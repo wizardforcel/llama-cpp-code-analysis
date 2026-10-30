@@ -1,0 +1,92 @@
+classes: []
+desc: 该文件是一个用于测试 llama.cpp 空闲 GPU 场景下解码性能的命令行示例程序。程序解析模型路径等参数，初始化 llama 后端和模型，创建上下文并执行一次预热解码，然后在不同的模拟空闲暂停时间下重复执行解码操作，统计平均解码耗时和标准差，最后释放上下文与模型资源。
+file: examples/idle/idle.cpp
+funcs:
+- code:
+  - static void print_usage(int /*argc*/, char ** argv) {
+  - '    printf("\nexample usage:\n");'
+  - '    printf("\n    %s -m model.gguf [-ngl n_gpu_layers]\n", argv[0]);'
+  - '    printf("\n");'
+  - '}'
+  desc: 打印程序的命令行使用说明和模型参数示例。
+  line: 13-17
+  name: print_usage
+- code:
+  - int main(int argc, char ** argv) {
+  - '    common_params params;'
+  - ''
+  - '    common_init();'
+  - ''
+  - '    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON, print_usage))
+    {'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    llama_backend_init();'
+  - '    llama_numa_init(params.numa);'
+  - ''
+  - '    llama_model_params model_params = common_model_params_to_llama(params);'
+  - '    llama_model * model = llama_model_load_from_file(params.model.path.c_str(),
+    model_params);'
+  - ''
+  - '    if (model == NULL) {'
+  - '        LOG_ERR("%s: error: unable to load model\n" , __func__);'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    const llama_vocab * vocab = llama_model_get_vocab(model);'
+  - '    std::vector<llama_token> prompt_tokens(1, llama_vocab_bos(vocab));'
+  - ''
+  - '    llama_context_params ctx_params = llama_context_default_params();'
+  - '    ctx_params.n_ctx   = 512;'
+  - '    ctx_params.n_batch = 512;'
+  - '    ctx_params.no_perf = false;'
+  - ''
+  - '    llama_context * ctx = llama_init_from_model(model, ctx_params);'
+  - '    if (ctx == NULL) {'
+  - '        fprintf(stderr , "%s: error: failed to create the llama_context\n" ,
+    __func__);'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());'
+  - '    const int n_iters = 3;'
+  - ''
+  - '    llama_decode(ctx, batch);'
+  - '    llama_memory_clear(llama_get_memory(ctx), true);'
+  - '    llama_synchronize(ctx);'
+  - ''
+  - '    for (int64_t t_pause_ms = 0; t_pause_ms <= 4000; t_pause_ms += 800) {'
+  - '        double t_sum_us  = 0.0;'
+  - '        double t_sum2_us = 0.0;'
+  - ''
+  - '        for (int i = 0; i < n_iters; i++) {'
+  - '            std::this_thread::sleep_for(std::chrono::milliseconds(t_pause_ms));'
+  - '            const int64_t t_start_us = llama_time_us();'
+  - '            llama_decode(ctx, batch);'
+  - '            llama_synchronize(ctx);'
+  - '            const int64_t t_end_us = llama_time_us();'
+  - '            const double t_cur_us = t_end_us - t_start_us;'
+  - '            printf("  - decode time: %8.2f ms\n", t_cur_us / 1000);'
+  - '            t_sum_us  += t_cur_us;'
+  - '            t_sum2_us += t_cur_us * t_cur_us;'
+  - '            llama_memory_clear(llama_get_memory(ctx), true);'
+  - '            llama_synchronize(ctx);'
+  - '        }'
+  - ''
+  - '        const double t_avg_us = t_sum_us / n_iters;'
+  - '        const double t_dev_us = sqrt((t_sum2_us / (n_iters - 1)) - (t_avg_us
+    * t_avg_us * n_iters) / (n_iters - 1));'
+  - '        printf("iters: %4d, pause: %5d ms, avg decode time: %8.2f +/- %4.2f ms\n",
+    n_iters, (int) t_pause_ms, t_avg_us / 1000, t_dev_us / 1000);'
+  - '        fflush(stdout);'
+  - '    }'
+  - ''
+  - '    llama_free(ctx);'
+  - '    llama_model_free(model);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解析命令行参数并初始化 llama 模型，通过不同空闲暂停时长重复测试模型解码性能，输出平均耗时和标准差后释放资源。
+  line: 19-81
+  name: main

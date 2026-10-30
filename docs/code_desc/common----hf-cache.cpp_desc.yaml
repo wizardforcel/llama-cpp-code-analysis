@@ -1,0 +1,600 @@
+classes: []
+desc: 该文件实现 Hugging Face 模型缓存管理功能：根据环境变量确定缓存目录，校验仓库、令牌、提交哈希和对象标识，访问 Hugging Face API
+  获取仓库文件及提交信息，枚举本地缓存文件，完成缓存文件的最终落盘，并将旧版 llama.cpp 缓存迁移到标准 Hugging Face 缓存目录。
+file: common/hf-cache.cpp
+funcs:
+- code:
+  - static fs::path get_cache_directory() {
+  - '    static const fs::path cache = []() {'
+  - '        struct {'
+  - '            const char * var;'
+  - '            fs::path path;'
+  - '        } entries[] = {'
+  - '            {"LLAMA_CACHE", fs::path()},'
+  - '            {"HF_HUB_CACHE", fs::path()},'
+  - '            {"HUGGINGFACE_HUB_CACHE", fs::path()},'
+  - '            {"HF_HOME", fs::path("hub")},'
+  - '            {"XDG_CACHE_HOME", fs::path("huggingface") / "hub"},'
+  - '            {HOME_DIR, fs::path(".cache") / "huggingface" / "hub"}'
+  - '        };'
+  - '        for (const auto & entry : entries) {'
+  - '            if (auto * p = std::getenv(entry.var); p && *p) {'
+  - '                fs::path base(p);'
+  - '                return entry.path.empty() ? base : base / entry.path;'
+  - '            }'
+  - '        }'
+  - '#ifndef _WIN32'
+  - '        const struct passwd * pw = getpwuid(getuid());'
+  - '        if (pw->pw_dir && *pw->pw_dir) {'
+  - '            return fs::path(pw->pw_dir) / ".cache" / "huggingface" / "hub";'
+  - '        }'
+  - '#endif'
+  - '        throw std::runtime_error("Failed to determine HF cache directory");'
+  - '    }();'
+  - '    return cache;'
+  - '}'
+  desc: 根据环境变量、当前用户主目录或系统用户信息确定 Hugging Face 缓存目录。
+  line: 34-69
+  name: get_cache_directory
+- code:
+  - static std::string folder_name_to_repo(const std::string & folder) {
+  - '    constexpr std::string_view prefix = "models--";'
+  - '    if (folder.rfind(prefix, 0)) {'
+  - '        return {};'
+  - '    }'
+  - '    std::string result = folder.substr(prefix.length());'
+  - '    string_replace_all(result, "--", "/");'
+  - '    return result;'
+  - '}'
+  desc: 将 Hugging Face 缓存目录名转换为仓库 ID。
+  line: 71-80
+  name: folder_name_to_repo
+- code:
+  - static std::string repo_to_folder_name(const std::string & repo_id) {
+  - '    constexpr std::string_view prefix = "models--";'
+  - '    std::string result = std::string(prefix) + repo_id;'
+  - '    string_replace_all(result, "/", "--");'
+  - '    return result;'
+  - '}'
+  desc: 将仓库 ID 转换为 Hugging Face 缓存目录名。
+  line: 82-87
+  name: repo_to_folder_name
+- code:
+  - static fs::path get_repo_path(const std::string & repo_id) {
+  - '    return get_cache_directory() / repo_to_folder_name(repo_id);'
+  - '}'
+  desc: 获取指定仓库在 Hugging Face 缓存中的根路径。
+  line: 89-91
+  name: get_repo_path
+- code:
+  - static bool is_hex_char(const char c) {
+  - '    return (c >= ''A'' && c <= ''F'') ||'
+  - '           (c >= ''a'' && c <= ''f'') ||'
+  - '           (c >= ''0'' && c <= ''9'');'
+  - '}'
+  desc: 判断字符是否为十六进制字符。
+  line: 93-97
+  name: is_hex_char
+- code:
+  - static bool is_hex_string(const std::string & s, size_t expected_len) {
+  - '    if (s.length() != expected_len) {'
+  - '        return false;'
+  - '    }'
+  - '    for (const char c : s) {'
+  - '        if (!is_hex_char(c)) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 验证字符串是否具有指定长度且全部由十六进制字符组成。
+  line: 99-109
+  name: is_hex_string
+- code:
+  - static bool is_alphanum(const char c) {
+  - '    return (c >= ''A'' && c <= ''Z'') ||'
+  - '           (c >= ''a'' && c <= ''z'') ||'
+  - '           (c >= ''0'' && c <= ''9'');'
+  - '}'
+  desc: 判断字符是否为英文字母或数字。
+  line: 111-115
+  name: is_alphanum
+- code:
+  - static bool is_special_char(char c) {
+  - '    return c == ''/'' || c == ''.'' || c == ''-'';'
+  - '}'
+  desc: 判断字符是否为仓库 ID 允许的特殊字符。
+  line: 117-119
+  name: is_special_char
+- code:
+  - static bool is_valid_repo_id(const std::string & repo_id) {
+  - '    if (repo_id.empty() || repo_id.length() > 256) {'
+  - '        return false;'
+  - '    }'
+  - '    int slash = 0;'
+  - '    bool special = true;'
+  - '    for (const char c : repo_id) {'
+  - '        if (is_alphanum(c) || c == ''_'') {'
+  - '            special = false;'
+  - '        } else if (is_special_char(c)) {'
+  - '            if (special) {'
+  - '                return false;'
+  - '            }'
+  - '            slash += (c == ''/'');'
+  - '            special = true;'
+  - '        } else {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return !special && slash == 1;'
+  - '}'
+  desc: 验证仓库 ID 是否符合 Hugging Face 仓库命名规则。
+  line: 125-148
+  name: is_valid_repo_id
+- code:
+  - static bool is_valid_hf_token(const std::string & token) {
+  - '    if (token.length() < 37 || token.length() > 256 ||'
+  - '        !string_starts_with(token, "hf_")) {'
+  - '        return false;'
+  - '    }'
+  - '    for (size_t i = 3; i < token.length(); ++i) {'
+  - '        if (!is_alphanum(token[i])) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 验证 Hugging Face 访问令牌格式。
+  line: 150-161
+  name: is_valid_hf_token
+- code:
+  - static bool is_valid_commit(const std::string & hash) {
+  - '    return is_hex_string(hash, 40);'
+  - '}'
+  desc: 验证提交哈希是否为 40 位十六进制字符串。
+  line: 163-165
+  name: is_valid_commit
+- code:
+  - static bool is_valid_oid(const std::string & oid) {
+  - '    return is_hex_string(oid, 40) || is_hex_string(oid, 64);'
+  - '}'
+  desc: 验证对象标识是否为 40 位或 64 位十六进制字符串。
+  line: 167-169
+  name: is_valid_oid
+- code:
+  - static bool is_valid_subpath(const fs::path & path, const fs::path & subpath)
+    {
+  - '    if (subpath.is_absolute()) {'
+  - '        return false;'
+  - '    }'
+  - '    auto b = fs::absolute(path).lexically_normal();'
+  - '    auto t = (b / subpath).lexically_normal();'
+  - '    auto [b_end, _] = std::mismatch(b.begin(), b.end(), t.begin(), t.end());'
+  - '    return b_end == b.end();'
+  - '}'
+  desc: 验证目标路径是否位于指定基础路径内，防止路径遍历。
+  line: 171-181
+  name: is_valid_subpath
+- code:
+  - static void safe_write_file(const fs::path & path, const std::string & data) {
+  - '    fs::path path_tmp = path.string() + ".tmp";'
+  - '    if (path.has_parent_path()) {'
+  - '        fs::create_directories(path.parent_path());'
+  - '    }'
+  - '    std::ofstream file(path_tmp);'
+  - '    file << data;'
+  - '    file.close();'
+  - '    std::error_code ec;'
+  - '    if (!file.fail()) {'
+  - '        fs::rename(path_tmp, path, ec);'
+  - '    }'
+  - '    if (file.fail() || ec) {'
+  - '        fs::remove(path_tmp, ec);'
+  - '        throw std::runtime_error("failed to write file: " + path.string());'
+  - '    }'
+  - '}'
+  desc: 通过临时文件和原子重命名方式安全写入文件。
+  line: 183-202
+  name: safe_write_file
+- code:
+  - static nl::json api_get(const std::string & url,
+  - '                        const std::string & token) {'
+  - '    auto [cli, parts] = common_http_client(url);'
+  - '    httplib::Headers headers = {'
+  - '        {"User-Agent", "llama-cpp/" + build_info},'
+  - '        {"Accept", "application/json"}'
+  - '    };'
+  - '    if (is_valid_hf_token(token)) {'
+  - '        headers.emplace("Authorization", "Bearer " + token);'
+  - '    } else if (!token.empty()) {'
+  - '        LOG_WRN("%s: invalid token, authentication disabled\n", __func__);'
+  - '    }'
+  - '    if (auto res = cli.Get(parts.path, headers)) {'
+  - '        auto body = res->body;'
+  - '        if (res->status == 200) {'
+  - '            return nl::json::parse(res->body);'
+  - '        }'
+  - '        try {'
+  - '            body = nl::json::parse(res->body)["error"].get<std::string>();'
+  - '        } catch (...) { }'
+  - '        throw std::runtime_error("GET failed (" + std::to_string(res->status)
+    + "): " + body);'
+  - '    } else {'
+  - '        throw std::runtime_error("HTTPLIB failed: " + httplib::to_string(res.error()));'
+  - '    }'
+  - '}'
+  desc: 向指定 URL 发起带可选认证的 HTTP GET 请求并解析 JSON 响应。
+  line: 204-238
+  name: api_get
+- code:
+  - static std::string get_repo_commit(const std::string & repo_id,
+  - '                                   const std::string & token) {'
+  - '    try {'
+  - '        auto endpoint = get_model_endpoint();'
+  - '        auto json = api_get(endpoint + "api/models/" + repo_id + "/refs", token);'
+  - '        if (!json.is_object() || !json.contains("branches") || !json["branches"].is_array())
+    {'
+  - '            LOG_WRN("%s: missing ''branches'' for ''%s''\n", __func__, repo_id.c_str());'
+  - '            return {};'
+  - '        }'
+  - '        fs::path refs_path = get_repo_path(repo_id) / "refs";'
+  - '        std::string name;'
+  - '        std::string commit;'
+  - '        for (const auto & branch : json["branches"]) {'
+  - '            if (!branch.is_object() || !branch.contains("name") || !branch["name"].is_string()
+    ||'
+  - '                !branch.contains("targetCommit") || !branch["targetCommit"].is_string())
+    {'
+  - '                continue;'
+  - '            }'
+  - '            std::string _name = branch["name"].get<std::string>();'
+  - '            std::string _commit = branch["targetCommit"].get<std::string>();'
+  - '            if (!is_valid_subpath(refs_path, _name) || !is_valid_commit(_commit))
+    {'
+  - '                continue;'
+  - '            }'
+  - '            if (_name == "main") {'
+  - '                name = _name;'
+  - '                commit = _commit;'
+  - '                break;'
+  - '            }'
+  - '            if (name.empty() || commit.empty()) {'
+  - '                name = _name;'
+  - '                commit = _commit;'
+  - '            }'
+  - '        }'
+  - '        if (name.empty() || commit.empty()) {'
+  - '            return {};'
+  - '        }'
+  - '        safe_write_file(refs_path / name, commit);'
+  - '        return commit;'
+  - '    } catch (const nl::json::exception & e) {'
+  - '        LOG_ERR("%s: JSON error: %s\n", __func__, e.what());'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("%s: error: %s\n", __func__, e.what());'
+  - '    }'
+  - '    return {};'
+  - '}'
+  desc: 通过 Hugging Face API 获取仓库分支提交，并将有效引用写入本地缓存。
+  line: 240-298
+  name: get_repo_commit
+- code:
+  - hf_files get_repo_files(const std::string & repo_id,
+  - '                        const std::string & token) {'
+  - '    if (!is_valid_repo_id(repo_id)) {'
+  - '        return {};'
+  - '    }'
+  - '    std::string commit = get_repo_commit(repo_id, token);'
+  - '    if (commit.empty()) {'
+  - '        return {};'
+  - '    }'
+  - '    fs::path blobs_path = get_repo_path(repo_id) / "blobs";'
+  - '    fs::path commit_path = get_repo_path(repo_id) / "snapshots" / commit;'
+  - '    hf_files files;'
+  - '    try {'
+  - '        auto endpoint = get_model_endpoint();'
+  - '        auto json = api_get(endpoint + "api/models/" + repo_id + "/tree/" + commit
+    + "?recursive=true", token);'
+  - '        if (!json.is_array()) {'
+  - '            return {};'
+  - '        }'
+  - '        for (const auto & item : json) {'
+  - '            if (!item.is_object() || !item.contains("type") || !item["type"].is_string()
+    || item["type"] != "file" ||'
+  - '                !item.contains("path") || !item["path"].is_string()) {'
+  - '                continue;'
+  - '            }'
+  - '            hf_file file;'
+  - '            file.repo_id = repo_id;'
+  - '            file.path = item["path"].get<std::string>();'
+  - '            if (!is_valid_subpath(commit_path, file.path)) {'
+  - '                continue;'
+  - '            }'
+  - '            if (item.contains("lfs") && item["lfs"].is_object()) {'
+  - '                if (item["lfs"].contains("oid") && item["lfs"]["oid"].is_string())
+    file.oid = item["lfs"]["oid"].get<std::string>();'
+  - '                if (item["lfs"].contains("size") && item["lfs"]["size"].is_number())
+    file.size = item["lfs"]["size"].get<size_t>();'
+  - '            } else if (item.contains("oid") && item["oid"].is_string()) {'
+  - '                file.oid = item["oid"].get<std::string>();'
+  - '            }'
+  - '            if (file.size == 0 && item.contains("size") && item["size"].is_number())
+    file.size = item["size"].get<size_t>();'
+  - '            if (!file.oid.empty() && !is_valid_oid(file.oid)) continue;'
+  - '            file.url = endpoint + repo_id + "/resolve/" + commit + "/" + file.path;'
+  - '            fs::path final_path = commit_path / file.path;'
+  - '            file.final_path = final_path.string();'
+  - '            file.local_path = !file.oid.empty() && !fs::exists(final_path) ?
+    (blobs_path / file.oid).string() : file.final_path;'
+  - '            files.push_back(file);'
+  - '        }'
+  - '    } catch (const nl::json::exception & e) {'
+  - '        LOG_ERR("%s: JSON error: %s\n", __func__, e.what());'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("%s: error: %s\n", __func__, e.what());'
+  - '    }'
+  - '    return files;'
+  - '}'
+  desc: 获取仓库指定提交中的文件清单，并构造其远程、缓存和最终路径信息。
+  line: 300-377
+  name: get_repo_files
+- code:
+  - static std::string get_cached_ref(const fs::path & repo_path) {
+  - '    fs::path refs_path = repo_path / "refs";'
+  - '    if (!fs::is_directory(refs_path)) return {};'
+  - '    std::string fallback;'
+  - '    for (const auto & entry : fs::directory_iterator(refs_path)) {'
+  - '        if (!entry.is_regular_file()) continue;'
+  - '        std::ifstream f(entry.path());'
+  - '        std::string commit;'
+  - '        if (!f || !std::getline(f, commit) || commit.empty()) continue;'
+  - '        if (!is_valid_commit(commit)) continue;'
+  - '        if (entry.path().filename() == "main") return commit;'
+  - '        if (fallback.empty()) fallback = commit;'
+  - '    }'
+  - '    return fallback;'
+  - '}'
+  desc: 从仓库缓存的 refs 目录中选择 main 分支或备用提交引用。
+  line: 379-402
+  name: get_cached_ref
+- code:
+  - hf_files get_cached_files(const std::string & repo_id) {
+  - '    fs::path cache_dir = get_cache_directory();'
+  - '    if (!fs::exists(cache_dir)) return {};'
+  - '    if (!repo_id.empty() && !is_valid_repo_id(repo_id)) return {};'
+  - '    hf_files files;'
+  - '    for (const auto & repo : fs::directory_iterator(cache_dir)) {'
+  - '        if (!repo.is_directory()) continue;'
+  - '        fs::path snapshots_path = repo.path() / "snapshots";'
+  - '        if (!fs::exists(snapshots_path)) continue;'
+  - '        std::string _repo_id = folder_name_to_repo(repo.path().filename().string());'
+  - '        if (!is_valid_repo_id(_repo_id)) continue;'
+  - '        if (!repo_id.empty() && _repo_id != repo_id) continue;'
+  - '        std::string commit = get_cached_ref(repo.path());'
+  - '        fs::path commit_path = snapshots_path / commit;'
+  - '        if (commit.empty() || !fs::is_directory(commit_path)) continue;'
+  - '        for (const auto & entry : fs::recursive_directory_iterator(commit_path))
+    {'
+  - '            if (!entry.is_regular_file() && !entry.is_symlink()) continue;'
+  - '            fs::path path = entry.path().lexically_relative(commit_path);'
+  - '            if (!path.empty()) {'
+  - '                hf_file file;'
+  - '                file.repo_id = _repo_id;'
+  - '                file.path = path.generic_string();'
+  - '                file.local_path = entry.path().string();'
+  - '                file.final_path = file.local_path;'
+  - '                files.push_back(std::move(file));'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return files;'
+  - '}'
+  desc: 扫描本地 Hugging Face 缓存并返回指定仓库或所有仓库的已缓存文件。
+  line: 404-448
+  name: get_cached_files
+- code:
+  - std::string finalize_file(const hf_file & file) {
+  - '    static std::atomic<bool> symlinks_disabled{false};'
+  - '    std::error_code ec;'
+  - '    fs::path local_path(file.local_path);'
+  - '    fs::path final_path(file.final_path);'
+  - '    if (local_path == final_path || fs::exists(final_path, ec)) return file.final_path;'
+  - '    if (!fs::exists(local_path, ec)) return file.final_path;'
+  - '    fs::create_directories(final_path.parent_path(), ec);'
+  - '    if (!symlinks_disabled) {'
+  - '        fs::path target = fs::relative(local_path, final_path.parent_path(),
+    ec);'
+  - '        if (!ec) fs::create_symlink(target, final_path, ec);'
+  - '        if (!ec) return file.final_path;'
+  - '    }'
+  - '    if (!symlinks_disabled.exchange(true)) {'
+  - '        LOG_WRN("%s: failed to create symlink: %s\n", __func__, ec.message().c_str());'
+  - '        LOG_WRN("%s: switching to degraded mode\n", __func__);'
+  - '    }'
+  - '    fs::rename(local_path, final_path, ec);'
+  - '    if (ec) {'
+  - '        fs::copy(local_path, final_path, ec);'
+  - '        if (ec) LOG_ERR("%s: failed to copy file to snapshots: %s\n", __func__,
+    ec.message().c_str());'
+  - '    }'
+  - '    return file.final_path;'
+  - '}'
+  desc: 将缓存文件链接或移动到快照最终路径，并在不支持符号链接时降级为移动或复制。
+  line: 450-487
+  name: finalize_file
+- code:
+  - static gguf_split_info get_gguf_split_info(const std::string & path) {
+  - '    static const std::regex re_split("^(.+)-([0-9]{5})-of-([0-9]{5})$", std::regex::icase);'
+  - '    std::smatch m;'
+  - '    std::string prefix = path;'
+  - '    if (!string_remove_suffix(prefix, ".gguf")) return {};'
+  - '    int index = 1;'
+  - '    int count = 1;'
+  - '    if (std::regex_match(prefix, m, re_split)) {'
+  - '        index = std::stoi(m[2].str());'
+  - '        count = std::stoi(m[3].str());'
+  - '        prefix = m[1].str();'
+  - '    }'
+  - '    return {std::move(prefix), index, count};'
+  - '}'
+  desc: 解析 GGUF 分片文件名，提取前缀、当前分片序号和分片总数。
+  line: 498-515
+  name: get_gguf_split_info
+- code:
+  - static std::pair<std::string, std::string> parse_manifest_name(std::string & filename)
+    {
+  - '    static const std::regex re(R"(^manifest=([^=]+)=([^=]+)=.*\.json$");'
+  - '    std::smatch match;'
+  - '    if (std::regex_match(filename, match, re)) {'
+  - '        return {match[1].str(), match[2].str()};'
+  - '    }'
+  - '    return {};'
+  - '}'
+  desc: 从旧版缓存清单文件名中解析模型所有者和仓库名称。
+  line: 517-524
+  name: parse_manifest_name
+- code:
+  - static std::string make_old_cache_filename(const std::string & owner,
+  - '                                           const std::string & repo,'
+  - '                                           const std::string & filename) {'
+  - '    auto result = owner + "_" + repo + "_" + filename;'
+  - '    string_replace_all(result, "/", "_");'
+  - '    return result;'
+  - '}'
+  desc: 按照旧版缓存命名规则生成缓存文件名。
+  line: 526-532
+  name: make_old_cache_filename
+- code:
+  - static bool collect_file(const fs::path & old_cache,
+  - '                         const std::string & owner,'
+  - '                         const std::string & repo,'
+  - '                         const std::string & path,'
+  - '                         const std::string & sha256,'
+  - '                         const hf_files & files,'
+  - '                         migrate_files & to_migrate) {'
+  - '    const hf_file * file = nullptr;'
+  - '    for (const auto & f : files) {'
+  - '        if (f.path == path) { file = &f; break; }'
+  - '    }'
+  - '    std::string old_filename = make_old_cache_filename(owner, repo, path);'
+  - '    fs::path old_path = old_cache / old_filename;'
+  - '    fs::path etag_path = old_path.string() + ".etag";'
+  - '    if (!fs::exists(old_path)) {'
+  - '        if (file && fs::exists(file->final_path)) return true;'
+  - '        return false;'
+  - '    }'
+  - '    if (!file) return false;'
+  - '    if (!sha256.empty() && !file->oid.empty() && sha256 != file->oid) return
+    false;'
+  - '    if (file->size > 0 && fs::file_size(old_path) != file->size) return false;'
+  - '    to_migrate.push_back({path, sha256, file->size, old_path, etag_path, file});'
+  - '    return true;'
+  - '}'
+  desc: 校验并收集一个旧缓存文件，确认其存在性、哈希和大小后加入迁移列表。
+  line: 543-586
+  name: collect_file
+- code:
+  - static bool collect_files(const fs::path & old_cache,
+  - '                          const std::string & owner,'
+  - '                          const std::string & repo,'
+  - '                          const nl::json & node,'
+  - '                          const hf_files & files,'
+  - '                          migrate_files & to_migrate) {'
+  - '    if (!node.contains("rfilename") || !node.contains("lfs") || !node["lfs"].contains("sha256"))
+    return true;'
+  - '    std::string path = node["rfilename"];'
+  - '    std::string sha256 = node["lfs"]["sha256"];'
+  - '    auto split = get_gguf_split_info(path);'
+  - '    if (split.count <= 1) return collect_file(old_cache, owner, repo, path, sha256,
+    files, to_migrate);'
+  - '    std::vector<std::pair<std::string, std::string>> splits;'
+  - '    for (const auto & f : files) {'
+  - '        auto split_f = get_gguf_split_info(f.path);'
+  - '        if (split_f.count == split.count && split_f.prefix == split.prefix) {'
+  - '            std::string f_sha256 = (split_f.index == 1) ? sha256 : "";'
+  - '            splits.emplace_back(f.path, f_sha256);'
+  - '        }'
+  - '    }'
+  - '    if ((int)splits.size() != split.count) return false;'
+  - '    for (const auto & [f_path, f_sha256] : splits) {'
+  - '        if (!collect_file(old_cache, owner, repo, f_path, f_sha256, files, to_migrate))
+    return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 从 manifest 节点收集普通文件或完整的 GGUF 分片文件集合。
+  line: 588-624
+  name: collect_files
+- code:
+  - static bool migrate_file(const migrate_file & file) {
+  - '    std::error_code ec;'
+  - '    fs::path new_path(file.file->local_path);'
+  - '    fs::create_directories(new_path.parent_path(), ec);'
+  - '    if (!fs::exists(new_path, ec)) {'
+  - '        fs::rename(file.old_path, new_path, ec);'
+  - '        if (ec) {'
+  - '            fs::copy_file(file.old_path, new_path, ec);'
+  - '            if (ec) return false;'
+  - '        }'
+  - '        fs::remove(file.old_path, ec);'
+  - '    }'
+  - '    fs::remove(file.etag_path, ec);'
+  - '    std::string filename = finalize_file(*file.file);'
+  - '    LOG_INF("%s: migrated %s -> %s\n", __func__, file.old_path.filename().string().c_str(),
+    filename.c_str());'
+  - '    return true;'
+  - '}'
+  desc: 将单个旧版缓存文件移动或复制到新的 Hugging Face 缓存位置，并完成最终链接。
+  line: 626-648
+  name: migrate_file
+- code:
+  - void migrate_old_cache_to_hf_cache(const std::string & token, bool offline) {
+  - '    fs::path old_cache = fs_get_cache_directory();'
+  - '    if (!fs::exists(old_cache)) return;'
+  - '    if (offline) {'
+  - '        LOG_WRN("%s: skipping migration in offline mode (will run when online)\n",
+    __func__);'
+  - '        return;'
+  - '    }'
+  - '    bool warned = false;'
+  - '    for (const auto & entry : fs::directory_iterator(old_cache)) {'
+  - '        if (!entry.is_regular_file()) continue;'
+  - '        auto filename = entry.path().filename().string();'
+  - '        auto [owner, repo] = parse_manifest_name(filename);'
+  - '        if (owner.empty() || repo.empty()) continue;'
+  - '        if (!warned) {'
+  - '            warned = true;'
+  - '            LOG_WRN("WARNING: Migrating cache to HuggingFace cache directory\n");'
+  - '        }'
+  - '        auto repo_id = owner + "/" + repo;'
+  - '        auto files = get_repo_files(repo_id, token);'
+  - '        if (files.empty()) continue;'
+  - '        migrate_files to_migrate;'
+  - '        bool ok = true;'
+  - '        try {'
+  - '            std::ifstream manifest(entry.path());'
+  - '            auto json = nl::json::parse(manifest);'
+  - '            for (const char * key : {"ggufFile", "mmprojFile"}) {'
+  - '                if (json.contains(key) && !collect_files(old_cache, owner, repo,
+    json[key], files, to_migrate)) {'
+  - '                    ok = false;'
+  - '                    break;'
+  - '                }'
+  - '            }'
+  - '        } catch (const std::exception & e) {'
+  - '            continue;'
+  - '        }'
+  - '        if (!ok) continue;'
+  - '        for (const auto & file : to_migrate) {'
+  - '            if (!migrate_file(file)) {'
+  - '                ok = false;'
+  - '                break;'
+  - '            }'
+  - '        }'
+  - '        if (!ok) continue;'
+  - '        fs::remove(entry.path());'
+  - '    }'
+  - '}'
+  desc: 将旧版 llama.cpp 缓存中的模型文件校验后迁移到标准 Hugging Face 缓存目录。
+  line: 650-723
+  name: migrate_old_cache_to_hf_cache

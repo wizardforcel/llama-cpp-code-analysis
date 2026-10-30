@@ -1,0 +1,417 @@
+classes:
+- desc: 继承自 Dexie 的数据库类，定义了 LlamacppWebui 数据库的结构，包含 conversations 和 messages 两张表及其索引。
+  methods:
+  - code:
+    - constructor() {
+    - "\tsuper('LlamacppWebui');"
+    - ''
+    - "\tthis.version(1).stores({"
+    - "\t\tconversations: 'id, lastModified, currNode, name',"
+    - "\t\tmessages: 'id, convId, type, role, timestamp, parent, children'"
+    - "\t});"
+    - '}'
+    desc: 初始化数据库实例，声明数据库名称并定义版本 1 的表结构与索引字段。
+    line: 9-17
+    name: constructor
+  name: LlamacppDatabase
+- desc: 数据库静态服务类，封装了对话与消息的全部 CRUD 操作，包括消息分支管理、级联删除、对话导入与分叉等高级功能。
+  methods:
+  - code:
+    - 'static async createConversation(name: string): Promise<DatabaseConversation>
+      {'
+    - "\tconst conversation: DatabaseConversation = {"
+    - "\t\tid: uuid(),"
+    - "\t\tname,"
+    - "\t\tlastModified: Date.now(),"
+    - "\t\tcurrNode: ''"
+    - "\t};"
+    - ''
+    - "\tawait db.conversations.add(conversation);"
+    - "\treturn conversation;"
+    - '}'
+    desc: 创建一个新的对话记录，生成 UUID 并写入数据库，返回创建的对话对象。
+    line: 37-46
+    name: createConversation
+  - code:
+    - static async createMessageBranch(
+    - "\tmessage: Omit<DatabaseMessage, 'id'>,"
+    - "\tparentId: string | null"
+    - '): Promise<DatabaseMessage> {'
+    - "\treturn await db.transaction('rw', [db.conversations, db.messages], async\
+      \ () => {"
+    - "\t\t// Handle null parent (root message case)"
+    - "\t\tif (parentId !== null) {"
+    - "\t\t\tconst parentMessage = await db.messages.get(parentId);"
+    - "\t\t\tif (!parentMessage) {"
+    - "\t\t\t\tthrow new Error(`Parent message ${parentId} not found`);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tconst newMessage: DatabaseMessage = {"
+    - "\t\t\t...message,"
+    - "\t\t\tid: uuid(),"
+    - "\t\t\tparent: parentId,"
+    - "\t\t\ttoolCalls: message.toolCalls ?? '',"
+    - "\t\t\tchildren: []"
+    - "\t\t};"
+    - ''
+    - "\t\tawait db.messages.add(newMessage);"
+    - ''
+    - "\t\t// Update parent's children array if parent exists"
+    - "\t\tif (parentId !== null) {"
+    - "\t\t\tconst parentMessage = await db.messages.get(parentId);"
+    - "\t\t\tif (parentMessage) {"
+    - "\t\t\t\tawait db.messages.update(parentId, {"
+    - "\t\t\t\t\tchildren: [...parentMessage.children, newMessage.id]"
+    - "\t\t\t\t});"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tawait this.updateConversation(message.convId, {"
+    - "\t\t\tcurrNode: newMessage.id"
+    - "\t\t});"
+    - ''
+    - "\t\treturn newMessage;"
+    - "\t});"
+    - '}'
+    desc: 在事务中创建新的消息分支节点：校验父消息存在性，创建消息并挂接到父节点的 children 数组，同时更新对话的 currNode 指针。
+    line: 63-100
+    name: createMessageBranch
+  - code:
+    - 'static async createRootMessage(convId: string): Promise<string> {'
+    - "\tconst rootMessage: DatabaseMessage = {"
+    - "\t\tid: uuid(),"
+    - "\t\tconvId,"
+    - "\t\ttype: 'root',"
+    - "\t\ttimestamp: Date.now(),"
+    - "\t\trole: MessageRole.SYSTEM,"
+    - "\t\tcontent: '',"
+    - "\t\tparent: null,"
+    - "\t\ttoolCalls: '',"
+    - "\t\tchildren: []"
+    - "\t};"
+    - ''
+    - "\tawait db.messages.add(rootMessage);"
+    - "\treturn rootMessage.id;"
+    - '}'
+    desc: 为新对话创建隐藏的根消息节点（type 为 'root'），作为消息树分支结构的起点，返回其 ID。
+    line: 108-123
+    name: createRootMessage
+  - code:
+    - static async createSystemMessage(
+    - "\tconvId: string,"
+    - "\tsystemPrompt: string,"
+    - "\tparentId: string"
+    - '): Promise<DatabaseMessage> {'
+    - "\tconst trimmedPrompt = systemPrompt.trim();"
+    - "\tif (!trimmedPrompt) {"
+    - "\t\tthrow new Error('Cannot create system message with empty content');"
+    - "\t}"
+    - ''
+    - "\tconst systemMessage: DatabaseMessage = {"
+    - "\t\tid: uuid(),"
+    - "\t\tconvId,"
+    - "\t\ttype: MessageRole.SYSTEM,"
+    - "\t\ttimestamp: Date.now(),"
+    - "\t\trole: MessageRole.SYSTEM,"
+    - "\t\tcontent: trimmedPrompt,"
+    - "\t\tparent: parentId,"
+    - "\t\tchildren: []"
+    - "\t};"
+    - ''
+    - "\tawait db.messages.add(systemMessage);"
+    - ''
+    - "\tconst parentMessage = await db.messages.get(parentId);"
+    - "\tif (parentMessage) {"
+    - "\t\tawait db.messages.update(parentId, {"
+    - "\t\t\tchildren: [...parentMessage.children, systemMessage.id]"
+    - "\t\t});"
+    - "\t}"
+    - ''
+    - "\treturn systemMessage;"
+    - '}'
+    desc: 为对话创建系统提示消息，校验内容非空后写入数据库并挂接到指定父节点的 children 数组。
+    line: 134-164
+    name: createSystemMessage
+  - code:
+    - static async deleteConversation(
+    - "\tid: string,"
+    - "\toptions?: { deleteWithForks?: boolean }"
+    - '): Promise<void> {'
+    - "\tawait db.transaction('rw', [db.conversations, db.messages], async () => {"
+    - "\t\tif (options?.deleteWithForks) {"
+    - "\t\t\t// Recursively collect all descendant IDs"
+    - "\t\t\tconst idsToDelete: string[] = [];"
+    - "\t\t\tconst queue = [id];"
+    - ''
+    - "\t\t\twhile (queue.length > 0) {"
+    - "\t\t\t\tconst parentId = queue.pop()!;"
+    - "\t\t\t\tconst children = await db.conversations"
+    - "\t\t\t\t\t.filter((c) => c.forkedFromConversationId === parentId)"
+    - "\t\t\t\t\t.toArray();"
+    - ''
+    - "\t\t\t\tfor (const child of children) {"
+    - "\t\t\t\t\tidsToDelete.push(child.id);"
+    - "\t\t\t\t\tqueue.push(child.id);"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\tfor (const forkId of idsToDelete) {"
+    - "\t\t\t\tawait db.conversations.delete(forkId);"
+    - "\t\t\t\tawait db.messages.where('convId').equals(forkId).delete();"
+    - "\t\t\t}"
+    - "\t\t} else {"
+    - "\t\t\t// Reparent direct children to deleted conv's parent"
+    - "\t\t\tconst conv = await db.conversations.get(id);"
+    - "\t\t\tconst newParent = conv?.forkedFromConversationId;"
+    - "\t\t\tconst directChildren = await db.conversations"
+    - "\t\t\t\t.filter((c) => c.forkedFromConversationId === id)"
+    - "\t\t\t\t.toArray();"
+    - ''
+    - "\t\t\tfor (const child of directChildren) {"
+    - "\t\t\t\tawait db.conversations.update(child.id, {"
+    - "\t\t\t\t\tforkedFromConversationId: newParent ?? undefined"
+    - "\t\t\t\t});"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tawait db.conversations.delete(id);"
+    - "\t\tawait db.messages.where('convId').equals(id).delete();"
+    - "\t});"
+    - '}'
+    desc: 删除指定对话及其全部消息；可选递归删除所有分叉（fork）子对话，或将子对话重新挂接到被删对话的父级。
+    line: 171-212
+    name: deleteConversation
+  - code:
+    - 'static async deleteMessage(messageId: string): Promise<void> {'
+    - "\tawait db.transaction('rw', db.messages, async () => {"
+    - "\t\tconst message = await db.messages.get(messageId);"
+    - "\t\tif (!message) return;"
+    - ''
+    - "\t\t// Remove this message from its parent's children array"
+    - "\t\tif (message.parent) {"
+    - "\t\t\tconst parent = await db.messages.get(message.parent);"
+    - "\t\t\tif (parent) {"
+    - "\t\t\t\tparent.children = parent.children.filter((childId: string) => childId\
+      \ !== messageId);"
+    - "\t\t\t\tawait db.messages.put(parent);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\t// Delete the message"
+    - "\t\tawait db.messages.delete(messageId);"
+    - "\t});"
+    - '}'
+    desc: 删除单条消息，并从其父消息的 children 数组中移除该消息 ID 的引用。
+    line: 219-236
+    name: deleteMessage
+  - code:
+    - static async deleteMessageCascading(
+    - "\tconversationId: string,"
+    - "\tmessageId: string"
+    - '): Promise<string[]> {'
+    - "\treturn await db.transaction('rw', db.messages, async () => {"
+    - "\t\t// Get all messages in the conversation to find descendants"
+    - "\t\tconst allMessages = await db.messages.where('convId').equals(conversationId).toArray();"
+    - ''
+    - "\t\t// Find all descendant messages"
+    - "\t\tconst descendants = findDescendantMessages(allMessages, messageId);"
+    - "\t\tconst allToDelete = [messageId, ...descendants];"
+    - ''
+    - "\t\t// Get the message to delete for parent cleanup"
+    - "\t\tconst message = await db.messages.get(messageId);"
+    - "\t\tif (message && message.parent) {"
+    - "\t\t\tconst parent = await db.messages.get(message.parent);"
+    - "\t\t\tif (parent) {"
+    - "\t\t\t\tparent.children = parent.children.filter((childId: string) => childId\
+      \ !== messageId);"
+    - "\t\t\t\tawait db.messages.put(parent);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\t// Delete all messages in the branch"
+    - "\t\tawait db.messages.bulkDelete(allToDelete);"
+    - ''
+    - "\t\treturn allToDelete;"
+    - "\t});"
+    - '}'
+    desc: 级联删除指定消息及其所有后代消息（整个分支），清理父节点引用后批量删除并返回所有被删除的消息 ID。
+    line: 246-272
+    name: deleteMessageCascading
+  - code:
+    - 'static async getAllConversations(): Promise<DatabaseConversation[]> {'
+    - "\treturn await db.conversations.orderBy('lastModified').reverse().toArray();"
+    - '}'
+    desc: 获取全部对话列表，按最后修改时间倒序排列（最新在前）。
+    line: 279-281
+    name: getAllConversations
+  - code:
+    - 'static async getConversation(id: string): Promise<DatabaseConversation | undefined>
+      {'
+    - "\treturn await db.conversations.get(id);"
+    - '}'
+    desc: 根据 ID 获取单个对话，不存在时返回 undefined。
+    line: 289-291
+    name: getConversation
+  - code:
+    - 'static async getConversationMessages(convId: string): Promise<DatabaseMessage[]>
+      {'
+    - "\treturn await db.messages.where('convId').equals(convId).sortBy('timestamp');"
+    - '}'
+    desc: 获取指定对话中的全部消息，按时间戳升序排列（最早在前）。
+    line: 299-301
+    name: getConversationMessages
+  - code:
+    - static async updateConversation(
+    - "\tid: string,"
+    - "\tupdates: Partial<Omit<DatabaseConversation, 'id'>>"
+    - '): Promise<void> {'
+    - "\tawait db.conversations.update(id, {"
+    - "\t\t...updates,"
+    - "\t\tlastModified: Date.now()"
+    - "\t});"
+    - '}'
+    desc: 部分更新指定对话的字段，并自动刷新 lastModified 时间戳。
+    line: 310-318
+    name: updateConversation
+  - code:
+    - 'static async updateCurrentNode(convId: string, nodeId: string): Promise<void>
+      {'
+    - "\tawait this.updateConversation(convId, {"
+    - "\t\tcurrNode: nodeId"
+    - "\t});"
+    - '}'
+    desc: 更新对话的当前节点指针（currNode），用于切换当前查看的消息分支路径。
+    line: 334-338
+    name: updateCurrentNode
+  - code:
+    - static async updateMessage(
+    - "\tid: string,"
+    - "\tupdates: Partial<Omit<DatabaseMessage, 'id'>>"
+    - '): Promise<void> {'
+    - "\tawait db.messages.update(id, updates);"
+    - '}'
+    desc: 部分更新指定消息的字段。
+    line: 346-351
+    name: updateMessage
+  - code:
+    - static async importConversations(
+    - "\tdata: { conv: DatabaseConversation; messages: DatabaseMessage[] }[]"
+    - '): Promise<{ imported: number; skipped: number }> {'
+    - "\tlet importedCount = 0;"
+    - "\tlet skippedCount = 0;"
+    - ''
+    - "\treturn await db.transaction('rw', [db.conversations, db.messages], async\
+      \ () => {"
+    - "\t\tfor (const item of data) {"
+    - "\t\t\tconst { conv, messages } = item;"
+    - ''
+    - "\t\t\tconst existing = await db.conversations.get(conv.id);"
+    - "\t\t\tif (existing) {"
+    - "\t\t\t\tconsole.warn(`Conversation \"${conv.name}\" already exists, skipping...`);"
+    - "\t\t\t\tskippedCount++;"
+    - "\t\t\t\tcontinue;"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\tawait db.conversations.add(conv);"
+    - "\t\t\tfor (const msg of messages) {"
+    - "\t\t\t\tawait db.messages.put(msg);"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\timportedCount++;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn { imported: importedCount, skipped: skippedCount };"
+    - "\t});"
+    - '}'
+    desc: 批量导入对话及其消息，跳过已存在的对话，在事务中执行并返回导入与跳过的数量统计。
+    line: 367-393
+    name: importConversations
+  - code:
+    - static async forkConversation(
+    - "\tsourceConvId: string,"
+    - "\tatMessageId: string,"
+    - "\toptions: { name: string; includeAttachments: boolean }"
+    - '): Promise<DatabaseConversation> {'
+    - "\treturn await db.transaction('rw', [db.conversations, db.messages], async\
+      \ () => {"
+    - "\t\tconst sourceConv = await db.conversations.get(sourceConvId);"
+    - "\t\tif (!sourceConv) {"
+    - "\t\t\tthrow new Error(`Source conversation ${sourceConvId} not found`);"
+    - "\t\t}"
+    - ''
+    - "\t\tconst allMessages = await db.messages.where('convId').equals(sourceConvId).toArray();"
+    - ''
+    - "\t\tconst pathMessages = filterByLeafNodeId(allMessages, atMessageId, true)\
+      \ as DatabaseMessage[];"
+    - "\t\tif (pathMessages.length === 0) {"
+    - "\t\t\tthrow new Error(`Could not resolve message path to ${atMessageId}`);"
+    - "\t\t}"
+    - ''
+    - "\t\tconst idMap = new Map<string, string>();"
+    - ''
+    - "\t\tfor (const msg of pathMessages) {"
+    - "\t\t\tidMap.set(msg.id, uuid());"
+    - "\t\t}"
+    - ''
+    - "\t\tconst newConvId = uuid();"
+    - "\t\tconst clonedMessages: DatabaseMessage[] = pathMessages.map((msg) => {"
+    - "\t\t\tconst newId = idMap.get(msg.id)!;"
+    - "\t\t\tconst newParent = msg.parent ? (idMap.get(msg.parent) ?? null) : null;"
+    - "\t\t\tconst newChildren = msg.children"
+    - "\t\t\t\t.filter((childId: string) => idMap.has(childId))"
+    - "\t\t\t\t.map((childId: string) => idMap.get(childId)!);"
+    - ''
+    - "\t\t\treturn {"
+    - "\t\t\t\t...msg,"
+    - "\t\t\t\tid: newId,"
+    - "\t\t\t\tconvId: newConvId,"
+    - "\t\t\t\tparent: newParent,"
+    - "\t\t\t\tchildren: newChildren,"
+    - "\t\t\t\textra: options.includeAttachments ? msg.extra : undefined"
+    - "\t\t\t};"
+    - "\t\t});"
+    - ''
+    - "\t\tconst lastClonedMessage = clonedMessages[clonedMessages.length - 1];"
+    - "\t\tconst newConv: DatabaseConversation = {"
+    - "\t\t\tid: newConvId,"
+    - "\t\t\tname: options.name,"
+    - "\t\t\tlastModified: Date.now(),"
+    - "\t\t\tcurrNode: lastClonedMessage.id,"
+    - "\t\t\tforkedFromConversationId: sourceConvId,"
+    - "\t\t\tmcpServerOverrides: sourceConv.mcpServerOverrides"
+    - "\t\t\t\t? sourceConv.mcpServerOverrides.map((o: McpServerOverride) => ({"
+    - "\t\t\t\t\t\tserverId: o.serverId,"
+    - "\t\t\t\t\t\tenabled: o.enabled"
+    - "\t\t\t\t\t}))"
+    - "\t\t\t\t: undefined"
+    - "\t\t};"
+    - ''
+    - "\t\tawait db.conversations.add(newConv);"
+    - ''
+    - "\t\tfor (const msg of clonedMessages) {"
+    - "\t\t\tawait db.messages.add(msg);"
+    - "\t\t}"
+    - ''
+    - "\t\treturn newConv;"
+    - "\t});"
+    - '}'
+    desc: 在指定消息处分叉对话：复制从根到目标消息的完整路径，为所有消息生成新 ID 并重建父子引用关系，创建继承源对话 MCP 配置的新对话。
+    line: 410-470
+    name: forkConversation
+  name: DatabaseService
+desc: 该文件实现了一个基于 Dexie（IndexedDB 封装库）的本地数据库服务层，用于管理 llama.cpp WebUI 中的对话（Conversation）与消息（Message）数据。它定义了数据库结构
+  LlamacppDatabase，并提供静态服务类 DatabaseService，封装了对话的创建、查询、更新、删除，消息的创建（含分支、根消息、系统消息）、级联删除，以及对话导入和分叉（fork）等核心功能，支持树状消息分支结构的持久化存储。
+file: tools/server/webui/src/lib/services/database.service.ts
+funcs:
+- code:
+  - import Dexie, { type EntityTable } from 'dexie';
+  - import { findDescendantMessages, uuid, filterByLeafNodeId } from '$lib/utils';
+  - import type { McpServerOverride } from '$lib/types/database';
+  - '...'
+  - const db = new LlamacppDatabase();
+  - import { MessageRole } from '$lib/enums';
+  desc: 模块级全局代码：导入 Dexie、工具函数与类型定义，实例化 LlamacppDatabase 得到全局单例数据库对象 db，并导入 MessageRole
+    枚举供服务类使用。
+  line: 1-22
+  name: __main__

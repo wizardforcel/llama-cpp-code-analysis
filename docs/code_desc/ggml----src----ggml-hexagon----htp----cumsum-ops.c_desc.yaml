@@ -1,0 +1,284 @@
+classes:
+- desc: cumsum运算的辅助上下文结构体，封装了运算所需的输入输出行尺寸、对齐尺寸、线程分配计算以及总行数等信息，用于在线程间传递参数。
+  methods: []
+  name: htp_cumsum_context
+desc: 该文件实现了基于Hexagon HVX DSP的cumsum（累加和）运算算子，针对单精度浮点数据提供了两种多线程处理路径：一种是使用DMA进行双缓冲数据搬运的优化版本，另一种是直接访问内存的直通版本。核心算法通过HVX矢量指令实现前缀扫描（prefix
+  scan），支持批量计算张量每一行的累积和，并通过工作线程池实现多线程并行处理。
+file: ggml/src/ggml-hexagon/htp/cumsum-ops.c
+funcs:
+- code:
+  - struct htp_cumsum_context {
+  - '    struct htp_ops_context * octx;'
+  - '    size_t          src_row_size;'
+  - '    size_t          dst_row_size;'
+  - '    size_t          src_row_size_aligned;'
+  - '    size_t          dst_row_size_aligned;'
+  - '    uint32_t        rows_per_thread;'
+  - '    uint32_t        total_rows;'
+  - '};'
+  - ''
+  - '#define htp_cumsum_tensors_preamble                  \'
+  - '    struct htp_tensor * restrict src0 = &octx->src0; \'
+  - '    struct htp_tensor * restrict dst  = &octx->dst;  \'
+  - '                                                     \'
+  - '    const uint32_t ne00 = src0->ne[0];               \'
+  - '    const uint32_t ne01 = src0->ne[1];               \'
+  - '    const uint32_t ne02 = src0->ne[2];               \'
+  - '    const uint32_t ne03 = src0->ne[3];               \'
+  - '                                                     \'
+  - '    const uint32_t ne0 = dst->ne[0];                 \'
+  - '    const uint32_t ne1 = dst->ne[1];                 \'
+  - '    const uint32_t ne2 = dst->ne[2];                 \'
+  - '    const uint32_t ne3 = dst->ne[3];                 \'
+  - '                                                     \'
+  - '    const uint32_t nb00 = src0->nb[0];               \'
+  - '    const uint32_t nb01 = src0->nb[1];               \'
+  - '    const uint32_t nb02 = src0->nb[2];               \'
+  - '    const uint32_t nb03 = src0->nb[3];               \'
+  - '                                                     \'
+  - '    const uint32_t nb0 = dst->nb[0];                 \'
+  - '    const uint32_t nb1 = dst->nb[1];                 \'
+  - '    const uint32_t nb2 = dst->nb[2];                 \'
+  - '    const uint32_t nb3 = dst->nb[3];'
+  - ''
+  - '#define htp_cumsum_preamble                                                \'
+  - '    struct htp_cumsum_context * cctx = (struct htp_cumsum_context *) data; \'
+  - '    struct htp_ops_context *    octx = cctx->octx;                         \'
+  - '    htp_cumsum_tensors_preamble;                                           \'
+  - '    dma_queue * dma_queue = octx->ctx->dma[ith];'
+  desc: 文件全局区域，包含宏定义（htp_cumsum_tensors_preamble 和 htp_cumsum_preamble）以及结构体定义，这些宏用于解包张量维度信息和上下文信息，是后续函数的通用前置声明。
+  line: 1-66
+  name: __main__
+- code:
+  - static inline HVX_Vector hvx_cumsum_vadd(HVX_Vector a, HVX_Vector b) {
+  - '    return Q6_Vsf_vadd_VsfVsf(a, b);'
+  - '}'
+  - static inline HVX_Vector hvx_cumsum_vadd(HVX_Vector a, HVX_Vector b) {
+  - '    return Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(a, b));'
+  - '}'
+  desc: HVX向量加法辅助函数，根据HVX架构版本选择不同的饱和加法指令实现，用于后续前缀扫描的累积操作。
+  line: 68-76
+  name: hvx_cumsum_vadd
+- code:
+  - static inline HVX_Vector hvx_prefix_scan_f32(HVX_Vector v, HVX_Vector carry_in)
+    {
+  - '    const HVX_Vector zero = Q6_V_vsplat_R(0);'
+  - ''
+  - '    v = hvx_cumsum_vadd(v, Q6_V_vlalign_VVR(v, zero,  4));'
+  - '    v = hvx_cumsum_vadd(v, Q6_V_vlalign_VVR(v, zero,  8));'
+  - '    v = hvx_cumsum_vadd(v, Q6_V_vlalign_VVR(v, zero, 16));'
+  - '    v = hvx_cumsum_vadd(v, Q6_V_vlalign_VVR(v, zero, 32));'
+  - '    v = hvx_cumsum_vadd(v, Q6_V_vlalign_VVR(v, zero, 64));'
+  - '    v = hvx_cumsum_vadd(v, carry_in);'
+  - ''
+  - '    return v;'
+  - '}'
+  desc: HVX前缀扫描核心算法，通过多级向量错位累加实现对单个向量内32位浮点数的前缀和计算，并结合进位向量实现跨向量的累加。
+  line: 81-94
+  name: hvx_prefix_scan_f32
+- code:
+  - static inline HVX_Vector hvx_splat_last_f32(HVX_Vector v) {
+  - '    return hvx_vec_repl4(Q6_V_vror_VR(v, 124));'
+  - '}'
+  desc: 从HVX向量中提取最后一个浮点元素并广播到整个向量，用于提取当前向量前缀和的最后一个值作为下一向量的进位。
+  line: 96-98
+  name: hvx_splat_last_f32
+- code:
+  - static inline void hvx_cumsum_row_f32(const float * restrict src, float * restrict
+    dst, uint32_t n) {
+  - '    const uint32_t nvec = n / VLEN_FP32;'
+  - '    const uint32_t nloe = n % VLEN_FP32;'
+  - ''
+  - '    HVX_Vector carry = Q6_V_vsplat_R(0);'
+  - ''
+  - '    for (uint32_t i = 0; i < nvec; i++) {'
+  - '        HVX_Vector v = *((const HVX_UVector *) (src + i * VLEN_FP32));'
+  - '        v = hvx_prefix_scan_f32(v, carry);'
+  - '        hvx_vec_store_u(dst + i * VLEN_FP32, VLEN, v);'
+  - '        carry = hvx_splat_last_f32(v);'
+  - '    }'
+  - ''
+  - '    if (nloe) {'
+  - '        float acc = hvx_vec_get_f32(carry);'
+  - '        const float * src_tail = src + nvec * VLEN_FP32;'
+  - '        float       * dst_tail = dst + nvec * VLEN_FP32;'
+  - '        for (uint32_t i = 0; i < nloe; i++) {'
+  - '            acc        += src_tail[i];'
+  - '            dst_tail[i] = acc;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 单行浮点累加和的核心计算函数，对输入行按HVX向量宽度分批进行前缀扫描，并处理行尾不满足向量宽度的残余元素。
+  line: 100-121
+  name: hvx_cumsum_row_f32
+- code:
+  - static void cumsum_thread_f32_dma(unsigned int nth, unsigned int ith, void * data)
+    {
+  - '    htp_cumsum_preamble;'
+  - ''
+  - '    uint64_t t1, t2;'
+  - '    t1 = HAP_perf_get_qtimer_count();'
+  - ''
+  - '    const uint32_t ir0 = cctx->rows_per_thread * ith;'
+  - '    const uint32_t ir1 = MIN(ir0 + cctx->rows_per_thread, cctx->total_rows);'
+  - ''
+  - '    if (ir0 >= ir1) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    const size_t src_row_size         = cctx->src_row_size;'
+  - '    const size_t dst_row_size         = cctx->dst_row_size;'
+  - '    const size_t src_row_size_aligned = cctx->src_row_size_aligned;'
+  - '    const size_t dst_row_size_aligned = cctx->dst_row_size_aligned;'
+  - ''
+  - '    const uint8_t * src_data = (const uint8_t *) src0->data;'
+  - '    uint8_t *       dst_data = (uint8_t *) dst->data;'
+  - ''
+  - '    uint8_t * src_spad = octx->src0_spad.data + (ith * src_row_size_aligned *
+    2);'
+  - '    uint8_t * dst_spad = octx->dst_spad.data  + (ith * dst_row_size_aligned *
+    2);'
+  - ''
+  - '    for (uint32_t ir = ir0, spad_idx = 0; ir < ir1 && spad_idx < 2; ir++, spad_idx++)
+    {'
+  - '        dma_queue_push_vtcm_to_ddr(dma_queue,'
+  - '                                   dma_make_ptr(dst_data, dst_spad + (spad_idx
+    * dst_row_size_aligned)),'
+  - '                                   dst_row_size, dst_row_size_aligned, 0);'
+  - ''
+  - '        dma_queue_push_ddr_to_vtcm(dma_queue,'
+  - '                                   dma_make_ptr(src_spad + (spad_idx * src_row_size_aligned),'
+  - '                                                src_data + (ir * src_row_size)),'
+  - '                                   src_row_size_aligned, src_row_size, 1);'
+  - '    }'
+  - ''
+  - '    for (uint32_t ir = ir0; ir < ir1; ir++) {'
+  - '        float * dst_spad_row = (float *) dma_queue_pop(dma_queue).src;'
+  - '        float * src_spad_row = (float *) dma_queue_pop(dma_queue).dst;'
+  - ''
+  - '        hvx_cumsum_row_f32(src_spad_row, dst_spad_row, ne00);'
+  - ''
+  - '        dma_queue_push_vtcm_to_ddr(dma_queue,'
+  - '                                   dma_make_ptr(dst_data + (ir * dst_row_size),
+    (uint8_t *) dst_spad_row),'
+  - '                                   dst_row_size, dst_row_size_aligned, 1);'
+  - ''
+  - '        const uint32_t next_row = ir + 2;'
+  - '        if (next_row < ir1) {'
+  - '            dma_queue_push_ddr_to_vtcm(dma_queue,'
+  - '                                       dma_make_ptr((uint8_t *) src_spad_row,
+    src_data + (next_row * src_row_size)),'
+  - '                                       src_row_size_aligned, src_row_size, 1);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    dma_queue_flush(dma_queue);'
+  - '    t2 = HAP_perf_get_qtimer_count();'
+  - ''
+  - '    FARF(HIGH, "cumsum-f32-dma %d/%d: %ux%ux%ux%u (%u:%u) -> %ux%ux%ux%u usec
+    %u\n",'
+  - '         ith, nth, src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3], ir0, ir1,'
+  - '         dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3],'
+  - '         (unsigned) HAP_perf_qtimer_count_to_us(t2 - t1));'
+  - '}'
+  desc: 使用DMA双缓冲机制的工作线程函数，通过异步DMA进行输入输出的乒乓式数据搬运，减少CPU等待时间，适合大尺寸数据的批处理场景。
+  line: 123-196
+  name: cumsum_thread_f32_dma
+- code:
+  - static void cumsum_thread_f32(unsigned int nth, unsigned int ith, void * data)
+    {
+  - '    htp_cumsum_preamble;'
+  - ''
+  - '    uint64_t t1, t2;'
+  - '    t1 = HAP_perf_get_qtimer_count();'
+  - ''
+  - '    const uint8_t * src_data = (const uint8_t *) src0->data;'
+  - '    uint8_t *       dst_data = (uint8_t *) dst->data;'
+  - ''
+  - '    const uint32_t ir0 = cctx->rows_per_thread * ith;'
+  - '    const uint32_t ir1 = MIN(ir0 + cctx->rows_per_thread, cctx->total_rows);'
+  - ''
+  - '    for (uint32_t ir = ir0; ir < ir1; ir++) {'
+  - '        const float * restrict src_row = (const float *) (src_data + ir * cctx->src_row_size);'
+  - '        float       * restrict dst_row = (float *)       (dst_data + ir * cctx->dst_row_size);'
+  - '        hvx_cumsum_row_f32(src_row, dst_row, ne00);'
+  - '    }'
+  - ''
+  - '    t2 = HAP_perf_get_qtimer_count();'
+  - ''
+  - '    FARF(HIGH, "cumsum-f32 %d/%d: %ux%ux%ux%u (%u:%u) -> %ux%ux%ux%u usec %u\n",'
+  - '         ith, nth, src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3], ir0, ir1,'
+  - '         dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3],'
+  - '         (unsigned) HAP_perf_qtimer_count_to_us(t2 - t1));'
+  - '}'
+  desc: 无DMA的工作线程函数，直接从L2/主存读取数据并进行HVX向量化计算，适合数据量较小或VTCM空间不足的场景。
+  line: 198-227
+  name: cumsum_thread_f32
+- code:
+  - int op_cumsum_f32(struct htp_ops_context * octx) {
+  - '    const struct htp_tensor * src0 = &octx->src0;'
+  - '    const struct htp_tensor * dst  = &octx->dst;'
+  - ''
+  - '    if (octx->flags & HTP_OPFLAGS_SKIP_COMPUTE) {'
+  - '        return HTP_STATUS_OK;'
+  - '    }'
+  - ''
+  - '    const uint32_t total_rows = src0->ne[1] * src0->ne[2] * src0->ne[3];'
+  - '    const uint32_t n_threads  = MIN(octx->n_threads, total_rows);'
+  - ''
+  - '    const size_t src_row_size         = src0->nb[1];'
+  - '    const size_t dst_row_size         = dst->nb[1];'
+  - '    const size_t src_row_size_aligned = hex_round_up(src_row_size, VLEN);'
+  - '    const size_t dst_row_size_aligned = hex_round_up(dst_row_size, VLEN);'
+  - ''
+  - '    const size_t spad_per_thread = 2 * (src_row_size_aligned + dst_row_size_aligned);'
+  - ''
+  - '    octx->src0_spad.size_per_thread = src_row_size_aligned * 2;'
+  - '    octx->dst_spad.size_per_thread  = dst_row_size_aligned * 2;'
+  - '    octx->src0_spad.size            = n_threads * octx->src0_spad.size_per_thread;'
+  - '    octx->dst_spad.size             = n_threads * octx->dst_spad.size_per_thread;'
+  - '    octx->src0_spad.data            = octx->ctx->vtcm_base;'
+  - '    octx->dst_spad.data             = octx->src0_spad.data + octx->src0_spad.size;'
+  - ''
+  - '    struct htp_cumsum_context cctx = {'
+  - '        .octx                 = octx,'
+  - '        .src_row_size         = src_row_size,'
+  - '        .dst_row_size         = dst_row_size,'
+  - '        .src_row_size_aligned = src_row_size_aligned,'
+  - '        .dst_row_size_aligned = dst_row_size_aligned,'
+  - '        .rows_per_thread      = (total_rows + n_threads - 1) / n_threads,'
+  - '        .total_rows           = total_rows,'
+  - '    };'
+  - ''
+  - '    if (octx->ctx->vtcm_size < spad_per_thread * n_threads) {'
+  - '        worker_pool_run_func(octx->ctx->worker_pool, cumsum_thread_f32, &cctx,
+    n_threads);'
+  - '    } else {'
+  - '        worker_pool_run_func(octx->ctx->worker_pool, cumsum_thread_f32_dma, &cctx,
+    n_threads);'
+  - '    }'
+  - ''
+  - '    return HTP_STATUS_OK;'
+  - '}'
+  desc: 浮点cumsum运算的入口函数，负责计算总行数、分配线程数、设置DMA缓冲区参数，并根据VTCM空间大小选择使用DMA或直接内存访问的实现路径。
+  line: 229-272
+  name: op_cumsum_f32
+- code:
+  - int op_cumsum(struct htp_ops_context * octx) {
+  - '    int                 err = HTP_STATUS_OK;'
+  - '    struct htp_tensor * dst = &octx->dst;'
+  - ''
+  - '    switch (dst->type) {'
+  - '        case HTP_TYPE_F32:'
+  - '            err = op_cumsum_f32(octx);'
+  - '            break;'
+  - '        default:'
+  - '            err = HTP_STATUS_NO_SUPPORT;'
+  - '            break;'
+  - '    }'
+  - ''
+  - '    return err;'
+  - '}'
+  desc: cumsum运算的统一入口函数，根据输出张量的数据类型分派到对应的实现（目前仅支持单精度浮点），不支持的数据类型返回错误状态。
+  line: 274-287
+  name: op_cumsum

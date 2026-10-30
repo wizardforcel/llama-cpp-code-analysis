@@ -1,0 +1,550 @@
+code_map:
+- common/peg-parser.h
+- ├── 基础类型与上下文 (1-100行)
+- '│   ├── common_peg_parse_result_type      # 解析结果枚举（SUCCESS/FAIL/NEED_MORE_INPUT）'
+- '│   ├── common_peg_parse_result           # 解析结果结构体（位置、节点、类型）'
+- '│   └── common_peg_parse_context          # 解析上下文（输入、标志位、深度）'
+- ├── AST 管理 (79-105行)
+- '│   ├── common_peg_ast_node               # AST节点（规则名、标签、文本、子节点）'
+- '│   └── common_peg_ast_arena              # AST竞技场'
+- '│       ├── add_node()                    # 添加AST节点'
+- '│       ├── find_by_tag()/find_by_rule()  # 按标签/规则查找'
+- '│       ├── visit()                       # 遍历访问'
+- '│       └── dump()                        # 调试输出'
+- ├── 解析器节点类型 (107-230行)
+- '│   ├── common_peg_literal_parser         # 字面量'
+- '│   ├── common_peg_sequence_parser        # 序列'
+- '│   ├── common_peg_choice_parser          # 选择'
+- '│   ├── common_peg_repetition_parser      # 重复（min/max）'
+- │   ├── common_peg_and_parser / not_parser# 前瞻（ And/Not）
+- '│   ├── common_peg_chars_parser           # 字符类（含范围区间）'
+- '│   ├── common_peg_string_parser          # 字符串（带转义）'
+- '│   ├── common_peg_until_parser           # 直到分隔符'
+- '│   ├── common_peg_rule_parser            # 命名规则'
+- '│   ├── common_peg_ref_parser             # 规则引用'
+- '│   ├── common_peg_atomic_parser          # 原子操作'
+- '│   └── common_peg_tag_parser             # 标签节点'
+- ├── 解析器竞技场 (232-268行)
+- '│   ├── add_parser() / add_rule()         # 添加解析器/注册规则'
+- '│   ├── get() / get_rule()                # 按ID/名称获取'
+- '│   ├── resolve_refs()                    # 解析所有引用'
+- '│   ├── build_grammar()                   # 生成GBNF文法'
+- '│   ├── dump() / dump_impl()              # 结构转储'
+- '│   └── to_json() / from_json()           # JSON序列化'
+- └── 解析器构建器 (271-471行)
+- '    ├── common_peg_parser                 # 轻量级句柄（ID+Builder引用）'
+- '    │   ├── operator=                     # 赋值'
+- '    │   ├── operator+                     # 序列拼接'
+- '    │   ├── operator|                     # 选择分支'
+- '    │   └── operator<<                    # 带空格连接'
+- '    └── common_peg_parser_builder         # 构建器工厂'
+- '        ├── sequence() / choice()         # 基础组合子（自动扁平化）'
+- '        ├── repeat() / one_or_more()      # 重复组合'
+- '        ├── rule()                        # 注册规则（支持lambda占位回填）'
+- '        ├── literal() / chars()           # 基础字面量/字符集'
+- '        ├── json_*()                      # JSON语法家族（object/array/number/string/bool/null）'
+- '        ├── python_*()                    # Python语法家族（dict/array/string/bool/none）'
+- '        └── marker() / json_member()      # 聊天场景特化函数'
+- ''
+- common/peg-parser.cpp
+- ├── 辅助函数 (19-180行)
+- '│   ├── common_peg_parse_result_type_name() # 结果类型转字符串'
+- '│   ├── is_hex_digit()                    # 十六进制数字校验'
+- '│   ├── parse_hex_escape()                # 十六进制转义解析'
+- '│   ├── parse_char_class_char()           # 字符类单字符解析'
+- '│   ├── parse_char_classes()              # 解析字符类语法[a-zA-Z]'
+- '│   └── rule_name()                       # 规则名清洗（非法字符转-）'
+- ├── Trie 结构 (46-85行)
+- '│   ├── trie()                            # 构造函数（插入所有词）'
+- '│   ├── check_at()                        # 检查位置匹配状态（NO/PARTIAL/COMPLETE）'
+- '│   └── collect_prefix_and_next()         # 收集前缀与后续字符'
+- ├── 解析执行器 (183-541行)
+- '│   ├── parser_executor                   # 基于std::visit的分发执行器'
+- '│   │   ├── operator()(epsilon/start/end) # 边界与空解析器'
+- '│   │   ├── operator()(literal)           # 字面量逐字节匹配（支持lenient模式）'
+- '│   │   ├── operator()(sequence)          # 顺序执行子解析器，失败即返'
+- '│   │   ├── operator()(choice)            # 有序选择，取首个成功'
+- '│   │   ├── operator()(repetition)        # 重复匹配（防零消耗死循环）'
+- '│   │   ├── operator()(and/not)           # 零消耗前瞻'
+- '│   │   ├── operator()(any/chars/space)   # Unicode码点级匹配'
+- '│   │   ├── operator()(string)            # 字符串内容（处理\\转义与\\uXXXX）'
+- '│   │   ├── operator()(until)             # 基于Trie的多分隔符探测'
+- '│   │   ├── operator()(schema/rule/tag)   # 规则与标签包装'
+- '│   │   ├── operator()(ref)               # 引用解析（查表跳转）'
+- '│   │   └── operator()(atomic)            # NEED_MORE_INPUT时清空节点（防污染）'
+- '│   ├── handle_escape_sequence()          # 转义序列处理'
+- '│   └── handle_unicode_escape()           # Unicode转义（\uXXXX）处理'
+- ├── AST与Arena实现 (545-1069行)
+- '│   ├── bfs_node()                        # BFS遍历输出AST节点'
+- '│   ├── common_peg_ast_arena::dump()      # BFS遍历输出AST'
+- '│   ├── common_peg_arena::resolve_refs()  # 遍历替换所有ref为真实ID'
+- '│   ├── common_peg_arena::dump()          # 解析器结构转储入口'
+- '│   ├── common_peg_arena::dump_impl()     # 递归转储（带cycle检测）'
+- '│   └── common_peg_arena::build_grammar() # PEG转GBNF（收集可达规则，生成文本）'
+- ├── 序列化 (1331-1992行)
+- '│   ├── gbnf_escape_char_class()          # GBNF字符类转义'
+- '│   ├── gbnf_excluding_pattern()          # 生成GBNF排除模式'
+- '│   ├── collect_reachable_rules()         # 收集可达规则'
+- '│   ├── serialize_parser_variant()        # 变体类型转JSON'
+- '│   ├── deserialize_parser_variant()      # JSON转解析器变体'
+- '│   ├── common_peg_arena::to_json()       # 整体序列化'
+- '│   ├── common_peg_arena::from_json()     # 反序列化（含校验）'
+- '│   ├── save() / load()                   # 字符串级存取'
+- '│   └── build_peg_parser()                # 全局便捷构建函数'
+- └── 内置语法构建 (1141-1424行)
+- '    ├── __main__                          # 全局初始化与模块入口'
+- '    ├── common_peg_parser_builder::sequence()  # 扁平化嵌套序列'
+- '    ├── common_peg_parser_builder::choice()    # 扁平化嵌套选择'
+- '    ├── common_peg_parser_builder::rule()      # 规则注册（支持递归占位）'
+- '    ├── json_number()                          # JSON数字（含负向前瞻）'
+- '    ├── json_object() / json_array()           # JSON复合结构（递归引用）'
+- '    ├── json()                                 # JSON值总入口'
+- '    ├── python_*()                             # Python字面量系列'
+- '    └── marker() / json_member()               # 标记与JSON成员特化'
+exercises:
+- contents:
+  - 阅读 `common/peg-parser.cpp` 第1143-1213行（sequence/choice实现）与第1286-1350行（JSON解析器构建）。
+  - 思考问题：
+  - 1. `sequence()`和`choice()`为什么要对子节点进行「扁平化」处理？不扁平化会导致什么问题？
+  - 2. `json_number()`中的`not_number_continuation`（负向前瞻）是为了解决什么具体场景的误匹配问题？
+  - 3. 尝试使用`rule()`的lambda重载版本，编写一个能匹配成对括号（如`((()))`）的递归规则，并解释占位规则（placeholder）的工作机制。
+  'no': 1
+  title: 构建器组合子实践
+- contents:
+  - 阅读 `common/peg-parser.cpp` 第183-541行`parser_executor`类的各个`operator()`重载。
+  - 完成以下任务：
+  - 1. 对比`operator()(sequence)`与`operator()(choice)`在子节点失败处理逻辑上的差异，解释为什么这种差异体现了PEG的「有序选择」特性。
+  - 2. 分析`operator()(repetition)`中的防死循环机制（`if (result.end == pos) break;`），说明在什么情况下会出现零消耗匹配。
+  - 3. 解释`operator()(atomic)`在`NEED_MORE_INPUT`时清空`nodes`的设计意图，如果不清理会导致什么后果？
+  'no': 2
+  title: 执行器语义深度分析
+- contents:
+  - 阅读第46-77行`trie`类实现，以及第467-491行`until_parser`的执行逻辑。
+  - 回答问题：
+  - 1. `trie::check_at()`返回的三种状态（NO_MATCH/PARTIAL_MATCH/COMPLETE_MATCH）分别对应`until_parser`中的什么处理分支？
+  - 2. 在`lenient`模式下（流式输入），当输入在`until`分隔符中间被截断时（如分隔符是`</tag>`但只收到`</t`），解析器会返回什么状态？为什么这样设计？
+  - 3. `handle_unicode_escape`（第423-438行）如何确保`\uXXXX`格式的严格性？如果输入是`\u12`且`lenient=true`，会发生什么？
+  'no': 3
+  title: Trie与流式解析机制
+- contents:
+  - 阅读 `common/peg-parser.cpp` 第960-1006行（`resolve_refs`）和第1841-1992行（JSON序列化相关）。
+  - 思考问题：
+  - 1. `resolve_refs()`为什么必须在`build()`阶段调用？如果尝试在构建过程中（如`rule()`函数内部）就解析引用，会遇到什么困难？
+  - 2. `to_json()`/`from_json()`使用`std::visit`处理`common_peg_parser_variant`的类型擦除，请描述序列化`common_peg_chars_parser`时需要保存哪些字段，为什么`ranges`必须序列化？
+  - 3. `from_json()`在恢复`rules_`映射时进行了哪些合法性校验（第1964-1972行）？这些校验防止了什么潜在的内存安全问题？
+  'no': 4
+  title: Arena管理与序列化
+- contents:
+  - 阅读 `common/peg-parser.h` 第79-105行`common_peg_ast_arena`接口，以及 `common/peg-parser.cpp`
+    第951-958行`dump()`实现。
+  - 实践任务：
+  - 1. 编写一段代码，使用`build_peg_parser`构建一个能解析简单算术表达式（如`1+2`）的解析器，要求包含`rule()`和`tag()`。
+  - 2. 在解析成功后，使用`common_peg_ast_arena::find_by_tag()`查找特定标签的节点，并打印其对应的文本区间（`node.text`）。
+  - 3. 启用调试模式（`ctx.flags |= COMMON_PEG_PARSE_FLAG_DEBUG`），观察`parser_executor`在解析`sequence`时的日志输出格式（注意`debug_indent()`如何体现递归深度）。
+  'no': 5
+  title: AST构建与调试
+- contents:
+  - 定位并阅读 `common/peg-parser.cpp` 中的 `__main__` 相关代码段（通常在文件头部或尾部）。
+  - 思考问题：
+  - 1. `__main__` 在该模块中承担了哪些初始化职责？它与 `build_peg_parser()` 的调用顺序有何关联？
+  - 2. 如果将 `__main__` 中的初始化逻辑改为惰性加载（lazy initialization），会对解析器的线程安全性产生什么影响？
+  - 3. 尝试绘制 `__main__` 执行完成后的内存布局示意图，标注 arena、builder 和全局规则表的位置关系。
+  'no': 6
+  title: 全局初始化流程追踪
+learning_targets:
+- 理解PEG解析器的「句柄+竞技场」双层设计架构及其共享/递归支持机制
+- 掌握组合子API（sequence/choice/repeat/optional）与运算符糖（+/|/<<）的使用与底层实现
+- 深入解析执行引擎的三态结果（SUCCESS/FAIL/NEED_MORE_INPUT）与流式解析原理
+- 掌握基于std::visit的类型分发机制及各类解析器（序列/选择/重复/前瞻）的匹配语义
+- 理解Trie树在高效多分隔符探测（until_parser）中的应用
+- 学会AST（抽象语法树）的构建、引用解析（resolve_refs）与arena内存管理
+- 了解内置JSON/Python语法规则的递归构建技巧与GBNF代码生成流程
+- 掌握解析器的JSON序列化/反序列化（to_json/from_json）实现机制
+- 理解__main__全局代码的组织方式与模块初始化流程
+life_analogy:
+- 想象PEG解析器系统是一家**智能文档处理工厂**：
+- '- **common_peg_parser（句柄）** = 加工机器的遥控器（持有机台编号，不存放机器本身）'
+- '- **common_peg_arena（竞技场）** = 中央仓库（所有机器/解析器节点实际存放于此，按ID索引）'
+- '- **common_peg_parser_builder** = 乐高拼装台（提供sequence/choice等标准积木块，自动优化结构/扁平化）'
+- '- **parser_executor** = 质量检测流水线（根据工件类型/解析器类型，自动切换检测程序/std::visit分发）'
+- '- **三态结果** = 质检报告：合格（SUCCESS）/报废（FAIL）/待补料（NEED_MORE_INPUT），支持流水线边生产边检测'
+- '- **Trie树** = 多通道分拣器（同时监听多个结束标记，高效判断当前位置是否匹配任一分隔符）'
+- '- **AST Arena** = 成品档案馆（解析生成的抽象语法树节点统一登记造册，支持按标签/规则检索）'
+- '- **resolve_refs** = 设备联调（把设计图纸上的占位引用替换为实际机器ID，让流水线真正跑起来）'
+- '- **__main__** = 工厂总控室的初始化面板（负责全局配置加载与系统自检）'
+- 就像工厂经理用乐高积木搭建生产线，开发者用builder组合解析规则；就像质检员按工序分段验收，executor按顺序执行子解析器，任一环节失败即整体失败（PEG有序选择特性）。
+'no': 47
+summary:
+- concept: common_peg_parser
+  desc: 轻量级解析器句柄，仅持有ID和builder引用，真正的节点存储在arena中，支持共享与递归
+- concept: common_peg_arena / common_peg_ast_arena
+  desc: 解析器与AST的内存竞技场，集中管理所有节点，提供ID索引、引用解析与周期性内存回收
+- concept: 组合子（Combinators）
+  desc: sequence（顺序）、choice（有序选择）、repeat（重复）等基础构建块，支持自动扁平化嵌套结构
+- concept: 运算符糖
+  desc: +表示顺序、|表示选择、<<表示带空格的顺序，让语法规则书写接近BNF范式
+- concept: 三态结果
+  desc: SUCCESS（匹配成功）、FAIL（匹配失败）、NEED_MORE_INPUT（需更多输入，支持流式解析）
+- concept: std::visit分发
+  desc: parser_executor通过重载operator()为每种解析器变体（literal/sequence/choice等）定义匹配逻辑
+- concept: 有序选择
+  desc: choice解析器严格按顺序尝试分支，第一个成功即返回，这是PEG与CFG的关键差异
+- concept: 前瞻（And/Not）
+  desc: 零消耗探测，and只检测不前进，not在子解析器失败时成功，用于实现边界控制
+- concept: Trie + until
+  desc: 使用前缀树组织多个终止字符串，实现高效的多分隔符检测，用于提取标记内容
+- concept: 规则与递归
+  desc: rule()支持lambda占位回填，resolve_refs()在构建末期将所有ref替换为真实规则ID，实现递归语法
+- concept: 原子操作（atomic）
+  desc: 当子解析器返回NEED_MORE_INPUT时清空已产生节点，防止半成品AST污染上层结果
+- concept: JSON序列化
+  desc: to_json()/from_json()实现解析器图的持久化，便于缓存、传输与调试
+- concept: GBNF生成
+  desc: build_grammar()将PEG规则转换为GGUF BNF格式，支持懒加载与触发规则
+- concept: Unicode感知
+  desc: any/chars/string等解析器基于common_parse_utf8_codepoint逐码点处理，而非简单字节
+- concept: __main__
+  desc: 全局初始化入口，负责模块级配置与系统启动自检
+units:
+- codes:
+  - file: common/peg-parser.h
+    line: 271-471
+    method_or_func: common_peg_parser_builder.*
+  - file: common/peg-parser.h
+    line: 31-57
+    method_or_func: common_peg_parser.*
+  - file: common/peg-parser.cpp
+    line: 1143-1177
+    method_or_func: common_peg_parser_builder.sequence()
+  - file: common/peg-parser.cpp
+    line: 1179-1213
+    method_or_func: common_peg_parser_builder.choice()
+  - file: common/peg-parser.cpp
+    line: 1224-1249
+    method_or_func: common_peg_parser_builder.rule()
+  - file: common/peg-parser.cpp
+    line: 1286-1298
+    method_or_func: common_peg_parser_builder.json_number()
+  - file: common/peg-parser.cpp
+    line: 1318-1330
+    method_or_func: common_peg_parser_builder.json_object()
+  - file: common/peg-parser.cpp
+    line: 1346-1350
+    method_or_func: common_peg_parser_builder.json()
+  - file: common/peg-parser.cpp
+    line: 1404-1408
+    method_or_func: common_peg_parser_builder.python_value()
+  - file: common/peg-parser.cpp
+    line: 1071-1120
+    method_or_func: common_peg_parser.*
+  - file: common/peg-parser.cpp
+    line: 1146-1149
+    method_or_func: rule_name()
+  - file: common/peg-parser.cpp
+    line: 1994-1998
+    method_or_func: build_peg_parser()
+  - file: common/peg-parser.cpp
+    line: 1126-1128
+    method_or_func: operator+(const std::string&, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1142-1144
+    method_or_func: operator|(const std::string&, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1134-1136
+    method_or_func: operator<<(const std::string&, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1122-1124
+    method_or_func: operator+(const char*, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1138-1140
+    method_or_func: operator|(const char*, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1130-1132
+    method_or_func: operator<<(const char*, const common_peg_parser&)
+  - file: common/peg-parser.cpp
+    line: 1141-1141
+    method_or_func: common_peg_parser_builder.common_peg_parser_builder()
+  - file: common/peg-parser.cpp
+    line: 1251-1253
+    method_or_func: common_peg_parser_builder.set_root()
+  - file: common/peg-parser.cpp
+    line: 1255-1258
+    method_or_func: common_peg_parser_builder.build()
+  - file: common/peg-parser.cpp
+    line: 1215-1218
+    method_or_func: common_peg_parser_builder.chars()
+  - file: common/peg-parser.cpp
+    line: 1220-1222
+    method_or_func: common_peg_parser_builder.schema()
+  - file: common/peg-parser.cpp
+    line: 1232-1249
+    method_or_func: common_peg_parser_builder.rule(const std::string&, const std::function<common_peg_parser()>&,
+      bool)
+  - file: common/peg-parser.cpp
+    line: 1262-1264
+    method_or_func: common_peg_parser_builder.string_content()
+  - file: common/peg-parser.cpp
+    line: 1266-1270
+    method_or_func: common_peg_parser_builder.double_quoted_string()
+  - file: common/peg-parser.cpp
+    line: 1272-1276
+    method_or_func: common_peg_parser_builder.single_quoted_string()
+  - file: common/peg-parser.cpp
+    line: 1278-1282
+    method_or_func: common_peg_parser_builder.quoted_string()
+  - file: common/peg-parser.cpp
+    line: 1300-1304
+    method_or_func: common_peg_parser_builder.json_string()
+  - file: common/peg-parser.cpp
+    line: 1306-1310
+    method_or_func: common_peg_parser_builder.json_bool()
+  - file: common/peg-parser.cpp
+    line: 1312-1316
+    method_or_func: common_peg_parser_builder.json_null()
+  - file: common/peg-parser.cpp
+    line: 1332-1344
+    method_or_func: common_peg_parser_builder.json_array()
+  - file: common/peg-parser.cpp
+    line: 1352-1356
+    method_or_func: common_peg_parser_builder.python_string()
+  - file: common/peg-parser.cpp
+    line: 1358-1360
+    method_or_func: common_peg_parser_builder.python_number()
+  - file: common/peg-parser.cpp
+    line: 1362-1368
+    method_or_func: common_peg_parser_builder.python_bool()
+  - file: common/peg-parser.cpp
+    line: 1370-1374
+    method_or_func: common_peg_parser_builder.python_null()
+  - file: common/peg-parser.cpp
+    line: 1376-1388
+    method_or_func: common_peg_parser_builder.python_dict()
+  - file: common/peg-parser.cpp
+    line: 1390-1402
+    method_or_func: common_peg_parser_builder.python_array()
+  - file: common/peg-parser.cpp
+    line: 1417-1424
+    method_or_func: common_peg_parser_builder.json_member()
+  - file: common/peg-parser.cpp
+    line: 1410-1415
+    method_or_func: common_peg_parser_builder.marker()
+  - file: common/peg-parser.cpp
+    line: 1159-1167
+    method_or_func: common_peg_parser_builder.sequence(const std::vector<common_peg_parser>&)
+  - file: common/peg-parser.cpp
+    line: 1169-1177
+    method_or_func: common_peg_parser_builder.sequence(std::initializer_list<common_peg_parser>)
+  - file: common/peg-parser.cpp
+    line: 1195-1203
+    method_or_func: common_peg_parser_builder.choice(const std::vector<common_peg_parser>&)
+  - file: common/peg-parser.cpp
+    line: 1205-1213
+    method_or_func: common_peg_parser_builder.choice(std::initializer_list<common_peg_parser>)
+  - file: common/peg-parser.cpp
+    line: 1-1998
+    method_or_func: __main__
+  - file: common/peg-parser.h
+    line: 1-477
+    method_or_func: __main__
+  name: PEG 解析器构建器 —— 语法规则的「乐高拼装台」
+  'no': 1
+  points:
+  - '**为什么需要「句柄 + 竞技场」双层设计？**'
+  - '- `common_peg_parser` 只是一个轻量级句柄（持有一个 id 和 builder 引用），真正的解析器节点存放在 `common_peg_arena`
+    的 `parsers_` 数组里'
+  - '- 这样做让解析器节点可以被多处共享，递归规则也能用「先占位、后回填」的方式表达'
+  - '**组合子 API：`sequence` / `choice` / `repeat` / `optional`**'
+  - '- `sequence`/`choice` 会自动「拍平」嵌套的同类节点，避免产生无意义的深层树'
+  - '- `one_or_more`/`zero_or_more`/`optional` 都统一收敛到 `repeat(p, min, max)`，用 `-1`
+    表示无上界'
+  - '**运算符糖：`+`、`|`、`<<` 让规则读起来像 BNF**'
+  - '- `a + b` 是顺序拼接，`a | b` 是分支选择，`a << b` 则在两者中间自动插入空格解析器'
+  - '- 字符串字面量可以直接参与运算，内部自动转成 `literal` 解析器'
+  - '**规则的命名与递归：`rule()` 与占位回填**'
+  - '- `rule_name()` 用正则把非法字符替换成 `-`，保证生成的 GBNF 规则名合法'
+  - '- 带 lambda 的 `rule()` 先注册一个 `any()` 占位规则，再执行 builder 函数生成真正的解析器并替换，从而支持自引用递归'
+  - '**内置数据格式：JSON 与 Python 字面量全家桶**'
+  - '- `json_number` 精心构造了整数/小数/指数三部分，并用负向前瞻 `not_number_continuation` 防止把 `123abc`
+    误判为数字'
+  - '- `json_object`/`json_array`/`json()` 通过互相 `ref` 引用构成递归语法，覆盖完整 JSON 规范'
+  - '- `python_dict`/`python_array` 几乎是 JSON 的镜像，但布尔值是 `True/False`、空值是 `None`'
+  - '**`marker()` 与 `json_member()`：面向聊天场景的特化**'
+  - '- `marker()` 识别 `<...>` 或 `[...]` 形式的标记，常用于工具调用的定界'
+  - '- `json_member(key, p)` 生成 `"key" : <parser>` 的固定成员匹配'
+  - '**构建收尾：`set_root()` + `build()`**'
+  - '- `build()` 会调用 `arena_.resolve_refs()` 把所有 `ref` 引用替换成真实的规则 ID，然后移动语义交出 arena'
+- codes:
+  - file: common/peg-parser.cpp
+    line: 19-26
+    method_or_func: common_peg_parse_result_type_name()
+  - file: common/peg-parser.cpp
+    line: 29-31
+    method_or_func: is_hex_digit()
+  - file: common/peg-parser.cpp
+    line: 100-122
+    method_or_func: parse_hex_escape()
+  - file: common/peg-parser.cpp
+    line: 125-155
+    method_or_func: parse_char_class_char()
+  - file: common/peg-parser.cpp
+    line: 158-180
+    method_or_func: parse_char_classes()
+  - file: common/peg-parser.cpp
+    line: 46-51
+    method_or_func: trie.trie()
+  - file: common/peg-parser.cpp
+    line: 56-77
+    method_or_func: trie.check_at()
+  - file: common/peg-parser.cpp
+    line: 80-85
+    method_or_func: trie.collect_prefix_and_next()
+  - file: common/peg-parser.cpp
+    line: 183-186
+    method_or_func: parser_executor.parser_executor()
+  - file: common/peg-parser.cpp
+    line: 188-189
+    method_or_func: parser_executor.debug_indent()
+  - file: common/peg-parser.cpp
+    line: 198-200
+    method_or_func: parser_executor.operator()(const common_peg_epsilon_parser &)
+  - file: common/peg-parser.cpp
+    line: 202-206
+    method_or_func: parser_executor.operator()(const common_peg_start_parser &)
+  - file: common/peg-parser.cpp
+    line: 208-212
+    method_or_func: parser_executor.operator()(const common_peg_end_parser &)
+  - file: common/peg-parser.cpp
+    line: 226-239
+    method_or_func: parser_executor.operator()(const common_peg_literal_parser &)
+  - file: common/peg-parser.cpp
+    line: 241-270
+    method_or_func: parser_executor.operator()(const common_peg_sequence_parser &)
+  - file: common/peg-parser.cpp
+    line: 272-289
+    method_or_func: parser_executor.operator()(const common_peg_choice_parser &)
+  - file: common/peg-parser.cpp
+    line: 291-338
+    method_or_func: parser_executor.operator()(const common_peg_repetition_parser
+      &)
+  - file: common/peg-parser.cpp
+    line: 340-343
+    method_or_func: parser_executor.operator()(const common_peg_and_parser &)
+  - file: common/peg-parser.cpp
+    line: 345-354
+    method_or_func: parser_executor.operator()(const common_peg_not_parser &)
+  - file: common/peg-parser.cpp
+    line: 356-365
+    method_or_func: parser_executor.operator()(const common_peg_any_parser &)
+  - file: common/peg-parser.cpp
+    line: 367-376
+    method_or_func: parser_executor.operator()(const common_peg_space_parser &)
+  - file: common/peg-parser.cpp
+    line: 378-406
+    method_or_func: parser_executor.operator()(const common_peg_chars_parser &)
+  - file: common/peg-parser.cpp
+    line: 408-421
+    method_or_func: parser_executor.handle_escape_sequence()
+  - file: common/peg-parser.cpp
+    line: 423-438
+    method_or_func: parser_executor.handle_unicode_escape()
+  - file: common/peg-parser.cpp
+    line: 440-465
+    method_or_func: parser_executor.operator()(const common_peg_string_parser &)
+  - file: common/peg-parser.cpp
+    line: 467-491
+    method_or_func: parser_executor.operator()(const common_peg_until_parser &)
+  - file: common/peg-parser.cpp
+    line: 493-495
+    method_or_func: parser_executor.operator()(const common_peg_schema_parser &)
+  - file: common/peg-parser.cpp
+    line: 497-511
+    method_or_func: parser_executor.operator()(const common_peg_rule_parser &)
+  - file: common/peg-parser.cpp
+    line: 513-528
+    method_or_func: parser_executor.operator()(const common_peg_tag_parser &)
+  - file: common/peg-parser.cpp
+    line: 530-533
+    method_or_func: parser_executor.operator()(const common_peg_ref_parser &)
+  - file: common/peg-parser.cpp
+    line: 535-541
+    method_or_func: parser_executor.operator()(const common_peg_atomic_parser &)
+  - file: common/peg-parser.h
+    line: 79-105
+    method_or_func: common_peg_ast_arena.*
+  - file: common/peg-parser.h
+    line: 232-268
+    method_or_func: common_peg_arena.*
+  - file: common/peg-parser.cpp
+    line: 570-582
+    method_or_func: bfs_node()
+  - file: common/peg-parser.cpp
+    line: 951-958
+    method_or_func: common_peg_ast_arena.dump()
+  - file: common/peg-parser.cpp
+    line: 960-1006
+    method_or_func: common_peg_arena.resolve_refs()
+  - file: common/peg-parser.cpp
+    line: 1008-1011
+    method_or_func: common_peg_arena.dump()
+  - file: common/peg-parser.cpp
+    line: 1013-1069
+    method_or_func: common_peg_arena.dump_impl()
+  - file: common/peg-parser.cpp
+    line: 1535-1686
+    method_or_func: common_peg_arena.build_grammar()
+  - file: common/peg-parser.cpp
+    line: 1841-1850
+    method_or_func: common_peg_arena.to_json()
+  - file: common/peg-parser.cpp
+    line: 1951-1984
+    method_or_func: common_peg_arena.from_json()
+  - file: common/peg-parser.cpp
+    line: 1986-1988
+    method_or_func: common_peg_arena.save()
+  - file: common/peg-parser.cpp
+    line: 1990-1992
+    method_or_func: common_peg_arena.load()
+  - file: common/peg-parser.h
+    line: 176-176
+    method_or_func: common_peg_chars_parser::char_range.contains()
+  - file: common/peg-parser.cpp
+    line: 1843-1908
+    method_or_func: serialize_parser_variant()
+  - file: common/peg-parser.cpp
+    line: 1912-1949
+    method_or_func: deserialize_parser_variant()
+  - file: common/peg-parser.cpp
+    line: 1259-1308
+    method_or_func: gbnf_escape_char_class()
+  - file: common/peg-parser.cpp
+    line: 1310-1340
+    method_or_func: gbnf_excluding_pattern()
+  - file: common/peg-parser.cpp
+    line: 1342-1410
+    method_or_func: collect_reachable_rules()
+  name: PEG 执行引擎与竞技场管理 —— 文本匹配的「裁判与档案馆」
+  'no': 2
+  points:
+  - '**三种结局的比赛：解析结果状态机**'
+  - '- 每次匹配只会得到 `SUCCESS` / `FAIL` / `NEED_MORE_INPUT` 三种结果之一'
+  - '- `NEED_MORE_INPUT` 配合 `lenient` 模式，让流式输入（模型边生成边解析）成为可能'
+  - '**`parser_executor`：基于 `std::visit` 的类型分发裁判**'
+  - '- 通过重载 `operator()` 为每种解析器变体（literal、sequence、choice、repetition、and/not、any、space、chars、string、until、schema、rule、tag、ref、atomic）定义匹配逻辑'
+  - '**序列与选择：最基础的两种组合语义**'
+  - '- 序列要求所有子解析器按顺序成功，任一失败整体失败，并忠实地累积 AST 节点'
+  - '- 选择是「有序选择」：只取第一个成功的分支，这是 PEG 与 CFG 的关键差异'
+  - '**重复与前瞻：PEG 的看家本领**'
+  - '- 重复有上限保护，且当子解析器零消耗时立即中断，避免死循环'
+  - '- `and`/`not` 是零消耗前瞻：`and` 只探测不前进，`not` 在子解析器失败时成功'
+  - '**Unicode 感知的字符与字符串处理**'
+  - '- `any`/`chars`/`string` 都通过 `common_parse_utf8_codepoint` 逐码点推进，而非逐字节'
+  - '- `handle_escape_sequence` 支持 `\uXXXX` 形式的 Unicode 转义'
+  - '**Trie + until_parser：高效多分隔符探测**'
+  - '- `trie` 把多个终止字符串组织成前缀树，`check_at` 能在每个位置返回无匹配/部分匹配/完整匹配'
+  - '- `until_parser` 利用它实现「读到任一分隔符为止」，是提取标记内容的核心'
+  - '**AST 生成：`rule` 与 `tag` 节点的包装**'
+  - '- 规则解析成功后，会把匹配区间、文本、子节点打包成带名称的 AST 节点存入 `common_peg_ast_arena`'
+  - '- `atomic` 则相反：当结果是 `NEED_MORE_INPUT` 时清空已产生的节点，避免半成品污染上层'
+  - '**竞技场的幕后工作：引用解析与结构转储**'
+  - '- `resolve_refs()` 遍历所有解析器，把 `ref` 替换成真实规则 ID，并同样解析根节点'
+  - '- `dump()`/`dump_impl()` 用 `visited` 集合检测循环，输出可读的解析器树'

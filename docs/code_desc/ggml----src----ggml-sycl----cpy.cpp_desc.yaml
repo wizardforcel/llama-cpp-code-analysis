@@ -1,0 +1,907 @@
+classes: []
+desc: 该文件是 ggml-sycl 后端的 cpy.cpp 源文件，提供了 SYCL 设备上的张量复制操作实现。它包含多种数据类型之间的元素复制内核函数，包括
+  f32、f16、i16、i32 等常规数据类型，以及 q4_0、q4_1、q5_0、q5_1、q8_0、iq4_nl 等量化类型的相互转换。文件中的核心功能是通过并行
+  SYCL 内核，根据源张量和目标张量的不同数据类型组合，选择相应的复制函数，实现高效的张量复制和类型转换操作。该代码片段是ggml SYCL后端中cpy.cpp文件的一部分，核心功能是实现了SYCL设备上的张量复制操作。具体来说，代码根据源张量和目标张量的量化类型组合，在SYCL流上执行相应的数据复制函数，以确保在异构计算环境中高效、类型安全地复制量化张量数据。此外，代码还处理了不支持的张量类型组合情况，通过错误日志和终止程序来保证鲁棒性，并捕获SYCL异常以避免程序崩溃。
+file: ggml/src/ggml-sycl/cpy.cpp
+funcs:
+- code:
+  - static void cpy_1_f32_f32(const char * cxi, char * cdsti) {
+  - '    const float * xi   = (const float *) cxi;'
+  - '    float *       dsti = (float *) cdsti;'
+  - ''
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 将单个 f32 类型的元素从源指针复制到目标指针的简单复制函数。
+  line: 10-16
+  name: cpy_1_f32_f32
+- code:
+  - static void cpy_1_f32_f16(const char * cxi, char * cdsti) {
+  - '    const float * xi   = (const float *) cxi;'
+  - '    sycl::half *  dsti = (sycl::half *) cdsti;'
+  - ''
+  - '    *dsti = sycl::vec<float, 1>(*xi).convert<sycl::half, sycl::rounding_mode::automatic>()[0];'
+  - '}'
+  desc: 将单个 f32 类型的元素转换为 f16 类型并复制到目标指针的转换函数。
+  line: 18-24
+  name: cpy_1_f32_f16
+- code:
+  - static void cpy_1_f16_f16(const char * cxi, char * cdsti) {
+  - '    const sycl::half * xi   = (const sycl::half *) cxi;'
+  - '    sycl::half *       dsti = (sycl::half *) cdsti;'
+  - ''
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 将单个 f16 类型的元素从源指针复制到目标指针的简单复制函数。
+  line: 26-32
+  name: cpy_1_f16_f16
+- code:
+  - static void cpy_1_f16_f32(const char * cxi, char * cdsti) {
+  - '    const sycl::half * xi   = (const sycl::half *) cxi;'
+  - '    float *            dsti = (float *) cdsti;'
+  - ''
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 将单个 f16 类型的元素转换为 f32 类型并复制到目标指针的转换函数。
+  line: 34-40
+  name: cpy_1_f16_f32
+- code:
+  - static void cpy_1_i16_i16(const char * cxi, char * cdsti) {
+  - '    const int16_t * xi   = (const int16_t *) cxi;'
+  - '    int16_t *       dsti = (int16_t *) cdsti;'
+  - ''
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 将单个 i16 类型的元素从源指针复制到目标指针的简单复制函数。
+  line: 42-48
+  name: cpy_1_i16_i16
+- code:
+  - static void cpy_1_i32_i32(const char * cxi, char * cdsti) {
+  - '    const int32_t * xi   = (const int32_t *) cxi;'
+  - '    int32_t *       dsti = (int32_t *) cdsti;'
+  - ''
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 将单个 i32 类型的元素从源指针复制到目标指针的简单复制函数。
+  line: 50-56
+  name: cpy_1_i32_i32
+- code:
+  - template <cpy_kernel_t cpy_1>
+  - static void cpy_f32_f16(const char * cx, char * cdst, const int ne, const int
+    ne00, const int ne01, const int ne02,
+  - '                        const int nb00, const int nb01, const int nb02, const
+    int nb03, const int ne10, const int ne11,'
+  - '                        const int ne12, const int nb10, const int nb11, const
+    int nb12, const int nb13,'
+  - '                        const sycl::nd_item<3> & item_ct1) {'
+  - '    const int i = item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2);'
+  - ''
+  - '    if (i >= ne) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    // determine indices i02/i12, i01/i11, i00/i10 as a function of index i of
+    flattened tensor'
+  - '    // then combine those indices with the corresponding byte offsets to get
+    the total offsets'
+  - '    const int i03      = i / (ne00 * ne01 * ne02);'
+  - '    const int i02      = (i - i03 * ne00 * ne01 * ne02) / (ne00 * ne01);'
+  - '    const int i01      = (i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00) /
+    ne00;'
+  - '    const int i00      = i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00 - i01
+    * ne00;'
+  - '    const int x_offset = i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03;'
+  - ''
+  - '    const int i13        = i / (ne10 * ne11 * ne12);'
+  - '    const int i12        = (i - i13 * ne10 * ne11 * ne12) / (ne10 * ne11);'
+  - '    const int i11        = (i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11)
+    / ne10;'
+  - '    const int i10        = i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11 -
+    i11 * ne10;'
+  - '    const int dst_offset = i10 * nb10 + i11 * nb11 + i12 * nb12 + i13 * nb13;'
+  - ''
+  - '    cpy_1(cx + x_offset, cdst + dst_offset);'
+  - '}'
+  desc: 通用的 SYCL 内核函数，负责处理 f32/f16 类型的张量复制，根据扁平化索引计算出源和目标张量的多维索引及偏移量，并调用对应的单元素复制函数
+    cpy_1。
+  line: 58-85
+  name: cpy_f32_f16
+- code:
+  - template<typename T>
+  - static void cpy_blck_q_q(const char * cxi, char * cdsti) {
+  - '    const T * xi = (const T *) cxi;'
+  - '    T * dsti = (T *) cdsti;'
+  - '    *dsti = *xi;'
+  - '}'
+  desc: 模板函数，用于量化类型相同的张量块的复制操作，直接将量化块从源指针复制到目标指针。
+  line: 88-94
+  name: cpy_blck_q_q
+- code:
+  - static void cpy_blck_q8_0_f32(const char * cxi, char * cdsti) {
+  - '    float * cdstf = (float *) (cdsti);'
+  - ''
+  - '    for (int j = 0; j < QK8_0; j += 2) {'
+  - '        dfloat2 dq;'
+  - '        dequantize_q8_0(cxi, 0, j, dq);'
+  - '        *(cdstf + j)     = dq.x();'
+  - '        *(cdstf + j + 1) = dq.y();'
+  - '    }'
+  - '}'
+  desc: 将 q8_0 类型的量化块转换为 f32 类型的函数，通过 dequantize_q8_0 对每个元素进行反量化并存储为 float。
+  line: 96-107
+  name: cpy_blck_q8_0_f32
+- code:
+  - template <dequantize_kernel_t dequant, int qk> static void cpy_blck_q_f32(const
+    char * cxi, char * cdsti) {
+  - '    float * cdstf = (float *) (cdsti);'
+  - ''
+  - '    for (int j = 0; j < qk / 2; j++) {'
+  - '        dfloat2 dq;'
+  - '        dequant(cxi, 0, j, dq);'
+  - '        *(cdstf + j)          = dq.x();'
+  - '        *(cdstf + j + qk / 2) = dq.y();'
+  - '    }'
+  - '}'
+  desc: 模板函数，用于将指定的量化类型块转换为 f32 类型的函数，通过模板参数指定反量化内核和量化块大小。
+  line: 110-118
+  name: cpy_blck_q_f32
+- code:
+  - template <typename T, int qk>
+  - static void cpy_q_q(const char * cx, char * cdst, const int ne, const int ne00,
+    const int ne01, const int ne02,
+  - '                      const int nb00, const int nb01, const int nb02, const int
+    nb03, const int ne10, const int ne11,'
+  - '                      const int ne12, const int nb10, const int nb11, const int
+    nb12, const int nb13,'
+  - '                      const sycl::nd_item<3> & item_ct1) {'
+  - '    const int i = (item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2))
+    * qk;'
+  - ''
+  - '    if (i >= ne) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    const int i03      = i / (ne00 * ne01 * ne02);'
+  - '    const int i02      = (i - i03 * ne00 * ne01 * ne02) / (ne00 * ne01);'
+  - '    const int i01      = (i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00) /
+    ne00;'
+  - '    const int i00      = i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00 - i01
+    * ne00;'
+  - '    const int x_offset = (i00 / qk) * nb00 + i01 * nb01 + i02 * nb02 + i03 *
+    nb03;'
+  - ''
+  - ''
+  - '    const int i13        = i / (ne10 * ne11 * ne12);'
+  - '    const int i12        = (i - i13 * ne10 * ne11 * ne12) / (ne10 * ne11);'
+  - '    const int i11        = (i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11)
+    / ne10;'
+  - '    const int i10        = i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11 -
+    i11 * ne10;'
+  - '    const int dst_offset = (i10 / qk) * nb10 + i11 * nb11 + i12 * nb12 + i13
+    * nb13;'
+  - ''
+  - '    cpy_blck_q_q<T>(cx + x_offset, cdst + dst_offset);'
+  - '}'
+  desc: 通用的 SYCL 内核函数，用于量化类型相同的张量复制操作，根据扁平化索引计算多维索引及偏移量，并调用等量化的块复制函数。
+  line: 120-143
+  name: cpy_q_q
+- code:
+  - template <cpy_kernel_t cpy_blck, int qk>
+  - static void cpy_f32_q(const char * cx, char * cdst, const int ne, const int ne00,
+    const int ne01, const int ne02,
+  - '                      const int nb00, const int nb01, const int nb02, const int
+    nb03, const int ne10, const int ne11,'
+  - '                      const int ne12, const int nb10, const int nb11, const int
+    nb12, const int nb13,'
+  - '                      const sycl::nd_item<3> & item_ct1) {'
+  - '    const int i = (item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2))
+    * qk;'
+  - ''
+  - '    if (i >= ne) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - ''
+  - '    const int i03      = i / (ne00 * ne01 * ne02);'
+  - '    const int i02      = (i - i03 * ne00 * ne01 * ne02) / (ne00 * ne01);'
+  - '    const int i01      = (i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00) /
+    ne00;'
+  - '    const int i00      = i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00 - i01
+    * ne00;'
+  - '    const int x_offset = i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03;'
+  - ''
+  - '    const int i13        = i / (ne10 * ne11 * ne12);'
+  - '    const int i12        = (i - i13 * ne10 * ne11 * ne12) / (ne10 * ne11);'
+  - '    const int i11        = (i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11)
+    / ne10;'
+  - '    const int i10        = i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11 -
+    i11 * ne10;'
+  - '    const int dst_offset = (i10 / qk) * nb10 + i11 * nb11 + i12 * nb12 + i13
+    * nb13;'
+  - ''
+  - '    cpy_blck(cx + x_offset, cdst + dst_offset);'
+  - '}'
+  desc: 通用的 SYCL 内核函数，用于将 f32 类型的张量转换为量化类型的复制操作，根据扁平化索引计算偏移量并调用块级转换函数。
+  line: 145-171
+  name: cpy_f32_q
+- code:
+  - template <cpy_kernel_t cpy_blck, int qk>
+  - static void cpy_q_f32(const char * cx, char * cdst, const int ne, const int ne00,
+    const int ne01, const int ne02,
+  - '                      const int nb00, const int nb01, const int nb02, const int
+    nb03, const int ne10, const int ne11,'
+  - '                      const int ne12, const int nb10, const int nb11, const int
+    nb12, const int nb13,'
+  - '                      const sycl::nd_item<3> & item_ct1) {'
+  - '    const int i = (item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2))
+    * qk;'
+  - ''
+  - '    if (i >= ne) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    const int i03      = i / (ne00 * ne01 * ne02);'
+  - '    const int i02      = (i - i03 * ne00 * ne01 * ne02) / (ne00 * ne01);'
+  - '    const int i01      = (i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00) /
+    ne00;'
+  - '    const int i00      = i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00 - i01
+    * ne00;'
+  - '    const int x_offset = (i00 / qk) * nb00 + i01 * nb01 + i02 * nb02 + i03 *
+    nb03;'
+  - ''
+  - '    const int i13        = i / (ne10 * ne11 * ne12);'
+  - '    const int i12        = (i - i13 * ne10 * ne11 * ne12) / (ne10 * ne11);'
+  - '    const int i11        = (i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11)
+    / ne10;'
+  - '    const int i10        = i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11 -
+    i11 * ne10;'
+  - '    const int dst_offset = i10 * nb10 + i11 * nb11 + i12 * nb12 + i13 * nb13;'
+  - ''
+  - '    cpy_blck(cx + x_offset, cdst + dst_offset);'
+  - '}'
+  desc: 通用的 SYCL 内核函数，用于将量化类型的张量转换为 f32 类型的复制操作，根据扁平化索引计算偏移量并调用块级转换函数。
+  line: 173-199
+  name: cpy_q_f32
+- code:
+  - static void ggml_cpy_f16_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16
+    });'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_f16_f32>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f16 张量复制为 f32 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 201-220
+  name: ggml_cpy_f16_f32_sycl
+- code:
+  - static void ggml_cpy_f32_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16
+    });'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_f32_f32>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 f32 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 222-241
+  name: ggml_cpy_f32_f32_sycl
+- code:
+  - static void ggml_cpy_f32_f16_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16
+    });'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_f32_f16>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 f16 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 243-262
+  name: ggml_cpy_f32_f16_sycl
+- code:
+  - static void ggml_cpy_f32_q8_0_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK8_0 == 0);'
+  - '    const int num_blocks = ne / QK8_0;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_f32_q<cpy_blck_f32_q8_0, QK8_0>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 q8_0 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 264-274
+  name: ggml_cpy_f32_q8_0_sycl
+- code:
+  - static void ggml_cpy_q8_0_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ne;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_q_f32<cpy_blck_q8_0_f32, QK8_0>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q8_0 量化张量复制为 f32 张量，启动并行内核并调用对应的 cpy_q_f32 函数。
+  line: 276-286
+  name: ggml_cpy_q8_0_f32_sycl
+- code:
+  - static void ggml_cpy_f32_q4_0_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK4_0 == 0);'
+  - '    const int num_blocks = ne / QK4_0;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_f32_q<cpy_blck_f32_q4_0, QK4_0>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 q4_0 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 288-298
+  name: ggml_cpy_f32_q4_0_sycl
+- code:
+  - static void ggml_cpy_q4_0_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ne;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks), sycl::range<3>(1,
+    1, 1)), [=](sycl::nd_item<3> item_ct1) {'
+  - '            cpy_q_f32<cpy_blck_q_f32<dequantize_q4_0, QK4_0>, QK4_0>(cx, cdst,
+    ne, ne00, ne01, ne02, nb00, nb01, nb02,'
+  - '                                                                     nb03, ne10,
+    ne11, ne12, nb10, nb11, nb12, nb13,'
+  - '                                                                     item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q4_0 量化张量复制为 f32 张量，启动并行内核并调用对应的 cpy_q_f32 函数。
+  line: 300-311
+  name: ggml_cpy_q4_0_f32_sycl
+- code:
+  - static void ggml_cpy_f32_q4_1_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK4_1 == 0);'
+  - '    const int num_blocks = ne / QK4_1;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_f32_q<cpy_blck_f32_q4_1, QK4_1>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 q4_1 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 313-323
+  name: ggml_cpy_f32_q4_1_sycl
+- code:
+  - static void ggml_cpy_q4_1_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ne;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks), sycl::range<3>(1,
+    1, 1)), [=](sycl::nd_item<3> item_ct1) {'
+  - '            cpy_q_f32<cpy_blck_q_f32<dequantize_q4_1, QK4_1>, QK4_1>(cx, cdst,
+    ne, ne00, ne01, ne02, nb00, nb01, nb02,'
+  - '                                                                     nb03, ne10,
+    ne11, ne12, nb10, nb11, nb12, nb13,'
+  - '                                                                     item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q4_1 量化张量复制为 f32 张量，启动并行内核并调用对应的 cpy_q_f32 函数。
+  line: 325-336
+  name: ggml_cpy_q4_1_f32_sycl
+- code:
+  - static void ggml_cpy_f32_q5_0_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK5_0 == 0);'
+  - '    const int num_blocks = ne / QK5_0;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_f32_q<cpy_blck_f32_q5_0, QK5_0>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 q5_0 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 338-348
+  name: ggml_cpy_f32_q5_0_sycl
+- code:
+  - static void ggml_cpy_q5_0_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ne;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks), sycl::range<3>(1,
+    1, 1)), [=](sycl::nd_item<3> item_ct1) {'
+  - '            cpy_q_f32<cpy_blck_q_f32<dequantize_q5_0, QK5_0>, QK5_0>(cx, cdst,
+    ne, ne00, ne01, ne02, nb00, nb01, nb02,'
+  - '                                                                     nb03, ne10,
+    ne11, ne12, nb10, nb11, nb12, nb13,'
+  - '                                                                     item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q5_0 量化张量复制为 f32 张量，启动并行内核并调用对应的 cpy_q_f32 函数。
+  line: 350-361
+  name: ggml_cpy_q5_0_f32_sycl
+- code:
+  - static void ggml_cpy_f32_q5_1_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK5_1 == 0);'
+  - '    const int num_blocks = ne / QK5_1;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks),
+    sycl::range<3>(1, 1, 1)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             cpy_f32_q<cpy_blck_f32_q5_1, QK5_1>(cx, cdst, ne,
+    ne00, ne01, ne02, nb00, nb01, nb02, nb03,'
+  - '                                                                 ne10, ne11,
+    ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 q5_1 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 363-373
+  name: ggml_cpy_f32_q5_1_sycl
+- code:
+  - static void ggml_cpy_q5_1_f32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ne;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks), sycl::range<3>(1,
+    1, 1)), [=](sycl::nd_item<3> item_ct1) {'
+  - '            cpy_q_f32<cpy_blck_q_f32<dequantize_q5_1, QK5_1>, QK5_1>(cx, cdst,
+    ne, ne00, ne01, ne02, nb00, nb01, nb02,'
+  - '                                                                     nb03, ne10,
+    ne11, ne12, nb10, nb11, nb12, nb13,'
+  - '                                                                     item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q5_1 量化张量复制为 f32 张量，启动并行内核并调用对应的 cpy_q_f32 函数。
+  line: 375-386
+  name: ggml_cpy_q5_1_f32_sycl
+- code:
+  - static void ggml_cpy_f32_iq4_nl_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                     const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                     const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                     const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    GGML_ASSERT(ne % QK4_NL == 0);'
+  - '    const int num_blocks = ne / QK4_NL;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks), sycl::range<3>(1,
+    1, 1)), [=](sycl::nd_item<3> item_ct1) {'
+  - '            cpy_f32_q<cpy_blck_f32_iq4_nl, QK4_NL>(cx, cdst, ne, ne00, ne01,
+    ne02, nb00, nb01, nb02, nb03, ne10, ne11,'
+  - '                                                   ne12, nb10, nb11, nb12, nb13,
+    item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f32 张量复制为 iq4_nl 量化张量，启动并行内核并调用对应的 cpy_f32_q 函数。
+  line: 388-399
+  name: ggml_cpy_f32_iq4_nl_sycl
+- code:
+  - static void ggml_cpy_f16_f16_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16
+    });'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_f16_f16>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 f16 张量复制为 f16 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 401-420
+  name: ggml_cpy_f16_f16_sycl
+- code:
+  - static void ggml_cpy_i16_i16_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        // dpct::has_capability_or_fail(stream->get_device(),'
+  - '        //                              {sycl::aspect::fp16});'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_i16_i16>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 i16 张量复制为 i16 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 422-441
+  name: ggml_cpy_i16_i16_sycl
+- code:
+  - static void ggml_cpy_i32_i32_sycl(const char * cx, char * cdst, const int ne,
+    const int ne00, const int ne01,
+  - '                                  const int ne02, const int nb00, const int nb01,
+    const int nb02, const int nb03,'
+  - '                                  const int ne10, const int ne11, const int ne12,
+    const int nb10, const int nb11,'
+  - '                                  const int nb12, const int nb13, queue_ptr stream)
+    {'
+  - '    const int num_blocks = (ne + SYCL_CPY_BLOCK_SIZE - 1) / SYCL_CPY_BLOCK_SIZE;'
+  - '    {'
+  - '        // dpct::has_capability_or_fail(stream->get_device(),'
+  - '        //                              {sycl::aspect::fp16});'
+  - ''
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                cpy_f32_f16<cpy_1_i32_i32>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                           nb10, nb11, nb12, nb13, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 i32 张量复制为 i32 张量，启动并行内核并调用对应的 cpy_f32_f16 函数。
+  line: 443-462
+  name: ggml_cpy_i32_i32_sycl
+- code:
+  - static void ggml_cpy_q8_0_q8_0(const char * cx, char * cdst, const int ne, const
+    int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ceil_div(ne, SYCL_CPY_BLOCK_SIZE);'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)), [=](sycl::nd_item<3>
+    item_ct1) {'
+  - '            cpy_q_q<block_q8_0, QK8_0>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q8_0 量化张量复制为 q8_0 量化张量，启动并行内核并调用对应的 cpy_q_q 函数。
+  line: 464-474
+  name: ggml_cpy_q8_0_q8_0
+- code:
+  - static void ggml_cpy_q5_0_q5_0(const char * cx, char * cdst, const int ne, const
+    int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ceil_div(ne, SYCL_CPY_BLOCK_SIZE);'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)), [=](sycl::nd_item<3>
+    item_ct1) {'
+  - '            cpy_q_q<block_q5_0, QK5_0>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q5_0 量化张量复制为 q5_0 量化张量，启动并行内核并调用对应的 cpy_q_q 函数。
+  line: 477-487
+  name: ggml_cpy_q5_0_q5_0
+- code:
+  - static void ggml_cpy_q5_1_q5_1(const char * cx, char * cdst, const int ne, const
+    int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ceil_div(ne, SYCL_CPY_BLOCK_SIZE);'
+  - ''
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE),'
+  - '                              sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)), [=](sycl::nd_item<3>
+    item_ct1) {'
+  - '            cpy_q_q<block_q5_1, QK5_1>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q5_1 量化张量复制为 q5_1 量化张量，启动并行内核并调用对应的 cpy_q_q 函数。
+  line: 490-501
+  name: ggml_cpy_q5_1_q5_1
+- code:
+  - static void ggml_cpy_q4_0_q4_0(const char * cx, char * cdst, const int ne, const
+    int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - '    const int num_blocks = ceil_div(ne, SYCL_CPY_BLOCK_SIZE);'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE), sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)), [=](sycl::nd_item<3>
+    item_ct1) {'
+  - '            cpy_q_q<block_q4_0, QK4_0>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q4_0 量化张量复制为 q4_0 量化张量，启动并行内核并调用对应的 cpy_q_q 函数。
+  line: 504-514
+  name: ggml_cpy_q4_0_q4_0
+- code:
+  - static void ggml_cpy_q4_1_q4_1(const char * cx, char * cdst, const int ne, const
+    int ne00, const int ne01,
+  - '                                   const int ne02, const int nb00, const int
+    nb01, const int nb02, const int nb03,'
+  - '                                   const int ne10, const int ne11, const int
+    ne12, const int nb10, const int nb11,'
+  - '                                   const int nb12, const int nb13, queue_ptr
+    stream) {'
+  - ''
+  - '   const int num_blocks = ceil_div(ne, SYCL_CPY_BLOCK_SIZE);'
+  - '   stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_CPY_BLOCK_SIZE), sycl::range<3>(1, 1, SYCL_CPY_BLOCK_SIZE)), [=](sycl::nd_item<3>
+    item_ct1) {'
+  - '            cpy_q_q<block_q4_1, QK4_1>(cx, cdst, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 外部调用的 SYCL 复制函数，用于将 q4_1 量化张量复制为 q4_1 量化张量，启动并行内核并调用对应的 cpy_q_q 函数。
+  line: 517-527
+  name: ggml_cpy_q4_1_q4_1
+- code:
+  - void ggml_sycl_cpy(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+    const ggml_tensor * src1) try {
+  - '    // Unlike other operators ggml_sycl_cpy takes 2 distinct tensors instead
+    of a dst ggml_tensor and rely on its src field'
+  - '    scope_op_debug_print scope_dbg_print(__func__, src1, /*num_src=*/0, debug_get_tensor_str("\tsrc0",
+    src0));'
+  - '    const int64_t ne = ggml_nelements(src0);'
+  - '    GGML_ASSERT(ne == ggml_nelements(src1));'
+  - ''
+  - '    GGML_TENSOR_BINARY_OP_LOCALS01;'
+  - ''
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    queue_ptr main_stream = ctx.stream();'
+  - ''
+  - '    char * src0_ddc = (char *) src0->data;'
+  - '    char * src1_ddc = (char *) src1->data;'
+  - '    if ((src0->type == src1->type) && (ggml_is_contiguous(src0) && ggml_is_contiguous(src1)))
+    {'
+  - '        GGML_SYCL_DEBUG("%s: memcpy path\n", __func__);'
+  - '        main_stream->memcpy(src1_ddc, src0_ddc, ggml_nbytes(src0));'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_f32_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {'
+  - '        ggml_cpy_f32_f16_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q8_0) {'
+  - '        ggml_cpy_f32_q8_0_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_0) {'
+  - '        ggml_cpy_f32_q4_0_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_1) {'
+  - '        ggml_cpy_f32_q4_1_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_f16_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {'
+  - '        ggml_cpy_f16_f16_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_I16 && src1->type == GGML_TYPE_I16) {'
+  - '        ggml_cpy_i16_i16_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_I32) {'
+  - '        ggml_cpy_i32_i32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                              nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q4_0 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_q4_0_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q4_1 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_q4_1_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q8_0 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_q8_0_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_0) {'
+  - '        ggml_cpy_f32_q5_0_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q5_0 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_q5_0_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_1) {'
+  - '        ggml_cpy_f32_q5_1_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q5_1 && src1->type == GGML_TYPE_F32) {'
+  - '        ggml_cpy_q5_1_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12, nb10,'
+  - '                               nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_IQ4_NL)
+    {'
+  - '        ggml_cpy_f32_iq4_nl_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00,
+    nb01, nb02, nb03, ne10, ne11, ne12,'
+  - '                                 nb10, nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q8_0 && src1->type == GGML_TYPE_Q8_0)
+    {'
+  - '        ggml_cpy_q8_0_q8_0(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01,
+    nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q5_0 && src1->type == GGML_TYPE_Q5_0)
+    {'
+  - '        ggml_cpy_q5_0_q5_0(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01,
+    nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q5_1 && src1->type == GGML_TYPE_Q5_1)
+    {'
+  - '        ggml_cpy_q5_1_q5_1(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01,
+    nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);'
+  - '    } else if (src0->type == GGML_TYPE_Q4_0 && src1->type == '
+  desc: 核心复制函数，根据源张量和目标张量的类型组合选择合适的复制路径，包括直接内存复制和类型转换复制，并启动相应的 SYCL 内核。
+  line: 529-617
+  name: ggml_sycl_cpy
+- code:
+  - void ggml_sycl_dup(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_cpy(ctx, dst->src[0], dst);'
+  - '}'
+  desc: 这是一个全局函数，用于在SYCL后端上执行张量复制操作。它接受一个后端上下文和一个目标张量，通过调用ggml_sycl_cpy函数，将目标张量的源张量数据复制到目标张量中。该函数还设置了作用域调度日志，以便于调试和性能分析。
+  line: 607-610
+  name: ggml_sycl_dup

@@ -1,0 +1,392 @@
+code_map:
+- tools/server/server-queue.h
+- ├── struct server_queue (20-127行)
+- '│   ├── int post(server_task && task, bool front = false) [25-43]      # 提交单个任务到队列'
+- '│   ├── int post(std::vector<server_task> && tasks, bool front = false) [45-69]  #
+  批量提交任务'
+- '│   ├── void defer(server_task && task) [71-77]                        # 将任务加入延迟队列'
+- '│   ├── int get_new_id() [79-83]                                       # 获取唯一任务ID'
+- '│   ├── void pop_deferred_task(int id_slot) [85-110]                   # 从延迟队列弹出任务'
+- '│   ├── void wait_until_no_sleep() [112-128]                           # 等待直到退出睡眠状态'
+- '│   ├── bool is_sleeping() [70-73]                                     # 查询睡眠状态'
+- '│   ├── void terminate() [130-135]                                     # 终止主循环'
+- '│   ├── void start_loop(int64_t idle_sleep_ms = -1) [137-212]          # 启动主处理循环'
+- '│   ├── size_t queue_tasks_deferred_size() [94-97]                     # 延迟队列大小'
+- '│   ├── void on_new_task(...) [102-104]                                # 注册新任务回调'
+- '│   ├── void on_update_slots(...) [107-109]                            # 注册槽位更新回调'
+- '│   ├── void on_sleeping_state(...) [114-123]                          # 注册睡眠状态回调'
+- '│   └── void cleanup_pending_task(int id_target) [214-225]             # 清理未完成任务'
+- ├── struct server_response (129-164行)
+- '│   ├── void add_waiting_task_id(int id_task) [229-235]                # 注册等待任务'
+- '│   ├── void add_waiting_task_ids(...) [237-245]                       # 批量注册等待任务'
+- '│   ├── void remove_waiting_task_id(int id_task) [247-260]             # 移除任务并清理结果'
+- '│   ├── void remove_waiting_task_ids(...) [262-270]                    # 批量移除等待'
+- '│   ├── server_task_result_ptr recv(...) [272-293, 321-325]            # 阻塞接收结果'
+- '│   ├── server_task_result_ptr recv_with_timeout(...) [295-319]        # 带超时接收'
+- '│   ├── void send(server_task_result_ptr && result) [327-340]          # 发送结果'
+- '│   └── void terminate() [342-346]                                     # 终止等待循环'
+- └── struct server_response_reader (166-215行)
+- '    ├── server_response_reader(...) [184-185]                          # 构造函数'
+- '    ├── ~server_response_reader() [186-188]                            # 析构自动stop'
+- '    ├── int get_new_id() [190-192]                                     # 获取任务ID'
+- '    ├── void post_task(server_task && task, bool front) [348-356]      # 提交单任务'
+- '    ├── void post_tasks(...) [358-375]                                 # 提交批量任务（含子任务）'
+- '    ├── bool has_next() const [377-380]                                # 检查结果流状态'
+- '    ├── server_task_result_ptr next(...) [381-408]                     # 生成器：获取下一结果'
+- '    ├── batch_response wait_for_all(...) [410-426]                     # 聚合所有结果'
+- '    └── void stop() [428-445]                                          # 取消并清理任务'
+- ''
+- tools/server/server-queue.cpp
+- '├── server_queue::post() [25-43]          # 单任务入队，支持front插队'
+- '├── server_queue::post() [45-69]          # 批量任务入队，支持front插队'
+- '├── server_queue::defer() [71-77]         # 延迟任务入队'
+- '├── server_queue::get_new_id() [79-83]    # 原子ID分配'
+- '├── server_queue::pop_deferred_task() [85-110]  # 槽位优先的延迟任务弹出'
+- '├── server_queue::wait_until_no_sleep() [112-128]  # 睡眠唤醒协调'
+- '├── server_queue::terminate() [130-135]   # 优雅终止信号'
+- '├── server_queue::start_loop() [137-212]  # 主循环三阶段调度'
+- '├── server_queue::cleanup_pending_task() [214-225]  # 级联清理'
+- '├── server_response::add_waiting_task_id() [229-235]      # 加入等待集合'
+- '├── server_response::add_waiting_task_ids() [237-245]     # 批量加入等待集合'
+- '├── server_response::remove_waiting_task_id() [247-260]   # 移除并清理结果'
+- '├── server_response::remove_waiting_task_ids() [262-270]  # 批量移除'
+- '├── server_response::recv() [272-293, 321-325]            # 多任务/单任务阻塞接收'
+- '├── server_response::recv_with_timeout() [295-319]        # 超时接收'
+- '├── server_response::send() [327-340]     # 结果匹配与入队'
+- '├── server_response::terminate() [342-346]                # 结果队列终止'
+- '├── server_response_reader::post_task() [348-356]         # 单任务提交与状态初始化'
+- '├── server_response_reader::post_tasks() [358-375]        # 批量/子任务提交'
+- '├── server_response_reader::has_next() [377-380]          # 流状态检查'
+- '├── server_response_reader::next() [381-408]              # 流式结果获取与状态更新'
+- '├── server_response_reader::wait_for_all() [410-426]      # 批量结果聚合'
+- '└── server_response_reader::stop() [428-445]              # 级联取消与清理'
+exercises:
+- contents:
+  - 阅读 `tools/server/server-queue.cpp` 中 `server_queue::post()`（25-69行）和 `server_queue::start_loop()`（137-212行）。
+  - 1. 分析 `mutex_tasks` 和 `condition_tasks` 如何配合实现生产者-消费者模式
+  - 2. 解释为什么 `start_loop` 中使用两次 `lock.unlock()` 和 `lock.lock()` 来缩小临界区
+  - 3. 思考：如果 `callback_update_slots()` 执行时间较长，如何避免新任务饥饿？
+  'no': 1
+  title: 分析任务队列的线程安全机制
+- contents:
+  - 基于 `server_queue::defer()`（71-77行）和 `pop_deferred_task()`（85-110行）的实现。
+  - 1. 编写单元测试：提交三个任务（id=1,2,3），其中任务2指定 id_slot=5，其余默认
+  - 2. 先 defer 所有任务，然后调用 `pop_deferred_task(5)`，验证是否只有任务2被激活
+  - 3. 再调用一次 `pop_deferred_task(999)`，观察是否按 FIFO 顺序弹出剩余任务
+  - 4. 思考：这种设计如何优化 KV Cache 的局部性？
+  'no': 2
+  title: 实现延迟队列的槽位亲和性测试
+- contents:
+  - 以 `server_response::send()`（327-340行）和 `remove_waiting_task_id()`（247-260行）为对象。
+  - 1. 绘制 `waiting_task_ids` 与 `queue_results` 的数据流图，说明结果如何被筛选
+  - 2. 分析 `remove_waiting_task_id` 中 `std::remove_if` 的遍历效率与一致性保证
+  - 3. 当服务器收到客户端断开连接时，如何通过此方法防止已删除任务的结果泄漏到无关请求？
+  'no': 3
+  title: 理解 server_response 的结果匹配与清理
+- contents:
+  - 对比 `server_response_reader::next()`（381-408行）与 `wait_for_all()`（410-426行）的实现差异。
+  - 1. 解释 `next()` 中 `result->update(states[idx])` 如何实现增量状态聚合（如聊天上下文）
+  - 2. `wait_for_all()` 中 `batch_res.results[idx] = std::move(res)` 为何使用移动语义？
+  - 3. 思考：在流式场景下，如果客户端提前断开，`stop()` 如何保证服务端推理立即停止并释放 KV Cache？
+  'no': 4
+  title: 对比流式与批量响应的内存管理
+- contents:
+  - 研究 `server_response_reader::stop()`（428-445行）与 `server_queue::cleanup_pending_task()`（214-225行）的协作。
+  - 1. 说明为什么取消任务要设置 `front=true` 插入队列头部
+  - 2. 追踪 `SERVER_TASK_TYPE_CANCEL` 从 `post()` 到 `cleanup_pending_task()` 的完整路径
+  - 3. 设计实验：同时提交 A、B、C 三个任务，在 B 执行途中调用 `reader.stop()`，验证 C 是否被阻止执行，以及是否避免了已分配资源的泄漏
+  'no': 5
+  title: 设计取消任务的级联传播实验
+learning_targets:
+- 理解 server_queue 在并发推理中的核心职责与双端队列设计
+- 掌握延迟队列（deferred queue）与槽位优先唤醒机制
+- 理解主循环三阶段模型（处理新任务/更新槽位/等待睡眠）与空闲节能设计
+- 掌握 server_response 的等待集合机制与生产者-消费者同步原语
+- 理解 server_response_reader 的生成器模式与 RAII 资源管理
+- 掌握任务取消的级联清理机制与异常路径安全保障
+- 能独立实现基于条件变量的多线程任务调度器
+life_analogy:
+- 想象 llama-server 的并发系统是一座**现代化智能机场**：
+- '- **server_queue** = 机场塔台调度系统，管理所有待起飞（待推理）的航班（任务）'
+- '  - **双端队列** = 紧急航班（front）可插队优先起飞，普通航班按序排队（back）'
+- '  - **延迟队列** = 停机坪等待区，因跑道（槽位）被占用而暂时等待的航班'
+- '  - **pop_deferred_task** = 当指定跑道（id_slot）空闲时，优先安排使用该跑道的航班'
+- '  - **start_loop** = 塔台值班循环：处理进港（新任务）→ 协调跑道使用（更新槽位）→ 空闲时进入节能模式（睡眠）'
+- '- **server_response** = 行李分拣中心，确保每位乘客（任务）拿到自己的行李（结果）'
+- '  - **waiting_task_ids** = 已登记等待行李的乘客名单'
+- '  - **queue_results** = 行李传送带，按航班号匹配'
+- '  - **remove_waiting_task_id** = 乘客离开时同时清理其遗留行李，防止传送带堵塞'
+- '- **server_response_reader** = 自助行李提取终端，乘客（客户端）通过它取行李'
+- '  - **生成器模式** = 乘客一件件提取行李（流式响应），直到提完为止'
+- '  - **stop()** = 乘客紧急取消行程，系统立即清理其所有行李并通知地勤'
+- '- **RAII 析构** = 乘客离开机场时自动注销登机牌，防止系统资源泄漏'
+- 就像塔台需要精确协调跑道使用、处理紧急插队和夜间节能模式，server_queue 也需要管理任务优先级、槽位竞争和服务器空闲功耗。
+'no': 82
+summary:
+- concept: '`server_queue`'
+  desc: 并发任务调度的核心，采用双端队列+延迟队列设计，支持优先级插队与空闲睡眠节能
+- concept: '`callback_new_task/update_slots`'
+  desc: 主循环回调 hook，分离任务接收与槽位计算，实现关注点分离
+- concept: '`defer/pop_deferred_task`'
+  desc: 槽位竞争优化机制，暂存无法立即执行的任务，按槽位优先唤醒，提高 KV Cache 利用率
+- concept: '`server_response::waiting_task_ids`'
+  desc: 基于集合的任务注册机制，确保只处理有效活跃任务，防止脏数据
+- concept: '`add_waiting_task_ids/remove_waiting_task_ids`'
+  desc: 批量注册与批量移除等待任务，支撑多任务聚合场景的高效管理
+- concept: '`recv/recv_with_timeout`'
+  desc: 阻塞与超时接收策略，支持单任务与多任务聚合等待，适配流式与非流式场景
+- concept: '`server_response_reader`'
+  desc: 生成器模式封装，提供 next() 流式接口与 wait_for_all() 批量接口，自动管理任务生命周期
+- concept: '`stop()` 级联取消'
+  desc: 通过向队列前端插入 SERVER_TASK_TYPE_CANCEL 实现高优先级取消，触发 cleanup_pending_task 级联清理
+- concept: RAII 析构与 RAII 状态
+  desc: 析构自动调用 stop()，确保异常安全；task_result_state 跟踪生成上下文与增量结果
+- concept: '`sleeping/req_stop_sleeping`'
+  desc: 空闲睡眠机制，通过条件变量与回调通知实现零 CPU 占用的待机唤醒
+- concept: '`std::terminate` 策略'
+  desc: HTTP 线程无法优雅返回时的强制终止保护，防止服务端不一致状态
+units:
+- codes:
+  - file: tools/server/server-queue.h
+    line: 48-51
+    method_or_func: server_queue.post
+  - file: tools/server/server-queue.h
+    line: '54'
+    method_or_func: server_queue.defer
+  - file: tools/server/server-queue.h
+    line: '57'
+    method_or_func: server_queue.get_new_id
+  - file: tools/server/server-queue.h
+    line: '62'
+    method_or_func: server_queue.pop_deferred_task
+  - file: tools/server/server-queue.h
+    line: 70-73
+    method_or_func: server_queue.is_sleeping
+  - file: tools/server/server-queue.h
+    line: 94-97
+    method_or_func: server_queue.queue_tasks_deferred_size
+  - file: tools/server/server-queue.h
+    line: 102-104
+    method_or_func: server_queue.on_new_task
+  - file: tools/server/server-queue.h
+    line: 107-109
+    method_or_func: server_queue.on_update_slots
+  - file: tools/server/server-queue.h
+    line: 114-123
+    method_or_func: server_queue.on_sleeping_state
+  - file: tools/server/server-queue.h
+    line: '126'
+    method_or_func: server_queue.cleanup_pending_task
+  - file: tools/server/server-queue.h
+    line: 1-9
+    method_or_func: __main__
+  - file: tools/server/server-queue.cpp
+    line: 25-69
+    method_or_func: server_queue.post
+  - file: tools/server/server-queue.cpp
+    line: 71-77
+    method_or_func: server_queue.defer
+  - file: tools/server/server-queue.cpp
+    line: 79-83
+    method_or_func: server_queue.get_new_id
+  - file: tools/server/server-queue.cpp
+    line: 85-110
+    method_or_func: server_queue.pop_deferred_task
+  - file: tools/server/server-queue.cpp
+    line: 214-225
+    method_or_func: server_queue.cleanup_pending_task
+  name: 任务队列基础设施 —— 服务端推理的「交通枢纽调度台」
+  'no': 1
+  points:
+  - '**server_queue 的核心设计哲学**'
+  - '- 作为 llama-server 的并发核心，server_queue 承担着「交通指挥中心」的角色，负责接收 HTTP 请求转化的推理任务，并按优先级调度给后端处理线程'
+  - '- 采用双端队列（deque）设计，支持 front 插入实现紧急任务插队（如取消请求）'
+  - '- 引入延迟队列（deferred queue）机制，处理暂时无法执行的任务（如等待 KV 缓存槽位释放）'
+  - '**线程安全与同步原语**'
+  - '- 使用 std::mutex 保护任务队列，std::condition_variable 实现生产者-消费者模式'
+  - '- 通过 QUE_DBG/RES_DBG 宏实现调试日志，便于追踪任务流转状态'
+  - '**任务生命周期管理**'
+  - '- 每个任务通过唯一的 task.id 标识，支持批量提交（post 重载）和单个提交'
+  - '- 取消任务（SERVER_TASK_TYPE_CANCEL）会触发 cleanup_pending_task 清理关联任务'
+  - '- defer/pop_deferred_task 实现任务的挂起与恢复，优化槽位利用率'
+  - '**辅助查询接口**'
+  - '- is_sleeping() 与 queue_tasks_deferred_size() 为外部模块（如 server_metrics）提供运行时状态查询能力'
+  - '- on_sleeping_state 支持多回调链式注册，允许日志模块与指标收集器同时监听睡眠状态切换'
+- codes:
+  - file: tools/server/server-queue.h
+    line: '88'
+    method_or_func: server_queue.start_loop
+  - file: tools/server/server-queue.h
+    line: '76'
+    method_or_func: server_queue.terminate
+  - file: tools/server/server-queue.h
+    line: '68'
+    method_or_func: server_queue.wait_until_no_sleep
+  - file: tools/server/server-queue.cpp
+    line: 137-212
+    method_or_func: server_queue.start_loop
+  - file: tools/server/server-queue.cpp
+    line: 130-135
+    method_or_func: server_queue.terminate
+  - file: tools/server/server-queue.cpp
+    line: 112-128
+    method_or_func: server_queue.wait_until_no_sleep
+  name: 主循环调度机制 —— 永不停歇的「任务处理引擎」
+  'no': 2
+  points:
+  - '**start_loop 的三阶段工作模型**'
+  - '- 阶段一：处理新任务（processing new tasks）—— 从队列取出任务，通过 callback_new_task 分发给推理引擎'
+  - '- 阶段二：更新槽位（update slots）—— 触发 callback_update_slots 执行实际的 LLM 推理计算，这是整个循环中最耗时的部分'
+  - '- 阶段三：等待新任务（waiting for new tasks）—— 空载时进入条件变量等待，支持空闲休眠（idle sleep）节能机制'
+  - '**睡眠与唤醒的智能管理**'
+  - '- 当 idle_sleep_ms 超时且无新任务时，进入 sleeping 状态，通过 callback_sleeping_state 通知外部模块'
+  - '- wait_until_no_sleep() 允许外部线程请求唤醒，确保延迟敏感任务能及时执行'
+  - '- 采用 max_wait_time（1秒）的轮询间隔，平衡响应速度与 CPU 占用'
+  - '**优雅终止机制**'
+  - '- terminate() 设置 running=false 并广播条件变量，确保所有等待线程能安全退出'
+  - '- 在睡眠状态中被唤醒后，会二次检查 running 状态，避免虚假唤醒'
+- codes:
+  - file: tools/server/server-queue.h
+    line: '139'
+    method_or_func: server_response.add_waiting_task_id
+  - file: tools/server/server-queue.h
+    line: '141'
+    method_or_func: server_response.add_waiting_task_ids
+  - file: tools/server/server-queue.h
+    line: '144'
+    method_or_func: server_response.remove_waiting_task_id
+  - file: tools/server/server-queue.h
+    line: '147'
+    method_or_func: server_response.remove_waiting_task_ids
+  - file: tools/server/server-queue.h
+    line: 150-157
+    method_or_func: server_response.recv
+  - file: tools/server/server-queue.h
+    line: '154'
+    method_or_func: server_response.recv_with_timeout
+  - file: tools/server/server-queue.h
+    line: '160'
+    method_or_func: server_response.send
+  - file: tools/server/server-queue.h
+    line: '163'
+    method_or_func: server_response.terminate
+  - file: tools/server/server-queue.cpp
+    line: 229-235
+    method_or_func: server_response.add_waiting_task_id
+  - file: tools/server/server-queue.cpp
+    line: 237-245
+    method_or_func: server_response.add_waiting_task_ids
+  - file: tools/server/server-queue.cpp
+    line: 247-260
+    method_or_func: server_response.remove_waiting_task_id
+  - file: tools/server/server-queue.cpp
+    line: 262-270
+    method_or_func: server_response.remove_waiting_task_ids
+  - file: tools/server/server-queue.cpp
+    line: 272-293
+    method_or_func: server_response.recv
+  - file: tools/server/server-queue.cpp
+    line: 295-319
+    method_or_func: server_response.recv_with_timeout
+  - file: tools/server/server-queue.cpp
+    line: 321-325
+    method_or_func: server_response.recv
+  - file: tools/server/server-queue.cpp
+    line: 327-340
+    method_or_func: server_response.send
+  - file: tools/server/server-queue.cpp
+    line: 342-346
+    method_or_func: server_response.terminate
+  name: 响应分发与等待集合 —— 推理结果的「快递分拣中心」
+  'no': 3
+  points:
+  - '**server_response 的核心职责**'
+  - '- 维护等待任务集合（waiting_task_ids），只处理已注册任务的结果，避免脏数据'
+  - '- 结果队列（queue_results）采用 deque 存储 server_task_result_ptr 智能指针，支持高效插入删除'
+  - '- 区分阻塞式接收（recv）与超时接收（recv_with_timeout），适应不同场景需求'
+  - '**等待集合的注册与注销**'
+  - '- add_waiting_task_id / add_waiting_task_ids 分别支持单任务注册与批量注册，后者常用于多序列并行生成场景'
+  - '- remove_waiting_task_ids 提供批量注销能力，随 reader 析构时统一清理，避免逐个调用开销'
+  - '**多任务结果匹配策略**'
+  - '- recv(id_tasks) 支持同时等待多个任务，返回第一个到达的结果，适用于批量检测场景'
+  - '- 单任务 recv(id_task) 是 recv(id_tasks) 的便捷包装，内部构造单元素集合后复用主流程'
+  - '- 内部采用轮询扫描：先检查队列中是否有匹配结果，无则条件变量等待'
+  - '- 终止时通过 std::terminate() 强制退出，因为调用方是 HTTP 线程无法优雅返回'
+  - '**结果清理与一致性保障**'
+  - '- remove_waiting_task_id 不仅移除等待标记，还清理该任务的所有待处理结果，防止资源泄漏'
+  - '- send() 方法进行结果-任务匹配，只有匹配到等待列表才会入队，确保结果有效性'
+- codes:
+  - file: tools/server/server-queue.h
+    line: 184-185
+    method_or_func: server_response_reader.server_response_reader
+  - file: tools/server/server-queue.h
+    line: 190-192
+    method_or_func: server_response_reader.get_new_id
+  - file: tools/server/server-queue.h
+    line: '196'
+    method_or_func: server_response_reader.post_task
+  - file: tools/server/server-queue.h
+    line: '197'
+    method_or_func: server_response_reader.post_tasks
+  - file: tools/server/server-queue.h
+    line: '198'
+    method_or_func: server_response_reader.has_next
+  - file: tools/server/server-queue.h
+    line: '201'
+    method_or_func: server_response_reader.next
+  - file: tools/server/server-queue.h
+    line: '213'
+    method_or_func: server_response_reader.wait_for_all
+  - file: tools/server/server-queue.cpp
+    line: 348-356
+    method_or_func: server_response_reader.post_task
+  - file: tools/server/server-queue.cpp
+    line: 358-375
+    method_or_func: server_response_reader.post_tasks
+  - file: tools/server/server-queue.cpp
+    line: 377-380
+    method_or_func: server_response_reader.has_next
+  - file: tools/server/server-queue.cpp
+    line: 381-408
+    method_or_func: server_response_reader.next
+  - file: tools/server/server-queue.cpp
+    line: 410-426
+    method_or_func: server_response_reader.wait_for_all
+  name: 响应读取器 —— 面向客户端的「生成器模式」封装
+  'no': 4
+  points:
+  - '**server_response_reader 的设计目标**'
+  - '- 为上层（HTTP 处理层）提供简洁的迭代器风格 API，屏蔽底层队列交互细节'
+  - '- 自动管理任务注册、状态跟踪、结果聚合与取消清理，遵循 RAII 原则'
+  - '- 支持单任务模式（post_task）与批量任务模式（post_tasks），后者用于嵌套推理（如并行采样多个候选）'
+  - '**流式与批量处理的双重支持**'
+  - '- next() 方法实现生成器模式：每次调用返回一个 token/结果，适用于 SSE 流式响应'
+  - '- wait_for_all() 收集所有结果到 batch_response，适用于非流式的 JSON 响应'
+  - '- has_next() 结合 received_count 与 cancelled 标志，精确判断流是否结束'
+  - '**状态跟踪与错误处理**'
+  - '- 为每个任务创建 task_result_state（通过 create_state()），跟踪生成过程中的增量状态（如聊天上下文、工具调用）'
+  - '- 收到错误结果（is_error()）时自动触发 stop()，取消剩余任务，防止无效计算'
+  - '- next() 内部通过 result->update(states[idx]) 更新累积状态，实现增量式结果聚合'
+- codes:
+  - file: tools/server/server-queue.cpp
+    line: 428-445
+    method_or_func: server_response_reader.stop
+  - file: tools/server/server-queue.h
+    line: 186-188
+    method_or_func: server_response_reader.~server_response_reader
+  - file: tools/server/server-queue.cpp
+    line: 214-225
+    method_or_func: server_queue.cleanup_pending_task
+  name: 取消与清理机制 —— 异常路径的「安全气囊」
+  'no': 5
+  points:
+  - '**任务取消的级联处理**'
+  - '- stop() 方法不仅删除本地等待状态，还向队列前端（front=true）插入取消任务，确保高优先级执行'
+  - '- 取消任务是特殊类型（SERVER_TASK_TYPE_CANCEL），在 server_queue::post 中会触发关联任务的清理'
+  - '- 支持部分取消：通过 id_tasks 集合精确指定要终止的子任务，不影响其他并行任务'
+  - '**RAII 与资源安全**'
+  - '- 析构函数自动调用 stop()，确保即使上层忘记显式调用，任务也会被正确取消，防止服务端资源泄漏'
+  - '- 使用智能指针（server_task_result_ptr）管理结果对象，自动处理内存生命周期'
+  - '**边界情况处理**'
+  - '- has_next() 检查 cancelled 标志，避免在已取消状态下继续等待'
+  - '- post_tasks() 中会展开所有子任务（child_tasks），为每个子任务建立独立状态跟踪，确保嵌套任务（如并行采样）的正确取消'

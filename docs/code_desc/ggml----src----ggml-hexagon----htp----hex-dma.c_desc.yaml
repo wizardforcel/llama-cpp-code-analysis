@@ -1,0 +1,73 @@
+classes: []
+desc: 该文件实现了用于Qualcomm Hexagon DSP的DMA队列管理功能，提供了DMA队列的创建、删除和刷新操作，以及内部的2次幂向上取整工具函数。队列使用环形缓冲区存储DMA描述符和指针，支持高效的2D
+  DMA传输操作，适用于神经网络推理等需要快速数据搬运的场景。
+file: ggml/src/ggml-hexagon/htp/hex-dma.c
+funcs:
+- code:
+  - static inline uint32_t pow2_ceil(uint32_t x) {
+  - '    if (x <= 1) {'
+  - '        return 1;'
+  - '    }'
+  - '    int p = 2;'
+  - '    x--;'
+  - '    while (x >>= 1) {'
+  - '        p <<= 1;'
+  - '    }'
+  - '    return p;'
+  - '}'
+  desc: 静态内联工具函数，计算给定32位无符号整数的2次幂向上取整值，最小返回1。
+  line: 10-21
+  name: pow2_ceil
+- code:
+  - dma_queue * dma_queue_create(size_t capacity) {
+  - '    dma_queue * q = (dma_queue *) memalign(32, sizeof(dma_queue));'
+  - '    if (q == NULL) {'
+  - '        FARF(ERROR, "%s: failed to allocate DMA queue\n", __FUNCTION__);'
+  - '        return NULL;'
+  - '    }'
+  - '    '
+  - '    capacity = pow2_ceil(capacity);'
+  - '    '
+  - '    memset(q, 0, sizeof(dma_queue));'
+  - '    q->capacity = capacity;'
+  - '    q->idx_mask = capacity - 1;'
+  - '    '
+  - '    q->desc = (dma_descriptor_2d *) memalign(64, capacity * sizeof(dma_descriptor_2d));'
+  - '    memset(q->desc, 0, capacity * sizeof(dma_descriptor_2d));'
+  - '    '
+  - '    q->dptr = (dma_ptr *) memalign(4, capacity * sizeof(dma_ptr));'
+  - '    memset(q->dptr, 0, capacity * sizeof(dma_ptr));'
+  - '    '
+  - '    q->tail = &q->desc[capacity - 1];'
+  - '    '
+  - '    if (!q->desc && !q->dptr) {'
+  - '        FARF(ERROR, "%s: failed to allocate DMA queue items\n", __FUNCTION__);'
+  - '        return NULL;'
+  - '    }'
+  - '    '
+  - '    FARF(HIGH, "dma-queue: capacity %u\n", capacity);'
+  - '    '
+  - '    return q;'
+  - '}'
+  desc: 创建并初始化DMA队列，为队列结构、描述符数组和数据指针数组分配对齐内存，并将容量向上取整到2的幂次。
+  line: 23-55
+  name: dma_queue_create
+- code:
+  - void dma_queue_delete(dma_queue * q) {
+  - '    if (!q) {'
+  - '        return;'
+  - '    }'
+  - '    free(q->desc);'
+  - '    free(q->dptr);'
+  - '    free(q);'
+  - '}'
+  desc: 释放DMA队列相关的所有内存资源，包括描述符数组、数据指针数组和队列结构本身。
+  line: 57-64
+  name: dma_queue_delete
+- code:
+  - void dma_queue_flush(dma_queue * q) {
+  - '    while (dma_queue_pop(q).dst != NULL) ;'
+  - '}'
+  desc: 清空DMA队列，通过循环弹出队列元素直到目标地址为空，丢弃所有排队的DMA请求。
+  line: 66-68
+  name: dma_queue_flush

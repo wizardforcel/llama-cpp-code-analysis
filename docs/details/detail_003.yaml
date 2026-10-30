@@ -1,0 +1,775 @@
+code_map:
+- convert_hf_to_gguf.py
+- ├── ModelBase 基础设施与张量索引
+- '│   ├── ModelBase.__init__()                      # 加载 hparams / model_tensors,
+  初始化 GGUFWriter'
+- '│   ├── ModelBase.load_hparams()                  # 静态方法, 读取 config.json / params.json
+  并自动适配子 config'
+- '│   ├── ModelBase.index_tensors()                 # 索引 safetensors/pytorch 文件并构建
+  LazyTorchTensor'
+- '│   ├── ModelBase.find_hparam()                   # 多键名兜底查找'
+- '│   ├── ModelBase.get_tensors()                   # 迭代生成 (name, tensor)'
+- '│   ├── ModelBase.format_tensor_name()            # 按 MODEL_TENSOR 模板拼装张量名称'
+- '│   ├── ModelBase.match_model_tensor_name()       # 反向匹配张量名是否属于某 MODEL_TENSOR'
+- '│   ├── ModelBase.map_tensor_name()               # 通过 TensorNameMap 将 HF 名称映射到
+  GGUF 名称'
+- '│   ├── ModelBase.modify_tensors()                # 默认张量改写 + gate_up_exps 融合 hook'
+- '│   ├── ModelBase.generate_extra_tensors()        # 产生额外张量的入口 (默认空生成器)'
+- '│   ├── ModelBase.tensor_force_quant()            # 子类重写以强制 F32/F16 等'
+- '│   ├── ModelBase.prepare_tensors()               # 调度 dequant / modify / quantize
+  / 写出'
+- '│   ├── ModelBase.dequant_model()                # 处理 bitnet / fp8 / gptq / compressed-tensors
+  / modelopt 反量化'
+- '│   ├── ModelBase._generate_nvfp4_tensors()      # NVFP4 量化专家张量流式生成'
+- '│   ├── ModelBase._flush_nvfp4_experts()         # 写出一组 (bid, proj_type) NVFP4
+  专家'
+- '│   ├── ModelBase._nvfp4_pack()                   # 静态方法, 把 ModelOpt NVFP4 重新打包成
+  ggml 超级块'
+- '│   ├── ModelBase._repack_nvfp4()                 # 普通张量的 NVFP4 重打包'
+- '│   ├── ModelBase.set_gguf_parameters()           # 抽象方法入口'
+- '│   ├── ModelBase.prepare_metadata()              # 写入参数统计与 gguf.Metadata 元信息'
+- '│   ├── ModelBase.set_type()                      # 默认写 MODEL 类型'
+- '│   ├── ModelBase.write_vocab()                   # 抽象方法入口'
+- '│   ├── ModelBase.write()                         # 串联 prepare_tensors / prepare_metadata
+  / 写盘'
+- '│   ├── ModelBase.register()                      # 类装饰器, 把子类注册到架构名表'
+- '│   ├── ModelBase.from_model_architecture()       # 工厂方法, 根据架构字符串找到类'
+- '│   ├── ModelBase.print_registered_models()       # 调试输出'
+- '│   └── ModelBase.get_model_part_names()          # 静态方法, 扫描分片文件'
+- ├── TextModel 公共逻辑
+- '│   ├── TextModel.__init__()                      # 合并 text_config / 计算 block_count
+  / 构造 tensor_map'
+- '│   ├── TextModel.set_vocab()                     # 默认调用 _set_vocab_gpt2'
+- '│   ├── TextModel.set_gguf_parameters()           # 通用超参数 (block_count/head/ffn/rope/norm)'
+- '│   ├── TextModel.prepare_metadata()              # 覆写以完成词汇表写入流程'
+- '│   ├── TextModel.write_vocab()                   # 仅写词表, 不写权重'
+- '│   ├── TextModel.does_token_look_special()       # 启发式识别特殊 token'
+- '│   ├── TextModel.get_vocab_base()                # GPT-2 / WordPiece 通用词表加载'
+- '│   ├── TextModel.get_vocab_base_pre()            # 自动检测 BPE 预分词器类型'
+- '│   ├── TextModel._set_vocab_none()               # 无词表模型占位'
+- '│   ├── TextModel._set_vocab_gpt2()               # GPT2 BPE 路径'
+- '│   ├── TextModel._set_vocab_qwen()               # 旧 Qwen 词表处理'
+- '│   ├── TextModel._set_vocab_sentencepiece()      # 通用 SPM 路径'
+- '│   ├── TextModel._create_vocab_sentencepiece()   # SPM 词表实际生成器'
+- '│   ├── TextModel._set_vocab_llama_hf()           # Llama HF 词表封装'
+- '│   ├── TextModel._set_vocab_rwkv_world()         # RWKV world 词表'
+- '│   ├── TextModel._set_vocab_builtin()             # 内置 gpt-neox / llama-spm 词表回退'
+- '│   ├── TextModel._set_vocab_plamo()              # PLaMo JSONL 词表'
+- '│   ├── TextModel._set_vocab_interns1()           # Intern-S1 自定义词表'
+- '│   ├── TextModel._set_vocab_mistral()            # Mistral tekken / spm 词表'
+- '│   ├── TextModel._set_vocab_glm()                # GLM 系列词表'
+- '│   ├── TextModel._set_vocab_glmedge()            # GLM-Edge 词表'
+- '│   └── TextModel._try_set_pooling_type()          # sentence-transformers pooling
+  探测'
+- ├── 经典 LLaMA 系 (2409-2531行)
+- '│   ├── LlamaModel.__init__()                     # 修正 num_attention_heads 并读取
+  origin_hf_arch'
+- '│   ├── LlamaModel.set_vocab()                    # 多种词表回退 + CodeLlama/Granite
+  small 特例'
+- '│   ├── LlamaModel.set_gguf_parameters()          # vocab_size + rope_dimension_count'
+- '│   ├── LlamaModel.permute()                      # 静态方法, Q/K 权重维度重排'
+- '│   ├── LlamaModel.modify_tensors()               # 跳过多模态、撤销 HF QKV permute、Mixtral
+  专家合并'
+- '│   ├── LlamaModel.generate_extra_tensors()       # Llama3 RoPE 频率因子生成'
+- '│   └── LlamaModel.prepare_tensors()              # 校验未处理的专家张量'
+- ├── GPT-NeoX 与 Bloom (2684-2812行)
+- '│   ├── GPTNeoXModel.set_gguf_parameters()       # rotary_pct 部分旋转、parallel_residual'
+- '│   ├── GPTNeoXModel.modify_tensors()             # QKV 维度 reshape + cat'
+- '│   ├── BloomModel.set_gguf_parameters()          # seq_length / n_positions 兼容'
+- '│   └── BloomModel.modify_tensors()               # 去掉 transformer. 前缀, QKV 重排'
+- ├── Falcon / StarCoder / Refact / Baichuan / Xverse (2820-3206行)
+- '│   ├── MPTModel.set_vocab()                      # GPT-2 失败 fallback 到 SPM'
+- '│   ├── MPTModel.set_gguf_parameters()            # alibi bias / clip_qkv'
+- '│   ├── MPTModel.modify_tensors()                 # scales 重命名为 act.scales'
+- '│   ├── OrionModel.set_vocab()                    # SPM 词表'
+- '│   ├── OrionModel.set_gguf_parameters()          # RMS/Layer Norm 注释'
+- '│   ├── StableLMModel.set_vocab()                 # GPT2 / Qwen 回退'
+- '│   ├── StableLMModel.set_gguf_parameters()       # partial_rotary_factor + use_parallel_residual'
+- '│   ├── StableLMModel.modify_tensors()            # 多头 Q/K Norm 缓存'
+- '│   ├── StableLMModel._stack_qk_norm()            # 拼接成 2D 张量'
+- '│   ├── StableLMModel.prepare_tensors()           # 校验未处理 Norm 残留'
+- '│   ├── FalconModel.set_gguf_parameters()        # hidden_size * 4 替代 ffn, tensor
+  layout jploski'
+- '│   ├── FalconModel.modify_tensors()              # kv 组打包重排 [Q,K,V]'
+- '│   ├── StarCoderModel.set_gguf_parameters()      # n_positions 单一 KV 头'
+- '│   ├── BaichuanModel.set_vocab()                 # SPM'
+- '│   ├── BaichuanModel.set_gguf_parameters()       # 写入 tensor layout 与 rope dimension'
+- '│   ├── BaichuanModel.modify_tensors()            # W_pack 拆分 + _reverse_hf_permute_part'
+- '│   ├── BaichuanModel._reverse_hf_permute()       # 多头维度重排核心'
+- '│   ├── BaichuanModel._reverse_hf_permute_part()  # 切片版 (n_part 划分 W_pack)'
+- '│   ├── BaichuanModel._reverse_hf_part()          # 不做 permute 的纯切片'
+- '│   ├── XverseModel.set_vocab()                   # 自定义 BPE 词表加载'
+- '│   ├── XverseModel.set_gguf_parameters()         # 写入 tensor layout 与 rope dimension'
+- '│   ├── XverseModel.modify_tensors()              # q/k_proj 各自 permute'
+- '│   ├── XverseModel._reverse_hf_permute()         # Xverse 版本 permute'
+- '│   ├── RefactModel.set_vocab()                   # 继承 + 显式声明 FIM tokens'
+- '│   ├── RefactModel.set_gguf_parameters()         # ff_dim = multiple_of * ceil(2*4*d/3
+  / multiple_of)'
+- '│   └── RefactModel.modify_tensors()              # gate_up_proj 拆分, ff/kv 权重拆分'
+- ├── Qwen 系 (3347-3476行)
+- '│   ├── Qwen2Model.set_vocab()                    # SPM -> GPT2 fallback'
+- '│   ├── Qwen2Model.set_gguf_parameters()          # 调用父类 + 探测 pooling'
+- '│   ├── Qwen2Model.modify_tensors()               # 跳过 InternVL 多模态前缀'
+- '│   ├── Qwen2MoeModel.set_gguf_parameters()       # moe_intermediate_size / shared_expert_intermediate_size'
+- '│   ├── Qwen2MoeModel.modify_tensors()            # NVFP4 旁路 + down_proj/gate_up_proj
+  拆 + 3D 专家合并'
+- '│   └── Qwen2MoeModel.prepare_tensors()           # 校验未处理专家张量'
+- ├── Deepseek V2 (4203-4381行)
+- '│   ├── DeepseekV2Model.__init__()                # 缓存 origin_hf_arch, OCR 分支切换
+  model_arch'
+- '│   ├── DeepseekV2Model.set_vocab()               # GPT-2 fallback 或 kimi-k2 merges
+  重建'
+- '│   ├── DeepseekV2Model.set_gguf_parameters()     # MLA MQA 转换、MTP/merge 标志'
+- '│   ├── DeepseekV2Model.modify_tensors()          # kv_b_proj 拆 k_b/v_b、专家合并、tie_word_embeddings
+  跳过'
+- '│   └── DeepseekV2Model.prepare_tensors()         # 校验未处理专家张量'
+- ├── Mamba / Mamba2 (3932-4137行)
+- '│   ├── MambaModel.__init__()                     # 绕开 AutoConfig'
+- '│   ├── MambaModel.set_vocab()                    # pad_vocab_size_multiple 自动对齐'
+- '│   ├── MambaModel.set_gguf_parameters()          # ssm_* / rms_norm_eps / use_dt_b_c_norm'
+- '│   ├── MambaModel.modify_tensors()               # A_log 取负指数, conv1d squeeze,
+  output 共享检测'
+- '│   ├── Mamba2Model.__init__()                    # 绕开 AutoConfig + 记录 d_model/d_inner/n_group'
+- '│   ├── Mamba2Model.set_vocab()                   # pad_vocab_size_multiple 对齐到
+  16'
+- '│   ├── Mamba2Model.set_gguf_parameters()         # ssm_* / group_count 等'
+- '│   └── Mamba2Model.modify_tensors()              # dt_bias 重命名、A/A/D reshape 为
+  (..., 1) + SSM_NORM reshape 为 (n_group, d_inner/n_group)'
+- ├── BERT 系 (4698-4964行)
+- '│   ├── BertModel.__init__()                      # 缓存 cls_out_labels'
+- '│   ├── BertModel.set_gguf_parameters()           # 关闭因果注意力 + pooling + 分类标签'
+- '│   ├── BertModel.set_vocab()                     # phantom space 词汇 (▁word)'
+- '│   ├── BertModel.modify_tensors()                # 跳过 pooler / cls.predictions
+  / cls.seq_relationship'
+- '│   ├── BertModel._xlmroberta_tokenizer_init()    # pad_token_id 偏移 + 调整 max_position_embeddings'
+- '│   ├── BertModel._xlmroberta_set_vocab()         # BPE 与 Unigram 双模式'
+- '│   ├── DistilBertModel.set_gguf_parameters()     # 固定 layer_norm_eps = 1e-12'
+- '│   └── DistilBertModel.modify_tensors()          # 跳过 vocab_* 头'
+- ├── MmprojModel 多模态
+- '│   ├── MmprojModel.__init__()                    # 处理 vision/audio 子 config +
+  preprocessor_config.json'
+- '│   ├── MmprojModel.get_vision_config()           # 取 vision_config 字典'
+- '│   ├── MmprojModel.get_audio_config()            # 取 audio/whisper_config 字典'
+- '│   ├── MmprojModel.set_type()                    # 写 MMPROJ 类型'
+- '│   ├── MmprojModel.prepare_metadata()            # 文件名加 mmproj- 前缀'
+- '│   ├── MmprojModel.set_gguf_parameters()         # vision/audio 通用参数'
+- '│   ├── MmprojModel.tensor_force_quant()          # patch_embd / patch_merger 强制
+  F16/F32'
+- '│   ├── MmprojModel.write_vocab()                 # 报错: 不支持词表输出'
+- '│   ├── MmprojModel.find_vparam()                 # 在 vision config 中查找参数'
+- '│   ├── MmprojModel.find_aparam()                 # 在 audio config 中查找参数'
+- '│   └── MmprojModel._find_param()                 # 多键名兜底'
+- ├── LazyTorchTensor
+- '│   ├── LazyTorchTensor.from_safetensors_slice()  # 通过 safetensors 切片构造 lazy'
+- '│   ├── LazyTorchTensor.from_local_tensor()       # 通过本地 safetensors 构造 lazy'
+- '│   ├── LazyTorchTensor.from_remote_tensor()      # 通过 HTTP Range 构造 lazy'
+- '│   ├── LazyTorchTensor.numpy()                   # 转 numpy 视图'
+- '│   ├── LazyTorchTensor.meta_with_dtype_and_shape() # 元设备张量'
+- '│   └── LazyTorchTensor.__torch_function__()      # 把 torch.* 操作延迟到求值时'
+- ├── main 入口与 CLI
+- '│   ├── parse_args()                              # 命令行解析'
+- '│   ├── split_str_to_n_bytes()                    # 解析 K/M/G 字符串'
+- '│   ├── get_model_architecture()                  # 从 hparams 提取架构名'
+- '│   └── main()                                    # 选择 model_class → 实例化 → write
+  / write_vocab'
+exercises:
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 2409-2531 行，理解 `LlamaModel` 的转换核心，回答以下问题：
+  - 1. `LlamaModel.__init__` 中如何修正缺失的 `num_attention_heads`？哪些 HF 架构触发了 `origin_hf_arch`
+    缓存？
+  - 2. `LlamaModel.permute` 是 `staticmethod`，它的参数 `n_head_kv=None` 起什么作用？什么时候 n_head
+    会被压缩到 n_kv？
+  - 3. `modify_tensors` 中 `vision_prefixes` 列表列出了哪些前缀？它们如何与 Kimi-VL 等多模态变体协作？
+  - 4. `_experts` 列表的字典结构是什么？何时触发 `n_experts * 3` 张量的合并？合并后的 3D 张量 shape 顺序与 GGML
+    的 ne 顺序有何关系？
+  - 5. `generate_extra_tensors` 中 Llama3 RoPE 因子的三段函数（高频/低频/过渡）各自的判定条件是什么？
+  - '6. `prepare_tensors` 末尾的 `ValueError(f"Unprocessed experts: {experts}")` 是如何校验完整性的？'
+  - 提示：重点关注 `is_multimodal_tensor` 判定、`block_sparse_moe.experts` 路径以及 rope_params
+    的 `llama3` 分支。
+  'no': 1
+  title: 阅读 LLaMA/Mistral/Mixtral 家族转换逻辑
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 2684-3206 行，理解四类模型的 QKV 处理，回答以下问题：
+  - 1. GPT-NeoX 与 Falcon 在 QKV 打包上的核心区别是什么？为什么 Falcon 要把 `qkv.view` 设计成 `(n_head_kv,
+    n_head/n_head_kv+2, head_dim, head_dim*n_head)`？
+  - 2. `GPTNeoXModel.set_gguf_parameters` 如何用 `rotary_pct` 计算部分旋转的 RoPE 维度？`parallel_residual`
+    是什么？
+  - 3. `BaichuanModel.modify_tensors` 如何把单个 `W_pack` 切成 Q/K/V 三份？`_reverse_hf_permute_part(weights,
+    n_part, n_head, n_head_kv)` 中的 `n_part` 与 `n_head_kv` 各自的作用是什么？
+  - 4. `XverseModel.modify_tensors` 为何只对 `q_proj.weight` 与 `k_proj.weight` 单独 permute，而不合并
+    Q/K/V？
+  - 5. `RefactModel.modify_tensors` 中 `transformer.h.{bid}.attn.kv.weight` 是如何拆分为
+    ATTN_K 与 ATTN_V 的？`ff_dim` 的计算公式 `multiple_of * ((hidden_dim + multiple_of - 1)
+    // multiple_of)` 是什么意思？
+  - 6. `StableLMModel._stack_qk_norm` 如何判断一个层的所有 head norm 已收集完毕？`prepare_tensors`
+    中的最终校验逻辑是怎样的？
+  - 提示：在源码中搜索 `qkv_weights.reshape` 与 `qkv.view` 关键词，对比四种实现的差异，并追踪 `_q_norms` / `_k_norms`
+    的生命周期。
+  'no': 2
+  title: GPT-NeoX / Bloom / Falcon / Baichuan QKV 重排对比
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 2820-3163 行，理解 MPT / Orion / StableLM 在词表与归一化上的差异，回答以下问题：
+  - 1. `MPTModel.set_vocab` 的 try/except 实现了哪种 fallback？触发条件是什么？`add_bos_token=False
+    / pad_token_id=3 / unk_token_id=0` 这三个设置是为了兼容哪一类模型？
+  - 2. `MPTModel.modify_tensors` 为什么把 `scales` 后缀改名成 `act.scales`？`attn_config.alibi`
+    与 `clip_qkv` 分别映射到 GGUF 的什么字段？
+  - 3. `OrionModel.set_gguf_parameters` 注释中提到 HF 声称 RMS Norm、实际是 Layer Norm，这种「名实不符」是如何被注释记录的？
+  - 4. `StableLMModel.modify_tensors` 中 `_q_norms` 与 `_k_norms` 的数据结构是什么？为何用 `list[dict[str,
+    Tensor]]` 而不是 `dict[str, Tensor]`？
+  - 5. `StableLMModel._stack_qk_norm` 在 `len(self._q_norms[bid]) >= n_head` 时被触发，如何保证
+    n_head 与 n_kv_head 两种情况下都正确？
+  - 6. `prepare_tensors` 末尾如何把两层 norms 列表展平并校验无残留？
+  - 提示：搜索 `SEA-LION`、`alibi`、`partial_rotary_factor` 关键词，理解三类模型对归一化与张量后缀的不同处理。
+  'no': 3
+  title: MPT/Orion/StableLM 差异化处理与词表 fallback
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 3347-3508 行，理解 Qwen2 与 Qwen2 MoE 的转换差异，回答以下问题：
+  - 1. `Qwen2Model.set_vocab` 实现了哪种词表回退？为何先尝试 SPM、再 fallback 到 GPT2？
+  - 2. `Qwen2Model.set_gguf_parameters` 调用 `super().set_gguf_parameters()` 后又调用 `_try_set_pooling_type()`，后者从哪里读取
+    pooling 配置？
+  - 3. `Qwen2Model.modify_tensors` 跳过了哪些多模态前缀？`language_model.` 前缀剥离是为了支持哪些架构？
+  - 4. `Qwen2MoeModel.modify_tensors` 中 NVFP4 旁路的判断条件是什么？`_is_nvfp4` 何时被置为 True？
+  - 5. `down_proj` 与 `gate_up_proj` 两类合并专家张量时，PyTorch 形状与 GGML ne 顺序分别是怎样的？为什么需要 `data_torch[...,...,
+    :n_ff, :]` 切分？
+  - 6. `_experts` 缓存字典如何按 bid 索引？合并触发条件为何是 `len(self._experts[bid]) >= n_experts *
+    3`？
+  - 7. `prepare_tensors` 校验未处理专家张量的逻辑与 `Qwen2MoeModel.modify_tensors` 的合并逻辑如何呼应？
+  - 提示：阅读 `_is_nvfp4` 标志的设置路径与 `gate_up_proj` 在 HF 中的存储格式，理解 GGML 张量维度顺序。
+  'no': 4
+  title: Qwen2/Qwen2MoE 极简模型与 3D 专家合并
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 4203-4381 行 `DeepseekV2Model`，回答以下问题：
+  - 1. `__init__` 中 `skip_mtp` 与 `merge_expert` 两个类属性的默认开关是什么？MTP 层对应投机解码中的什么角色？
+  - 2. `set_gguf_parameters` 中 `self.hparams["num_key_value_heads"] = 1` 的目的是什么？这与
+    MQA 有什么关系？
+  - 3. MLA 的 `kv_b_proj` 拆分逻辑：如何按 `(qk_nope_head_dim, v_head_dim)` 切分？K 部分为什么需要 `transpose(1,
+    2)` 用于吸收优化？
+  - 4. 多模态前缀剥离（`vision_tower` / `multi_modal_projector` / `language_model.` / `sam_model`
+    / `merger.`）的具体实现逻辑是什么？
+  - 5. `prepare_tensors` 如何校验未处理的专家张量？这种校验为何是必要的？
+  - 6. DeepseekV2Model 还被哪些 `arch` 复用？OCR 分支 (`DeepseekOCRForCausalLM`) 是如何切换 `model_arch`
+    并重写 `set_gguf_parameters` 的？
+  - 提示：阅读 Kimi-VL/Kimi-K2.5/Youtu/YoutuVL 在 `modify_tensors` 中对 `language_model.`
+    前缀的剥离处理，并追踪 `skip_mtp` / `merge_expert` 的开关意义。
+  'no': 5
+  title: Deepseek V2 MLA 拆分与多模态前缀剥离
+- contents:
+  - 阅读 `convert_hf_to_gguf.py` 第 3932-4151 行（Mamba/Mamba2）与第 4698-4964 行（BERT 系），回答以下问题：
+  - 1. Mamba 中 `A_log = -torch.exp(data_torch)` 为什么需要取负指数？GGML 实际存储的是 A 还是 log(A)？
+  - 2. Mamba 中 `SSM_CONV1D` 张量的 `data_torch.squeeze()` 操作目的是什么？Mamba2 中如何把它再次 reshape
+    成 4D？
+  - 3. Mamba2 中 `SSM_A` 与 `SSM_D` 需要 `reshape((..., 1))` 来适配广播语义，为什么 `SSM_NORM` 需要
+    reshape 为 `(n_group, d_inner // n_group)`？
+  - 4. Mamba 如何检测 `token_embd.weight == output.weight` 并省略冗余张量？`_tok_embd` 缓存是如何工作的？
+  - 5. `BertModel.set_vocab` 中 `phantom` 函数把 `##` 前缀替换为什么字符？为什么要做这个转换？token_type_count
+    来自哪个 hparam？
+  - 6. `_xlmroberta_tokenizer_init` 中 `pad_token_id` 的偏移如何影响 `max_position_embeddings`？
+  - 7. `_xlmroberta_set_vocab` 中如何区分 BPE 和 Unigram 两种 SentencePiece 模型？两者走的分支有何不同？
+  - 8. `DistilBertModel.modify_tensors` 为何要跳过 `vocab_*` 开头的张量？这些张量在原始模型中承担什么角色？
+  - 提示：对比 `_tok_embd` 缓存机制与 `prepare_tensors` 中的残差校验，追踪 `pad_token_id` 在 XLM-RoBERTa
+    中的双重作用。
+  'no': 6
+  title: Mamba / Mamba2 / BERT 张量转换与词表处理
+- contents:
+  - 阅读 `ModelBase.__init__` / `index_tensors` / `dequant_model` / `_generate_nvfp4_tensors`
+    / `_flush_nvfp4_experts` / `_nvfp4_pack` / `_repack_nvfp4`（约 130-700 行），回答以下问题：
+  - 1. `index_tensors` 如何处理 `model.safetensors.index.json`？如果 `weight_map` 与实际分片文件名不一致，会抛什么异常？
+  - 2. `_is_nvfp4` 标志如何被设置？为何要同时检查 `quant_algo == "NVFP4"` 与 `quantized_layers` 内任意一层为
+    NVFP4？
+  - 3. `_generate_nvfp4_tensors` 中 `expert_blocks` 字典的键 `(bid, proj_type)` 如何唯一标识一组待合并的权重？合并触发条件
+    `len(expert_blocks[key]) >= n_experts` 起了什么作用？
+  - 4. `_nvfp4_pack` 静态方法如何把 ModelOpt 的 nibble-packed 权重重新打包成 ggml 超级块 `[4 UE4M3 +
+    32 bytes]`？为何要 `strip sign bit`？
+  - 5. `_nvfp4_scale2_is_trivial` 与 `input_scale` 的非平凡判断逻辑是什么？为什么要单独把它们写出为 F32 张量？
+  - 6. `dequant_model` 中 `quant_method` 分支覆盖了哪些量化方案？FP8 的 `block_size` 是如何用于 `repeat_interleave`
+    重建 scale 的？
+  - 7. `_gate_exp_buffer` 与 `_up_exp_buffer` 的 `fuse_gate_up_exps` 路径与 NVFP4 的专家流式合并有何不同？哪个会调用
+    `gguf_writer.add_tensor`？
+  - 提示：跟踪 `gate_proj` + `up_proj` + `down_proj` 三类权重的合并时机，理解 `n_experts * 3` 这个临界值与
+    `model_arch == MODEL_ARCH.MOP` 时如何区分 `block_count = 128` 的特殊处理。
+  'no': 7
+  title: ModelBase 基础设施与 NVFP4 专家流式生成
+- contents:
+  - 阅读 `TextModel.__init__` / `_set_vocab_*` / `MmprojModel.__init__` / `_find_param`
+    / `find_vparam` / `find_aparam`（约 750-1400 行），回答以下问题：
+  - 1. `TextModel.__init__` 中如何合并 `text_config` 子字典？`rope_parameters` 中的 `sliding_attention`
+    是如何被镜像出来的？
+  - 2. `_set_vocab_gpt2` / `_set_vocab_sentencepiece` / `_set_vocab_llama_hf` / `_set_vocab_mistral`
+    / `_set_vocab_plamo` / `_set_vocab_interns1` / `_set_vocab_glm` / `_set_vocab_glmedge`
+    各自对应哪一类模型？
+  - 3. `get_vocab_base_pre` 中的 `chkhsh == "..."` 哈希链是什么原理？为什么新增 BPE 预分词器需要修改这个文件？
+  - 4. `MmprojModel.__init__` 中 `vision_config` 与 `audio_config` 子 config 是如何被提取的？`media_proc_cfg`
+    与 `image_processor` 嵌套字段如何被展平？
+  - 5. `find_vparam` / `find_aparam` / `_find_param` 三者关系是怎样的？`have_multiple_encoders`
+    时 `block_count = 128` 是何用意？
+  - 6. `prepare_metadata` 中 `fname_out` 加上 `mmproj-` 前缀的逻辑在哪里？MMPROJ 类型 GGUF 文件与普通
+    TEXT 模型 GGUF 文件有什么区别？
+  - 提示：搜索 `chatglm-spm`、`tekken`、`Mistral-Small-3.2-24B-Instruct-2506.jinja` 等关键词理解词表家族多样性，并追踪
+    `_tok_embd` / `set_type` / `prepare_metadata` 在不同模型类中的差异。
+  'no': 8
+  title: TextModel 词表加载与多模态分发
+learning_targets:
+- 理解 GGML 基础数学运算的实现原理
+- 掌握神经网络专用算子（SiLU、RMSNorm、RoPE）的源码
+- 了解内存优化技术（in-place、view、复用）的实现机制
+- 能阅读并修改自定义算子
+- 理解 LLaMA、Mistral、Mixtral 等主流模型的张量命名约定与转换策略
+- 掌握 GPT-NeoX、Bloom 等 QKV 打包模型的拆解重排方法
+- 理解 Falcon、Baichuan、Refact 等非主流架构的差异化张量布局处理
+- 了解 Mamba/Mamba2 状态空间模型特有的 A_log、conv1d 张量转换
+- 理解 BERT 系编码器模型的双向注意力与 phantom space 词汇处理
+- 掌握 MoE 专家权重的 3D 合并与门控/上投影拆分技巧
+life_analogy:
+- 想象 GGML 的计算图是一家**智能工厂的生产流水线**：
+- '- **张量** = 传送带上的物料箱（每个箱子装着不同形状的零件）'
+- '- **运算操作** = 加工机器（加法机、乘法机、混合机、SiLU 染色机）'
+- '- **内存池** = 仓库货架（预先规划好的存储空间）'
+- '- **in-place 优化** = 原地改造（不搬动物料，直接加工）'
+- '- **view 机制** = 贴标签（多个箱子共享同一批货物，只换标签不换内容）'
+- '- **专家合并** = 把分散在 8 个小房间里的同款专家集中到一间大仓库（3D 张量叠放）'
+- '- **QKV 重排** = 把三股交织的彩线拆开，按 [红-红-红, 蓝-蓝, 绿-绿] 顺序重新卷线'
+- '- **RoPE 因子** = 调整时钟齿轮的变速比，让秒针走得快慢交替'
+- '- **Llama3 RoPE** = 齿轮变速器：高频区不调速、中频区线性过渡、低频区倍速旋转'
+- '- **LazyTorchTensor** = 订单延迟交付（仓库只收小票，零件真要拉走时才上架）'
+- '- **NVFP4 超级块** = 4 个一组的快递箱（每箱内附 UE4M3 比例尺 + 32 件货）'
+- 就像工厂经理需要精心安排每台机器的位置和物料流转，GGML 的计算图也需要精确规划每个算子的内存使用和计算顺序。
+'no': 2
+summary:
+- concept: '`ModelBase`'
+  desc: 统一基类，封装 hparams/张量索引/dequant/NVFP4/写出全流程
+- concept: '`ModelBase.modify_tensors`'
+  desc: 钩子函数，可改写张量名、形状并触发 gate_up_exps 融合
+- concept: '`ModelBase.prepare_tensors`'
+  desc: 调度中心：dequant → NVFP4 → modify → quantize → 写出
+- concept: '`ModelBase.dequant_model`'
+  desc: 把 bitnet/fp8/gptq/compressed-tensors/modelopt 等量化模型还原成原始权重
+- concept: '`ModelBase._nvfp4_pack`'
+  desc: 静态方法，将 ModelOpt NVFP4 nibble 重新打包成 ggml 超级块 [4 UE4M3 + 32 bytes]
+- concept: '`ModelBase._generate_nvfp4_tensors`'
+  desc: 流式生成 NVFP4 专家权重，避免一次性加载所有专家
+- concept: '`ModelBase.register/from_model_architecture`'
+  desc: 架构名 → 模型类的注册机制与工厂分发
+- concept: '`TextModel.set_vocab/_set_vocab_*`'
+  desc: GPT-2 / SPM / Llama-HF / Mistral / Plamo / Intern-S1 / RWKV / GLM 等多源词表
+- concept: '`TextModel._try_set_pooling_type`'
+  desc: 通过 modules.json 探测 sentence-transformers 的 pooling 类型
+- concept: '`LlamaModel.permute`'
+  desc: 撤销 HF 的 Q/K 权重 2/4 维度交织排列
+- concept: '`LlamaModel.modify_tensors`'
+  desc: 跳过多模态张量、撤销 QKV permute、合并 Mixtral 专家
+- concept: '`LlamaModel.generate_extra_tensors`'
+  desc: Llama3 RoPE 三段因子 (low/high 区间 + smooth 过渡)
+- concept: '`LlamaModel.prepare_tensors`'
+  desc: 校验未处理的专家张量，确保合并完整
+- concept: '`GPTNeoXModel.modify_tensors`'
+  desc: (n_head, 3, head_dim, n_embed) -> [Q,K,V] 连续排列
+- concept: '`BloomModel.modify_tensors`'
+  desc: 去掉 transformer. 前缀 + 同上 QKV 重排
+- concept: '`MPTModel.set_vocab`'
+  desc: GPT-2 失败时 fallback 到 SPM（SEA-LION 模型）
+- concept: '`MPTModel.modify_tensors`'
+  desc: scales 重命名为 act.scales，兼容 ALiBi / clip_qkv
+- concept: '`StableLMModel._stack_qk_norm`'
+  desc: n_head 个 Norm 缓存到齐后 stack 为 2D 张量
+- concept: '`FalconModel.modify_tensors`'
+  desc: kv 组解包 (kv_n, q_per_kv+2, head_dim, dim) -> [所有Q, 所有K, 所有V] 连续
+- concept: '`BaichuanModel.modify_tensors/_reverse_hf_permute_part`'
+  desc: W_pack 拆分 + Q/K 部分单独 permute
+- concept: '`BaichuanModel._reverse_hf_permute`'
+  desc: (n_head, 2, ..., n_embd) swapaxes(1,2) 撤销 HF 交织
+- concept: '`XverseModel.modify_tensors`'
+  desc: 对 q_proj.weight 与 k_proj.weight 各自 permute，简化 W_pack 拆分
+- concept: '`RefactModel.modify_tensors`'
+  desc: gate_up_proj 拆分，kv.weight 拆分 ATTN_K/ATTN_V
+- concept: '`RefactModel.set_gguf_parameters`'
+  desc: ff_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+- concept: '`Qwen2Model.set_vocab/modify_tensors`'
+  desc: 极简主义：复用 TextModel，仅修改词表路径与多模态跳过
+- concept: '`Qwen2MoeModel.modify_tensors`'
+  desc: NVFP4 旁路 + down_proj/gate_up_proj 拆分 + (n_expert, n_ff, n_embd) 3D 合并
+- concept: '`Qwen2MoeModel.prepare_tensors`'
+  desc: 校验未处理的专家张量，确保合并完整
+- concept: '`DeepseekV2Model.modify_tensors`'
+  desc: kv_b_proj 按 (qk_nope, v) 切分 + K 部分 transpose，吸收优化
+- concept: '`DeepseekV2Model.prepare_tensors`'
+  desc: 校验未处理的专家张量
+- concept: '`DeepseekV2Model.set_gguf_parameters`'
+  desc: MLA 拆 MQA + first_k_dense_replace + kv_lora_rank 写入
+- concept: '`MambaModel.set_vocab`'
+  desc: pad_vocab_size_multiple 自动对齐
+- concept: '`MambaModel.modify_tensors`'
+  desc: A_log 取负指数 + conv1d squeeze + output 共享检测
+- concept: '`Mamba2Model.set_vocab`'
+  desc: pad_vocab_size_multiple 对齐到 16
+- concept: '`Mamba2Model.modify_tensors`'
+  desc: A_log 取负指数 + A/D reshape 为 (..., 1) + SSM_NORM reshape 为 (n_group, d_inner/n_group)
+- concept: '`BertModel.set_vocab`'
+  desc: phantom space 词汇 (##word -> ▁word)
+- concept: '`BertModel.set_gguf_parameters`'
+  desc: 关闭因果注意力 + pooling + 分类标签输出
+- concept: '`BertModel._xlmroberta_tokenizer_init`'
+  desc: pad_token_id 偏移 + 调整 max_position_embeddings
+- concept: '`BertModel._xlmroberta_set_vocab`'
+  desc: 兼容 BPE 与 Unigram 两种 SentencePiece
+- concept: '`DistilBertModel.modify_tensors`'
+  desc: 跳过 vocab_* 开头的 MLM 头
+- concept: '`LazyTorchTensor`'
+  desc: 按需读取 safetensors 的惰性张量，避免一次性加载
+- concept: '`main/get_model_architecture`'
+  desc: 解析 CLI、识别架构、选择 model_class、写入 GGUF
+units:
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 2409-2417
+    method_or_func: LlamaModel.__init__
+  - file: convert_hf_to_gguf.py
+    line: 2420-2455
+    method_or_func: LlamaModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 2457-2467
+    method_or_func: LlamaModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2469-2474
+    method_or_func: LlamaModel.permute
+  - file: convert_hf_to_gguf.py
+    line: 2483-2515
+    method_or_func: LlamaModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 2517-2523
+    method_or_func: LlamaModel.generate_extra_tensors
+  - file: convert_hf_to_gguf.py
+    line: 2525-2531
+    method_or_func: LlamaModel.prepare_tensors
+  name: 经典 LLaMA 系：LlamaModel —— 「Transformer 王朝的奠基者」
+  'no': 1
+  points:
+  - '**为什么需要 `LlamaModel`？**'
+  - '- 它是整个转换体系中最基础的模型类，承载着 LLaMA/Mistral/Mixtral 等主流架构'
+  - '- 通过 `undo_permute = True` 类属性控制是否需要撤销 HF 的 QKV 权重旋转'
+  - '- 专家合并机制 (`_experts` 缓存) 让 Mixtral 的稀疏专家变成单一 3D 张量'
+  - '**`modify_tensors` 中的核心逻辑：**'
+  - '- 跳过多模态张量（视觉/音频塔、投影器）'
+  - '- 撤销 HF 对 Q/K 投影的维度排列（`LlamaModel.permute` 静态方法）'
+  - '- 对 `block_sparse_moe.experts` 路径进行专家权重缓存与合并'
+  - '**`generate_extra_tensors` 实现 Llama3 RoPE 频率：**'
+  - '- 当 `rope_type == ''llama3''` 时，按原始公式计算 rope_factors'
+  - '- 分别处理 `low_freq_factor` 与 `high_freq_factor` 之间的平滑过渡区间'
+  - '**词表与超参数特例：**'
+  - '- `set_vocab` 兼容 CodeLlama (FIM tokens) 与 Granite small (`vocab_size == 49152`)'
+  - '- `set_gguf_parameters` 额外写入 `vocab_size` 与 `rope_dimension_count`'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 2684-2697
+    method_or_func: GPTNeoXModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2700-2723
+    method_or_func: GPTNeoXModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 2740-2756
+    method_or_func: BloomModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2760-2791
+    method_or_func: BloomModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3123-3130
+    method_or_func: BaichuanModel._reverse_hf_permute
+  - file: convert_hf_to_gguf.py
+    line: 3132-3136
+    method_or_func: BaichuanModel._reverse_hf_permute_part
+  - file: convert_hf_to_gguf.py
+    line: 3138-3140
+    method_or_func: BaichuanModel._reverse_hf_part
+  - file: convert_hf_to_gguf.py
+    line: 3199-3206
+    method_or_func: XverseModel._reverse_hf_permute
+  - file: convert_hf_to_gguf.py
+    line: 3361-3369
+    method_or_func: Qwen2Model.modify_tensors
+  name: GPT-NeoX 与 Bloom：QKV 重排专家 —— 「把交错打包的张量重新解开」
+  'no': 2
+  points:
+  - '**为什么 GPT-NeoX 与 Bloom 的 QKV 需要重排？**'
+  - '- HF 把 Q/K/V 三组权重打包成 `(n_head, 3, head_dim, n_embed)` 的形状'
+  - '- GGML 期望连续排列：[所有 Q, 所有 K, 所有 V]，所以需要 reshape + cat'
+  - '- 同时需要处理对应的 bias 张量（QKV 偏置）'
+  - '**`GPTNeoXModel.set_gguf_parameters` 的特别之处：**'
+  - '- 通过 `rotary_pct` 计算 RoPE 维度（部分旋转）'
+  - '- `parallel_residual` 参数描述 GPT-NeoX 的并行残差设计'
+  - '**`BloomModel` 的差异：**'
+  - '- 通过正则去掉 `transformer.` 前缀'
+  - '- `seq_length` 与 `n_positions` 命名差异的兼容处理'
+  - '- `feed_forward_length` 固定为 `4 * n_embed`'
+  - '**QKV 重排的两种实现变体：**'
+  - '- `BaichuanModel._reverse_hf_permute()`：`(n_head, 2, ..., n_embd) swapaxes(1,2)`
+    撤销 HF 交织'
+  - '- `BaichuanModel._reverse_hf_permute_part()`：切片版，按 `n_part` 划分 W_pack 再 permute'
+  - '- `BaichuanModel._reverse_hf_part()`：V 部分纯切片，不做 permute'
+  - '- `XverseModel._reverse_hf_permute()`：对 `q_proj.weight` / `k_proj.weight` 各自
+    permute，不合并 QKV'
+  - '**多模态前缀剥离（Qwen2 为代表）：**'
+  - '- `Qwen2Model.modify_tensors()` 跳过 `mlp` / `multi_modal_projector` / `vision_model`
+    / `audio_tower` 等前缀'
+  - '- 剥离 `language_model.` 前缀以对齐单模态模型'
+  - '- 同时兼容 `Qwen2Model`（HF 架构名）→ `model.` 前缀映射'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 2820-2831
+    method_or_func: MPTModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 2833-2847
+    method_or_func: MPTModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2851-2857
+    method_or_func: MPTModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 2879-2899
+    method_or_func: OrionModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2912-2917
+    method_or_func: StableLMModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 2919-2933
+    method_or_func: StableLMModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 2940-2962
+    method_or_func: StableLMModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 2964-2977
+    method_or_func: StableLMModel._stack_qk_norm
+  - file: convert_hf_to_gguf.py
+    line: 2979-2987
+    method_or_func: StableLMModel.prepare_tensors
+  name: MPT / Orion / StableLM —— 「差异化的归一化与词表处理」
+  'no': 3
+  points:
+  - '**MPTModel 的特殊 fallback 机制：**'
+  - '- 优先尝试 GPT-2 分词，失败时 fallback 到 SentencePiece（用于 SEA-LION 模型）'
+  - '- 设置特殊的 `add_bos_token=False`、`pad_token_id=3`、`unk_token_id=0`'
+  - '**MPTModel.modify_tensors 的 scales 重命名：**'
+  - '- HF 中的 `scales` 后缀被改名为 `act.scales` 以匹配 GGML 张量命名'
+  - '- 同时处理 `attn_config.clip_qkv` 与 `attn_config.alibi` 两个特性字段'
+  - '**OrionModel 的 RMS/Layer Norm 混淆：**'
+  - '- HF 配置声称用 RMS Norm，但实际实现是 Layer Norm'
+  - '- `set_gguf_parameters` 注释明确指出此 bug'
+  - '**StableLMModel 的多头 Q/K Norm 合并：**'
+  - '- 维护 `_q_norms` 与 `_k_norms` 两个 `list[dict[str, Tensor]]` 缓存'
+  - '- 当一层所有 head 的 norm 都收集完毕后，stack 成 2D 张量'
+  - '- `prepare_tensors` 最后校验是否有未处理的 norm 残留'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 2989-3006
+    method_or_func: FalconModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3008-3023
+    method_or_func: FalconModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3027-3036
+    method_or_func: StarCoderModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3040-3050
+    method_or_func: RefactModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 3052-3070
+    method_or_func: RefactModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3072-3092
+    method_or_func: RefactModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3095-3096
+    method_or_func: BaichuanModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 3098-3104
+    method_or_func: BaichuanModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3106-3121
+    method_or_func: BaichuanModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3123-3130
+    method_or_func: BaichuanModel._reverse_hf_permute
+  - file: convert_hf_to_gguf.py
+    line: 3132-3136
+    method_or_func: BaichuanModel._reverse_hf_permute_part
+  - file: convert_hf_to_gguf.py
+    line: 3138-3140
+    method_or_func: BaichuanModel._reverse_hf_part
+  - file: convert_hf_to_gguf.py
+    line: 3144-3178
+    method_or_func: XverseModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 3180-3185
+    method_or_func: XverseModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3187-3197
+    method_or_func: XverseModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3199-3206
+    method_or_func: XverseModel._reverse_hf_permute
+  name: Falcon / StarCoder / Refact / Baichuan / Xverse —— 「非主流但重要的张量布局专家」
+  'no': 4
+  points:
+  - '**Falcon 独特的「kv 组」打包：**'
+  - '- `query_key_value` 中包含 `n_head/n_head_kv` 个 Q，共享的 K 和 V'
+  - '- 重排为 [所有 Q, 所有 K, 所有 V] 连续布局（`view + reshape + cat`）'
+  - '- `set_gguf_parameters` 中通过 `tensor_data_layout = "jploski"` 标记此特殊布局'
+  - '**Baichuan 的 QKV 三合一：**'
+  - '- `W_pack` 把 Q/K/V 拼在一起，需要 `permute(0,1)` 切片并单独 permute'
+  - '- `_reverse_hf_permute_part` 处理不同部分的 head 数量差异'
+  - '- `_reverse_hf_part` 用于 V 部分（不需要 permute）'
+  - '**Xverse 与 Baichuan 类似的 `_reverse_hf_permute` 处理：**'
+  - '- 直接对 `q_proj.weight` 与 `k_proj.weight` 各自 permute，不合并 QKV'
+  - '**Refact 模型特殊的 FFN 计算公式：**'
+  - '- `ff_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)`，其中
+    `hidden_dim = int(2 * inner_dim / 3)`'
+  - '- 需要拆分合并的 `gate_up_proj` 与 `kv` 权重'
+  - '- 显式声明 FIM 特殊 token (prefix/suffix/middle/eot)'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 3347-3353
+    method_or_func: Qwen2Model.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 3355-3359
+    method_or_func: Qwen2Model.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3361-3369
+    method_or_func: Qwen2Model.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3384-3393
+    method_or_func: Qwen2MoeModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 3395-3468
+    method_or_func: Qwen2MoeModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 3470-3476
+    method_or_func: Qwen2MoeModel.prepare_tensors
+  name: Qwen 系：Qwen2Model 与 Qwen2MoeModel —— 「阿里系模型的标准化模板」
+  'no': 5
+  points:
+  - '**Qwen2Model 的极简主义：**'
+  - '- 直接复用 TextModel 的所有逻辑，只修改词表加载路径（SPM → GPT2 fallback）'
+  - '- `_try_set_pooling_type` 兼容 sentence-transformers 风格的嵌入模型'
+  - '- `modify_tensors` 跳过 mlp/multi_modal_projector/vision_model/audio_tower 等多模态前缀'
+  - '**Qwen2MoeModel 的 3D 专家合并：**'
+  - '- 缓存 `self._experts[bid][name]`，按 `n_experts * 3` 触发合并'
+  - '- 输出形状为 `(n_expert, n_ff, n_embd)` 的 3D 张量'
+  - '- 同时处理 NVFP4 量化的特殊路径（`_is_nvfp4` 标志）'
+  - '**gate_up_proj 拆分：**'
+  - '- 当 HF 存储的是 `[n_expert, 2*n_ff, n_embd]` 时，沿 `dim=-2` 拆分'
+  - '- down_proj 不拆分但需保证正确映射到 GGML 维度'
+  - '- 注意 GGML 维度顺序与 PyTorch 相反，需要仔细处理 shape'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 4203-4220
+    method_or_func: DeepseekV2Model.__init__
+  - file: convert_hf_to_gguf.py
+    line: 4222-4260
+    method_or_func: DeepseekV2Model.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 4262-4320
+    method_or_func: DeepseekV2Model.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 4322-4369
+    method_or_func: DeepseekV2Model.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 4371-4377
+    method_or_func: DeepseekV2Model.prepare_tensors
+  name: Deepseek V2：MLA 与 MoE 的复合战场 —— 「多头潜在注意力的特殊处理」
+  'no': 6
+  points:
+  - '**MLA (Multi-head Latent Attention) 的拆分：**'
+  - '- `kv_b_proj` 同时包含 K 与 V，需要按 `(qk_nope_head_dim, v_head_dim)` 拆分'
+  - '- K 部分需要 `transpose(1, 2)` 用于吸收优化'
+  - '- 通过把 MLA 转换成 MQA（1 个 KV 头），让 KV Cache 复用更高效'
+  - '**`skip_mtp` 与 `merge_expert` 双标志：**'
+  - '- 跳过 Multi-Token Prediction 层（这些是投机解码用的）'
+  - '- 专家合并机制同 Qwen2MoE'
+  - '**Kimi-VL/Kimi-K2.5/Youtu 等多模态前缀剥离：**'
+  - '- 自动识别并跳过 `vision_tower` / `multi_modal_projector` / `sam_model` / `merger.`
+    / `view_seperator` 等路径'
+  - '- 剥离 `language_model.` 前缀以对齐单模态模型'
+  - '**DeepseekOCR 特殊分支：**'
+  - '- `__init__` 中根据 `origin_hf_arch == "DeepseekOCRForCausalLM"` 切换 `model_arch
+    = DEEPSEEK2OCR`'
+  - '- 跳过 MLA 相关设置，保留 `rope_theta` 默认值'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 3932-3942
+    method_or_func: MambaModel.__init__
+  - file: convert_hf_to_gguf.py
+    line: 3944-3965
+    method_or_func: MambaModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 3967-3994
+    method_or_func: MambaModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 4004-4026
+    method_or_func: MambaModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 4030-4044
+    method_or_func: Mamba2Model.__init__
+  - file: convert_hf_to_gguf.py
+    line: 4046-4069
+    method_or_func: Mamba2Model.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 4071-4102
+    method_or_func: Mamba2Model.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 4104-4137
+    method_or_func: Mamba2Model.modify_tensors
+  name: Mamba / Mamba2：状态空间模型的转换 —— 「非 Transformer 的特殊处理」
+  'no': 7
+  points:
+  - '**Mamba 的特殊张量布局：**'
+  - '- `A_log` 需要取负指数（`-torch.exp(data_torch)`），因为 ggml 存储的是 A 而非 log(A)'
+  - '- `SSM_CONV1D` 张量需要 `squeeze()` 把 `[d_inner, 1, d_conv]` 变成 `[d_inner, d_conv]`'
+  - '- 自动检查 `token_embd.weight == output.weight`，省略冗余的 output 张量'
+  - '**Mamba2 的差异：**'
+  - '- 绕开 AutoConfig 直接读 config.json（HF 误判为 Mamba-Codestral）'
+  - '- 用 `n_groups` / `d_inner` 显式存储维度信息'
+  - '- `SSM_A` 与 `SSM_D` 需要 `reshape((..., 1))` 来适配广播语义'
+  - '- `SSM_NORM` 需要 reshape 为 `(n_group, d_inner // n_group)`'
+  - '**词表自动填充：**'
+  - '- 通过 `pad_vocab_size_multiple` 自动对齐到指定倍数'
+  - '- Mamba2 默认为 16，Mamba 默认为 8'
+- codes:
+  - file: convert_hf_to_gguf.py
+    line: 4698-4711
+    method_or_func: BertModel.__init__
+  - file: convert_hf_to_gguf.py
+    line: 4713-4726
+    method_or_func: BertModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 4728-4759
+    method_or_func: BertModel.set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 4761-4798
+    method_or_func: BertModel.modify_tensors
+  - file: convert_hf_to_gguf.py
+    line: 4800-4810
+    method_or_func: BertModel._xlmroberta_tokenizer_init
+  - file: convert_hf_to_gguf.py
+    line: 4812-4907
+    method_or_func: BertModel._xlmroberta_set_vocab
+  - file: convert_hf_to_gguf.py
+    line: 4914-4919
+    method_or_func: DistilBertModel.set_gguf_parameters
+  - file: convert_hf_to_gguf.py
+    line: 4921-4931
+    method_or_func: DistilBertModel.modify_tensors
+  name: BERT 系：编码器模型的特殊处理 —— 「理解型模型的双向注意力」
+  'no': 8
+  points:
+  - '**BERTModel 的 phantom space 词汇：**'
+  - '- 通过 `phantom` 函数把 `##` 前缀替换为 `▁`（phantom space）'
+  - '- `##word` → `▁word`，对齐 WordPiece 词表格式'
+  - '**`set_gguf_parameters` 关闭因果注意力：**'
+  - '- `add_causal_attention(False)` 标志位'
+  - '- `_try_set_pooling_type` 兼容 sentence-transformers'
+  - '- `classifier_output_labels` 写入 `id2label` 转换后的分类标签'
+  - '**DistilBERTModel 的 MLM 头剥离：**'
+  - '- 固定 `layer_norm_eps = 1e-12`'
+  - '- 跳过所有 `vocab_*` 开头的张量'
+  - '**XLM-RoBERTa 的 tokenizer 重构：**'
+  - '- `_xlmroberta_tokenizer_init` 处理 `pad_token_id` 偏移，并调整 `max_position_embeddings`'
+  - '- `_xlmroberta_set_vocab` 兼容 BPE (sentencepiece_model_pb2) 与 Unigram (tokenizer.json)
+    两种 SentencePiece 模型'
+  - '- 兼容 `MoE` 版本的 `NomicBertModel` 也复用此逻辑'

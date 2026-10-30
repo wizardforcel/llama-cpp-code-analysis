@@ -1,0 +1,1324 @@
+classes:
+- desc: 分词器数据编辑对话框，支持查看和编辑 GGUF 文件中的分词器相关的 tokens、token types 和 scores 数据，提供过滤、分页显示和增删改功能。
+  methods:
+  - code:
+    - 'def __init__(self, tokens, token_types, scores, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.setWindowTitle("Edit Tokenizer Data")'
+    - '    self.resize(900, 600)'
+    - '    self.tokens = tokens.copy() if tokens else []'
+    - '    self.token_types = token_types.copy() if token_types else []'
+    - '    self.scores = scores.copy() if scores else []'
+    - '    # Ensure all arrays have the same length'
+    - '    max_len = max(len(self.tokens), len(self.token_types), len(self.scores))'
+    - '    if len(self.tokens) < max_len:'
+    - '        self.tokens.extend([""] * (max_len - len(self.tokens)))'
+    - '    if len(self.token_types) < max_len:'
+    - '        self.token_types.extend([0] * (max_len - len(self.token_types)))'
+    - '    if len(self.scores) < max_len:'
+    - '        self.scores.extend([0.0] * (max_len - len(self.scores)))'
+    - '    layout = QVBoxLayout(self)'
+    - '    # Add filter controls'
+    - '    filter_layout = QHBoxLayout()'
+    - '    filter_layout.addWidget(QLabel("Filter:"))'
+    - '    self.filter_edit = QLineEdit()'
+    - '    self.filter_edit.setPlaceholderText("Type to filter tokens...")'
+    - '    self.filter_edit.textChanged.connect(self.apply_filter)'
+    - '    filter_layout.addWidget(self.filter_edit)'
+    - '    # Add page controls'
+    - '    self.page_size = 100  # Show 100 items per page'
+    - '    self.current_page = 0'
+    - '    self.total_pages = max(1, (len(self.tokens) + self.page_size - 1) // self.page_size)'
+    - '    self.page_label = QLabel(f"Page 1 of {self.total_pages}")'
+    - '    filter_layout.addWidget(self.page_label)'
+    - '    prev_page = QPushButton("Previous")'
+    - '    prev_page.clicked.connect(self.previous_page)'
+    - '    filter_layout.addWidget(prev_page)'
+    - '    next_page = QPushButton("Next")'
+    - '    next_page.clicked.connect(self.next_page)'
+    - '    filter_layout.addWidget(next_page)'
+    - '    layout.addLayout(filter_layout)'
+    - '    # Tokenizer data table'
+    - '    self.tokens_table = QTableWidget()'
+    - '    self.tokens_table.setColumnCount(4)'
+    - '    self.tokens_table.setHorizontalHeaderLabels(["Index", "Token", "Type",
+      "Score"])'
+    - '    self.tokens_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    self.tokens_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)'
+    - '    self.tokens_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    self.tokens_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    layout.addWidget(self.tokens_table)'
+    - '    # Controls'
+    - '    controls_layout = QHBoxLayout()'
+    - '    add_button = QPushButton("Add Token")'
+    - '    add_button.clicked.connect(self.add_token)'
+    - '    controls_layout.addWidget(add_button)'
+    - '    remove_button = QPushButton("Remove Selected")'
+    - '    remove_button.clicked.connect(self.remove_selected)'
+    - '    controls_layout.addWidget(remove_button)'
+    - '    controls_layout.addStretch()'
+    - '    layout.addLayout(controls_layout)'
+    - '    # Buttons'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(buttons)'
+    - '    # Initialize the filtered values'
+    - '    self.filtered_indices = list(range(len(self.tokens)))'
+    - '    # Load data for the first page'
+    - '    self.load_page()'
+    desc: 初始化分词器编辑对话框，接收 tokens、token_types、scores 数据，设置界面布局、过滤控件、分页控件和数据表格。
+    line: 58-132
+    name: __init__
+  - code:
+    - 'def apply_filter(self):'
+    - '    """Filter the tokens based on the search text."""'
+    - '    filter_text = self.filter_edit.text().lower()'
+    - '    if not filter_text:'
+    - '        # No filter, show all values'
+    - '        self.filtered_indices = list(range(len(self.tokens)))'
+    - '    else:'
+    - '        # Apply filter'
+    - '        self.filtered_indices = []'
+    - '        for i, token in enumerate(self.tokens):'
+    - '            if filter_text in str(token).lower():'
+    - '                self.filtered_indices.append(i)'
+    - '    # Reset to first page and reload'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    self.current_page = 0'
+    - '    self.page_label.setText(f"Page 1 of {self.total_pages}")'
+    - '    self.load_page()'
+    desc: 根据搜索文本过滤 token 列表，更新过滤后的索引并重置分页到第一页。
+    line: 134-150
+    name: apply_filter
+  - code:
+    - 'def previous_page(self):'
+    - '    """Go to the previous page of results."""'
+    - '    if self.current_page > 0:'
+    - '        self.current_page -= 1'
+    - '        self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '        self.load_page()'
+    desc: 切换到上一页显示结果。
+    line: 152-158
+    name: previous_page
+  - code:
+    - 'def next_page(self):'
+    - '    """Go to the next page of results."""'
+    - '    if self.current_page < self.total_pages - 1:'
+    - '        self.current_page += 1'
+    - '        self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '        self.load_page()'
+    desc: 切换到下一页显示结果。
+    line: 160-166
+    name: next_page
+  - code:
+    - 'def load_page(self):'
+    - '    """Load the current page of tokenizer data."""'
+    - '    self.tokens_table.setRowCount(0)  # Clear the table'
+    - '    # Calculate start and end indices for the current page'
+    - '    start_idx = self.current_page * self.page_size'
+    - '    end_idx = min(start_idx + self.page_size, len(self.filtered_indices))'
+    - '    # Pre-allocate rows for better performance'
+    - '    self.tokens_table.setRowCount(end_idx - start_idx)'
+    - '    for row, i in enumerate(range(start_idx, end_idx)):'
+    - '        orig_idx = self.filtered_indices[i]'
+    - '        # Index'
+    - '        index_item = QTableWidgetItem(str(orig_idx))'
+    - '        index_item.setData(Qt.ItemDataRole.UserRole, orig_idx)  # Store original
+      index'
+    - '        index_item.setFlags(index_item.flags() & ~Qt.ItemFlag.ItemIsEditable)'
+    - '        self.tokens_table.setItem(row, 0, index_item)'
+    - '        # Token'
+    - '        token_item = QTableWidgetItem(str(self.tokens[orig_idx]))'
+    - '        self.tokens_table.setItem(row, 1, token_item)'
+    - '        # Token Type'
+    - '        token_type = self.token_types[orig_idx] if orig_idx < len(self.token_types)
+      else 0'
+    - '        try:'
+    - '            enum_val = TokenType(token_type)'
+    - '            display_text = f"{enum_val.name} ({token_type})"'
+    - '        except (ValueError, KeyError):'
+    - '            display_text = f"Unknown ({token_type})"'
+    - '        type_item = QTableWidgetItem(display_text)'
+    - '        type_item.setData(Qt.ItemDataRole.UserRole, token_type)'
+    - '        # Make type cell editable with a double-click handler'
+    - '        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)'
+    - '        self.tokens_table.setItem(row, 2, type_item)'
+    - '        # Score'
+    - '        score = self.scores[orig_idx] if orig_idx < len(self.scores) else 0.0'
+    - '        score_item = QTableWidgetItem(str(score))'
+    - '        self.tokens_table.setItem(row, 3, score_item)'
+    - '    # Connect double-click handler for token type cells'
+    - '    self.tokens_table.cellDoubleClicked.connect(self.handle_cell_double_click)'
+    desc: 加载当前页的分词器数据到表格中，包括索引、token、类型和分数。
+    line: 168-203
+    name: load_page
+  - code:
+    - 'def handle_cell_double_click(self, row, column):'
+    - '    """Handle double-click on a cell, specifically for token type editing."""'
+    - '    if column == 2:  # Token Type column'
+    - '        orig_item = self.tokens_table.item(row, 0)'
+    - '        if orig_item:'
+    - '            orig_idx = orig_item.data(Qt.ItemDataRole.UserRole)'
+    - '            self.edit_token_type(row, orig_idx)'
+    desc: 处理表格单元格双击事件，双击 Token Type 列时触发编辑操作。
+    line: 205-212
+    name: handle_cell_double_click
+  - code:
+    - 'def edit_token_type(self, row, orig_idx):'
+    - '    """Edit a token type using a dialog with a dropdown of all enum options."""'
+    - '    current_value = self.token_types[orig_idx] if orig_idx < len(self.token_types)
+      else 0'
+    - '    # Create a dialog with enum options'
+    - '    dialog = QDialog(self)'
+    - '    dialog.setWindowTitle("Select Token Type")'
+    - '    layout = QVBoxLayout(dialog)'
+    - '    combo = QComboBox()'
+    - '    for enum_val in TokenType:'
+    - '        combo.addItem(f"{enum_val.name} ({enum_val.value})", enum_val.value)'
+    - '    # Set current value'
+    - '    try:'
+    - '        if isinstance(current_value, int):'
+    - '            enum_val = TokenType(current_value)'
+    - '            combo.setCurrentText(f"{enum_val.name} ({current_value})")'
+    - '    except (ValueError, KeyError):'
+    - '        pass'
+    - '    layout.addWidget(combo)'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(dialog.accept)'
+    - '    buttons.rejected.connect(dialog.reject)'
+    - '    layout.addWidget(buttons)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        # Get the selected value'
+    - '        new_value = combo.currentData()'
+    - '        enum_val = TokenType(new_value)'
+    - '        display_text = f"{enum_val.name} ({new_value})"'
+    - '        # Update the display'
+    - '        type_item = self.tokens_table.item(row, 2)'
+    - '        if type_item:'
+    - '            type_item.setText(display_text)'
+    - '            type_item.setData(Qt.ItemDataRole.UserRole, new_value)'
+    - '        # Update the actual value'
+    - '        self.token_types[orig_idx] = new_value'
+    desc: 弹出对话框让用户从 TokenType 枚举中选择新的 token 类型值并更新数据。
+    line: 214-245
+    name: edit_token_type
+  - code:
+    - 'def add_token(self):'
+    - '    """Add a new token to the end of the list."""'
+    - '    # Add to the end of the arrays'
+    - '    self.tokens.append("")'
+    - '    self.token_types.append(0)  # Default to normal token'
+    - '    self.scores.append(0.0)'
+    - '    orig_idx = len(self.tokens) - 1'
+    - '    # Add to filtered indices if it matches the current filter'
+    - '    filter_text = self.filter_edit.text().lower()'
+    - '    if not filter_text or filter_text in "":'
+    - '        self.filtered_indices.append(orig_idx)'
+    - '    # Update pagination'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    # Go to the last page to show the new item'
+    - '    self.current_page = self.total_pages - 1'
+    - '    self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '    # Reload the page'
+    - '    self.load_page()'
+    desc: 在列表末尾添加一个新的空 token，默认类型为 normal，分数为 0，并刷新显示。
+    line: 247-263
+    name: add_token
+  - code:
+    - 'def remove_selected(self):'
+    - '    """Remove selected tokens from all arrays."""'
+    - '    selected_rows = []'
+    - '    for item in self.tokens_table.selectedItems():'
+    - '        row = item.row()'
+    - '        if row not in selected_rows:'
+    - '            selected_rows.append(row)'
+    - '    if not selected_rows:'
+    - '        return'
+    - '    # Get original indices in descending order to avoid index shifting'
+    - '    orig_indices = []'
+    - '    for row in selected_rows:'
+    - '        orig_item = self.tokens_table.item(row, 0)'
+    - '        if orig_item:'
+    - '            orig_indices.append(orig_item.data(Qt.ItemDataRole.UserRole))'
+    - '    orig_indices.sort(reverse=True)'
+    - '    # Remove from all arrays'
+    - '    for idx in orig_indices:'
+    - '        if idx < len(self.tokens):'
+    - '            del self.tokens[idx]'
+    - '        if idx < len(self.token_types):'
+    - '            del self.token_types[idx]'
+    - '        if idx < len(self.scores):'
+    - '            del self.scores[idx]'
+    - '    # Rebuild filtered_indices'
+    - '    self.filtered_indices = []'
+    - '    filter_text = self.filter_edit.text().lower()'
+    - '    for i, token in enumerate(self.tokens):'
+    - '        if not filter_text or filter_text in str(token).lower():'
+    - '            self.filtered_indices.append(i)'
+    - '    # Update pagination'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    self.current_page = min(self.current_page, self.total_pages - 1)'
+    - '    self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '    # Reload the page'
+    - '    self.load_page()'
+    desc: 删除选中的 tokens 及其对应的类型和分数数据，并刷新过滤和分页状态。
+    line: 265-300
+    name: remove_selected
+  - code:
+    - 'def get_data(self):'
+    - '    """Return the edited tokenizer data."""'
+    - '    return self.tokens, self.token_types, self.scores'
+    desc: 返回编辑后的分词器数据（tokens、token_types、scores 三个列表）。
+    line: 302-304
+    name: get_data
+  name: TokenizerEditorDialog
+- desc: 通用数组编辑对话框，支持查看和编辑 GGUF 文件中的数组类型元数据，提供过滤、分页、增删改以及针对枚举值的批量编辑功能。
+  methods:
+  - code:
+    - 'def __init__(self, array_values, element_type, key=None, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.setWindowTitle("Edit Array Values")'
+    - '    self.resize(700, 500)'
+    - '    self.array_values = array_values'
+    - '    self.element_type = element_type'
+    - '    self.key = key'
+    - '    # Get enum type for this array if applicable'
+    - '    self.enum_type = None'
+    - '    if key in KEY_TO_ENUM_TYPE and element_type == GGUFValueType.INT32:'
+    - '        self.enum_type = KEY_TO_ENUM_TYPE[key]'
+    - '    layout = QVBoxLayout(self)'
+    - '    # Add enum type information if applicable'
+    - '    if self.enum_type is not None:'
+    - '        enum_info_layout = QHBoxLayout()'
+    - '        enum_label = QLabel(f"Editing {self.enum_type.__name__} values:")'
+    - '        enum_info_layout.addWidget(enum_label)'
+    - '        # Add a legend for the enum values'
+    - '        enum_values = ", ".join([f"{e.name}={e.value}" for e in self.enum_type])'
+    - '        enum_values_label = QLabel(f"Available values: {enum_values}")'
+    - '        enum_values_label.setWordWrap(True)'
+    - '        enum_info_layout.addWidget(enum_values_label, 1)'
+    - '        layout.addLayout(enum_info_layout)'
+    - '    # Add search/filter controls'
+    - '    filter_layout = QHBoxLayout()'
+    - '    filter_layout.addWidget(QLabel("Filter:"))'
+    - '    self.filter_edit = QLineEdit()'
+    - '    self.filter_edit.setPlaceholderText("Type to filter values...")'
+    - '    self.filter_edit.textChanged.connect(self.apply_filter)'
+    - '    filter_layout.addWidget(self.filter_edit)'
+    - '    # Add page controls for large arrays'
+    - '    self.page_size = 100  # Show 100 items per page'
+    - '    self.current_page = 0'
+    - '    self.total_pages = max(1, (len(array_values) + self.page_size - 1) // self.page_size)'
+    - '    self.page_label = QLabel(f"Page 1 of {self.total_pages}")'
+    - '    filter_layout.addWidget(self.page_label)'
+    - '    prev_page = QPushButton("Previous")'
+    - '    prev_page.clicked.connect(self.previous_page)'
+    - '    filter_layout.addWidget(prev_page)'
+    - '    next_page = QPushButton("Next")'
+    - '    next_page.clicked.connect(self.next_page)'
+    - '    filter_layout.addWidget(next_page)'
+    - '    layout.addLayout(filter_layout)'
+    - '    # Array items table'
+    - '    self.items_table = QTableWidget()'
+    - '    # Set up columns based on whether we have an enum type'
+    - '    if self.enum_type is not None:'
+    - '        self.items_table.setColumnCount(3)'
+    - '        self.items_table.setHorizontalHeaderLabels(["Index", "Value", "Actions"])'
+    - '        self.items_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)'
+    - '        self.items_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)'
+    - '        self.items_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    else:'
+    - '        self.items_table.setColumnCount(2)'
+    - '        self.items_table.setHorizontalHeaderLabels(["Index", "Value"])'
+    - '        self.items_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)'
+    - '        self.items_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)'
+    - '    layout.addWidget(self.items_table)'
+    - '    # Controls'
+    - '    controls_layout = QHBoxLayout()'
+    - '    add_button = QPushButton("Add Item")'
+    - '    add_button.clicked.connect(self.add_item)'
+    - '    controls_layout.addWidget(add_button)'
+    - '    remove_button = QPushButton("Remove Selected")'
+    - '    remove_button.clicked.connect(self.remove_selected)'
+    - '    controls_layout.addWidget(remove_button)'
+    - '    # Add bulk edit button for enum arrays'
+    - '    if self.enum_type is not None:'
+    - '        bulk_edit_button = QPushButton("Bulk Edit Selected")'
+    - '        bulk_edit_button.clicked.connect(self.bulk_edit_selected)'
+    - '        controls_layout.addWidget(bulk_edit_button)'
+    - '    controls_layout.addStretch()'
+    - '    layout.addLayout(controls_layout)'
+    - '    # Buttons'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(buttons)'
+    - '    # Initialize the filtered values'
+    - '    self.filtered_indices = list(range(len(self.array_values)))'
+    - '    # Load array values for the first page'
+    - '    self.load_page()'
+    desc: 初始化数组编辑对话框，接收数组值、元素类型和键名，设置界面布局、过滤控件、分页控件和数据表格。
+    line: 307-417
+    name: __init__
+  - code:
+    - 'def apply_filter(self):'
+    - '    """Filter the array values based on the search text."""'
+    - '    filter_text = self.filter_edit.text().lower()'
+    - '    if not filter_text:'
+    - '        # No filter, show all values'
+    - '        self.filtered_indices = list(range(len(self.array_values)))'
+    - '    else:'
+    - '        # Apply filter'
+    - '        self.filtered_indices = []'
+    - '        for i, value in enumerate(self.array_values):'
+    - '            # For enum values, search in both name and value'
+    - '            if self.enum_type is not None and isinstance(value, int):'
+    - '                try:'
+    - '                    enum_val = self.enum_type(value)'
+    - '                    display_text = f"{enum_val.name} ({value})".lower()'
+    - '                    if filter_text in display_text:'
+    - '                        self.filtered_indices.append(i)'
+    - '                except (ValueError, KeyError):'
+    - '                    # If not a valid enum value, just check the raw value'
+    - '                    if filter_text in str(value).lower():'
+    - '                        self.filtered_indices.append(i)'
+    - '            else:'
+    - '                # For non-enum values, just check the string representation'
+    - '                if filter_text in str(value).lower():'
+    - '                    self.filtered_indices.append(i)'
+    - '    # Reset to first page and reload'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    self.current_page = 0'
+    - '    self.page_label.setText(f"Page 1 of {self.total_pages}")'
+    - '    self.load_page()'
+    desc: 根据搜索文本过滤数组值，支持按枚举名称和值进行搜索，并重置分页到第一页。
+    line: 419-448
+    name: apply_filter
+  - code:
+    - 'def previous_page(self):'
+    - '    """Go to the previous page of results."""'
+    - '    if self.current_page > 0:'
+    - '        self.current_page -= 1'
+    - '        self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '        self.load_page()'
+    desc: 切换到数组值的上一页显示。
+    line: 450-456
+    name: previous_page
+  - code:
+    - 'def next_page(self):'
+    - '    """Go to the next page of results."""'
+    - '    if self.current_page < self.total_pages - 1:'
+    - '        self.current_page += 1'
+    - '        self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '        self.load_page()'
+    desc: 切换到数组值的下一页显示。
+    line: 458-464
+    name: next_page
+  - code:
+    - 'def load_page(self):'
+    - '    """Load the current page of array values."""'
+    - '    self.items_table.setRowCount(0)  # Clear the table'
+    - '    # Calculate start and end indices for the current page'
+    - '    start_idx = self.current_page * self.page_size'
+    - '    end_idx = min(start_idx + self.page_size, len(self.filtered_indices))'
+    - '    # Pre-allocate rows for better performance'
+    - '    self.items_table.setRowCount(end_idx - start_idx)'
+    - '    for row, i in enumerate(range(start_idx, end_idx)):'
+    - '        orig_idx = self.filtered_indices[i]'
+    - '        value = self.array_values[orig_idx]'
+    - '        # Index'
+    - '        index_item = QTableWidgetItem(str(orig_idx))'
+    - '        index_item.setData(Qt.ItemDataRole.UserRole, orig_idx)  # Store original
+      index'
+    - '        index_item.setFlags(index_item.flags() & ~Qt.ItemFlag.ItemIsEditable)'
+    - '        self.items_table.setItem(row, 0, index_item)'
+    - '        # Value'
+    - '        if self.enum_type is not None:'
+    - '            # Display enum value and name'
+    - '            try:'
+    - '                if isinstance(value, (int, numpy.signedinteger)):'
+    - '                    enum_val = self.enum_type(value)'
+    - '                    display_text = f"{enum_val.name} ({value})"'
+    - '                else:'
+    - '                    display_text = str(value)'
+    - '            except (ValueError, KeyError):'
+    - '                display_text = f"Unknown ({value})"'
+    - '            # Store the enum value in the item'
+    - '            value_item = QTableWidgetItem(display_text)'
+    - '            value_item.setData(Qt.ItemDataRole.UserRole, value)'
+    - '            value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)'
+    - '            self.items_table.setItem(row, 1, value_item)'
+    - '            # Add an edit button in a separate column'
+    - '            edit_button = QPushButton("Edit")'
+    - '            edit_button.setProperty("row", row)'
+    - '            edit_button.clicked.connect(self.edit_array_enum_value)'
+    - '            # Create a widget to hold the button'
+    - '            button_widget = QWidget()'
+    - '            button_layout = QHBoxLayout(button_widget)'
+    - '            button_layout.setContentsMargins(2, 2, 2, 2)'
+    - '            button_layout.addWidget(edit_button)'
+    - '            button_layout.addStretch()'
+    - '            self.items_table.setCellWidget(row, 2, button_widget)'
+    - '        else:'
+    - '            value_item = QTableWidgetItem(str(value))'
+    - '            self.items_table.setItem(row, 1, value_item)'
+    desc: 加载当前页的数组值到表格中，对于枚举类型显示枚举名称和值，并添加编辑按钮。
+    line: 466-508
+    name: load_page
+  - code:
+    - 'def edit_array_enum_value(self):'
+    - '    """Handle editing an enum value in the array editor."""'
+    - '    button = self.sender()'
+    - '    row = button.property("row")'
+    - '    # Get the original index from the table item'
+    - '    orig_item = self.items_table.item(row, 0)'
+    - '    new_item = self.items_table.item(row, 1)'
+    - '    if orig_item and new_item and self.enum_type and self.edit_enum_value(row,
+      self.enum_type):'
+    - '        orig_idx = orig_item.data(Qt.ItemDataRole.UserRole)'
+    - '        new_value = new_item.data(Qt.ItemDataRole.UserRole)'
+    - '        # Update the stored value in the array'
+    - '        if isinstance(new_value, (int, float, str, bool)):'
+    - '            self.array_values[orig_idx] = new_value'
+    desc: 处理编辑按钮点击事件，调用 edit_enum_value 方法编辑枚举值并更新数组数据。
+    line: 510-522
+    name: edit_array_enum_value
+  - code:
+    - 'def bulk_edit_selected(self):'
+    - '    """Edit multiple enum values at once."""'
+    - '    if not self.enum_type:'
+    - '        return'
+    - '    selected_rows = set()'
+    - '    for item in self.items_table.selectedItems():'
+    - '        selected_rows.add(item.row())'
+    - '    if not selected_rows:'
+    - '        QMessageBox.information(self, "No Selection", "Please select at least
+      one row to edit.")'
+    - '        return'
+    - '    # Create a dialog with enum options'
+    - '    dialog = QDialog(self)'
+    - '    dialog.setWindowTitle(f"Bulk Edit {self.enum_type.__name__} Values")'
+    - '    layout = QVBoxLayout(dialog)'
+    - '    layout.addWidget(QLabel(f"Set {len(selected_rows)} selected items to:"))'
+    - '    combo = QComboBox()'
+    - '    for enum_val in self.enum_type:'
+    - '        combo.addItem(f"{enum_val.name} ({enum_val.value})", enum_val.value)'
+    - '    layout.addWidget(combo)'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(dialog.accept)'
+    - '    buttons.rejected.connect(dialog.reject)'
+    - '    layout.addWidget(buttons)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        # Get the selected value'
+    - '        new_value = combo.currentData()'
+    - '        enum_val = self.enum_type(new_value)'
+    - '        display_text = f"{enum_val.name} ({new_value})"'
+    - '        # Update all selected rows'
+    - '        for row in selected_rows:'
+    - '            orig_item = self.items_table.item(row, 0)'
+    - '            new_item = self.items_table.item(row, 1)'
+    - '            if orig_item and new_item:'
+    - '                orig_idx = orig_item.data(Qt.ItemDataRole.UserRole)'
+    - '                self.array_values[orig_idx] = new_value'
+    - '                # Update the display'
+    - '                new_item.setText(display_text)'
+    - '                new_item.setData(Qt.ItemDataRole.UserRole, new_value)'
+    desc: 批量编辑选中的枚举值，弹出对话框选择要设置的新值并应用到所有选中行。
+    line: 524-559
+    name: bulk_edit_selected
+  - code:
+    - 'def add_item(self):'
+    - '    # Add to the end of the array'
+    - '    orig_idx = len(self.array_values)'
+    - '    # Add default value based on type'
+    - '    if self.enum_type is not None:'
+    - '        # Default to first enum value'
+    - '        default_value = list(self.enum_type)[0].value'
+    - '        self.array_values.append(default_value)'
+    - '    else:'
+    - '        if self.element_type == GGUFValueType.STRING:'
+    - '            self.array_values.append("")'
+    - '        else:'
+    - '            self.array_values.append(0)'
+    - '    # Add to filtered indices if it matches the current filter'
+    - '    self.filtered_indices.append(orig_idx)'
+    - '    # Update pagination'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    # Go to the last page to show the new item'
+    - '    self.current_page = self.total_pages - 1'
+    - '    self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '    # Reload the page'
+    - '    self.load_page()'
+    desc: 在数组末尾添加一个新项，根据类型添加默认值（枚举取第一个值，字符串为空串，其他为 0）。
+    line: 561-578
+    name: add_item
+  - code:
+    - 'def remove_selected(self):'
+    - '    selected_rows = []'
+    - '    for item in self.items_table.selectedItems():'
+    - '        row = item.row()'
+    - '        if row not in selected_rows:'
+    - '            selected_rows.append(row)'
+    - '    if not selected_rows:'
+    - '        return'
+    - '    # Get original indices in descending order to avoid index shifting'
+    - '    orig_indices = list()'
+    - '    for row in selected_rows:'
+    - '        orig_item = self.items_table.item(row, 0)'
+    - '        if orig_item:'
+    - '            orig_indices.append(orig_item.data(Qt.ItemDataRole.UserRole))'
+    - '    orig_indices.sort(reverse=True)'
+    - '    # Remove from array_values'
+    - '    for idx in orig_indices:'
+    - '        del self.array_values[idx]'
+    - '    # Rebuild filtered_indices'
+    - '    self.filtered_indices = []'
+    - '    filter_text = self.filter_edit.text().lower()'
+    - '    for i, value in enumerate(self.array_values):'
+    - '        if not filter_text:'
+    - '            self.filtered_indices.append(i)'
+    - '        else:'
+    - '            # Apply filter'
+    - '            if self.enum_type is not None and isinstance(value, int):'
+    - '                try:'
+    - '                    enum_val = self.enum_type(value)'
+    - '                    display_text = f"{enum_val.name} ({value})".lower()'
+    - '                    if filter_text in display_text:'
+    - '                        self.filtered_indices.append(i)'
+    - '                except (ValueError, KeyError):'
+    - '                    if filter_text in str(value).lower():'
+    - '                        self.filtered_indices.append(i)'
+    - '            else:'
+    - '                if filter_text in str(value).lower():'
+    - '                    self.filtered_indices.append(i)'
+    - '    # Update pagination'
+    - '    self.total_pages = max(1, (len(self.filtered_indices) + self.page_size
+      - 1) // self.page_size)'
+    - '    self.current_page = min(self.current_page, self.total_pages - 1)'
+    - '    self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")'
+    - '    # Reload the page'
+    - '    self.load_page()'
+    desc: 删除选中的数组项，重新构建过滤索引并刷新显示。
+    line: 580-625
+    name: remove_selected
+  - code:
+    - 'def edit_enum_value(self, row: int, enum_type: Type[enum.Enum]):'
+    - '    """Edit an enum value using a dialog with a dropdown of all enum options."""'
+    - '    # Get the original index from the table item'
+    - '    orig_item = self.items_table.item(row, 0)'
+    - '    if orig_item:'
+    - '        orig_idx = orig_item.data(Qt.ItemDataRole.UserRole)'
+    - '    else:'
+    - '        return'
+    - '    current_value = self.array_values[orig_idx]'
+    - '    # Create a dialog with enum options'
+    - '    dialog = QDialog(self)'
+    - '    dialog.setWindowTitle(f"Select {enum_type.__name__} Value")'
+    - '    layout = QVBoxLayout(dialog)'
+    - '    # Add description'
+    - '    description = QLabel(f"Select a {enum_type.__name__} value:")'
+    - '    layout.addWidget(description)'
+    - '    # Use a combo box for quick selection'
+    - '    combo = QComboBox()'
+    - '    for enum_val in enum_type:'
+    - '        combo.addItem(f"{enum_val.name} ({enum_val.value})", enum_val.value)'
+    - '    # Set current value'
+    - '    try:'
+    - '        if isinstance(current_value, int):'
+    - '            enum_val = enum_type(current_value)'
+    - '            combo.setCurrentText(f"{enum_val.name} ({current_value})")'
+    - '    except (ValueError, KeyError):'
+    - '        pass'
+    - '    layout.addWidget(combo)'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(dialog.accept)'
+    - '    buttons.rejected.connect(dialog.reject)'
+    - '    layout.addWidget(buttons)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        # Update the value display and stored data'
+    - '        new_value = combo.currentData()'
+    - '        enum_val = enum_type(new_value)'
+    - '        display_text = f"{enum_val.name} ({new_value})"'
+    - '        new_item = self.items_table.item(row, 1)'
+    - '        if new_item:'
+    - '            new_item.setText(display_text)'
+    - '            new_item.setData(Qt.ItemDataRole.UserRole, new_value)'
+    - '        # Update the actual array value'
+    - '        self.array_values[orig_idx] = new_value'
+    - '        return True'
+    - '    return False'
+    desc: 弹出对话框让用户从指定的枚举类型中选择新值，更新表格显示和数组数据。
+    line: 627-674
+    name: edit_enum_value
+  - code:
+    - 'def get_array_values(self):'
+    - '    # The array_values list is kept up-to-date as edits are made'
+    - '    return self.array_values'
+    desc: 返回编辑后的数组值列表。
+    line: 676-679
+    name: get_array_values
+  name: ArrayEditorDialog
+- desc: 添加元数据对话框，用于向 GGUF 文件中添加新的键值对元数据，支持多种数据类型转换。
+  methods:
+  - code:
+    - 'def __init__(self, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.setWindowTitle("Add Metadata")'
+    - '    self.resize(400, 200)'
+    - '    layout = QVBoxLayout(self)'
+    - '    form_layout = QFormLayout()'
+    - '    self.key_edit = QLineEdit()'
+    - '    form_layout.addRow("Key:", self.key_edit)'
+    - '    self.type_combo = QComboBox()'
+    - '    for value_type in GGUFValueType:'
+    - '        if value_type != GGUFValueType.ARRAY:  # Skip array type for simplicity'
+    - '            self.type_combo.addItem(value_type.name, value_type)'
+    - '    form_layout.addRow("Type:", self.type_combo)'
+    - '    self.value_edit = QTextEdit()'
+    - '    form_layout.addRow("Value:", self.value_edit)'
+    - '    layout.addLayout(form_layout)'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(buttons)'
+    desc: 初始化添加元数据对话框，设置键、类型和值的表单输入控件。
+    line: 682-705
+    name: __init__
+  - code:
+    - 'def get_data(self) -> Tuple[str, GGUFValueType, Any]:'
+    - '    key = self.key_edit.text()'
+    - '    value_type = self.type_combo.currentData()'
+    - '    value_text = self.value_edit.toPlainText()'
+    - '    # Convert value based on type'
+    - '    if value_type == GGUFValueType.UINT8:'
+    - '        value = np.uint8(int(value_text))'
+    - '    elif value_type == GGUFValueType.INT8:'
+    - '        value = np.int8(int(value_text))'
+    - '    elif value_type == GGUFValueType.UINT16:'
+    - '        value = np.uint16(int(value_text))'
+    - '    elif value_type == GGUFValueType.INT16:'
+    - '        value = np.int16(int(value_text))'
+    - '    elif value_type == GGUFValueType.UINT32:'
+    - '        value = np.uint32(int(value_text))'
+    - '    elif value_type == GGUFValueType.INT32:'
+    - '        value = np.int32(int(value_text))'
+    - '    elif value_type == GGUFValueType.FLOAT32:'
+    - '        value = np.float32(float(value_text))'
+    - '    elif value_type == GGUFValueType.BOOL:'
+    - '        value = value_text.lower() in (''true'', ''yes'', ''1'')'
+    - '    elif value_type == GGUFValueType.STRING:'
+    - '        value = value_text'
+    - '    else:'
+    - '        value = value_text'
+    - '    return key, value_type, value'
+    desc: 获取对话框输入的键、类型和值数据，根据类型将值转换为相应的 numpy 数据类型。
+    line: 707-730
+    name: get_data
+  name: AddMetadataDialog
+- desc: GGUF 编辑器主窗口类，提供打开、编辑、保存 GGUF 文件的功能，包含元数据标签页和张量标签页，支持元数据的增删改和分词器数据的编辑。
+  methods:
+  - code:
+    - 'def __init__(self):'
+    - '    super().__init__()'
+    - '    self.setWindowTitle("GGUF Editor")'
+    - '    self.resize(1000, 800)'
+    - '    self.current_file = None'
+    - '    self.reader = None'
+    - '    self.modified = False'
+    - '    self.metadata_changes = {}  # Store changes to apply when saving'
+    - '    self.metadata_to_remove = set()  # Store keys to remove when saving'
+    - '    self.on_metadata_changed_is_connected = False'
+    - '    self.setup_ui()'
+    desc: 初始化主窗口，设置窗口标题、大小、当前文件状态和 UI 界面。
+    line: 733-750
+    name: __init__
+  - code:
+    - 'def setup_ui(self):'
+    - '    central_widget = QWidget()'
+    - '    self.setCentralWidget(central_widget)'
+    - '    main_layout = QVBoxLayout(central_widget)'
+    - '    # File controls'
+    - '    file_layout = QHBoxLayout()'
+    - '    self.file_path_edit = QLineEdit()'
+    - '    self.file_path_edit.setReadOnly(True)'
+    - '    file_layout.addWidget(self.file_path_edit)'
+    - '    open_button = QPushButton("Open GGUF")'
+    - '    open_button.clicked.connect(self.open_file)'
+    - '    file_layout.addWidget(open_button)'
+    - '    save_button = QPushButton("Save As...")'
+    - '    save_button.clicked.connect(self.save_file)'
+    - '    file_layout.addWidget(save_button)'
+    - '    main_layout.addLayout(file_layout)'
+    - '    # Tabs for different views'
+    - '    self.tabs = QTabWidget()'
+    - '    # Metadata tab'
+    - '    self.metadata_tab = QWidget()'
+    - '    metadata_layout = QVBoxLayout(self.metadata_tab)'
+    - '    # Metadata table'
+    - '    self.metadata_table = QTableWidget()'
+    - '    self.metadata_table.setColumnCount(4)'
+    - '    self.metadata_table.setHorizontalHeaderLabels(["Key", "Type", "Value",
+      "Actions"])'
+    - '    self.metadata_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)'
+    - '    self.metadata_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    self.metadata_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)'
+    - '    self.metadata_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    metadata_layout.addWidget(self.metadata_table)'
+    - '    # Metadata controls'
+    - '    metadata_controls = QHBoxLayout()'
+    - '    add_metadata_button = QPushButton("Add Metadata")'
+    - '    add_metadata_button.clicked.connect(self.add_metadata)'
+    - '    metadata_controls.addWidget(add_metadata_button)'
+    - '    metadata_controls.addStretch()'
+    - '    metadata_layout.addLayout(metadata_controls)'
+    - '    # Tensors tab'
+    - '    self.tensors_tab = QWidget()'
+    - '    tensors_layout = QVBoxLayout(self.tensors_tab)'
+    - '    self.tensors_table = QTableWidget()'
+    - '    self.tensors_table.setColumnCount(5)'
+    - '    self.tensors_table.setHorizontalHeaderLabels(["Name", "Type", "Shape",
+      "Elements", "Size (bytes)"])'
+    - '    self.tensors_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)'
+    - '    self.tensors_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)'
+    - '    self.tensors_table.horizontalHeader().setSectionR'
+    desc: 设置主窗口的用户界面，包括文件控制栏、元数据标签页和张量标签页。
+    line: 752-809
+    name: setup_ui
+  name: GGUFEditorWindow
+- desc: 主窗口类，负责构建用户界面、加载和保存GGUF文件，并处理所有元数据与张量的编辑操作。
+  methods:
+  - code:
+    - 'def __init__(self):'
+    - '    super().__init__()'
+    - '    self.reader = None'
+    - '    self.current_file = None'
+    - '    self.metadata_changes = {}'
+    - '    self.metadata_to_remove = set()'
+    - '    self.modified = False'
+    - '    self.on_metadata_changed_is_connected = False'
+    - '    self.init_ui()'
+    desc: 初始化窗口组件、菜单栏、工具栏、文件路径输入框、元数据表和张量表等UI元素。
+    line: 1-30
+    name: __init__
+  - code:
+    - 'def init_ui(self):'
+    - '    self.setWindowTitle("GGUF Editor")'
+    - '    self.setGeometry(100, 100, 1200, 800)'
+    - '    self.create_menu()'
+    - '    self.create_toolbar()'
+    - '    main_widget = QWidget()'
+    - '    main_layout = QVBoxLayout(main_widget)'
+    - '    file_layout = QHBoxLayout()'
+    - '    self.file_path_edit = QLineEdit()'
+    - '    self.file_path_edit.setPlaceholderText("No file loaded")'
+    - '    self.file_path_edit.setReadOnly(True)'
+    - '    ...'
+    desc: 构建窗口的完整用户界面，包括菜单、工具栏、文件路径输入和标签页包含的元数据表与张量表。
+    line: 31-100
+    name: init_ui
+  - code:
+    - 'def create_actions(self):'
+    - '    self.open_action = QAction("Open", self)'
+    - '    self.open_action.triggered.connect(self.open_file)'
+    - '    self.save_action = QAction("Save", self)'
+    - '    self.save_action.triggered.connect(self.save_file)'
+    - '    self.add_metadata_action = QAction("Add Metadata", self)'
+    - '    self.add_metadata_action.triggered.connect(self.add_metadata)'
+    - '    self.exit_action = QAction("Exit", self)'
+    - '    self.exit_action.triggered.connect(self.close)'
+    desc: 创建窗口的QAction对象，包括打开、保存、添加元数据和退出等操作。
+    line: 101-150
+    name: create_actions
+  - code:
+    - 'def create_menu(self):'
+    - '    menubar = self.menuBar()'
+    - '    file_menu = menubar.addMenu("File")'
+    - '    file_menu.addAction(self.open_action)'
+    - '    file_menu.addAction(self.save_action)'
+    - '    file_menu.addSeparator()'
+    - '    file_menu.addAction(self.exit_action)'
+    - '    edit_menu = menubar.addMenu("Edit")'
+    - '    edit_menu.addAction(self.add_metadata_action)'
+    desc: 构建菜单栏，包括文件菜单和编辑菜单。
+    line: 151-200
+    name: create_menu
+  - code:
+    - 'def create_toolbar(self):'
+    - '    toolbar = self.addToolBar("Main")'
+    - '    toolbar.addAction(self.open_action)'
+    - '    toolbar.addAction(self.save_action)'
+    desc: 创建窗口的工具栏，包含打开和保存按钮。
+    line: 201-250
+    name: create_toolbar
+  - code:
+    - 'def load_file(self, file_path):'
+    - '    """Load a GGUF file by path"""'
+    - '    try:'
+    - '        self.reader = GGUFReader(file_path, ''r'')'
+    - '        self.current_file = file_path'
+    - '        self.load_metadata()'
+    - '        self.load_tensors()'
+    - '        self.metadata_changes = {}'
+    - '        self.metadata_to_remove = set()'
+    - '        self.modified = False'
+    - '        self.statusBar().showMessage(f"Loaded {file_path}")'
+    - '        return True'
+    - '    except Exception as e:'
+    - '        QMessageBox.critical(self, "Error", f"Failed to open file: {str(e)}")'
+    - '        return False'
+    desc: 从文件路径加载GGUF文件，初始化阅读器并刷新元数据和张量显示。
+    line: 251-300
+    name: load_file
+  - code:
+    - 'def open_file(self):'
+    - '    file_path, _ = QFileDialog.getOpenFileName('
+    - '        self, "Open GGUF File", "", "GGUF Files (*.gguf);;All Files (*)")'
+    - '    if not file_path:'
+    - '        return'
+    - '    self.load_file(file_path)'
+    desc: 通过文件对话框选择GGUF文件并调用load_file方法加载。
+    line: 301-350
+    name: open_file
+  - code:
+    - 'def load_metadata(self):'
+    - '    self.metadata_table.setRowCount(0)'
+    - '    if not self.reader: return'
+    - '    # Disconnect signal to avoid triggering during loading'
+    - '    for i, (key, field) in enumerate(self.reader.fields.items()):'
+    - '        self.metadata_table.insertRow(i)'
+    - '        # set key/type/value items'
+    - '        # Create actions widget with buttons'
+    desc: 从阅读器读取所有元数据字段，填充到元数据表中并设置编辑属性和操作按钮。
+    line: 351-420
+    name: load_metadata
+  - code:
+    - 'def extract_array_values(self, field: ReaderField) -> list:'
+    - '    """Extract all values from an array field."""'
+    - '    if not field.types or field.types[0] != GGUFValueType.ARRAY: return []'
+    - '    curr_type = field.types[1]'
+    - '    array_values = []'
+    - '    total_elements = len(field.data)'
+    - '    if curr_type == GGUFValueType.STRING:'
+    - '        for element_pos in range(total_elements):'
+    - '            value_string = str(bytes(field.parts[-1 - (total_elements - element_pos
+      - 1) * 2]), encoding=''utf-8'')'
+    - '            array_values.append(value_string)'
+    - '    elif self.reader and curr_type in self.reader.gguf_scalar_to_np:'
+    - '        for element_pos in range(total_elements):'
+    - '            array_values.append(field.parts[-1 - (total_elements - element_pos
+      - 1)][0])'
+    - '    return array_values'
+    desc: 从ReaderField对象中提取数组的所有值，支持字符串和数值类型。
+    line: 421-460
+    name: extract_array_values
+  - code:
+    - 'def get_enum_for_key(self, key: str) -> Optional[Type[enum.Enum]]:'
+    - '    """Get the enum type for a given key if it exists."""'
+    - '    return KEY_TO_ENUM_TYPE.get(key)'
+    desc: 根据元数据键名返回对应的枚举类型，如果不存在则返回None。
+    line: 461-470
+    name: get_enum_for_key
+  - code:
+    - 'def format_enum_value(self, value: Any, enum_type: Type[enum.Enum]) -> str:'
+    - '    """Format a value as an enum if possible."""'
+    - '    try:'
+    - '        if isinstance(value, (int, str)):'
+    - '            enum_value = enum_type(value)'
+    - '            return f"{enum_value.name} ({value})"'
+    - '    except (ValueError, KeyError): pass'
+    - '    return str(value)'
+    desc: 将值格式化为枚举的显示形式，如'NAME (value)'。
+    line: 471-480
+    name: format_enum_value
+  - code:
+    - 'def format_field_value(self, field: ReaderField) -> str:'
+    - '    if not field.types: return "N/A"'
+    - '    if len(field.types) == 1:'
+    - '        curr_type = field.types[0]'
+    - '        if curr_type == GGUFValueType.STRING:'
+    - '            return str(bytes(field.parts[-1]), encoding=''utf-8'')'
+    - '        elif self.reader and curr_type in self.reader.gguf_scalar_to_np:'
+    - '            value = field.parts[-1][0]'
+    - '            enum_type = self.get_enum_for_key(field.name)'
+    - '            if enum_type is not None: return self.format_enum_value(value,
+      enum_type)'
+    - '            return str(value)'
+    - '    if field.types[0] == GGUFValueType.ARRAY:'
+    - '        array_values = self.extract_array_values(field)'
+    - '        render_element = min(5, len(array_values))'
+    - '        enum_type = self.get_enum_for_key(field.name)'
+    - '        if enum_type is not None:'
+    - '            array_elements = [self.format_enum_value(array_values[i], enum_type)
+      for i in range(render_element)]'
+    - '        else:'
+    - '            array_elements = [str(array_values[i]) for i in range(render_element)]'
+    - '        return f"[ {'', ''.join(array_elements).strip()}{'', ...'' if len(array_values)
+      > len(array_elements) else ''''} ]"'
+    - '    return "Complex value"'
+    desc: 格式化元数据字段的值为字符串显示，处理字符串、数字、数组和枚举类型。
+    line: 481-510
+    name: format_field_value
+  - code:
+    - 'def load_tensors(self):'
+    - '    self.tensors_table.setRowCount(0)'
+    - '    if not self.reader: return'
+    - '    for i, tensor in enumerate(self.reader.tensors):'
+    - '        self.tensors_table.insertRow(i)'
+    - '        # set name, type, shape, elements, size'
+    desc: 将阅读器中的所有张量信息填充到张量表，包括名称、类型、形状、元素数量和大小。
+    line: 511-560
+    name: load_tensors
+  - code:
+    - 'def on_metadata_changed(self, item):'
+    - '    if item.column() != 2: return'
+    - '    row = item.row()'
+    - '    orig_item = self.metadata_table.item(row, 0)'
+    - '    key = orig_item.text() if orig_item else None'
+    - '    new_value = item.text()'
+    - '    field = self.reader.get_field(key) if self.reader and key else None'
+    - '    if not field or not field.types or not key: return'
+    - '    value_type = field.types[0]'
+    - '    # Check enum field'
+    - '    enum_type = self.get_enum_for_key(key)'
+    - '    if enum_type is not None and value_type == GGUFValueType.INT32:'
+    - '        try:'
+    - '            # Parse enum value and validate'
+    - '            self.metadata_changes[key] = (value_type, converted_value)'
+    - '            self.modified = True'
+    - '            item.setText(formatted_value)'
+    - '            return'
+    - '        except (ValueError, KeyError) as e:'
+    - '            QMessageBox.warning(...)'
+    - '            item.setText(original_value)'
+    - '            return'
+    - '    # Convert to proper type based on GGUFValueType'
+    desc: 处理元数据表中的值更改事件，将字符串转换为对应类型并验证枚举，更新变更记录。
+    line: 561-640
+    name: on_metadata_changed
+  - code:
+    - 'def remove_metadata(self):'
+    - '    button = self.sender()'
+    - '    key = button.property("key")'
+    - '    row = button.property("row")'
+    - '    reply = QMessageBox.question(...)'
+    - '    if reply == QMessageBox.StandardButton.Yes:'
+    - '        self.metadata_table.removeRow(row)'
+    - '        self.metadata_to_remove.add(key)'
+    - '        if key in self.metadata_changes:'
+    - '            del self.metadata_changes[key]'
+    - '        self.modified = True'
+    desc: 处理元数据移除按钮点击，确认后从表中移除行并记录待删除键。
+    line: 641-680
+    name: remove_metadata
+  - code:
+    - 'def edit_metadata_enum(self):'
+    - '    """Edit an enum metadata field."""'
+    - '    button = self.sender()'
+    - '    key = button.property("key")'
+    - '    row = button.property("row")'
+    - '    field = self.reader.get_field(key) if self.reader else None'
+    - '    if not field or not field.types: return'
+    - '    enum_type = self.get_enum_for_key(key)'
+    - '    if enum_type is None: return'
+    - '    # Create dialog, store change, update display'
+    desc: 为枚举元数据字段打开下拉选择对话框，选择后更新值和显示。
+    line: 681-720
+    name: edit_metadata_enum
+  - code:
+    - 'def edit_array_metadata(self):'
+    - '    button = self.sender()'
+    - '    key = button.property("key")'
+    - '    row = button.property("row")'
+    - '    if key in TOKENIZER_LINKED_KEYS:'
+    - '        self.edit_tokenizer_metadata(key)'
+    - '        return'
+    - '    field = self.reader.get_field(key) if self.reader else None'
+    - '    if not field or not field.types or field.types[0] != GGUFValueType.ARRAY:
+      return'
+    - '    element_type = field.types[1]'
+    - '    array_values = self.extract_array_values(field)'
+    - '    dialog = ArrayEditorDialog(array_values, element_type, key, self)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        new_values = dialog.get_array_values()'
+    - '        self.metadata_changes[key] = (GGUFValueType.ARRAY, (element_type, new_values))'
+    - '        self.modified = True'
+    - '        # Update display'
+    desc: 为数组元数据打开数组编辑器对话框，处理保存后的变更和显示更新。
+    line: 721-780
+    name: edit_array_metadata
+  - code:
+    - 'def edit_tokenizer_metadata(self, trigger_key):'
+    - '    """Edit the linked tokenizer metadata arrays together."""'
+    - '    if not self.reader: return'
+    - '    # Get all three fields and extract values'
+    - '    tokens_field = self.reader.get_field(gguf.Keys.Tokenizer.LIST)'
+    - '    token_types_field = self.reader.get_field(gguf.Keys.Tokenizer.TOKEN_TYPE)'
+    - '    scores_field = self.reader.get_field(gguf.Keys.Tokenizer.SCORES)'
+    - '    # Apply pending changes'
+    - '    dialog = TokenizerEditorDialog(tokens, token_types, scores, self)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        new_tokens, new_token_types, new_scores = dialog.get_data()'
+    - '        # Store changes for all three fields'
+    - '        self.modified = True'
+    - '        # Update display'
+    desc: 专门编辑关联的令牌化器元数据（tokens、token_types、scores），使用专用对话框一次性修改。
+    line: 781-840
+    name: edit_tokenizer_metadata
+  - code:
+    - 'def update_tokenizer_display(self, key, values):'
+    - '    """Update the display of a tokenizer field in the metadata table."""'
+    - '    for row in range(self.metadata_table.rowCount()):'
+    - '        key_item = self.metadata_table.item(row, 0)'
+    - '        if key_item and key_item.text() == key:'
+    - '            value_str = f"[ {'', ''.join(str(v) for v in values[:5])}{'', ...''
+      if len(values) > 5 else ''''} ]"'
+    - '            value_item = self.metadata_table.item(row, 2)'
+    - '            if value_item:'
+    - '                value_item.setText(value_str)'
+    - '            break'
+    desc: 更新令牌化器字段在元数据表中的显示值。
+    line: 841-880
+    name: update_tokenizer_display
+  - code:
+    - 'def add_metadata(self):'
+    - '    dialog = AddMetadataDialog(self)'
+    - '    if dialog.exec() == QDialog.DialogCode.Accepted:'
+    - '        key, value_type, value = dialog.get_data()'
+    - '        if not key:'
+    - '            QMessageBox.warning(self, "Invalid Key", "Key cannot be empty")'
+    - '            return'
+    - '        # Check for duplicate key, add to table'
+    - '        self.metadata_changes[key] = (value_type, value)'
+    - '        self.modified = True'
+    desc: 打开添加元数据对话框，添加新元数据键值对到表和变更记录中。
+    line: 881-920
+    name: add_metadata
+  - code:
+    - 'def save_file(self):'
+    - '    if not self.reader:'
+    - '        QMessageBox.warning(self, "No File Open", "Please open a GGUF file
+      first")'
+    - '        return'
+    - '    if not self.modified and not self.metadata_changes and not self.metadata_to_remove:'
+    - '        QMessageBox.information(self, "No Changes", "No changes to save")'
+    - '        return'
+    - '    file_path, _ = QFileDialog.getSaveFileName(...)'
+    - '    if not file_path: return'
+    - '    try:'
+    - '        # Create writer, copy metadata with changes'
+    - '        # Add tensors, write file'
+    - '        self.statusBar().showMessage(f"Saved to {file_path}")'
+    - '        # Ask if want to open the new file'
+    desc: 保存当前GGUF文件，应用所有元数据变更和张量数据，使用GGUFWriter写入新文件。
+    line: 921-1000
+    name: save_file
+  name: GGUFEditorWindow
+- desc: 用于编辑数组元数据的对话框类，提供表格界面添加、删除和修改数组元素。
+  methods:
+  - code:
+    - 'def __init__(self, values, element_type, key, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.values = values'
+    - '    self.element_type = element_type'
+    - '    self.key = key'
+    - '    self.setWindowTitle(f"Edit Array: {key}")'
+    - '    self.setModal(True)'
+    - '    self.setup_ui()'
+    desc: 初始化对话框，接收数组值、元素类型和父窗口，构建表格界面。
+    line: 1001-1030
+    name: __init__
+  - code:
+    - 'def setup_ui(self):'
+    - '    layout = QVBoxLayout(self)'
+    - '    self.table = QTableWidget()'
+    - '    self.table.setColumnCount(2)'
+    - '    self.table.setHorizontalHeaderLabels(["Index", "Value"])'
+    - '    self.table.setRowCount(len(self.values))'
+    - '    for i, value in enumerate(self.values):'
+    - '        # Populate table'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(self.table)'
+    - '    layout.addWidget(buttons)'
+    desc: 构建对话框UI，包括值表格和确定/取消按钮。
+    line: 1031-1070
+    name: setup_ui
+  - code:
+    - 'def get_array_values(self):'
+    - '    return [self.table.item(i, 1).text() for i in range(self.table.rowCount())]'
+    desc: 返回编辑后的数组元素列表。
+    line: 1071-1080
+    name: get_array_values
+  name: ArrayEditorDialog
+- desc: 用于编辑令牌化器关联数组的对话框，同时显示和编辑tokens、token_types和scores三列数据。
+  methods:
+  - code:
+    - 'def __init__(self, tokens, token_types, scores, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.tokens = tokens'
+    - '    self.token_types = token_types'
+    - '    self.scores = scores'
+    - '    self.setWindowTitle("Edit Tokenizer")'
+    - '    self.setModal(True)'
+    - '    self.setup_ui()'
+    desc: 初始化对话框，接收三个并行数组数据并构建UI。
+    line: 1081-1120
+    name: __init__
+  - code:
+    - 'def setup_ui(self):'
+    - '    layout = QVBoxLayout(self)'
+    - '    self.table = QTableWidget()'
+    - '    self.table.setColumnCount(3)'
+    - '    self.table.setHorizontalHeaderLabels(["Token", "Type", "Score"])'
+    - '    # Populate rows'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(self.table)'
+    - '    layout.addWidget(buttons)'
+    desc: 构建对话框UI，包含三列表格用于同时编辑tokens、token_types和scores。
+    line: 1121-1170
+    name: setup_ui
+  - code:
+    - 'def get_data(self):'
+    - '    tokens = []'
+    - '    token_types = []'
+    - '    scores = []'
+    - '    for i in range(self.table.rowCount()):'
+    - '        tokens.append(self.table.item(i, 0).text())'
+    - '        token_types.append(int(self.table.item(i, 1).text()))'
+    - '        scores.append(float(self.table.item(i, 2).text()))'
+    - '    return tokens, token_types, scores'
+    desc: 返回编辑后的三列数据，分别为tokens、token_types和scores列表。
+    line: 1171-1190
+    name: get_data
+  name: TokenizerEditorDialog
+- desc: 用于添加新元数据字段的对话框，支持输入键、选择类型和初始值。
+  methods:
+  - code:
+    - 'def __init__(self, parent=None):'
+    - '    super().__init__(parent)'
+    - '    self.setWindowTitle("Add Metadata")'
+    - '    self.setModal(True)'
+    - '    self.setup_ui()'
+    desc: 初始化对话框，构建键输入、类型选择和值输入控件。
+    line: 1191-1220
+    name: __init__
+  - code:
+    - 'def setup_ui(self):'
+    - '    layout = QVBoxLayout(self)'
+    - '    form_layout = QFormLayout()'
+    - '    self.key_edit = QLineEdit()'
+    - '    self.type_combo = QComboBox()'
+    - '    # Populate with GGUFValueType'
+    - '    self.value_edit = QLineEdit()'
+    - '    form_layout.addRow("Key:", self.key_edit)'
+    - '    form_layout.addRow("Type:", self.type_combo)'
+    - '    form_layout.addRow("Value:", self.value_edit)'
+    - '    layout.addLayout(form_layout)'
+    - '    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)'
+    - '    buttons.accepted.connect(self.accept)'
+    - '    buttons.rejected.connect(self.reject)'
+    - '    layout.addWidget(buttons)'
+    desc: 构建对话框UI，包括键的QLineEdit、类型的QComboBox和值的QLineEdit。
+    line: 1221-1270
+    name: setup_ui
+  - code:
+    - 'def get_data(self):'
+    - '    key = self.key_edit.text()'
+    - '    value_type = self.type_combo.currentData()'
+    - '    value = self.value_edit.text()'
+    - '    # Convert value to its type'
+    - '    return key, value_type, converted_value'
+    desc: 返回用户输入的键、值类型和值作为元组。
+    line: 1271-1300
+    name: get_data
+  name: AddMetadataDialog
+desc: 该文件实现了一个基于 PySide6 的图形化 GGUF 文件编辑器，提供元数据查看/编辑、张量信息浏览以及分词器数据编辑等功能，支持打开、修改和另存
+  GGUF 格式的模型文件。该文件实现了基于PyQt5的GGUF文件图形化编辑器，提供元数据和张量的查看、编辑、添加、删除以及保存功能，支持数组和枚举类型编辑，并包含可交互的令牌化器编辑器。
+file: gguf-py/gguf/scripts/gguf_editor_gui.py
+funcs:
+- code:
+  - '#!/usr/bin/env python3'
+  - from __future__ import annotations
+  - ''
+  - import logging
+  - import argparse
+  - import os
+  - import sys
+  - import numpy
+  - import enum
+  - from pathlib import Path
+  - from typing import Any, Optional, Tuple, Type
+  - import warnings
+  - ''
+  - import numpy as np
+  - from PySide6.QtWidgets import (
+  - '    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,'
+  - '    QPushButton, QLabel, QLineEdit, QFileDialog, QTableWidget,'
+  - '    QTableWidgetItem, QComboBox, QMessageBox, QTabWidget,'
+  - '    QTextEdit, QFormLayout,'
+  - '    QHeaderView, QDialog, QDialogButtonBox'
+  - )
+  - from PySide6.QtCore import Qt
+  - ''
+  - '# Necessary to load the local gguf package'
+  - 'if "NO_LOCAL_GGUF" not in os.environ and (Path(__file__).parent.parent.parent.parent
+    / ''gguf-py'').exists():'
+  - '    sys.path.insert(0, str(Path(__file__).parent.parent.parent))'
+  - ''
+  - import gguf
+  - from gguf import GGUFReader, GGUFWriter, GGUFValueType, ReaderField
+  - from gguf.constants import TokenType, RopeScalingType, PoolingType, GGMLQuantizationType
+  - ''
+  - logger = logging.getLogger("gguf-editor-gui")
+  - ''
+  - '# Map of key names to enum types for automatic enum interpretation'
+  - KEY_TO_ENUM_TYPE = {
+  - '    gguf.Keys.Tokenizer.TOKEN_TYPE: TokenType,'
+  - '    gguf.Keys.Rope.SCALING_TYPE: RopeScalingType,'
+  - '    gguf.Keys.LLM.POOLING_TYPE: PoolingType,'
+  - '    gguf.Keys.General.FILE_TYPE: GGMLQuantizationType,'
+  - '}'
+  - ''
+  - '# Define the tokenizer keys that should be edited together'
+  - TOKENIZER_LINKED_KEYS = [
+  - '    gguf.Keys.Tokenizer.LIST,'
+  - '    gguf.Keys.Tokenizer.TOKEN_TYPE,'
+  - '    gguf.Keys.Tokenizer.SCORES'
+  - ']'
+  desc: 模块顶层的全局配置代码，包括设置本地 gguf 包的导入路径、导入 gguf 模块及其相关类型。
+  line: 1-57
+  name: __main__
+- code:
+  - 'def main() -> None:'
+  - '    parser = argparse.ArgumentParser(description="GUI GGUF Editor")'
+  - '    parser.add_argument("model_path", nargs="?", help="path to GGUF model file
+    to load at startup")'
+  - '    parser.add_argument("--verbose", action="store_true", help="increase output
+    verbosity")'
+  - '    args = parser.parse_args()'
+  - '    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)'
+  - '    app = QApplication(sys.argv)'
+  - '    window = GGUFEditorWindow()'
+  - '    window.show()'
+  - '    if args.model_path:'
+  - '        if os.path.isfile(args.model_path) and args.model_path.endswith(''.gguf''):'
+  - '            window.load_file(args.model_path)'
+  - '        else:'
+  - '            logger.error(f"Invalid model path: {args.model_path}")'
+  - '            QMessageBox.warning('
+  - '                window,'
+  - '                "Invalid Model Path",'
+  - '                f"The specified file does not exist or is not a GGUF file: {args.model_path}")'
+  - '    sys.exit(app.exec())'
+  desc: 程序入口函数，解析命令行参数，创建QApplication和主窗口，并可选择加载初始GGUF文件。
+  line: 1301-1340
+  name: main

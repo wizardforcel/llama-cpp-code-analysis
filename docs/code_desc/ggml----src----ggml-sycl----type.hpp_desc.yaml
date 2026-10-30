@@ -1,0 +1,151 @@
+classes:
+- desc: 自定义的FP8 E4M3浮点类型，内部存储原始8位数据，支持与float和sycl::half的显式转换，并允许直接访问底层字节以支持向量化加载/存储。
+  methods:
+  - code:
+    - __nv_fp8_e4m3() = default;
+    desc: 默认构造函数，将raw成员置为默认值（未初始化）。
+    line: 73-73
+    name: __nv_fp8_e4m3
+  - code:
+    - 'explicit __nv_fp8_e4m3(float f) : raw(float_to_e4m3(f)) {}'
+    desc: 从float构造，调用float_to_e4m3函数将浮点数转换为FP8格式存储。
+    line: 75-75
+    name: __nv_fp8_e4m3
+  - code:
+    - 'explicit __nv_fp8_e4m3(sycl::half h) : raw(float_to_e4m3(static_cast<float>(h)))
+      {}'
+    desc: 从sycl::half构造，先将半精度浮点数转换为float，再调用float_to_e4m3转换。
+    line: 76-76
+    name: __nv_fp8_e4m3
+  - code:
+    - operator float() const { return e4m3_to_float(raw); }
+    desc: 类型转换运算符，将FP8值通过e4m3_to_float函数转换为float类型。
+    line: 78-78
+    name: operator float
+  - code:
+    - operator sycl::half() const { return static_cast<sycl::half>(static_cast<float>(*this));
+      }
+    desc: 类型转换运算符，先将FP8转换为float，再转换为sycl::half类型。
+    line: 79-79
+    name: operator sycl::half
+  - code:
+    - operator uint8_t&() { return raw; }
+    desc: 非const类型转换运算符，返回对raw成员的引用，允许直接修改底层数据以支持向量化操作。
+    line: 82-82
+    name: operator uint8_t&
+  - code:
+    - operator uint8_t() const { return raw; }
+    desc: const类型转换运算符，返回raw成员的值，允许读取底层数据。
+    line: 83-83
+    name: operator uint8_t
+  name: __nv_fp8_e4m3
+desc: 该文件实现了一个基于SYCL的FP8 E4M3浮点类型，通过自定义的float_to_e4m3和e4m3_to_float转换函数实现IEEE 754与FP8
+  E4M3格式的双向转换，并定义了__nv_fp8_e4m3类型及相应的向量类型别名，用于GPU加速计算中节省内存和带宽。
+file: ggml/src/ggml-sycl/type.hpp
+funcs:
+- code:
+  - inline uint8_t float_to_e4m3(float f)
+  - '{'
+  - '    if (sycl::isnan(f)) {'
+  - '        return 0x7F;                    // Canonical NaN (positive)'
+  - '    }'
+  - ''
+  - '    uint32_t bits = sycl::bit_cast<uint32_t>(f);'
+  - '    uint32_t sign = (bits >> 31) & 0x1u;'
+  - '    uint32_t exp  = (bits >> 23) & 0xFFu;'
+  - '    uint32_t mant = bits & 0x7FFFFFu;'
+  - ''
+  - '    // Zero'
+  - '    if (exp == 0 && mant == 0) {'
+  - '        return static_cast<uint8_t>(sign << 7);'
+  - '    }'
+  - ''
+  - '    // Extract biased exponent and mantissa for FP8'
+  - '    int e = static_cast<int>(exp) - 127;           // true exponent (IEEE bias
+    127)'
+  - '    uint32_t m = mant;'
+  - ''
+  - '    // Handle very large values → NaN (NVIDIA behavior for E4M3)'
+  - '    if (e > 7) {                                   // max exponent for E4M3 is
+    7 (biased 14)'
+  - '        return static_cast<uint8_t>((sign << 7) | 0x7F);'
+  - '    }'
+  - ''
+  - '    // Handle subnormals and normal numbers'
+  - '    if (e < -6) {                                  // smallest normal exponent
+    is -6'
+  - '        // Subnormal in FP8: shift mantissa right'
+  - '        int shift = -6 - e;'
+  - '        m = (m | 0x800000u) >> (shift + 1);        // +1 because we lose the
+    implicit 1 position'
+  - '        if (shift > 23) m = 0;'
+  - '    } else {'
+  - '        // Normal number: adjust exponent bias from 127 to 7'
+  - '        int new_exp = e + 7;'
+  - '        m = (m >> 20) & 0x7u;                      // take top 3 mantissa bits
+    (after implicit 1)'
+  - '        m |= (static_cast<uint32_t>(new_exp) << 3);'
+  - '    }'
+  - ''
+  - '    // Round-to-nearest-even (simple guard + round bit)'
+  - '    // For better accuracy you can add sticky bit, but this is sufficient for
+    most use cases'
+  - '    uint32_t round_bit = (mant >> 19) & 0x1u;      // bit after the 3 mantissa
+    bits'
+  - '    if (round_bit) {'
+  - '        m += 1;'
+  - '        // Carry into exponent if mantissa overflows'
+  - '        if ((m & 0x8u) != 0) {'
+  - '            m = (m & 0x7u) | ((m & 0x38u) << 1);   // simple carry handling'
+  - '            // If exponent overflows after carry → NaN'
+  - '            if ((m >> 3) > 14) {'
+  - '                return static_cast<uint8_t>((sign << 7) | 0x7F);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - ''
+  - '    uint8_t result = static_cast<uint8_t>((sign << 7) | (m & 0x7F));'
+  - '    return result;'
+  - '}'
+  desc: 将IEEE 754单精度浮点数转换为FP8 E4M3格式的8位值，包含NaN、零、过大值、次正规数和正规数的处理，并采用舍入到最近偶数策略。
+  line: 2-48
+  name: float_to_e4m3
+- code:
+  - inline float e4m3_to_float(uint8_t x)
+  - '{'
+  - '    if (x == 0) return 0.0f;'
+  - ''
+  - '    uint8_t sign = (x >> 7) & 0x1u;'
+  - '    uint8_t exp  = (x >> 3) & 0xFu;'
+  - '    uint8_t mant = x & 0x7u;'
+  - ''
+  - '    // NaN (NVIDIA uses 0x7F / 0xFF as NaN)'
+  - '    if (exp == 0xF && mant != 0) {'
+  - '        return std::numeric_limits<float>::quiet_NaN();'
+  - '    }'
+  - '    if (exp == 0xF) {                     // 0x7F or 0xFF treated as NaN'
+  - '        return std::numeric_limits<float>::quiet_NaN();'
+  - '    }'
+  - ''
+  - '    float val;'
+  - ''
+  - '    if (exp == 0) {'
+  - '        // Subnormal'
+  - '        val = mant * (1.0f / 8.0f) * sycl::pow(2.0f, -6.0f);'
+  - '    } else {'
+  - '        // Normal: implicit leading 1 + bias 7'
+  - '        val = (1.0f + mant / 8.0f) * sycl::pow(2.0f, static_cast<float>(exp)
+    - 7.0f);'
+  - '    }'
+  - ''
+  - '    return sign ? -val : val;'
+  - '}'
+  desc: 将FP8 E4M3格式的8位值转换为IEEE 754单精度浮点数，处理NaN、零、次正规数和正规数的还原。
+  line: 66-90
+  name: e4m3_to_float
+- code:
+  - using __nv_fp8x2_e4m3 = sycl::vec<__nv_fp8_e4m3, 2>;
+  - using __nv_fp8x4_e4m3 = sycl::vec<__nv_fp8_e4m3, 4>;
+  desc: 包含了两个使用using定义的向量类型别名：__nv_fp8x2_e4m3（长度为2的向量）和__nv_fp8x4_e4m3（长度为4的向量），用于支持向量化计算。
+  line: 89-90
+  name: __main__

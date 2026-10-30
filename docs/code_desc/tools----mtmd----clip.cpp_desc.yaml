@@ -1,0 +1,2256 @@
+classes:
+- desc: CLIP 上下文结构体，管理模型、后端、缓存和调度器等资源
+  methods:
+  - code:
+    - clip_ctx(clip_context_params & ctx_params) {
+    - '    flash_attn_type = ctx_params.flash_attn_type;'
+    - '    backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);'
+    - '    if (!backend_cpu) {'
+    - '        throw std::runtime_error("failed to initialize CPU backend");'
+    - '    }'
+    - '    if (ctx_params.use_gpu) {'
+    - '        auto backend_name = std::getenv("MTMD_BACKEND_DEVICE");'
+    - '        if (backend_name != nullptr) {'
+    - '            backend = ggml_backend_init_by_name(backend_name, nullptr);'
+    - '            if (!backend) {'
+    - '                LOG_WRN("%s: Warning: Failed to initialize \"%s\" backend,
+      falling back to default GPU backend\n", __func__, backend_name);'
+    - '            }'
+    - '        }'
+    - '        if (!backend) {'
+    - '            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU,
+      nullptr);'
+    - '            backend = backend ? backend : ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU,
+      nullptr);'
+    - '        }'
+    - '    }'
+    - '    if (backend) {'
+    - '        LOG_INF("%s: CLIP using %s backend\n", __func__, ggml_backend_name(backend));'
+    - '        backend_ptrs.push_back(backend);'
+    - '        backend_buft.push_back(ggml_backend_get_default_buffer_type(backend));'
+    - '    } else {'
+    - '        backend = backend_cpu;'
+    - '        LOG_INF("%s: CLIP using CPU backend\n", __func__);'
+    - '    }'
+    - '    if (ctx_params.image_min_tokens > 0) {'
+    - '        model.hparams.custom_image_min_tokens = ctx_params.image_min_tokens;'
+    - '    }'
+    - '    if (ctx_params.image_max_tokens > 0) {'
+    - '        model.hparams.custom_image_max_tokens = ctx_params.image_max_tokens;'
+    - '    }'
+    - '    backend_ptrs.push_back(backend_cpu);'
+    - '    backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));'
+    - '    sched.reset('
+    - '        ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(),
+      8192, false, true)'
+    - '    );'
+    - '    if (ctx_params.cb_eval != nullptr) {'
+    - '        ggml_backend_sched_set_eval_callback(sched.get(), ctx_params.cb_eval,
+      ctx_params.cb_eval_user_data);'
+    - '    }'
+    - '    debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;'
+    - '}'
+    desc: 构造函数，初始化后端、调度器和上下文参数
+    line: 120-163
+    name: clip_ctx
+  - code:
+    - ~clip_ctx() {
+    - '    ggml_backend_free(backend);'
+    - '    if (backend != backend_cpu) {'
+    - '        ggml_backend_free(backend_cpu);'
+    - '    }'
+    - '}'
+    desc: 析构函数，释放后端资源
+    line: 165-169
+    name: ~clip_ctx
+  - code:
+    - projector_type proj_type() const {
+    - '    return model.proj_type;'
+    - '}'
+    desc: 返回模型的投影类型
+    line: 174-176
+    name: proj_type
+  name: clip_ctx
+- desc: CLIP 计算图构建器，负责构建视觉和音频编码器的计算图
+  methods:
+  - code:
+    - 'clip_graph::clip_graph(clip_ctx * ctx, const clip_image_f32 & img) :'
+    - '        model(ctx->model),'
+    - '        hparams(model.hparams),'
+    - '        proj_type(ctx->proj_type()),'
+    - '        img(img),'
+    - '        patch_size(hparams.patch_size),'
+    - '        n_patches_x(img.nx / patch_size),'
+    - '        n_patches_y(img.ny / patch_size),'
+    - '        n_patches(n_patches_x * n_patches_y),'
+    - '        n_embd(hparams.n_embd),'
+    - '        n_head(hparams.n_head),'
+    - '        d_head(n_embd / n_head),'
+    - '        n_layer(hparams.n_layer),'
+    - '        n_mmproj_embd(clip_n_mmproj_embd(ctx)),'
+    - '        eps(hparams.eps),'
+    - '        kq_scale(1.0f / sqrtf((float)d_head)),'
+    - '        flash_attn_type(ctx->flash_attn_type) {'
+    - '    struct ggml_init_params params = {'
+    - '        /*.mem_size   =*/ ctx->buf_compute_meta.size(),'
+    - '        /*.mem_buffer =*/ ctx->buf_compute_meta.data(),'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ctx0_ptr.reset(ggml_init(params));'
+    - '    ctx0 = ctx0_ptr.get();'
+    - '    gf = ggml_new_graph_custom(ctx0, ctx->max_nodes, false);'
+    - '}'
+    desc: 构造函数，初始化计算图上下文和图结构
+    line: 216-241
+    name: clip_graph
+  - code:
+    - ggml_tensor * clip_graph::build_mm(ggml_tensor * w, ggml_tensor * x) const {
+    - '    return ggml_mul_mat(ctx0, w, x);'
+    - '}'
+    desc: 执行矩阵乘法操作
+    line: 245-247
+    name: build_mm
+  - code:
+    - void clip_graph::cb(ggml_tensor * cur, const char * name, int il) const {
+    - '    if (il >= 0) {'
+    - '        ggml_format_name(cur, "%s-%d", name, il);'
+    - '    } else {'
+    - '        ggml_set_name(cur, name);'
+    - '    }'
+    - '}'
+    desc: 设置张量名称的回调函数
+    line: 251-257
+    name: cb
+  - code:
+    - ggml_tensor * clip_graph::resize_position_embeddings(uint32_t interpolation_mode)
+      {
+    - '    ggml_tensor * pos_embd = model.position_embeddings;'
+    - '    const int height       = img.ny / patch_size;'
+    - '    const int width        = img.nx / patch_size;'
+    - '    const uint32_t mode    = interpolation_mode;'
+    - '    const int n_per_side   = (int)std::sqrt(pos_embd->ne[1]);'
+    - '    GGML_ASSERT(pos_embd);'
+    - '    if (height == n_per_side && width == n_per_side) {'
+    - '        return pos_embd;'
+    - '    }'
+    - '    pos_embd = ggml_reshape_3d(ctx0, pos_embd, n_embd, n_per_side, n_per_side);'
+    - '    pos_embd = ggml_permute(ctx0, pos_embd, 2, 0, 1, 3);'
+    - '    pos_embd = ggml_interpolate(ctx0, pos_embd, width, height, n_embd, 1, mode);'
+    - '    pos_embd = ggml_permute(ctx0, pos_embd, 1, 2, 0, 3);'
+    - '    pos_embd = ggml_cont_2d(ctx0, pos_embd, n_embd, width * height);'
+    - '    return pos_embd;'
+    - '}'
+    desc: 调整位置嵌入的尺寸以匹配输入图像大小
+    line: 262-281
+    name: resize_position_embeddings
+  - code:
+    - ggml_tensor * clip_graph::build_vit(
+    - '            ggml_tensor * inp,'
+    - '            int64_t n_pos,'
+    - '            norm_type norm_t,'
+    - '            ffn_op_type ffn_t,'
+    - '            ggml_tensor * learned_pos_embd,'
+    - '            std::function<ggml_tensor *(ggml_tensor *, const clip_layer &)>
+      add_pos'
+    - '        ) {'
+    - '    if (learned_pos_embd) {'
+    - '        inp = ggml_add(ctx0, inp, learned_pos_embd);'
+    - '        cb(inp, "pos_embed", -1);'
+    - '    }'
+    - '    ggml_tensor * inpL = inp;'
+    - '    if (model.pre_ln_w) {'
+    - '        inpL = build_norm(inpL, model.pre_ln_w, model.pre_ln_b, norm_t, eps,
+      -1);'
+    - '        cb(inpL, "pre_ln", -1);'
+    - '    }'
+    - '    for (int il = 0; il < n_layer; il++) {'
+    - '        auto & layer = model.layers[il];'
+    - '        ggml_tensor * cur = inpL;'
+    - '        cur = build_norm(cur, layer.ln_1_w, layer.ln_1_b, norm_t, eps, il);'
+    - '        cb(cur, "layer_inp_normed", il);'
+    - '        {'
+    - '            ggml_tensor * Qcur = nullptr;'
+    - '            ggml_tensor * Kcur = nullptr;'
+    - '            ggml_tensor * Vcur = nullptr;'
+    - '            if (layer.qkv_w != nullptr) {'
+    - '                cur = build_mm(layer.qkv_w, cur);'
+    - '                if (layer.qkv_b != nullptr) {'
+    - '                    cur = ggml_add(ctx0, cur, layer.qkv_b);'
+    - '                }'
+    - '                Qcur = ggml_view_3d(ctx0, cur, d_head, n_head, n_pos,'
+    - '                    ggml_row_size(cur->type, d_head),'
+    - '                    cur->nb[1],'
+    - '                    0);'
+    - '                Kcur = ggml_view_3d(ctx0, cur, d_head, n_head, n_pos,'
+    - '                    ggml_row_size(cur->type, d_head),'
+    - '                    cur->nb[1],'
+    - '                    ggml_row_size(cur->type, n_embd));'
+    - '                Vcur = ggml_view_3d(ctx0, cur, d_head, n_head, n_pos,'
+    - '                    ggml_row_size(cur->type, d_head),'
+    - '                    cur->nb[1],'
+    - '                    ggml_row_size(cur->type, 2 * n_embd));'
+    - '                if (layer.q_norm) {'
+    - '                    GGML_ASSERT(layer.q_norm->ne[0] == Qcur->ne[0]);'
+    - '                    Qcur = build_norm(Qcur, layer.q_norm, NULL, norm_t, eps,
+      il);'
+    - '                    cb(Qcur, "Qcur_norm", il);'
+    - '                }'
+    - '                if (layer.k_norm) {'
+    - '                    GGML_ASSERT(layer.k_norm->ne[0] == Kcur->ne[0]);'
+    - '                    Kcur = build_norm(Kcur, layer.k_norm, NULL, norm_t, eps,
+      il);'
+    - '                    cb(Kcur, "Kcur_norm", il);'
+    - '                }'
+    - '            } else {'
+    - '                Qcur = build_mm(layer.q_w, cur);'
+    - '                if (layer.q_b) {'
+    - '                    Qcur = ggml_add(ctx0, Qcur, layer.q_b);'
+    - '                }'
+    - '                Kcur = build_mm(layer.k_w, cur);'
+    - '                if (layer.k_b) {'
+    - '                    Kcur = ggml_add(ctx0, Kcur, layer.k_b);'
+    - '                }'
+    - '                Vcur = build_mm(layer.v_w, cur);'
+    - '                if (layer.v_b) {'
+    - '                    Vcur = ggml_add(ctx0, Vcur, layer.v_b);'
+    - '                }'
+    - '                bool norm_per_head = layer.q_norm && layer.q_norm->ne[0] ==
+      d_head;'
+    - '                if (!norm_per_head) {'
+    - '                    if (layer.q_norm) {'
+    - '                        Qcur = build_norm(Qcur, layer.q_norm, NULL, norm_t,
+      eps, il);'
+    - '                        cb(Qcur, "Qcur_norm", il);'
+    - '                    }'
+    - '                    if (layer.k_norm) {'
+    - '                        Kcur = build_norm(Kcur, layer.k_norm, NULL, norm_t,
+      eps, il);'
+    - '                        cb(Kcur, "Kcur_norm", il);'
+    - '                    }'
+    - '                }'
+    - '                Qcur = ggml_reshape_3d(ctx0, Qcur, d_head, n_head, n_pos);'
+    - '                Kcur = ggml_reshape_3d(ctx0, Kcur, d_head, n_head, n_pos);'
+    - '                Vcur = ggml_reshape_3d(ctx0, Vcur, d_head, n_head, n_pos);'
+    - '                if (norm_per_head) {'
+    - '                    if (layer.q_norm) {'
+    - '                        Qcur = build_norm(Qcur, layer.q_norm, NULL, norm_t,
+      eps, il);'
+    - '                        cb(Qcur, "Qcur_norm_per_head", il);'
+    - '                    }'
+    - '                    if (layer.k_norm) {'
+    - '                        Kcur = build_norm(Kcur, layer.k_norm, NULL, norm_t,
+      eps, il);'
+    - '                        cb(Kcur, "Kcur_norm_per_head", il);'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '            cb(Qcur, "Qcur", il);'
+    - '            cb(Kcur, "Kcur", il);'
+    - '            cb(Vcur, "Vcur", il);'
+    - '            if (add_pos) {'
+    - '                Qcur = add_pos(Qcur, layer);'
+    - '                Kcur = add_pos(Kcur, layer);'
+    - '                cb(Qcur, "Qcur_pos", il);'
+    - '                cb(Kcur, "Kcur_pos", il);'
+    - '            }'
+    - '            if (proj_type == PROJECTOR_TYPE_GEMMA4V) {'
+    - '                Vcur = ggml_rms_norm(ctx0, Vcur, eps);'
+    - '                cb(Vcur, "Vcur_normed", il);'
+    - '            }'
+    - '            cur = build_attn(layer.o_w, layer.o_b,'
+    - '                Qcur, Kcur, Vcur, nullptr, kq_scale, il);'
+    - '            cb(cur, "attn_out", il);'
+    - '        }'
+    - '        if (layer.ls_1_w) {'
+    - '            cur = ggml_mul(ctx0, cur, layer.ls_1_w);'
+    - '            cb(cur, "attn_out_scaled", il);'
+    - '        }'
+    - '        if (layer.attn_post_norm_w) {'
+    - '            cur = build_norm(cur, layer.attn_post_norm_w, nullptr, norm_t,
+      eps, il);'
+    - '            cb(cur, "attn_post_normed", il);'
+    - '        }'
+    - '        cur = ggml_add(ctx0, cur, inpL);'
+    - '        inpL = cur;'
+    - '        cb(cur, "ffn_inp", il);'
+    - '        cur = build_norm(cur, layer.ln_2_w, layer.ln_2_b, norm_t, eps, il);'
+    - '        cb(cur, "ffn_inp_normed", il);'
+    - '        cur = build_ffn(cur,'
+    - '            layer.ff_up_w, layer.ff_up_b,'
+    - '            layer.ff_gate_w, layer.ff_gate_b,'
+    - '            layer.ff_down_w, layer.ff_down_b,'
+    - '            ffn_t, il);'
+    - '        cb(cur, "ffn_out", il);'
+    - '        if (layer.ff_post_norm_w) {'
+    - '            cur = build_norm(cur, layer.ff_post_norm_w, nullptr, norm_t, eps,
+      il);'
+    - '            cb(cur, "ffn_post_normed", il);'
+    - '        }'
+    - '        if (layer.ls_2_w) {'
+    - '            cur = ggml_mul(ctx0, cur, layer.ls_2_w);'
+    - '            cb(cur, "ffn_out_scaled", il);'
+    - '        }'
+    - '        cur = ggml_add(ctx0, inpL, cur);'
+    - '        cb(cur, "layer_out", il);'
+    - '        if (layer.ls_out_w) {'
+    - '            cur = ggml_mul(ctx0, cur, layer.ls_out_w);'
+    - '            cb(cur, "layer_out_scaled", il);'
+    - '        }'
+    - '        inpL = cur;'
+    - '    }'
+    - '    if (model.audio_has_avgpool()) {'
+    - '        ggml_tensor * cur = inpL;'
+    - '        cur = ggml_transpose(ctx0, cur);'
+    - '        cur = ggml_cont(ctx0, cur);'
+    - '        cur = ggml_pool_1d(ctx0, cur, GGML_OP_POOL_AVG, 2, 2, 0);'
+    - '        cur = ggml_transpose(ctx0, cur);'
+    - '        cur = ggml_cont(ctx0, cur);'
+    - '        inpL = cur;'
+    - '    }'
+    - '    if (model.post_ln_w) {'
+    - '        inpL = build_norm(inpL, model.post_ln_w, model.post_ln_b, norm_t, eps,
+      -1);'
+    - '    }'
+    - '    return inpL;'
+    - '}'
+    desc: 构建视觉变换器（ViT）的计算图，包含注意力、前馈网络和归一化层
+    line: 285-464
+    name: build_vit
+  - code:
+    - ggml_tensor * clip_graph::build_inp() {
+    - '    ggml_tensor * inp_raw = build_inp_raw();'
+    - '    ggml_tensor * inp = ggml_conv_2d(ctx0, model.patch_embeddings_0, inp_raw,
+      patch_size, patch_size, 0, 0, 1, 1);'
+    - '    inp = ggml_reshape_2d(ctx0, inp, n_patches, n_embd);'
+    - '    inp = ggml_cont(ctx0, ggml_transpose(ctx0, inp));'
+    - '    if (model.patch_bias) {'
+    - '        inp = ggml_add(ctx0, inp, model.patch_bias);'
+    - '        cb(inp, "patch_bias", -1);'
+    - '    }'
+    - '    return inp;'
+    - '}'
+    desc: 构建输入处理模块，将原始图像转换为 patch 嵌入
+    line: 470-480
+    name: build_inp
+  - code:
+    - ggml_tensor * clip_graph::build_inp_raw(int channels) {
+    - '    ggml_tensor * inp_raw = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, img.nx,
+      img.ny, channels);'
+    - '    ggml_set_name(inp_raw, "inp_raw");'
+    - '    ggml_set_input(inp_raw);'
+    - '    return inp_raw;'
+    - '}'
+    desc: 构建原始输入张量
+    line: 483-489
+    name: build_inp_raw
+  - code:
+    - ggml_tensor * clip_graph::build_norm(
+    - '        ggml_tensor * cur,'
+    - '        ggml_tensor * mw,'
+    - '        ggml_tensor * mb,'
+    - '        norm_type type,'
+    - '        float norm_eps,'
+    - '        int il) const {'
+    - '    cur = type == NORM_TYPE_RMS'
+    - '        ? ggml_rms_norm(ctx0, cur, norm_eps)'
+    - '        : ggml_norm(ctx0, cur, norm_eps);'
+    - '    if (mw) {'
+    - '        cur = ggml_mul(ctx0, cur, mw);'
+    - '        cb(cur, "norm_w", il);'
+    - '    }'
+    - '    if (mb) {'
+    - '        cur = ggml_add(ctx0, cur, mb);'
+    - '        cb(cur, "norm_b", il);'
+    - '    }'
+    - '    return cur;'
+    - '}'
+    desc: 构建归一化层（RMS 或 LayerNorm）
+    line: 498-519
+    name: build_norm
+  - code:
+    - ggml_tensor * clip_graph::build_ffn(
+    - '        ggml_tensor * cur,'
+    - '        ggml_tensor * up,'
+    - '        ggml_tensor * up_b,'
+    - '        ggml_tensor * gate,'
+    - '        ggml_tensor * gate_b,'
+    - '        ggml_tensor * down,'
+    - '        ggml_tensor * down_b,'
+    - '        ffn_op_type type_op,'
+    - '        int il) const {'
+    - '    ggml_tensor * tmp = up ? build_mm(up, cur) : cur;'
+    - '    cb(tmp, "ffn_up", il);'
+    - '    if (up_b) {'
+    - '        tmp = ggml_add(ctx0, tmp, up_b);'
+    - '        cb(tmp, "ffn_up_b", il);'
+    - '    }'
+    - '    if (gate) {'
+    - '        cur = build_mm(gate, cur);'
+    - '        cb(cur, "ffn_gate", il);'
+    - '        if (gate_b) {'
+    - '            cur = ggml_add(ctx0, cur, gate_b);'
+    - '            cb(cur, "ffn_gate_b", il);'
+    - '        }'
+    - '    } else {'
+    - '        cur = tmp;'
+    - '    }'
+    - '    switch (type_op) {'
+    - '        case FFN_SILU:'
+    - '            if (gate) {'
+    - '                cur = ggml_swiglu_split(ctx0, cur, tmp);'
+    - '                cb(cur, "ffn_swiglu", il);'
+    - '            } else {'
+    - '                cur = ggml_silu(ctx0, cur);'
+    - '                cb(cur, "ffn_silu", il);'
+    - '            } break;'
+    - '        case FFN_GELU:'
+    - '            if (gate) {'
+    - '                cur = ggml_geglu_split(ctx0, cur, tmp);'
+    - '                cb(cur, "ffn_geglu", il);'
+    - '            } else {'
+    - '                cur = ggml_gelu(ctx0, cur);'
+    - '                cb(cur, "ffn_gelu", il);'
+    - '            } break;'
+    - '        case FFN_GELU_ERF:'
+    - '            if (gate) {'
+    - '                cur = ggml_geglu_erf_split(ctx0, cur, tmp);'
+    - '                cb(cur, "ffn_geglu_erf", il);'
+    - '            } else {'
+    - '                cur = ggml_gelu_erf(ctx0, cur);'
+    - '                cb(cur, "ffn_gelu_erf", il);'
+    - '            } break;'
+    - '        case FFN_GELU_QUICK:'
+    - '            if (gate) {'
+    - '                cur = ggml_geglu_quick_split(ctx0, cur, tmp);'
+    - '                cb(cur, "ffn_geglu_quick", il);'
+    - '            } else {'
+    - '                cur = ggml_gelu_quick(ctx0, cur);'
+    - '                cb(cur, "ffn_gelu_quick", il);'
+    - '            } break;'
+    - '        case FFN_RELU_SQR:'
+    - '            {'
+    - '                cur = ggml_relu(ctx0, cur);'
+    - '                cur = ggml_sqr(ctx0, cur);'
+    - '                cb(cur, "ffn_relu_sqr", il);'
+    - '            } break;'
+    - '    }'
+    - '    if (down) {'
+    - '        cur = build_mm(down, cur);'
+    - '    }'
+    - '    if (down_b) {'
+    - '        cb(cur, "ffn_down", il);'
+    - '    }'
+    - '    if (down_b) {'
+    - '        cur = ggml_add(ctx0, cur, down_b);'
+    - '    }'
+    - '    return cur;'
+    - '}'
+    desc: 构建前馈网络（FFN）模块
+    line: 523-617
+    name: build_ffn
+  - code:
+    - ggml_tensor * clip_graph::build_attn(
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_mask,'
+    - '        float kq_scale,'
+    - '        int il) const {'
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - '    ggml_build_forward_expand(gf, k_cur);'
+    - '    ggml_build_forward_expand(gf, v_cur);'
+    - '    ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);'
+    - '    ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);'
+    - '    ggml_tensor * cur;'
+    - '    if (flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED) {'
+    - '        ggml_tensor * v = ggml_permute(ctx0, v_cur, 0, 2, 1, 3);'
+    - '        k = ggml_cast(ctx0, k, GGML_TYPE_F16);'
+    - '        v = ggml_cast(ctx0, v, GGML_TYPE_F16);'
+    - '        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, 0.0f, 0.0f);'
+    - '        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);'
+    - '        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);'
+    - '    } else {'
+    - '        ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);'
+    - '        v = ggml_cont(ctx0, v);'
+    - '        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);'
+    - '        kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);'
+    - '        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);'
+    - '        cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);'
+    - '        cur = ggml_cont_2d(ctx0, cur, cur->ne[0] * cur->ne[1], cur->ne[2] *
+      cur->ne[3]);'
+    - '    }'
+    - '    cb(cur, "kqv_out", il);'
+    - '    if (wo) {'
+    - '        cur = build_mm(wo, cur);'
+    - '    }'
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - '    return cur;'
+    - '}'
+    desc: 构建注意力机制模块
+    line: 628-702
+    name: build_attn
+  - code:
+    - ggml_tensor * clip_graph::build_rope_2d(
+    - '    ggml_context * ctx0,'
+    - '    ggml_tensor * cur,'
+    - '    ggml_tensor * pos_a,'
+    - '    ggml_tensor * pos_b,'
+    - '    const float freq_base,'
+    - '    const bool interleave_freq'
+    - ) {
+    - '    const int64_t n_dim  = cur->ne[0];'
+    - '    const int64_t n_head = cur->ne[1];'
+    - '    const int64_t n_pos  = cur->ne[2];'
+    - '    const float freq_scale_odd = interleave_freq'
+    - '                                ? std::pow(freq_base, (float)-2/n_dim)'
+    - '                                : 1.0;'
+    - '    ggml_tensor * first;'
+    - '    {'
+    - '        first = ggml_view_3d(ctx0, cur,'
+    - '            n_dim/2, n_head, n_pos,'
+    - '            cur->nb[1],'
+    - '            cur->nb[2],'
+    - '            0);'
+    - '        first = ggml_rope_ext('
+    - '            ctx0,'
+    - '            first,'
+    - '            pos_a,'
+    - '            nullptr,'
+    - '            n_dim/2,'
+    - '            0, 0, freq_base,'
+    - '            1.0f, 0.0f, 1.0f, 0.0f, 0.0f'
+    - '        );'
+    - '    }'
+    - '    ggml_tensor * second;'
+    - '    {'
+    - '        second = ggml_view_3d(ctx0, cur,'
+    - '            n_dim/2, n_head, n_pos,'
+    - '            cur->nb[1],'
+    - '            cur->nb[2],'
+    - '            n_dim/2 * ggml_element_size(cur));'
+    - '        second = ggml_rope_ext('
+    - '            ctx0,'
+    - '            second,'
+    - '            pos_b,'
+    - '            nullptr,'
+    - '            n_dim/2,'
+    - '            0, 0, freq_base,'
+    - '            freq_scale_odd,'
+    - '            0.0f, 1.0f, 0.0f, 0.0f'
+    - '        );'
+    - '    }'
+    - '    cur = ggml_concat(ctx0, first, second, 0);'
+    - '    return cur;'
+    - '}'
+    desc: 构建 2D 旋转位置编码（RoPE），将位置嵌入分为两半应用
+    line: 709-747
+    name: build_rope_2d
+  - code:
+    - ggml_tensor * clip_graph::build_stack(ggml_tensor * cur, int32_t stack_factor,
+      int32_t n_embed) {
+    - '    if (stack_factor <= 1) {'
+    - '        return cur;'
+    - '    }'
+    - '    int64_t total_elements = ggml_nelements(cur);'
+    - '    int64_t stride = n_embed * stack_factor;'
+    - '    int64_t padded_len = GGML_PAD(total_elements, stride);'
+    - '    int64_t pad = padded_len - total_elements;'
+    - '    if (pad > 0) {'
+    - '        cur = ggml_view_1d(ctx0, cur, total_elements, 0);'
+    - '        cur = ggml_pad(ctx0, cur, pad, 0, 0, 0);'
+    - '    }'
+    - '    cur = ggml_view_2d(ctx0, cur, stride, padded_len / stride,'
+    - '                        ggml_row_size(cur->type, stride), 0);'
+    - '    return cur;'
+    - '}'
+    desc: 用于音频处理的堆叠帧函数
+    line: 762-781
+    name: build_stack
+  - code:
+    - ggml_tensor * clip_graph::build_patch_merge_permute(ggml_tensor * cur, int scale_factor)
+      {
+    - '    GGML_ASSERT(scale_factor > 1);'
+    - '    const int n_embd = cur->ne[0];'
+    - '    int width  = img.nx / patch_size;'
+    - '    int height = img.ny / patch_size;'
+    - '    const int64_t pad_width  = CLIP_ALIGN(width,  scale_factor) - width;'
+    - '    const int64_t pad_height = CLIP_ALIGN(height, scale_factor) - height;'
+    - '    cur = ggml_reshape_3d(ctx0, cur, n_embd, width, height);'
+    - '    if (pad_width || pad_height) {'
+    - '        cur     = ggml_pad(ctx0, cur, 0, pad_width, pad_height, 0);'
+    - '        width  += pad_width;'
+    - '        height += pad_height;'
+    - '    }'
+    - '    cur = ggml_reshape_3d(ctx0, cur, n_embd * scale_factor, width / scale_factor,
+      height);'
+    - '    cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);'
+    - '    cur = ggml_cont_3d(ctx0, cur, n_embd * scale_factor * scale_factor, height
+      / scale_factor, width / scale_factor);'
+    - '    cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);'
+    - '    cur = ggml_cont_2d(ctx0, cur, cur->ne[0], cur->ne[1] * cur->ne[2]);'
+    - '    cb(cur, "pixel_shuffle", -1);'
+    - '    return cur;'
+    - '}'
+    desc: 实现像素重排/取消重排操作，用于动态分辨率支持
+    line: 788-809
+    name: build_patch_merge_permute
+  name: clip_graph
+- desc: CLIP 模型加载器，负责从 GGUF 文件加载模型、参数和权重
+  methods:
+  - code:
+    - 'clip_model_loader(const char * fname) : fname(fname) {'
+    - '    struct ggml_context * meta = nullptr;'
+    - '    struct gguf_init_params params = {'
+    - '        /*.no_alloc = */ true,'
+    - '        /*.ctx      = */ &meta,'
+    - '    };'
+    - '    ctx_gguf = gguf_context_ptr(gguf_init_from_file(fname, params));'
+    - '    if (!ctx_gguf.get()) {'
+    - '        throw std::runtime_error(string_format("%s: failed to load CLIP model
+      from %s. Does this file exist?\n", __func__, fname));'
+    - '    }'
+    - '    ctx_meta.reset(meta);'
+    - '    const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());'
+    - '    {'
+    - '        std::string name;'
+    - '        get_string(KEY_NAME, name, false);'
+    - '        std::string description;'
+    - '        get_string(KEY_DESCRIPTION, description, false);'
+    - '        LOG_INF("%s: model name:   %s\n",  __func__, name.c_str());'
+    - '        LOG_INF("%s: description:  %s\n",  __func__, description.c_str());'
+    - '        LOG_INF("%s: GGUF version: %d\n",  __func__, gguf_get_version(ctx_gguf.get()));'
+    - '        LOG_INF("%s: alignment:    %zu\n", __func__, gguf_get_alignment(ctx_gguf.get()));'
+    - '        LOG_INF("%s: n_tensors:    %d\n",  __func__, n_tensors);'
+    - '        LOG_INF("%s: n_kv:         %d\n",  __func__, (int)gguf_get_n_kv(ctx_gguf.get()));'
+    - '        LOG_INF("\n");'
+    - '    }'
+    - '    {'
+    - '        get_bool(KEY_HAS_VISION_ENC, has_vision, false);'
+    - '        get_bool(KEY_HAS_AUDIO_ENC,  has_audio,  false);'
+    - '        if (has_vision) {'
+    - '            LOG_INF("%s: has vision encoder\n", __func__);'
+    - '        }'
+    - '        if (has_audio) {'
+    - '            LOG_INF("%s: has audio encoder\n", __func__);'
+    - '        }'
+    - '    }'
+    - '    {'
+    - '        for (int i = 0; i < n_tensors; ++i) {'
+    - '            const char * name = gguf_get_tensor_name(ctx_gguf.get(), i);'
+    - '            const size_t offset = gguf_get_tensor_offset(ctx_gguf.get(), i);'
+    - '            enum ggml_type type = gguf_get_tensor_type(ctx_gguf.get(), i);'
+    - '            ggml_tensor * cur = ggml_get_tensor(meta, name);'
+    - '            size_t tensor_size = ggml_nbytes(cur);'
+    - '            model_size += tensor_size;'
+    - '            LOG_DBG("%s: tensor[%d]: n_dims = %d, name = %s, tensor_size=%zu,
+      offset=%zu, shape:[%" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64 "], type
+      = %s\n",'
+    - '                __func__, i, ggml_n_dims(cur), cur->name, tensor_size, offset,
+      cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3], ggml_type_name(type));'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 构造函数，初始化 GGUF 上下文并打印模型信息
+    line: 854-912
+    name: clip_model_loader
+  - code:
+    - void load_hparams(clip_model & model, clip_modality modality) {
+    - '    auto & hparams = model.hparams;'
+    - '    std::string log_ffn_op;'
+    - '    if (modality == CLIP_MODALITY_VISION) {'
+    - '        GGML_ASSERT(has_vision);'
+    - '    } else if (modality == CLIP_MODALITY_AUDIO) {'
+    - '        GGML_ASSERT(has_audio);'
+    - '    }'
+    - '    model.modality = modality;'
+    - '    std::string proj_type;'
+    - '    {'
+    - '        get_string(KEY_PROJ_TYPE, proj_type, false);'
+    - '    }'
+    - '}'
+    desc: 加载模型超参数，包括投影类型和模态信息
+    line: 930-946
+    name: load_hparams
+  name: clip_model_loader
+- desc: A loader class responsible for reading CLIP model data from GGUF files, including
+    hyperparameters, model tensors, and performing warmup and graph allocation operations.
+  methods:
+  - code:
+    - void load_hparams(clip_model & model, int modality) const {
+    - '    auto & hparams = model.hparams;'
+    - '    get_string(KEY_MODEL_TYPE, hparams.model_type, /*required=*/false);'
+    - '    get_string(KEY_MODEL_SHA256, hparams.model_sha256, /*required=*/false);'
+    - '    get_string(KEY_MODEL_DESCRIPTION, hparams.model_description, /*required=*/false);'
+    - '    get_u32(KEY_VISION_N_EMBD, hparams.n_embd, /*required=*/false);'
+    - '    get_u32(KEY_VISION_N_LAYER, hparams.n_layer, /*required=*/false);'
+    - '    get_u32(KEY_VISION_N_HEAD, hparams.n_head, /*required=*/false);'
+    - '    get_u32(KEY_VISION_PATCH_SIZE, hparams.patch_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_IMAGE_SIZE, hparams.image_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_IMAGE_SIZE_WIDTH, hparams.image_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_IMAGE_SIZE_HEIGHT, hparams.image_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_IMAGE_SIZE_CROP, hparams.image_size_crop, /*required=*/false);'
+    - '    get_i32(KEY_VISION_WARMUP_IMAGE_SIZE, hparams.warmup_image_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_WARMUP_AUDIO_SIZE, hparams.warmup_audio_size, /*required=*/false);'
+    - '    get_i32(KEY_AUDIO_N_MEL_BINS, hparams.n_mel_bins, /*required=*/false);'
+    - '    get_i32(KEY_VISION_INTRA_OP_SIZE, hparams.intra_op_size, /*required=*/false);'
+    - '    get_i32(KEY_VISION_PROJ_TYPE, hparams.proj_type, /*required=*/false);'
+    - '    get_i32(KEY_VISION_PRECISION, hparams.vision_precision, /*required=*/false);'
+    - '    get_i32(KEY_VISION_DPR, hparams.dpr, /*required=*/false);'
+    - '    get_i32(KEY_VISION_PREPROC_NORMALIZE_HEIGHT, hparams.preproc_normalize_height,
+      /*required=*/false);'
+    - '    get_bool(KEY_IMAGE_TAG, hparams.has_image_tag, /*required=*/false);'
+    - '    get_i32(KEY_IMAGE_SEGMENT_ID, hparams.image_segment_id, /*required=*/false);'
+    - '    get_string(KEY_IMAGE_TAG_PREFIX, hparams.image_tag_prefix, /*required=*/false);'
+    desc: Loads hyperparameters from the GGUF file into a clip_model structure based
+      on the specified modality (vision or audio).
+    line: 2145-2210
+    name: load_hparams
+  - code:
+    - void get_bool(const std::string & key, bool & output, bool required = true)
+      const {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    output = gguf_get_val_bool(ctx_gguf.get(), i);'
+    - '}'
+    desc: Retrieves a boolean value from the GGUF context by key, optionally throwing
+      an error if required and not found.
+    line: 2210-2220
+    name: get_bool
+  - code:
+    - void get_i32(const std::string & key, int & output, bool required = true) const
+      {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    output = gguf_get_val_i32(ctx_gguf.get(), i);'
+    - '}'
+    desc: Retrieves a 32-bit integer value from the GGUF context by key, optionally
+      throwing an error if required and not found.
+    line: 2220-2230
+    name: get_i32
+  - code:
+    - void get_u32(const std::string & key, int & output, bool required = true) const
+      {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    output = gguf_get_val_u32(ctx_gguf.get(), i);'
+    - '}'
+    desc: Retrieves an unsigned 32-bit integer value from the GGUF context by key,
+      optionally throwing an error if required and not found.
+    line: 2230-2240
+    name: get_u32
+  - code:
+    - void get_f32(const std::string & key, float & output, bool required = true)
+      const {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    output = gguf_get_val_f32(ctx_gguf.get(), i);'
+    - '}'
+    desc: Retrieves a 32-bit float value from the GGUF context by key, optionally
+      throwing an error if required and not found.
+    line: 2240-2250
+    name: get_f32
+  - code:
+    - void get_string(const std::string & key, std::string & output, bool required
+      = true) const {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    output = std::string(gguf_get_val_str(ctx_gguf.get(), i));'
+    - '}'
+    desc: Retrieves a string value from the GGUF context by key, optionally throwing
+      an error if required and not found.
+    line: 2250-2260
+    name: get_string
+  - code:
+    - void get_arr_int(const std::string & key, std::vector<int> & output, bool required
+      = true) const {
+    - '    const int i = gguf_find_key(ctx_gguf.get(), key.c_str());'
+    - '    if (i < 0) {'
+    - '        if (required) {'
+    - '            throw std::runtime_error("Key not found: " + key);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    int n = gguf_get_arr_n(ctx_gguf.get(), i);'
+    - '    output.resize(n);'
+    - '    const int32_t * values = (const int32_t *)gguf_get_arr_data(ctx_gguf.get(),
+      i);'
+    - '    for (int i = 0; i < n; ++i) {'
+    - '        output[i] = values[i];'
+    - '    }'
+    - '}'
+    desc: Retrieves an integer array from the GGUF context by key, optionally throwing
+      an error if required and not found.
+    line: 2260-2275
+    name: get_arr_int
+  - code:
+    - static void set_llava_uhd_res_candidates(clip_model & model, const int max_patches_per_side)
+      {
+    - '    auto & hparams = model.hparams;'
+    - '    for (int x = 1; x <= max_patches_per_side; x++) {'
+    - '        for (int y = 1; y <= max_patches_per_side; y++) {'
+    - '            if (x == 1 && y == 1) {'
+    - '                continue; // skip the first point'
+    - '            }'
+    - '            hparams.image_res_candidates.push_back(clip_image_size{'
+    - '                x*hparams.image_size,'
+    - '                y*hparams.image_size,'
+    - '            });'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets image resolution candidates for LLaVA-UHD by generating all combinations
+      of width and height multiples, skipping the base 1x1 resolution.
+    line: 2275-2290
+    name: set_llava_uhd_res_candidates
+  - code:
+    - static void set_internvl_dhr_res_candidates(clip_model & model) {
+    - '    auto & hparams = model.hparams;'
+    - '    int min_num = hparams.preproc_min_tiles;'
+    - '    int max_num = hparams.preproc_max_tiles;'
+    - '    if (min_num < 1) {'
+    - '       return; // avoid  divide by 0'
+    - '    }'
+    - '    for (int a = min_num; a <= max_num; ++a) {'
+    - '        int b_lo = (min_num + a - 1) / a;'
+    - '        int b_hi = max_num / a;'
+    - '        b_lo = std::max(b_lo, min_num);'
+    - '        b_hi = std::min(b_hi, max_num);'
+    - '        for (int b = b_lo; b <= b_hi; ++b) {'
+    - '            hparams.image_res_candidates.push_back(clip_image_size {'
+    - '                a*hparams.image_size,'
+    - '                b*hparams.image_size,'
+    - '            });'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets image resolution candidates for InternVL-DHR by generating pairs of
+      tile counts within the minimum and maximum tile limits.
+    line: 2290-2310
+    name: set_internvl_dhr_res_candidates
+  - code:
+    - void load_tensors(clip_ctx & ctx_clip, int modality) const {
+    - '    const auto & hparams = ctx_clip.model.hparams;'
+    - '    std::map<std::string, size_t> tensor_offset;'
+    - '    std::vector<ggml_tensor *> tensors_to_load;'
+    - '    const size_t fname_size = ctx_clip.fname.size();'
+    - '    const int prefix = ctx_clip.model.modality;'
+    - '    gguf_init_params gguf_params = {'
+    - '        /*.no_alloc   =*/ true,'
+    - '        /*.ctx        =*/ &ctx_clip.ctx_gguf,'
+    - '    };'
+    - '    gguf_context * ctx_gguf = gguf_init_from_file(fname.c_str(), gguf_params);'
+    - '    if (!ctx_gguf) {'
+    - '        throw std::runtime_error("failed to load GGUF file: " + fname);'
+    - '    }'
+    - '    GGML_ASSERT(ctx_clip.ctx_data == nullptr);'
+    - '    ctx_clip.ctx_data = ggml_init({GGML_DEFAULT_SEED, false, hparams.intra_op_size});'
+    - '    // ... (tensor creation and loading logic)'
+    - '}'
+    desc: Loads weight tensors from the GGUF file, allocating memory buffers and reading
+      data based on the specified projector type.
+    line: 2310-2450
+    name: load_tensors
+  - code:
+    - static void warmup(clip_ctx & ctx_clip) {
+    - '    // create a fake batch'
+    - '    const auto & hparams = ctx_clip.model.hparams;'
+    - '    clip_image_f32_batch batch;'
+    - '    clip_image_f32_ptr img(clip_image_f32_init());'
+    - '    if (ctx_clip.model.modality == CLIP_MODALITY_VISION) {'
+    - '        img->nx = hparams.warmup_image_size;'
+    - '        img->ny = hparams.warmup_image_size;'
+    - '        LOG_INF("%s: warmup with image size = %d x %d\n", __func__, img->nx,
+      img->ny);'
+    - '    } else {'
+    - '        img->nx = hparams.warmup_audio_size;'
+    - '        img->ny = hparams.n_mel_bins;'
+    - '        LOG_INF("%s: warmup with audio size = %d\n", __func__, img->nx);'
+    - '    }'
+    - '    batch.entries.push_back(std::move(img));'
+    - '    warmup(ctx_clip, batch);'
+    - '}'
+    desc: Runs a warmup pass to initialize the computation graph and allocate memory
+      buffers, either with a default fake batch or with a provided batch.
+    line: 2450-2470
+    name: warmup
+  name: clip_model_loader
+- desc: A struct that associates a ggml operation with a flag indicating whether it
+    runs on the accelerated backend.
+  methods: []
+  name: support_info_op
+- desc: A container struct holding graph-level support information including flash
+    attention availability and a list of operation support entries.
+  methods: []
+  name: support_info_graph
+desc: 该文件是 CLIP 模型的核心实现，定义了 clip_ctx 上下文结构、clip_model_loader 加载器和构建模型计算图的 clip_graph
+  类，用于支持视觉和音频编码器的推理和计算图构建。该代码片段是 clip_ctx 结构体的 load_hparams 函数的一部分，负责从 GGUF 文件元数据中解析并加载
+  CLIP 视觉或音频模型的超参数（如投影器类型、模型维度、图像/音频预处理参数）和模型结构参数，并根据投影器类型进行特定配置，最后打印所有参数进行摘要记录。该代码文件是llama.cpp项目中的clip.cpp，用于实现CLIP（Contrastive
+  Language-Image Pre-training）模型的加载与处理功能，是多模态模型（如视觉语言模型）中处理图像和文本对齐的核心组件。该文件的主要功能包括：处理不同架构的CLIP模型（包括LLaVA、MobileVLM、MiniCPM-V、Qwen2-VL、Gemma、InternVL等多种变体），从GGUF格式模型中加载视觉编码器的参数和投影器权重，根据不同的投影器类型（如MLP、LDP、LDPV2、Qwen2VL等）加载相应的模型结构参数，并搭建相关的神经网络结构用于图像特征的提取和变换。This
+  file implements the CLIP (Contrastive Language-Image Pre-training) model loading
+  and inference logic for the llama.cpp project, handling both vision and audio modalities.
+  It includes a model loader that parses GGUF files, loads hyperparameters and tensors,
+  performs model weight allocation, sets up computation graphs, and handles various
+  projector types (e.g., QWEN2VL, LFM2, etc.). The file also provides utility functions
+  for image preprocessing, token count calculation, image encoding, and memory management
+  of CLIP image structures.This file implements the core image encoding functionality
+  for multimodal models in the llama.cpp/whisper.cpp framework. It handles the vision
+  encoder forward pass, managing different projector types (MLP, Qwen-VL, LLaMA, etc.)
+  by setting up appropriate position embeddings and input tensors for each architecture,
+  then computing and returning the image embeddings through the ggml backend.
+file: tools/mtmd/clip.cpp
+funcs:
+- code:
+  - static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32_batch
+    & imgs) {
+  - '    GGML_ASSERT(imgs.entries.size() == 1 && "n_batch > 1 is not supported");'
+  - '    const clip_image_f32 & img = *imgs.entries[0];'
+  - '    std::unique_ptr<clip_graph> builder;'
+  - '    switch (ctx->proj_type()) {'
+  - '        case PROJECTOR_TYPE_GEMMA3:'
+  - '        case PROJECTOR_TYPE_IDEFICS3:'
+  - '        case PROJECTOR_TYPE_LFM2:'
+  - '        case PROJECTOR_TYPE_JANUS_PRO:'
+  - '        case PROJECTOR_TYPE_PHI4:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_siglip>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_GEMMA3NV:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_mobilenetv5>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_GEMMA4V:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_gemma4v>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_PIXTRAL:'
+  - '        case PROJECTOR_TYPE_LIGHTONOCR:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_pixtral>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_QWEN2VL:'
+  - '        case PROJECTOR_TYPE_QWEN25VL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_qwen2vl>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_QWEN3VL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_qwen3vl>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_MINICPMV:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_minicpmv>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_INTERNVL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_internvl>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_NEMOTRON_V2_VL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_nemotron_v2_vl>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_LLAMA4:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_llama4>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_ULTRAVOX:'
+  - '        case PROJECTOR_TYPE_VOXTRAL:'
+  - '        case PROJECTOR_TYPE_QWEN2A:'
+  - '        case PROJECTOR_TYPE_GLMA:'
+  - '        case PROJECTOR_TYPE_MUSIC_FLAMINGO:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_whisper_enc>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_KIMIVL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_kimivl>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_PADDLEOCR:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_paddleocr>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_KIMIK25:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_kimik25>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_COGVLM:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_cogvlm>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_HUNYUANOCR:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_hunyuanocr>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_MLP:'
+  - '        case PROJECTOR_TYPE_MLP_NORM:'
+  - '        case PROJECTOR_TYPE_LDP:'
+  - '        case PROJECTOR_TYPE_LDPV2:'
+  - '        case PROJECTOR_TYPE_GLM_EDGE:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_llava>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_DEEPSEEKOCR:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_deepseekocr>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_LFM2A:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_conformer>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_GLM4V:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_glm4v>(ctx, img);'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_YOUTUVL:'
+  - '            {'
+  - '                builder = std::make_unique<clip_graph_youtuvl>(ctx, img);'
+  - '            } break;'
+  - '        default:'
+  - '            GGML_ABORT("missing cgraph builder");'
+  - '    }'
+  - '    return builder->build();'
+  - '}'
+  desc: 根据投影类型选择适合的计算图构建器并构建计算图
+  line: 824-852
+  name: clip_image_build_graph
+- code:
+  - void load_hparams(clip_ctx & ctx_clip) {
+  - '    auto & model = ctx_clip.model;'
+  - '    auto & hparams = model.hparams;'
+  - '    std::string log_ffn_op;'
+  - ''
+  - '    // sanity check'
+  - '    if (modality == CLIP_MODALITY_VISION) {'
+  - '        GGML_ASSERT(has_vision);'
+  - '    } else if (modality == CLIP_MODALITY_AUDIO) {'
+  - '        GGML_ASSERT(has_audio);'
+  - '    }'
+  - '    model.modality = modality;'
+  - ''
+  - '    // projector type'
+  - '    std::string proj_type;'
+  - '    {'
+  - '        get_string(KEY_PROJ_TYPE, proj_type, false);'
+  - '        if (proj_type.empty()) {'
+  - '            if (modality == CLIP_MODALITY_VISION) {'
+  - '                get_string(KEY_VISION_PROJ_TYPE, proj_type, false);'
+  - '            } else if (modality == CLIP_MODALITY_AUDIO) {'
+  - '                get_string(KEY_AUDIO_PROJ_TYPE, proj_type, false);'
+  - '            } else {'
+  - '                GGML_ABORT("unknown modality");'
+  - '            }'
+  - '        }'
+  - '        model.proj_type = clip_projector_type_from_string(proj_type);'
+  - '        if (model.proj_type == PROJECTOR_TYPE_UNKNOWN) {'
+  - '            throw std::runtime_error(string_format("%s: unknown projector type:
+    %s\n", __func__, proj_type.c_str()));'
+  - '        }'
+  - '        if (model.proj_type == PROJECTOR_TYPE_QWEN25O) {'
+  - '            model.proj_type = modality == CLIP_MODALITY_VISION ? PROJECTOR_TYPE_QWEN25VL
+    : PROJECTOR_TYPE_QWEN2A;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    const bool is_vision = model.modality == CLIP_MODALITY_VISION;'
+  - '    const bool is_audio  = model.modality == CLIP_MODALITY_AUDIO;'
+  - ''
+  - '    // other hparams'
+  - '    {'
+  - '        const char * prefix = is_vision ? "vision" : "audio";'
+  - '        get_u32(string_format(KEY_N_EMBD,         prefix), hparams.n_embd);'
+  - '        get_u32(string_format(KEY_N_HEAD,         prefix), hparams.n_head);'
+  - '        get_u32(string_format(KEY_N_FF,           prefix), hparams.n_ff);'
+  - '        get_u32(string_format(KEY_N_BLOCK,        prefix), hparams.n_layer);'
+  - '        get_u32(string_format(KEY_PROJ_DIM,       prefix), hparams.projection_dim);'
+  - '        get_f32(string_format(KEY_LAYER_NORM_EPS, prefix), hparams.eps);'
+  - ''
+  - '        if (is_vision) {'
+  - '            get_u32(KEY_IMAGE_SIZE, hparams.image_size);'
+  - '            get_u32(KEY_PATCH_SIZE, hparams.patch_size);'
+  - '            get_i32(KEY_MINICPMV_VERSION, hparams.minicpmv_version, false);'
+  - '            get_u32(KEY_MINICPMV_QUERY_NUM, hparams.minicpmv_query_num, false);'
+  - '            if (hparams.minicpmv_query_num == 0) {'
+  - '                if (hparams.minicpmv_version == 3) {'
+  - '                    hparams.minicpmv_query_num = 64;'
+  - '                } else if (hparams.minicpmv_version == 4) {'
+  - '                    hparams.minicpmv_query_num = 64;'
+  - '                } else if (hparams.minicpmv_version == 5) {'
+  - '                    hparams.minicpmv_query_num = 64;'
+  - '                } else if (hparams.minicpmv_version == 6) {'
+  - '                    hparams.minicpmv_query_num = 64;'
+  - '                } else if (hparams.minicpmv_version == 100045) {'
+  - '                    hparams.minicpmv_query_num = 64;'
+  - '                } else {'
+  - '                    hparams.minicpmv_query_num = 96;'
+  - '                }'
+  - '            }'
+  - '        } else if (is_audio) {'
+  - '            get_u32(KEY_A_NUM_MEL_BINS, hparams.n_mel_bins);'
+  - '            hparams.image_size = 0;'
+  - '            hparams.patch_size = 1;'
+  - '        } else {'
+  - '            GGML_ASSERT(false && "unknown modality");'
+  - '        }'
+  - ''
+  - '        {'
+  - '            std::vector<int> pinpoints;'
+  - '            get_arr_int(KEY_IMAGE_GRID_PINPOINTS, pinpoints, false);'
+  - '            if (!pinpoints.empty()) {'
+  - '                for (size_t i = 0; i < pinpoints.size(); i += 2) {'
+  - '                    hparams.image_res_candidates.push_back({pinpoints[i], pinpoints[i+1]});'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        hparams.warmup_image_size = hparams.image_size;'
+  - ''
+  - '        {'
+  - '            bool use_gelu = false;'
+  - '            bool use_silu = false;'
+  - '            get_bool(KEY_USE_GELU, use_gelu, false);'
+  - '            get_bool(KEY_USE_SILU, use_silu, false);'
+  - '            if (use_gelu && use_silu) {'
+  - '                throw std::runtime_error(string_format("%s: both use_gelu and
+    use_silu are set to true\n", __func__));'
+  - '            }'
+  - '            if (use_gelu) {'
+  - '                hparams.ffn_op = FFN_GELU;'
+  - '                log_ffn_op = "gelu";'
+  - '            } else if (use_silu) {'
+  - '                hparams.ffn_op = FFN_SILU;'
+  - '                log_ffn_op = "silu";'
+  - '            } else {'
+  - '                hparams.ffn_op = FFN_GELU_QUICK;'
+  - '                log_ffn_op = "gelu_quick";'
+  - '            }'
+  - '        }'
+  - ''
+  - '        {'
+  - '            std::string mm_patch_merge_type;'
+  - '            get_string(KEY_MM_PATCH_MERGE_TYPE, mm_patch_merge_type, false);'
+  - '            if (mm_patch_merge_type == "spatial_unpad") {'
+  - '                hparams.mm_patch_merge_type = PATCH_MERGE_SPATIAL_UNPAD;'
+  - '            }'
+  - '        }'
+  - ''
+  - '        if (is_vision) {'
+  - '            int idx_mean = gguf_find_key(ctx_gguf.get(), KEY_IMAGE_MEAN);'
+  - '            int idx_std  = gguf_find_key(ctx_gguf.get(), KEY_IMAGE_STD);'
+  - '            GGML_ASSERT(idx_mean >= 0 && "image_mean not found");'
+  - '            GGML_ASSERT(idx_std >= 0  && "image_std not found");'
+  - '            const float * mean_data = (const float *) gguf_get_arr_data(ctx_gguf.get(),
+    idx_mean);'
+  - '            const float * std_data  = (const float *) gguf_get_arr_data(ctx_gguf.get(),
+    idx_std);'
+  - '            for (int i = 0; i < 3; ++i) {'
+  - '                hparams.image_mean[i] = mean_data[i];'
+  - '                hparams.image_std[i]  = std_data[i];'
+  - '            }'
+  - '        }'
+  - ''
+  - '        std::vector<int> vision_feature_layer;'
+  - '        get_arr_int(KEY_FEATURE_LAYER, vision_feature_layer, false);'
+  - '        for (auto & layer : vision_feature_layer) {'
+  - '            hparams.vision_feature_layer.insert(layer);'
+  - '        }'
+  - ''
+  - '        switch (model.proj_type) {'
+  - '            case PROJECTOR_TYPE_MLP:'
+  - '            case PROJECTOR_TYPE_MLP_NORM:'
+  - '            case PROJECTOR_TYPE_LDP:'
+  - '            case PROJECTOR_TYPE_LDPV2:'
+  - '            case PROJECTOR_TYPE_COGVLM:'
+  - '                {'
+  - '                    hparams.has_llava_projector = model.proj_type != PROJECTOR_TYPE_COGVLM;'
+  - '                    hparams.image_pad_color     = {122, 116, 104};'
+  - '                    if (!hparams.image_res_candidates.empty()) {'
+  - '                        hparams.image_resize_pad  = true;'
+  - '                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    } else {'
+  - '                        hparams.image_pad_ov         = false;'
+  - '                        hparams.image_pad_rf         = true;'
+  - '                        hparams.image_pad_color_rf   = {122, 116, 104};'
+  - '                        hparams.image_resize_algo_rf = RESIZE_ALGO_BICUBIC;'
+  - '                        hparams.image_resize_algo_ov = RESIZE_ALGO_BILINEAR;'
+  - '                    }'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_GLM_EDGE:'
+  - '                {'
+  - '                    hparams.image_resize_pad  = true;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_MINICPMV:'
+  - '                {'
+  - '                    if (hparams.minicpmv_version == 0) {'
+  - '                        hparams.minicpmv_version = 2;'
+  - '                    }'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_INTERNVL:'
+  - '                {'
+  - '                    hparams.preproc_min_tiles = 1;'
+  - '                    hparams.preproc_max_tiles = 12;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    get_u32(KEY_PREPROC_MIN_TILES, hparams.preproc_min_tiles,
+    false);'
+  - '                    get_u32(KEY_PREPROC_MAX_TILES, hparams.preproc_max_tiles,
+    false);'
+  - '                    GGML_ASSERT(hparams.preproc_min_tiles <= hparams.preproc_max_tiles
+    && hparams.preproc_max_tiles < INT32_MAX);'
+  - '                    set_internvl_dhr_res_candidates(model);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_NEMOTRON_V2_VL:'
+  - '                {'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_IDEFICS3:'
+  - '                {'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    get_u32(KEY_PREPROC_IMAGE_SIZE, hparams.image_longest_edge,
+    false);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_LFM2:'
+  - '                {'
+  - '                    hparams.image_resize_algo    = RESIZE_ALGO_BILINEAR;'
+  - '                    hparams.image_resize_algo_rf = RESIZE_ALGO_BILINEAR;'
+  - '                    hparams.image_resize_algo_ov = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    hparams.set_limit_image_tokens(64, 256);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_PHI4:'
+  - '                {'
+  - '                    hparams.n_merge = 1;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);'
+  - '                    get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);'
+  - '                    hparams.set_warmup_n_tokens(16*16);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_PIXTRAL:'
+  - '                {'
+  - '                    hparams.n_merge = 1;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    hparams.set_limit_image_tokens(8, 1024);'
+  - '                    hparams.set_warmup_n_tokens(256);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_LIGHTONOCR:'
+  - '                {'
+  - '                    hparams.n_merge = 1;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    hparams.image_longest_edge = hparams.image_size;'
+  - '                    get_u32(KEY_PREPROC_IMAGE_SIZE, hparams.image_longest_edge,
+    false);'
+  - '                    hparams.set_warmup_n_tokens(256);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_KIMIVL:'
+  - '                {'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    hparams.set_limit_image_tokens(8, 1024);'
+  - '                    hparams.set_warmup_n_tokens(256);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_KIMIK25:'
+  - '                {'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    int min_pixels = 0, max_pixels = 0;'
+  - '                    get_u32(KEY_IMAGE_MIN_PIXELS, min_pixels, false);'
+  - '                    get_u32(KEY_IMAGE_MAX_PIXELS, max_pixels, false);'
+  - '                    if (min_pixels > 0 && max_pixels > 0) {'
+  - '                        hparams.image_min_pixels = min_pixels;'
+  - '                        hparams.image_max_pixels = max_pixels;'
+  - '                        hparams.warmup_image_size = static_cast<int>(std::sqrt(max_pixels));'
+  - '                    } else {'
+  - '                        hparams.set_limit_image_tokens(2, 4096);'
+  - '                    }'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_GEMMA3:'
+  - '                {'
+  - '                    hparams.n_merge = 4;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_GEMMA4V:'
+  - '                {'
+  - '                    hparams.rope_theta = 100.0f;'
+  - '                    hparams.n_merge = 3;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    hparams.set_limit_image_tokens(252, 280);'
+  - '                    hparams.set_warmup_n_tokens(256);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_GEMMA3NV:'
+  - '                {'
+  - '                    hparams.n_merge = 1;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_QWEN2VL:'
+  - '            case PROJECTOR_TYPE_QWEN25VL:'
+  - '            case PROJECTOR_TYPE_QWEN3VL:'
+  - '                {'
+  - '                    hparams.n_merge = 2;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    get_u32(KEY_WIN_ATTN_PATTERN, hparams.n_wa_pattern, model.proj_type
+    == PROJECTOR_TYPE_QWEN25VL);'
+  - '                    hparams.set_limit_image_tokens(8, 4096);'
+  - '                    hparams.set_warmup_n_tokens(46*46);'
+  - '                    const int warn_min_pixels = 1024 * hparams.n_merge * hparams.n_merge
+    * hparams.patch_size * hparams.patch_size;'
+  - '                    if (hparams.image_min_pixels < warn_min_pixels) {'
+  - '                        LOG_WRN("%s: Qwen-VL models require at minimum 1024 image
+    tokens to function correctly on grounding tasks\n", __func__);'
+  - '                        LOG_WRN("%s: if you encounter problems with accuracy,
+    try adding --image-min-tokens 1024\n", __func__);'
+  - '                        LOG_WRN("%s: more info: https://github.com/ggml-org/llama.cpp/issues/16842\n\n",
+    __func__);'
+  - '                    }'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_YOUTUVL:'
+  - '                {'
+  - '                    hparams.n_merge = 2;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    hparams.image_resize_pad  = false;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    get_u32(KEY_ATTN_WINDOW_SIZE, hparams.attn_window_size, true);'
+  - '                    std::vector<int> wa_layer_indexes_vec;'
+  - '                    get_arr_int(KEY_WIN_ATTN_LAYER_INDEXES, wa_layer_indexes_vec,
+    true);'
+  - '                    for (auto & layer : wa_layer_indexes_vec) {'
+  - '                        hparams.wa_layer_indexes.insert(layer);'
+  - '                    }'
+  - '                    hparams.set_limit_image_tokens(1, 62500);'
+  - '                    hparams.set_warmup_n_tokens(16*16);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_GLM4V:'
+  - '                {'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    hparams.n_merge = 2;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    hparams.set_limit_image_tokens(8, 4096);'
+  - '                    hparams.set_warmup_n_tokens(46*46);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_LLAMA4:'
+  - '                {'
+  - '                    hparams.rope_theta = 10000.0f;'
+  - '                    get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);'
+  - '                    set_llava_uhd_res_candidates(model, 3);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_ULTRAVOX:'
+  - '            case PROJECTOR_TYPE_QWEN2A:'
+  - '            case PROJECTOR_TYPE_GLMA:'
+  - '            case PROJECTOR_TYPE_VOXTRAL:'
+  - '            case PROJECTOR_TYPE_MUSIC_FLAMINGO:'
+  - '                {'
+  - '                    bool require_stack = model.proj_type == PROJECTOR_TYPE_ULTRAVOX
+    || model.proj_type == PROJECTOR_TYPE_VOXTRAL || model.proj_type == PROJECTOR_TYPE_GLMA;'
+  - '                    get_u32(KEY_A_PROJ_STACK_FACTOR, hparams.proj_stack_factor,
+    require_stack);'
+  - '                    hparams.ffn_op = FFN_GELU_ERF;'
+  - '                    log_ffn_op = "gelu_erf";'
+  - '                    hparams.audio_chunk_len    = 30;'
+  - '                    hparams.audio_sample_rate  = 16000;'
+  - '                    hparams.audio_n_fft        = 400;'
+  - '                    hparams.audio_window_len   = 400;'
+  - '                    hparams.audio_hop_len      = 160;'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_PADDLEOCR:'
+  - '                {'
+  - '                    hparams.n_merge = 2;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                    get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);'
+  - '                    get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);'
+  - '                    hparams.set_warmup_n_tokens(28*28);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_DEEPSEEKOCR:'
+  - '                {'
+  - '                    hparams.patch_size = 16;'
+  - '                    hparams.image_size = 1024;'
+  - '                    hparams.warmup_image_size = 1024;'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;'
+  - '                    hparams.image_pad_color[0] = hparams.image_mean[0];'
+  - '                    hparams.image_pad_color[1] = hparams.image_mean[1];'
+  - '                    hparams.image_pad_color[2] = hparams.image_mean[2];'
+  - '                    get_u32(KEY_SAM_N_BLOCK, hparams.sam_n_layer, true);'
+  - '                    get_u32(KEY_SAM_N_HEAD, hparams.sam_n_head, true);'
+  - '                    get_u32(KEY_SAM_N_EMBD, hparams.sam_n_embd, true);'
+  - '                    get_u32(KEY_ATTN_WINDOW_SIZE, hparams.attn_window_size, true);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_HUNYUANOCR:'
+  - '                {'
+  - '                    hparams.n_merge = 2;'
+  - '                    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);'
+  - '                    get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);'
+  - '                    get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);'
+  - '                    hparams.set_warmup_n_tokens(28*28);'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_LFM2A:'
+  - '                {'
+  - '                    hparams.audio_chunk_len        = 1;'
+  - '                    hparams.audio_sample_rate      = 16000;'
+  - '                    hparams.audio_n_fft            = 512;'
+  - '                    hparams.audio_window_len       = 400;'
+  - '                    hparams.audio_hop_len          = 160;'
+  - '                } break;'
+  - '            case PROJECTOR_TYPE_JANUS_PRO:'
+  - '                {'
+  - '                    hparams.image_pad_color   = {127, 127, 127};'
+  - '                    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;'
+  - '                } break;'
+  - '            default:'
+  - '                throw std::runtime_error(string_format("%s: unknown vision projector
+    type %s\n", __func__, proj_type.c_str()));'
+  - '        }'
+  - ''
+  - '        {'
+  - '            if (hparams.image_size < 0) {'
+  - '                throw std::runtime_error(string_format("%s: image_size (%d) cannot
+    be negative\n", __func__, hparams.image_size));'
+  - '            }'
+  - '            if (hparams.patch_size <= 0) {'
+  - '                throw std::runtime_error(string_format("%s: patch_size (%d) must
+    be greater than 0\n", __func__, hparams.patch_size));'
+  - '            }'
+  - '            if (hparams.n_embd <= 0) {'
+  - '                throw std::runtime_error(string_format("%s: n_embd (%d) must
+    be greater than 0\n", __func__, hparams.n_embd));'
+  - '            }'
+  - '            if (hparams.image_max_pixels < hparams.image_min_pixels) {'
+  - '                throw std::runtime_error(string_format("%s: image_max_pixels
+    (%d) is less than image_min_pixels (%d)\n", __func__, hparams.image_max_pixels,
+    hparams.image_min_pixels));'
+  - '            }'
+  - '        }'
+  - ''
+  - '        LOG_INF("%s: projector:          %s\n", __func__, proj_type.c_str());'
+  - '        LOG_INF("%s: n_embd:             %d\n", __func__, hparams.n_embd);'
+  - '        LOG_INF("%s: n_head:             %d\n", __func__, hparams.n_head);'
+  - '        LOG_INF("%s: n_ff:               %d\n", __func__, hparams.n_ff);'
+  - '        LOG_INF("%s: n_layer:            %d\n", __func__, hparams.n_layer);'
+  - '        LOG_INF("%s: ffn_op:             %s\n", __func__, log_ffn_op.c_str());'
+  - '        LOG_INF("%s: projection_dim:     %d\n", __func__, hparams.projection_dim);'
+  - '        if (is_vision) {'
+  - '            LOG_INF("\n--- vision hparams ---\n");'
+  - '            LOG_INF("%s: image_size:         %d\n", __func__, hparams.image_size);'
+  - '            LOG_INF("%s: patch_size:         %d\n", __func__, hparams.patch_size);'
+  - '            LOG_INF("%s: has_llava_proj:     %d\n", __func__, hparams.has_llava_projector);'
+  - '            LOG_INF("%s: minicpmv_version:   %d\n", __func__, hparams.minicpmv_version);'
+  - '            LOG_INF("%s: n_merge:            %d\n", __func__, hparams.n_merge);'
+  - '            LOG_INF("%s: n_wa_pattern: %d\n", __func__, hparams.n_wa_pattern);'
+  - '            if (!hparams.wa_layer_indexes.empty()) {'
+  - '                LOG_INF("%s: wa_layer_indexes:  ", __func__);'
+  - '                for (auto & layer : hparams.wa_layer_indexes) {'
+  - '                    LOG_INF("%d ", layer);'
+  - '                }'
+  - '                LOG_INF("\n");'
+  - '            }'
+  - '            if (hparams.image_min_pixels > 0) {'
+  - '                LOG_INF("%s: image_min_pixels:   %d%s\n", __func__, hparams.image_min_pixels,
+    hparams.custom_image_min_tokens > 0 ? " (custom value)" : "");'
+  - '            }'
+  - '            if (hparams.image_max_pixels > 0) {'
+  - '                LOG_INF("%s: image_max_pixels:   %d%s\n", __func__, hparams.image_max_pixels,
+    hparams.custom_image_max_tokens > 0 ? " (custom value)" : "");'
+  - '            }'
+  - '        } else if (is_audio) {'
+  - '            LOG_INF("\n--- audio hparams ---\n");'
+  - '            LOG_INF("%s: n_mel_bins:         %d\n", __func__, hparams.n_mel_bins);'
+  - '            LOG_INF("%s: proj_stack_factor:  %d\n", __func__, hparams.proj_stack_factor);'
+  - '            LOG_INF("%s: audio_chunk_len:    %d\n", __func__, hparams.audio_chunk_len);'
+  - '            LOG_INF("%s: audio_sample_rate:  %d\n", __func__, hparams.audio_sample_rate);'
+  - '            LOG_INF("%s: audio_n_fft:        %d\n", __func__, hparams.audio_n_fft);'
+  - '            LOG_INF("%s: audio_window_len:   %d\n", __func__, hparams.audio_window_len);'
+  - '            LOG_INF("%s: audio_hop_len:      %d\n", __func__, hparams.audio_hop_len);'
+  - '        }'
+  - '        LOG_INF("\n");'
+  - '        LOG_INF("%s: model size:         %.2f MiB\n", __func__, model_size /
+    1024.0 / 1024.0);'
+  - '        LOG_INF("%s: metadata size:      %.2f MiB\n", __func__, ggml_get_mem_size(ctx_meta.get())
+    / 1024.0 / 1024.0);'
+  - '    }'
+  - '}'
+  - ''
+  - void load_tensors(clip_ctx & ctx_clip) {
+  - '    auto & model = ctx_clip.model;'
+  - '    auto & hparams = model.hparams;'
+  - '    std::map<std::string, size_t> tensor_offset;'
+  - '    std::vector<ggml_tensor *> tensors_to_load;'
+  - '    auto fin = std::ifstream(fname, std::ios::binary);'
+  - '    if (!fin) {'
+  - '        throw std::runtime_error(string_format("%s: failed to open %s\n", __func__,
+    fname.c_str()));'
+  - '    }'
+  - '    const char * prefix = model.modality == CLIP_MODALITY_AUDIO ? "a" : "v";'
+  - '    for (int64_t i = 0; i < gguf_get_n_tensors(ctx_gguf.get()); ++i) {'
+  - '        const char * name = gguf_get_tensor_name(ctx_gguf.get(), i);'
+  - '        tensor_offset[name] = gguf_get_data_offset(ctx_gguf.get()) + gguf_get_tensor_offset(ctx_gguf.get(),
+    i);'
+  - '    }'
+  - '    struct ggml_init_params params = {'
+  - '        /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(ctx_gguf.get())
+    + 1) * ggml_tensor_overhead(),'
+  - '        /*.mem_buffer =*/ NULL,'
+  - '        /*.no_alloc =*/ true,'
+  - '    };'
+  - '    ctx_clip.ctx_data.reset(ggml_init(params));'
+  - '    if (!ctx_clip.ctx_data) {'
+  - '        throw std::runtime_error(string_format("%s: failed to init ggml context\n",
+    __func__));'
+  - '    }'
+  - '    auto get_tensor = [&](const std::string & name, bool required = true) {'
+  - '        ggml_tensor * cur = ggml_get_tensor(ctx_meta.get(), name.c_str());'
+  - '        if (!cur && required) {'
+  - '            throw std::runtime_error(string_format("%s: unable to find tensor
+    %s\n", __func__, name.c_str()));'
+  - '        }'
+  - '        if (cur) {'
+  - '            tensors_to_load.push_back(cur);'
+  - '            ggml_tensor * data_tensor = ggml_dup_tensor(ctx_clip.ctx_data.get(),
+    cur);'
+  - '            ggml_set_name(data_tensor, cur->name);'
+  - '            cur = data_tensor;'
+  - '        }'
+  - '        return cur;'
+  - '    };'
+  - '    auto get_scalar = [&](const std::string & name, float default_val) {'
+  - '        auto it = tensor_offset.find(name);'
+  - '        if (it == tensor_offset.end()) {'
+  - '            return default_val;'
+  - '        }'
+  - '        size_t offset = it->second;'
+  - '        fin.seekg(offset, std::ios::beg);'
+  - '        float value;'
+  - '        fin.read(reinterpret_cast<char*>(&value), sizeof(float));'
+  - '        return value;'
+  - '    };'
+  - '    model.class_embedding = get_tensor(TN_CLASS_EMBD, false);'
+  - '    model.pre_ln_w = get_tensor(string_format(TN_LN_PRE, prefix, "weight"), false);'
+  - '    model.pre_ln_b = get_tensor(string_format(TN_LN_PRE, prefix, "bias"),   false);'
+  - '    model.post_ln_w = get_tensor(string_format(TN_LN_POST, prefix, "weight"),
+    false);'
+  - '    model.post_ln_b = get_tensor(string_format(TN_LN_POST, prefix, "bias"),   false);'
+  - '    model.patch_bias = get_tensor(TN_PATCH_BIAS, false);'
+  - '    model.patch_embeddings_0 = get_tensor(TN_PATCH_EMBD,   false);'
+  - '    model.patch_embeddings_1 = get_tensor(TN_PATCH_EMBD_1, false);'
+  - '    model.norm_embd_w = get_tensor(string_format(TN_NORM_EMBD, "weight"), false);'
+  - '    model.norm_embd_b = get_tensor(string_format(TN_NORM_EMBD, "bias"),   false);'
+  - '    model.position_embeddings = get_tensor(string_format(TN_POS_EMBD, prefix),
+    false);'
+  - '    if (model.proj_type == PROJECTOR_TYPE_GEMMA3NV) {'
+  - '        hparams.n_layer = 0;'
+  - '    }'
+  - '    model.layers.resize(hparams.n_layer);'
+  - '    for (int il = 0; il < hparams.n_layer; ++il) {'
+  - '        auto & layer = model.layers[il];'
+  - '        layer.k_w    = get_tensor(string_format(TN_ATTN_K,      prefix, il, "weight"),
+    false);'
+  - '        layer.q_w    = get_tensor(string_format(TN_ATTN_Q,      prefix, il, "weight"),
+    false);'
+  - '        layer.v_w    = get_tensor(string_format(TN_ATTN_V,      prefix, il, "weight"),
+    false);'
+  - '        layer.o_w    = get_tensor(string_format(TN_ATTN_OUTPUT, prefix, il, "weight"));'
+  - '        layer.qkv_w  = get_tensor(string_format(TN_ATTN_QKV,    prefix, il, "weight"),
+    false);'
+  - '        layer.k_norm = get_tensor(string_format(TN_ATTN_K_NORM, prefix, il, "weight"),
+    false);'
+  - '        layer.q_norm = get_tensor(string_format(TN_ATTN_Q_NORM, prefix, il, "weight"),
+    false);'
+  - '        layer.ln_1_w = get_tensor(string_format(TN_LN_1,        prefix, il, "weight"),
+    false);'
+  - '        layer.ln_2_w = get_tensor(string_format(TN_LN_2,        prefix, il, "weight"),
+    false);'
+  - '        layer.ls_1_w        = get_tensor(string_format(TN_LS_1,         prefix,
+    il, "weight"), false);'
+  - '        layer.ls_2_w        = get_tensor(string_format(TN_LS_2,         prefix,
+    il, "weight"), false);'
+  - '        layer.ls_out_w      = get_tensor(string_format(TN_LS_OUT,        prefix,
+    il, "weight"), false);'
+  - '        layer.attn_post_norm_w = get_tensor(string_format(TN_ATTN_POST_NORM,
+    prefix, il, "weight"), false);'
+  - '        layer.ff_post_norm_w   = get_tensor(string_format(TN_FFN_POST_NORM,  prefix,
+    il, "weight"), false);'
+  - '        layer.k_b    = get_tensor(string_format(TN_ATTN_K,      prefix, il, "bias"),
+    false);'
+  - '        layer.q_b    = get_tensor(string_format(TN_ATTN_Q,      prefix, il, "bias"),
+    false);'
+  - '        layer.v_b    = get_tensor(string_format(TN_ATTN_V,      prefix, il, "bias"),
+    false);'
+  - '        layer.o_b    = get_tensor(string_format(TN_ATTN_OUTPUT, prefix, il, "bias"),
+    false);'
+  - '        layer.qkv_b  = get_tensor(string_format(TN_ATTN_QKV,    prefix, il, "bias"),
+    false);'
+  - '        layer.ln_1_b = get_tensor(string_format(TN_LN_1,        prefix, il, "bias"),
+    false);'
+  - '        layer.ln_2_b = get_tensor(string_format(TN_LN_2,        prefix, il, "bias"),
+    false);'
+  - '        layer.ff_up_w   = get_tensor(string_format(TN_FFN_UP,   prefix, il, "weight"));'
+  - '        layer.ff_up_b   = get_tensor(string_format(TN_FFN_UP,   prefix, il, "bias"),   false);'
+  - '        layer.ff_gate_w = get_tensor(string_format(TN_FFN_GATE, prefix, il, "weight"),
+    false);'
+  - '        layer.ff_gate_b = get_tensor(string_format(TN_FFN_GATE, prefix, il, "bias"),   false);'
+  - '        layer.ff_down_w = get_tensor(string_format(TN_FFN_DOWN, prefix, il, "weight"));'
+  - '        layer.ff_down_b = get_tensor(string_format(TN_FFN_DOWN, prefix, il, "bias"),   false);'
+  - '        layer.deepstack_norm_w = get_tensor(string_format(TN_DEEPSTACK_NORM,
+    il, "weight"), false);'
+  - '        layer.deepstack_norm_b = get_tensor(string_format(TN_DEEPSTACK_NORM,
+    il, "bias"), false);'
+  - '        layer.deepstack_fc1_w  = get_tensor(string_format(TN_DEEPSTACK_FC1,  il,
+    "weight"), false);'
+  - '        layer.deepstack_fc1_b  = get_tensor(string_format(TN_DEEPSTACK_FC1,  il,
+    "bias"), false);'
+  - '        layer.deepstack_fc2_w  = get_tensor(string_format(TN_DEEPSTACK_FC2,  il,
+    "weight"), false);'
+  - '        layer.deepstack_fc2_b  = get_tensor(string_format(TN_DEEPSTACK_FC2,  il,
+    "bias"), false);'
+  - '        if (layer.has_deepstack()) {'
+  - '            model.n_deepstack_layers++;'
+  - '        }'
+  - '        bool is_ffn_swapped = ('
+  - '                model.proj_type == PROJECTOR_TYPE_MLP'
+  - '                || model.proj_type == PROJECTOR_TYPE_MLP_NORM'
+  - '                || model.proj_type == PROJECTOR_TYPE_LDP'
+  - '                || model.proj_type == PROJECTOR_TYPE_LDPV2'
+  - '                || model.proj_type == PROJECTOR_TYPE_QWEN2VL'
+  - '                || model.proj_type == PROJECTOR_TYPE_QWEN25VL'
+  - '                || model.proj_type == PROJECTOR_TYPE_GLM_EDGE'
+  - '                || model.proj_type == PROJECTOR_TYPE_GEMMA3'
+  - '                || model.proj_type == PROJECTOR_TYPE_IDEFICS3'
+  - '                || model.proj_type == PROJECTOR_TYPE_MINICPMV'
+  - '            ) && layer.ff_up_w && layer.ff_down_w && layer.ff_down_w->ne[0] ==
+    hparams.n_em'
+  - '    }'
+  - '}'
+  desc: 从 GGUF 元数据中加载 CLIP 模型的所有超参数，包括投影器类型、模型维度、图像/音频预处理配置，并根据特定的投影器类型设置专用参数。
+  line: 1036-1550
+  name: load_hparams
+- code:
+  - struct clip_init_result clip_init(const char * fname, struct clip_context_params
+    ctx_params) {
+  - '    clip_ctx * ctx_vision = nullptr;'
+  - '    clip_ctx * ctx_audio = nullptr;'
+  - '    try {'
+  - '        clip_model_loader loader(fname);'
+  - '        bool skip_audio = false;'
+  - '        if (loader.has_vision) {'
+  - '            ctx_vision = new clip_ctx(ctx_params);'
+  - '            loader.load_hparams(ctx_vision->model, CLIP_MODALITY_VISION);'
+  - '            loader.load_tensors(*ctx_vision);'
+  - '            if (ctx_params.warmup) {'
+  - '                loader.warmup(*ctx_vision);'
+  - '            }'
+  - '            // TODO: we don''t support audio for Gemma 3N, but GGUF contains
+    audio tensors'
+  - '            // we can remove this check when we implement audio support for Gemma
+    3N'
+  - '            skip_audio = ctx_vision->model.proj_type == PROJECTOR_TYPE_GEMMA3NV'
+  - '                || ctx_vision->model.proj_type == PROJECTOR_TYPE_GEMMA4V;'
+  - '        }'
+  - '        if (loader.has_audio && !skip_audio) {'
+  - '            ctx_audio = new clip_ctx(ctx_params);'
+  - '            loader.load_hparams(ctx_audio->model, CLIP_MODALITY_AUDIO);'
+  - '            loader.load_tensors(*ctx_audio);'
+  - '            if (ctx_params.warmup) {'
+  - '                loader.warmup(*ctx_audio);'
+  - '            }'
+  - '        }'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("%s: failed to load model ''%s'': %s\n", __func__, fname, e.what());'
+  - '        delete ctx_vision;'
+  - '        delete ctx_audio;'
+  - '        return {nullptr, nullptr};'
+  - '    }'
+  - '    return {ctx_vision, ctx_audio};'
+  - '}'
+  desc: Initializes a CLIP context by loading vision and optionally audio models from
+    a given file, handling warmup and model loading failures.
+  line: 2310-2350
+  name: clip_init
+- code:
+  - struct clip_image_size * clip_image_size_init() {
+  - '    struct clip_image_size * load_image_size = new struct clip_image_size();'
+  - '    load_image_size->width = 448;'
+  - '    load_image_size->height = 448;'
+  - '    return load_image_size;'
+  - '}'
+  desc: Creates and initializes a clip_image_size structure with default dimensions
+    of 448x448.
+  line: 2350-2357
+  name: clip_image_size_init
+- code:
+  - struct clip_image_u8 * clip_image_u8_init() {
+  - '    return new clip_image_u8();'
+  - '}'
+  desc: Creates a new uninitialized clip_image_u8 structure for storing 8-bit image
+    data.
+  line: 2357-2360
+  name: clip_image_u8_init
+- code:
+  - struct clip_image_f32 * clip_image_f32_init() {
+  - '    return new clip_image_f32();'
+  - '}'
+  desc: Creates a new uninitialized clip_image_f32 structure for storing 32-bit float
+    image data.
+  line: 2360-2363
+  name: clip_image_f32_init
+- code:
+  - struct clip_image_f32_batch * clip_image_f32_batch_init() {
+  - '    return new clip_image_f32_batch();'
+  - '}'
+  desc: Creates a new uninitialized clip_image_f32_batch structure for storing a batch
+    of images.
+  line: 2363-2366
+  name: clip_image_f32_batch_init
+- code:
+  - unsigned char * clip_image_u8_get_data(struct clip_image_u8 * img, uint32_t *
+    nx, uint32_t * ny) {
+  - '    if (nx) *nx = img->nx;'
+  - '    if (ny) *ny = img->ny;'
+  - '    return img->buf.data();'
+  - '}'
+  desc: Returns a pointer to the image buffer data and optionally the width and height
+    of an 8-bit image.
+  line: 2366-2373
+  name: clip_image_u8_get_data
+- code:
+  - void clip_image_size_free(struct clip_image_size * load_image_size) {
+  - '    if (load_image_size == nullptr) {'
+  - '        return;'
+  - '    }'
+  - '    delete load_image_size;'
+  - '}'
+  desc: Frees the memory allocated for a clip_image_size structure.
+  line: 2373-2380
+  name: clip_image_size_free
+- code:
+  - void clip_image_u8_free(struct clip_image_u8  * img) { delete img; }
+  desc: Frees the memory allocated for a clip_image_u8  structure.
+  line: 2380-2381
+  name: clip_image_u8_free
+- code:
+  - void clip_image_f32_free(struct clip_image_f32 * img) { delete img; }
+  desc: Frees the memory allocated for a clip_image_f32 structure.
+  line: 2381-2382
+  name: clip_image_f32_free
+- code:
+  - void clip_image_u8_batch_free(struct clip_image_u8_batch * batch) { delete batch;
+    }
+  desc: Frees the memory allocated for a clip_image_u8_batch structure.
+  line: 2382-2383
+  name: clip_image_u8_batch_free
+- code:
+  - void clip_image_f32_batch_free(struct clip_image_f32_batch * batch) { delete batch;
+    }
+  desc: Frees the memory allocated for a clip_image_f32_batch structure.
+  line: 2383-2384
+  name: clip_image_f32_batch_free
+- code:
+  - size_t clip_image_f32_batch_n_images(const struct clip_image_f32_batch * batch)
+    {
+  - '    return batch->entries.size();'
+  - '}'
+  desc: Returns the number of images in a clip_image_f32_batch.
+  line: 2384-2388
+  name: clip_image_f32_batch_n_images
+- code:
+  - size_t clip_image_f32_batch_nx(const struct clip_image_f32_batch * batch, int
+    idx) {
+  - '    if (idx < 0 || idx >= (int)batch->entries.size()) {'
+  - '        LOG_ERR("%s: invalid index %d\n", __func__, idx);'
+  - '        return 0;'
+  - '    }'
+  - '    return batch->entries[idx]->nx;'
+  - '}'
+  desc: Returns the width (nx) of a specific image at the given index in a clip_image_f32_batch,
+    with bounds checking.
+  line: 2388-2398
+  name: clip_image_f32_batch_nx
+- code:
+  - size_t clip_image_f32_batch_ny(const struct clip_image_f32_batch * batch, int
+    idx) {
+  - '    if (idx < 0 || idx >= (int)batch->entries.size()) {'
+  - '        LOG_ERR("%s: invalid index %d\n", __func__, idx);'
+  - '        return 0;'
+  - '    }'
+  - '    return batch->entries[idx]->ny;'
+  - '}'
+  desc: Returns the height (ny) of a specific image at the given index in a clip_image_f32_batch,
+    with bounds checking.
+  line: 2398-2408
+  name: clip_image_f32_batch_ny
+- code:
+  - clip_image_f32 * clip_image_f32_get_img(const struct clip_image_f32_batch * batch,
+    int idx) {
+  - '    if (idx < 0 || idx >= (int)batch->entries.size()) {'
+  - '        LOG_ERR("%s: invalid index %d\n", __func__, idx);'
+  - '        return nullptr;'
+  - '    }'
+  - '    return batch->entries[idx].get();'
+  - '}'
+  desc: Returns a raw pointer to the clip_image_f32 image at the given index in a
+    batch, with bounds checking.
+  line: 2408-2418
+  name: clip_image_f32_get_img
+- code:
+  - void clip_build_img_from_pixels(const unsigned char * rgb_pixels, int nx, int
+    ny, clip_image_u8 * img) {
+  - '    img->nx = nx;'
+  - '    img->ny = ny;'
+  - '    img->buf.resize(3 * nx * ny);'
+  - '    memcpy(img->buf.data(), rgb_pixels, img->buf.size());'
+  - '}'
+  desc: Copies raw RGB pixel data into a clip_image_u8 structure, setting the width,
+    height, and buffer contents.
+  line: 2418-2425
+  name: clip_build_img_from_pixels
+- code:
+  - ggml_tensor * clip_get_newline_tensor(const struct clip_ctx * ctx) {
+  - '    return ctx->model.image_newline;'
+  - '}'
+  desc: Retrieves the image newline tensor from the CLIP model.
+  line: 2425-2429
+  name: clip_get_newline_tensor
+- code:
+  - void clip_free(clip_ctx * ctx) {
+  - '    if (ctx == nullptr) {'
+  - '        return;'
+  - '    }'
+  - '    delete ctx;'
+  - '}'
+  desc: Frees the memory allocated for a clip_ctx structure, returning early if the
+    pointer is null.
+  line: 2429-2436
+  name: clip_free
+- code:
+  - size_t clip_embd_nbytes(const struct clip_ctx * ctx) {
+  - '    const int32_t nx = ctx->model.hparams.image_size;'
+  - '    const int32_t ny = ctx->model.hparams.image_size;'
+  - '    return clip_embd_nbytes_by_img(ctx, nx, ny);'
+  - '}'
+  desc: Calculates the number of bytes needed for embeddings given a context, by calling
+    clip_embd_nbytes_by_img with the model's built-in image size.
+  line: 2436-2444
+  name: clip_embd_nbytes
+- code:
+  - size_t clip_embd_nbytes_by_img(const struct clip_ctx * ctx, int img_w, int img_h)
+    {
+  - '    clip_image_f32 img;'
+  - '    img.nx = img_w;'
+  - '    img.ny = img_h;'
+  - '    return clip_n_output_tokens(ctx, &img) * clip_n_mmproj_embd(ctx) * sizeof(float);'
+  - '}'
+  desc: Calculates the number of bytes needed for embeddings given a context and a
+    specific image width and height.
+  line: 2444-2451
+  name: clip_embd_nbytes_by_img
+- code:
+  - int32_t clip_get_image_size(const struct clip_ctx * ctx) {
+  - '    return ctx->model.hparams.image_size;'
+  - '}'
+  desc: Returns the image size used by the CLIP model.
+  line: 2451-2455
+  name: clip_get_image_size
+- code:
+  - int32_t clip_get_patch_size(const struct clip_ctx * ctx) {
+  - '    return ctx->model.hparams.patch_size;'
+  - '}'
+  desc: Returns the patch size used by the CLIP model.
+  line: 2455-2459
+  name: clip_get_patch_size
+- code:
+  - int32_t clip_get_hidden_size(const struct clip_ctx * ctx) {
+  - '    return ctx->model.hparams.n_embd;'
+  - '}'
+  desc: Returns the hidden size (embedding dimension) used by the CLIP model.
+  line: 2459-2463
+  name: clip_get_hidden_size
+- code:
+  - const char * clip_patch_merge_type(const struct clip_ctx * ctx) {
+  - '    return ctx->model.hparams.mm_patch_merge_type == PATCH_MERGE_SPATIAL_UNPAD
+    ? "spatial_unpad" : "flat";'
+  - '}'
+  desc: Returns the patch merge type string, either 'spatial_unpad' or 'flat', based
+    on the model's configuration.
+  line: 2463-2467
+  name: clip_patch_merge_type
+- code:
+  - int clip_n_output_tokens_x(const struct clip_ctx * ctx, struct clip_image_f32
+    * img) {
+  - '    const auto & params = ctx->model.hparams;'
+  - '    const int n_total = clip_n_output_tokens(ctx, img);'
+  - '    const auto & proj = ctx->proj_type();'
+  - '    switch (proj) {'
+  - '        case PROJECTOR_TYPE_QWEN2VL:'
+  - '        case PROJECTOR_TYPE_QWEN25VL:'
+  - '        case PROJECTOR_TYPE_QWEN3VL:'
+  - '        case PROJECTOR_TYPE_GLM4V:'
+  - '        case PROJECTOR_TYPE_PADDLEOCR:'
+  - '        case PROJECTOR_TYPE_HUNYUANOCR:'
+  - '        case PROJECTOR_TYPE_YOUTUVL:'
+  - '            return (img->nx / params.patch_size) / 2;'
+  - '        default:'
+  - '            break;'
+  - '    }'
+  - '    return n_total;'
+  - '}'
+  desc: Calculates the number of output tokens in the x-dimension for a given image,
+    with projector-specific handling.
+  line: 2467-2485
+  name: clip_n_output_tokens_x
+- code:
+  - int clip_n_output_tokens_y(const struct clip_ctx * ctx, struct clip_image_f32
+    * img) {
+  - '    const auto & params = ctx->model.hparams;'
+  - '    const auto & proj = ctx->proj_type();'
+  - '    switch (proj) {'
+  - '        case PROJECTOR_TYPE_QWEN2VL:'
+  - '        case PROJECTOR_TYPE_QWEN25VL:'
+  - '        case PROJECTOR_TYPE_QWEN3VL:'
+  - '        case PROJECTOR_TYPE_GLM4V:'
+  - '        case PROJECTOR_TYPE_PADDLEOCR:'
+  - '        case PROJECTOR_TYPE_YOUTUVL:'
+  - '            return (img->ny / params.patch_size) / 2;'
+  - '        default:'
+  - '            break;'
+  - '    }'
+  - '    return 1;'
+  - '}'
+  desc: Calculates the number of output tokens in the y-dimension for a given image,
+    with projector-specific handling.
+  line: 2485-2500
+  name: clip_n_output_tokens_y
+- code:
+  - int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 *
+    img) {
+  - '    const auto & params = ctx->model.hparams;'
+  - '    // for models with fixed size image, the input image is already pre-processed
+    and resized to square'
+  - '    int patch_size = params.patch_size;'
+  - '    int n_patches = (img->nx / patch_size) * (img->ny / patch_size);'
+  - '    projector_type proj = ctx->proj_type();'
+  - '    switch (proj) {'
+  - '        case PROJECTOR_TYPE_MLP:'
+  - '        case PROJECTOR_TYPE_MLP_NORM:'
+  - '        case PROJECTOR_TYPE_JANUS_PRO:'
+  - '        case PROJECTOR_TYPE_PHI4:'
+  - '            {'
+  - '                // do nothing'
+  - '            } break;'
+  - '        case PROJECTOR_TYPE_LDP:'
+  - '        case PROJECTOR_TYPE_LDPV2:'
+  - '        case PROJECTOR_TYPE_GLM_EDGE:'
+  - '            {'
+  - '                n_patches /= 4;'
+  - '                if (ctx->model.mm_boi) {'
+  - '                    n_patches += 2; // for BOI and EOI token embeddings'
+  - '                }'
+  - '            } break;'
+  - '        // ... (many more projector cases)'
+  - '    }'
+  - '    return n_patches;'
+  - '}'
+  desc: Calculates the total number of output tokens for a given image, with projector-specific
+    handling and downscaling logic.
+  line: 2500-2650
+  name: clip_n_output_tokens
+- code:
+  - bool clip_image_encode(struct clip_ctx * ctx, const int n_threads, clip_image_f32
+    * img, float * vec) {
+  - '    clip_image_f32_batch imgs;'
+  - '    clip_image_f32_ptr img_copy(clip_image_f32_init());'
+  - '    *img_copy = *img;'
+  - '    imgs.entries.push_back(std::move(img_copy));'
+  - '    return clip_image_batch_encode(ctx, n_threads, &imgs, vec);'
+  - '}'
+  desc: Encodes a single image to its embedding vector, creating a batch and calling
+    the batch encode function.
+  line: 2650-2660
+  name: clip_image_encode
+- code:
+  - bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_image_f32_batch
+    * imgs_c_ptr, float * vec) {
+  - '    const clip_image_f32_batch & imgs = *imgs_c_ptr;'
+  - '    int batch_size = imgs.entries.size();'
+  - '    // TODO @ngxson : implement batch size > 1 as a loop'
+  - '    //                we don''t need true batching support because the cgraph
+    will gonna be big anyway'
+  - '    if (batch_size != 1) {'
+  - '        return false; // only support batch size of 1'
+  - '    }'
+  - '    // if buffers are not allocated, we need to do a warmup run to allocate them'
+  - '    if (!ctx->is_allocated) {'
+  - '        clip_model_loader::warmup(*ctx, *imgs_c_ptr);'
+  - '    }'
+  - '    // build the inference graph'
+  - '    ggml_backend_sched_reset(ctx->sched.get());'
+  - '    ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);'
+  - '    ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);'
+  - '    // set inputs'
+  - '    const auto & model   = ctx->model;'
+  - '    const auto & hparams = model.hparams;'
+  - '    const int image_size_width  = imgs.entries[0]->nx;'
+  - '    const int image_size_height = imgs.entries[0]->ny;'
+  - '    const int patch_size    = hparams.patch_size;'
+  - '    const int num_patches   = ((image_size_width / patch_size) * (image_size_height
+    / patch_size));'
+  - '    const int n_pos = num_patches + (model.class_embedding ? 1 : 0);'
+  - '    const int pos_w = image_size_width  / patch_size;'
+  - '    const int pos_h = image_size_height / patch_size;'
+  - '    auto get_inp_tensor = [&gf](const char * name) {'
+  - '        ggml_tensor * inp = ggml_graph_get_tensor(gf, name);'
+  - '        if (inp == nullptr) {'
+  - '            GGML_ABORT("Failed to get tensor %s", name);'
+  - '        }'
+  - '        if (!(inp->flags & GGML_TENSOR_FLAG_INPUT)) {'
+  - '            GGML_ABORT("Tensor %s is not an input tensor", name);'
+  - '        }'
+  - '        return inp;'
+  - '    };'
+  - '    auto set_input_f32 = [&get_inp_tensor](const char * name, std::vector<float>
+    & values) {'
+  - '        ggml_tensor * cur = get_inp_tensor(name);'
+  - '        GGML_ASSERT(cur->type == GGML_TYPE_F32);'
+  - '        GGML_ASSERT(ggml_nelements(cur) == (int64_t)values.size());'
+  - '        ggml_backend_tensor_set(cur, values.data(), 0, ggml_nbytes(cur));'
+  - '    };'
+  - '    auto set_input_i32 = [&get_inp_tensor](const char * name, std::vector<int32_t>
+    & values) {'
+  - '        ggml_tensor * cur = get_inp_tensor(name);'
+  - '        GGML_ASSERT(cur->type == GGML_TYPE_I32);'
+  - '        GGML_ASSERT(ggml_nelements(cur) == (int64_t)values.size());'
+  - '        ggml_backend_tensor_set(cur, values.data(), 0, ggml_nbytes(cur));'
+  - '    };'
+  - '    // set input pixel values'
+  - '    if (!imgs.is_audio) {'
+  - '        size_t nelem = 0;'
+  - '        for (const auto & img : imgs.entries) {'
+  - '            nelem += img->nx * img->ny * 3;'
+  - '        }'
+  - '        std::vector<float> inp_raw(nelem);'
+  - '        for (size_t i = 0; i < imgs.entries.size(); i++) {'
+  - '            const int nx = imgs.entries[i]->nx;'
+  - '            const int ny = imgs.entries[i]->ny;'
+  - '            const int n = nx * ny;'
+  - '            for (int b = 0; b < batch_size; b++) {'
+  - '                float * batch_entry = inp_raw.data() + b * (3*n);'
+  - '                for (int y = 0; y < ny; y++) {'
+  - '                    for (int x = 0; x < nx; x++) {'
+  - '                        size_t base_src = 3*(y * nx + x); // idx of the first
+    channel'
+  - '                        size_t base_dst =    y * nx + x;  // idx of the first
+    channel'
+  - '                        batch_entry[      base_dst] = imgs.entries[b]->buf[base_src    ];'
+  - '                        batch_entry[1*n + base_dst] = imgs.entries[b]->buf[base_src
+    + 1];'
+  - '                        batch_entry[2*n + base_dst] = imgs.entries[b]->buf[base_src
+    + 2];'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        set_input_f32("inp_raw", inp_raw);'
+  - '    } else {'
+  - '        // audio input'
+  - '        GGML_ASSERT(imgs.entries.size() == 1);'
+  - '        const auto & mel_inp = imgs.entries[0];'
+  - '        const int n_step = mel_inp->nx;'
+  - '        const int n_mel  = mel_inp->ny;'
+  - '        std::vector<float> inp_raw(n_step * n_mel);'
+  - '        std::memcpy(inp_raw.data(), mel_inp->buf.data(), n_step * n_mel * sizeof(float));'
+  - '        set_input_f32("inp_raw", inp_raw);'
+  - '    }'
+  - '    // set input per projector'
+  - '    switch (ctx->model.proj_type) {'
+  - '        case PROJECTOR_TYPE_MINICPMV:'
+  - '            {'
+  - '                // inspired from siglip:'
+  - '                //    -> https://huggingface.co/HuggingFaceM4/siglip-so400m-14-980-flash-attn2-navit'
+  - '                //    -> https://huggingface.co/HuggingFaceM4/siglip-so400m-14-980-flash-attn2-navit/blob/d66538faeba44480d0bfaa42145eef26f9423199/modeling_siglip.py#L316'
+  - '                std::vector<int32_t> positions(pos_h '
+  - '            } break;'
+  - '        // ... (other projector cases)'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: Encodes a batch of images to embedding vectors, building the computation graph,
+    setting input tensors, and running inference.
+  line: 2660-2800
+  name: clip_image_batch_encode
+- code:
+  - switch (ctx->model.proj_type) {
+  - '    case PROJECTOR_TYPE_MINICPMV:'
+  - '        {'
+  - '            std::vector<int32_t> positions(pos_h * pos_w);'
+  - '            int bucket_coords_h[1024];'
+  - '            int bucket_coords_w[1024];'
+  - '            for (int i = 0; i < pos_h; i++){'
+  - '                bucket_coords_h[i] = std::floor(70.0*i/pos_h);'
+  - '            }'
+  - '            ...'
+  - '        }'
+  - '    ...'
+  - '    // compute the graph and extract embeddings'
+  - '    auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), gf);'
+  - '    ggml_tensor * embeddings = ggml_graph_node(gf, -1);'
+  - '    ...'
+  - '    return true;'
+  desc: Global code section containing the main image encoding logic that processes
+    various projector types, computes embeddings, and handles model-specific position
+    encoding setups.
+  line: 2977-3150
+  name: __main__
+- code:
+  - int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
+  - '    switch (ctx->model.proj_type) {'
+  - '        case PROJECTOR_TYPE_LDP:'
+  - '            return ctx->model.mm_model_block_1_block_2_1_b->ne[0];'
+  - '        case PROJECTOR_TYPE_LDPV2:'
+  - '            return ctx->model.mm_model_peg_0_b->ne[0];'
+  - '        ...'
+  - '        default:'
+  - '            GGML_ABORT("Unknown projector type");'
+  - '    }'
+  - '}'
+  desc: Returns the embedding dimension of the multimodal projector based on the projector
+    type.
+  line: 3151-3190
+  name: clip_n_mmproj_embd
+- code:
+  - int clip_is_minicpmv(const struct clip_ctx * ctx) {
+  - '    if (ctx->proj_type() == PROJECTOR_TYPE_MINICPMV) {'
+  - '        return ctx->model.hparams.minicpmv_version;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: Checks if the model is MiniCPM-V and returns the version, otherwise returns
+    0.
+  line: 3191-3197
+  name: clip_is_minicpmv
+- code:
+  - bool clip_is_glm(const struct clip_ctx * ctx) {
+  - '    return ctx->proj_type() == PROJECTOR_TYPE_GLM_EDGE;'
+  - '}'
+  desc: Returns whether the model uses GLM edge projector type.
+  line: 3198-3202
+  name: clip_is_glm
+- code:
+  - bool clip_is_llava(const struct clip_ctx * ctx) {
+  - '    return ctx->model.hparams.has_llava_projector;'
+  - '}'
+  desc: Checks if the model has a LLaVA projector.
+  line: 3203-3205
+  name: clip_is_llava
+- code:
+  - bool clip_has_vision_encoder(const struct clip_ctx * ctx) {
+  - '    return ctx->model.modality == CLIP_MODALITY_VISION;'
+  - '}'
+  desc: Returns whether the model has a vision encoder.
+  line: 3206-3208
+  name: clip_has_vision_encoder
+- code:
+  - bool clip_has_audio_encoder(const struct clip_ctx * ctx) {
+  - '    return ctx->model.modality == CLIP_MODALITY_AUDIO;'
+  - '}'
+  desc: Returns whether the model has an audio encoder.
+  line: 3209-3211
+  name: clip_has_audio_encoder
+- code:
+  - bool clip_has_whisper_encoder(const struct clip_ctx * ctx) {
+  - '    switch (ctx->proj_type()) {'
+  - '        case PROJECTOR_TYPE_ULTRAVOX:'
+  - '        case PROJECTOR_TYPE_QWEN2A:'
+  - '        case PROJECTOR_TYPE_GLMA:'
+  - '        case PROJECTOR_TYPE_VOXTRAL:'
+  - '        case PROJECTOR_TYPE_MUSIC_FLAMINGO:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: Checks if the projector type uses Whisper encoder.
+  line: 3212-3222
+  name: clip_has_whisper_encoder
+- code:
+  - bool clip_encode_float_image (struct clip_ctx * ctx, int n_threads, float * img,
+    int h, int w, float * vec) {
+  - '    clip_image_f32 clip_img;'
+  - '    clip_img.buf.resize(h * w * 3);'
+  - '    for (int i = 0; i < h*w*3; i++)'
+  - '    {'
+  - '        clip_img.buf[i] = img[i];'
+  - '    }'
+  - '    clip_img.nx = w;'
+  - '    clip_img.ny = h;'
+  - '    clip_image_encode(ctx, n_threads, &clip_img, vec);'
+  - '    return true;'
+  - '}'
+  desc: Encodes a float image by wrapping it into a clip_image_f32 structure and calling
+    clip_image_encode.
+  line: 3223-3235
+  name: clip_encode_float_image
+- code:
+  - projector_type clip_get_projector_type(const struct clip_ctx * ctx) {
+  - '    return ctx->proj_type();'
+  - '}'
+  desc: Returns the projector type of the model.
+  line: 3236-3238
+  name: clip_get_projector_type
+- code:
+  - void clip_image_f32_batch_add_mel(struct clip_image_f32_batch * batch, int n_mel,
+    int n_frames, float * mel) {
+  - '    clip_image_f32 * audio = new clip_image_f32;'
+  - '    audio->nx = n_frames;'
+  - '    audio->ny = n_mel;'
+  - '    audio->buf.resize(n_frames * n_mel);'
+  - '    std::memcpy(audio->buf.data(), mel, n_frames * n_mel * sizeof(float));'
+  - '    batch->entries.push_back(clip_image_f32_ptr(audio));'
+  - '    batch->is_audio = true;'
+  - '}'
+  desc: Adds a mel spectrogram to an audio image batch.
+  line: 3239-3248
+  name: clip_image_f32_batch_add_mel
+- code:
+  - const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx) {
+  - '    return &ctx->model.hparams;'
+  - '}'
+  desc: Returns the hyperparameters of the clip model.
+  line: 3249-3251
+  name: clip_get_hparams
+- code:
+  - void clip_set_debug_output_embeddings(clip_ctx * ctx, bool enable) {
+  - '    ctx->debug_output_embeddings = enable;'
+  - '}'
+  desc: Enables or disables debug output of embeddings.
+  line: 3252-3255
+  name: clip_set_debug_output_embeddings

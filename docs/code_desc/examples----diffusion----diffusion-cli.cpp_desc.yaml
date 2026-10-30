@@ -1,0 +1,228 @@
+classes: []
+desc: 该文件实现了一个基于 llama.cpp 的扩散式文本生成命令行程序：负责解析命令行参数、加载并验证扩散模型、构造输入提示词、执行基于时间步或分块的掩码扩散生成，并支持多种置信度算法、采样策略、分类器自由引导、Gumbel
+  噪声和可视化进度输出。
+file: examples/diffusion/diffusion-cli.cpp
+funcs:
+- code:
+  - static float calculate_confidence(const llama_token_data_array & cur_p,
+  - '                                  diffusion_algorithm            algorithm,'
+  - '                                  std::mt19937 &                 rng) {'
+  - '    switch (algorithm) {'
+  - '        case CONFIDENCE_BASED:'
+  - '            return cur_p.data[cur_p.selected].p;'
+  - '        case ENTROPY_BASED:'
+  - '            {'
+  - '                float entropy = 0.0f;'
+  - '                const float epsilon = 1e-10f;'
+  - '                for (size_t i = 0; i < cur_p.size; i++) {'
+  - '                    float prob = cur_p.data[i].p;'
+  - '                    entropy += prob * logf(prob + epsilon);'
+  - '                }'
+  - '                return -entropy;'
+  - '            }'
+  - '        case MARGIN_BASED:'
+  - '            return (cur_p.size > 1) ? cur_p.data[0].p - cur_p.data[1].p : cur_p.data[0].p;'
+  - '        case RANDOM:'
+  - '            {'
+  - '                std::uniform_real_distribution<float> uniform(0.0f, 1.0f);'
+  - '                return uniform(rng);'
+  - '            }'
+  - '        case ORIGIN:'
+  - '            return cur_p.data[cur_p.selected].p;'
+  - '        default:'
+  - '            return 0.0f;'
+  - '    }'
+  - '}'
+  desc: 根据指定的扩散算法计算当前候选 token 的置信度。
+  line: 49-87
+  name: calculate_confidence
+- code:
+  - static int32_t calculate_transfer_count(int32_t step,
+  - '                                        int32_t total_steps,'
+  - '                                        int32_t remaining_masked,'
+  - '                                        transfer_schedule schedule,'
+  - '                                        float eps,'
+  - '                                        const std::vector<int32_t> & num_transfer_tokens
+    = {}) {'
+  - '    switch (schedule) {'
+  - '        case TIMESTEP_BASED:'
+  - '            {'
+  - '                float t = 1.0f - (float) step / total_steps * (1.0f - eps);'
+  - '                float s = 1.0f - (float) (step + 1) / total_steps * (1.0f - eps);'
+  - '                float p_transfer = (step < total_steps - 1) ? (1.0f - s / t)
+    : 1.0f;'
+  - '                return (int32_t) (remaining_masked * p_transfer);'
+  - '            }'
+  - '        case BLOCK_BASED:'
+  - '            if (!num_transfer_tokens.empty() && step < (int32_t) num_transfer_tokens.size())
+    {'
+  - '                return num_transfer_tokens[step];'
+  - '            }'
+  - '            return remaining_masked / (total_steps - step);'
+  - '        default:'
+  - '            return remaining_masked / (total_steps - step);'
+  - '    }'
+  - '}'
+  desc: 根据时间步调度或分块调度计算当前步骤需要解除掩码的 token 数量。
+  line: 90-118
+  name: calculate_transfer_count
+- code:
+  - static bool diffusion_step_callback(int32_t step,
+  - '                                    int32_t total_steps,'
+  - '                                    const llama_token * tokens,'
+  - '                                    int32_t n_tokens,'
+  - '                                    void * user_data) {'
+  - '    callback_data * data = static_cast<callback_data *>(user_data);'
+  - '    auto print_progress_bar = [](int32_t step, int32_t total_steps) {'
+  - '        int progress_percent = (step * 100) / total_steps;'
+  - '        int progress_bars = (step * 50) / total_steps;'
+  - '        LOG_INF("\\rdiffusion step: %d/%d [%s%s] %d%%", step, total_steps,'
+  - '                std::string(progress_bars, ''='').c_str(),'
+  - '                std::string(50 - progress_bars, '' '').c_str(),'
+  - '                progress_percent);'
+  - '    };'
+  - '    if (data->diff_params->visual_mode) {'
+  - '        LOG_INF("\033[2J\033[H");'
+  - '        print_progress_bar(step, total_steps);'
+  - '        std::string current_text = " ";'
+  - '        for (int32_t i = data->n_input; i < n_tokens; i++) {'
+  - '            std::string token_str;'
+  - '            if (tokens[i] != llama_vocab_mask(data->vocab)) {'
+  - '                char piece[256];'
+  - '                int n_chars = llama_token_to_piece(data->vocab, tokens[i], piece,
+    sizeof(piece), 0, false);'
+  - '                if (n_chars > 0) {'
+  - '                    piece[n_chars] = ''\0'';'
+  - '                    token_str = piece;'
+  - '                }'
+  - '            } else {'
+  - '                token_str = " ";'
+  - '            }'
+  - '            current_text += token_str;'
+  - '        }'
+  - '        LOG_INF("%s\n", current_text.c_str());'
+  - '    } else {'
+  - '        print_progress_bar(step, total_steps);'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 在扩散生成的每个步骤输出进度条，并可在可视化模式下显示当前已生成文本。
+  line: 121-170
+  name: diffusion_step_callback
+- code:
+  - static void add_gumbel_noise(float * logits, int32_t n_vocab, float temperature,
+    std::mt19937 & rng) {
+  - '    if (temperature == 0.0f) {'
+  - '        return;'
+  - '    }'
+  - '    std::uniform_real_distribution<double> uniform(0.0, 1.0);'
+  - '    for (int32_t i = 0; i < n_vocab; i++) {'
+  - '        double noise = uniform(rng);'
+  - '        noise = std::max(noise, 1e-20);'
+  - '        double gumbel_noise = std::pow(-std::log(noise), temperature);'
+  - '        logits[i] = std::exp(logits[i]) / gumbel_noise;'
+  - '    }'
+  - '}'
+  desc: 在采样前向 logits 添加基于温度的 Gumbel 噪声变换。
+  line: 173-186
+  name: add_gumbel_noise
+- code:
+  - static std::vector<int32_t> get_num_transfer_tokens(int32_t mask_count, int32_t
+    steps) {
+  - '    std::vector<int32_t> num_transfer_tokens(steps);'
+  - '    int32_t base = mask_count / steps;'
+  - '    int32_t remainder = mask_count % steps;'
+  - '    for (int32_t i = 0; i < steps; i++) {'
+  - '        num_transfer_tokens[i] = base + (i < remainder ? 1 : 0);'
+  - '    }'
+  - '    return num_transfer_tokens;'
+  - '}'
+  desc: 将需要解除掩码的 token 数量尽可能均匀地分配到多个扩散步骤。
+  line: 189-200
+  name: get_num_transfer_tokens
+- code:
+  - static void diffusion_generate(llama_context * ctx,
+  - '                               const llama_token * input_tokens,'
+  - '                               llama_token * output_tokens,'
+  - '                               int32_t n_input,'
+  - '                               const diffusion_params & params,'
+  - '                               int32_t & n_generated) {'
+  - '    n_generated = 0;'
+  - '    if (!ctx || !input_tokens || !output_tokens || n_input <= 0 || params.max_length
+    <= n_input) {'
+  - '        return;'
+  - '    }'
+  - '    const llama_model * model = llama_get_model(ctx);'
+  - '    std::copy(input_tokens, input_tokens + n_input, output_tokens);'
+  - '    std::fill(output_tokens + n_input, output_tokens + params.max_length, params.mask_token_id);'
+  - '    std::mt19937 rng(params.seed);'
+  - '    llama_set_causal_attn(ctx, false);'
+  - '    int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));'
+  - '    // 初始化采样器、批处理对象和可选 CFG 缓冲区'
+  - '    // 按时间步或分块方式循环执行扩散生成'
+  - '    // 对掩码位置计算 logits、采样 token 和置信度'
+  - '    // 根据置信度选择需要在当前步骤解除掩码的位置'
+  - '    // 释放 llama batch 与 sampler 资源并返回生成长度'
+  - '}'
+  desc: 执行完整的掩码扩散文本生成流程，包括模型解码、候选 token 采样、置信度排序、逐步解除掩码以及可选的 CFG 和分块调度。
+  line: 203-465
+  name: diffusion_generate
+- code:
+  - static std::string format_input_text(const std::string & prompt,
+  - '                                     const std::string & system_prompt,'
+  - '                                     bool use_chat_template,'
+  - '                                     llama_model * model) {'
+  - '    if (!use_chat_template) {'
+  - '        return prompt;'
+  - '    }'
+  - '    auto chat_templates = common_chat_templates_init(model, "");'
+  - '    common_chat_templates_inputs inputs;'
+  - '    common_chat_msg system_msg;'
+  - '    if (!system_prompt.empty()) {'
+  - '        system_msg.role = "system";'
+  - '        system_msg.content = system_prompt;'
+  - '        inputs.messages.push_back(system_msg);'
+  - '    }'
+  - '    common_chat_msg user_msg;'
+  - '    user_msg.role = "user";'
+  - '    user_msg.content = prompt;'
+  - '    inputs.messages.push_back(user_msg);'
+  - '    inputs.add_generation_prompt = true;'
+  - '    auto result = common_chat_templates_apply(chat_templates.get(), inputs);'
+  - '    return result.prompt;'
+  - '}'
+  desc: 根据配置决定直接使用用户提示词，或通过模型聊天模板组合系统提示词、用户消息和生成提示。
+  line: 468-496
+  name: format_input_text
+- code:
+  - int main(int argc, char ** argv) {
+  - '    std::setlocale(LC_NUMERIC, "C");'
+  - '    ggml_time_init();'
+  - '    common_params params;'
+  - '    common_init();'
+  - '    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_DIFFUSION)) {'
+  - '        return 1;'
+  - '    }'
+  - '    llama_backend_init();'
+  - '    llama_model_params model_params = llama_model_default_params();'
+  - '    // 根据命令行参数配置并加载模型'
+  - '    // 创建 llama 上下文并设置线程参数'
+  - '    // 格式化提示词并进行 token 化'
+  - '    // 配置扩散算法、调度方式、采样参数和回调'
+  - '    diffusion_generate(ctx, input_tokens.data(), output_tokens.data(), n_input,
+    diff_params, n_generated);'
+  - '    if (n_generated > 0) {'
+  - '        output_tokens.erase(output_tokens.begin(), output_tokens.begin() + n_input);'
+  - '        std::string output_data = common_detokenize(vocab, output_tokens, false);'
+  - '        LOG_INF("\n%s\n", output_data.c_str());'
+  - '    } else {'
+  - '        LOG_INF("Error: diffusion generation failed\n");'
+  - '    }'
+  - '    llama_free(ctx);'
+  - '    llama_model_free(model);'
+  - '    llama_backend_free();'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口：解析参数、初始化 llama 后端、加载扩散模型、构造生成参数、执行文本生成并输出结果。
+  line: 499-638
+  name: __main__

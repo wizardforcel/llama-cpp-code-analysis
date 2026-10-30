@@ -1,0 +1,278 @@
+classes:
+- desc: 一个测试框架结构体，包含测试状态、断言方法和测试/基准执行逻辑，通过成员变量统计测试数量和失败次数，并提供结果输出功能。
+  methods:
+  - code:
+    - 'explicit testing(std::ostream &os = std::cout) : out(os) {}'
+    desc: 构造函数，初始化输出流，默认为标准输出。
+    line: 17-17
+    name: testing
+  - code:
+    - std::string indent() const {
+    - '    if (stack.empty()) {'
+    - '        return "";'
+    - '    }'
+    - '    return std::string((stack.size() - 1) * 2, '' '');'
+    - '}'
+    desc: 根据当前堆栈深度生成缩进字符串，用于格式化输出层次。
+    line: 19-24
+    name: indent
+  - code:
+    - std::string full_name() const {
+    - '    return string_join(stack, ".");'
+    - '}'
+    desc: 返回由堆栈中所有测试名称拼接而成的完整测试路径，用于过滤匹配。
+    line: 26-28
+    name: full_name
+  - code:
+    - void log(const std::string & msg) {
+    - '    if (verbose) {'
+    - '        out << indent() << "  " << msg << "\n";'
+    - '    }'
+    - '}'
+    desc: 在详细模式下输出一条日志消息，带缩进前缀。
+    line: 30-34
+    name: log
+  - code:
+    - void set_filter(const std::string & re) {
+    - '    filter = std::regex(re);'
+    - '    filter_tests = true;'
+    - '}'
+    desc: 设置正则表达式过滤器，用于仅运行匹配的测试用例。
+    line: 36-40
+    name: set_filter
+  - code:
+    - bool should_run() const {
+    - '    if (filter_tests) {'
+    - '        if (!std::regex_match(full_name(), filter)) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 检查当前测试是否应运行，根据过滤器设置来决定是否跳过。
+    line: 42-50
+    name: should_run
+  - code:
+    - template <typename F>
+    - void run_with_exceptions(F &&f, const char *ctx) {
+    - '    try {'
+    - '        f();'
+    - '    } catch (const std::exception &e) {'
+    - '        ++failures;'
+    - '        ++exceptions;'
+    - '        out << indent() << "UNHANDLED EXCEPTION (" << ctx << "): " << e.what()
+      << "\n";'
+    - '        if (throw_exception) {'
+    - '            throw;'
+    - '        }'
+    - '    } catch (...) {'
+    - '        ++failures;'
+    - '        ++exceptions;'
+    - '        out << indent() << "UNHANDLED EXCEPTION (" << ctx << "): unknown\n";'
+    - '        if (throw_exception) {'
+    - '            throw;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 执行传入的函数，捕获并统计异常，根据配置决定是否重新抛出。
+    line: 52-69
+    name: run_with_exceptions
+  - code:
+    - void print_result(const std::string &label, int new_failures, int new_assertions,
+      const std::string &extra = "") const {
+    - '    std::string line = indent() + label;'
+    - ''
+    - '    std::string details;'
+    - '    if (new_assertions > 0) {'
+    - '        if (new_failures == 0) {'
+    - '            details = std::to_string(new_assertions) + " assertion(s)";'
+    - '        } else {'
+    - '            details = std::to_string(new_failures) + " of " +'
+    - '                      std::to_string(new_assertions) + " assertion(s) failed";'
+    - '        }'
+    - '    }'
+    - '    if (!extra.empty()) {'
+    - '        if (!details.empty()) {'
+    - '            details += ", ";'
+    - '        }'
+    - '        details += extra;'
+    - '    }'
+    - ''
+    - '    if (!details.empty()) {'
+    - '        line += " (" + details + ")";'
+    - '    }'
+    - ''
+    - '    std::string status = (new_failures == 0) ? "[PASS]" : "[FAIL]";'
+    - ''
+    - '    if (line.size() + 1 < status_column) {'
+    - '        line.append(status_column - line.size(), '' '');'
+    - '    } else {'
+    - '        line.push_back('' '');'
+    - '    }'
+    - ''
+    - '    out << line << status << "\n";'
+    - '}'
+    desc: 格式化并打印一个测试或基准的结果行，包括断言统计和通过/失败状态。
+    line: 71-99
+    name: print_result
+  - code:
+    - template <typename F>
+    - void test(const std::string &name, F f) {
+    - '    stack.push_back(name);'
+    - '    if (!should_run()) {'
+    - '        stack.pop_back();'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    ++tests;'
+    - '    out << indent() << name << "\n";'
+    - ''
+    - '    int before_failures   = failures;'
+    - '    int before_assertions = assertions;'
+    - ''
+    - '    run_with_exceptions([&] { f(*this); }, "test");'
+    - ''
+    - '    int new_failures   = failures   - before_failures;'
+    - '    int new_assertions = assertions - before_assertions;'
+    - ''
+    - '    print_result(name, new_failures, new_assertions);'
+    - ''
+    - '    stack.pop_back();'
+    - '}'
+    desc: 执行一个命名测试函数，记录测试状态并打印结果，支持使用字符串名称。
+    line: 101-123
+    name: test
+  - code:
+    - template <typename F>
+    - void test(F f) {
+    - '    test("test #" + std::to_string(++unnamed), f);'
+    - '}'
+    desc: 执行一个未命名测试，自动生成名称并调用命名测试版本。
+    line: 125-128
+    name: test
+  - code:
+    - template <typename F>
+    - void bench(const std::string &name, F f, int iterations = 100) {
+    - '    stack.push_back(name);'
+    - '    if (!should_run()) {'
+    - '        stack.pop_back();'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    ++tests;'
+    - '    out << indent() << "[bench] " << name << "\n";'
+    - ''
+    - '    int before_failures   = failures;'
+    - '    int before_assertions = assertions;'
+    - ''
+    - '    using clock = std::chrono::high_resolution_clock;'
+    - ''
+    - '    std::chrono::microseconds duration(0);'
+    - ''
+    - '    run_with_exceptions([&] {'
+    - '        for (auto i = 0; i < iterations; i++) {'
+    - '            auto start = clock::now();'
+    - '            f();'
+    - '            duration += std::chrono::duration_cast<std::chrono::microseconds>(clock::now()
+      - start);'
+    - '        }'
+    - '    }, "bench");'
+    - ''
+    - '    auto avg_elapsed   = duration.count() / iterations;'
+    - '    auto avg_elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(duration).count()
+      / iterations;'
+    - '    auto rate = (avg_elapsed_s > 0.0) ? (1.0 / avg_elapsed_s) : 0.0;'
+    - ''
+    - '    int new_failures   = failures   - before_failures;'
+    - '    int new_assertions = assertions - before_assertions;'
+    - ''
+    - '    std::string extra ='
+    - '        "n=" + std::to_string(iterations) +'
+    - '        " avg=" + std::to_string(avg_elapsed) + "us" +'
+    - '        " rate=" + std::to_string(int(rate)) + "/s";'
+    - ''
+    - '    print_result("[bench] " + name, new_failures, new_assertions, extra);'
+    - ''
+    - '    stack.pop_back();'
+    - '}'
+    desc: 执行一个命名基准测试，重复运行函数并测量平均耗时和速率。
+    line: 130-164
+    name: bench
+  - code:
+    - template <typename F>
+    - void bench(F f, int iterations = 100) {
+    - '    bench("bench #" + std::to_string(++unnamed), f, iterations);'
+    - '}'
+    desc: 执行一个未命名基准测试，自动生成名称并调用命名基准测试版本。
+    line: 166-168
+    name: bench
+  - code:
+    - bool assert_true(bool cond) {
+    - '    return assert_true("", cond);'
+    - '}'
+    desc: 断言一个条件为真，无消息版本，增加断言计数并在失败时记录。
+    line: 171-173
+    name: assert_true
+  - code:
+    - bool assert_true(const std::string &msg, bool cond) {
+    - '    ++assertions;'
+    - '    if (!cond) {'
+    - '        ++failures;'
+    - '        out << indent() << "ASSERTION FAILED";'
+    - '        if (!msg.empty()) {'
+    - '            out << " : " << msg;'
+    - '        }'
+    - '        out << "\n";'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 断言一个条件为真，带消息版本，在失败时输出错误信息。
+    line: 175-187
+    name: assert_true
+  - code:
+    - template <typename A, typename B>
+    - bool assert_equal(const A &expected, const B &actual) {
+    - '    return assert_equal("", expected, actual);'
+    - '}'
+    desc: 断言两个值相等，无消息版本，增加断言计数并在失败时记录。
+    line: 189-191
+    name: assert_equal
+  - code:
+    - template <typename A, typename B>
+    - bool assert_equal(const std::string &msg, const A &expected, const B &actual)
+      {
+    - '    ++assertions;'
+    - '    if (!(actual == expected)) {'
+    - '        ++failures;'
+    - '        out << indent() << "ASSERT EQUAL FAILED";'
+    - '        if (!msg.empty()) {'
+    - '            out << " : " << msg;'
+    - '        }'
+    - '        out << "\n";'
+    - ''
+    - '        out << indent() << "  expected: " << expected << "\n";'
+    - '        out << indent() << "  actual  : " << actual << "\n";'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 断言两个值相等，带消息版本，在失败时输出期望值和实际值。
+    line: 193-209
+    name: assert_equal
+  - code:
+    - int summary() const {
+    - '    out << "\n";'
+    - '    out << "tests      : " << tests << "\n";'
+    - '    out << "assertions : " << assertions << "\n";'
+    - '    out << "failures   : " << failures << "\n";'
+    - '    out << "exceptions : " << exceptions << "\n";'
+    - '    return failures == 0 ? 0 : 1;'
+    - '}'
+    desc: 打印测试总览、断言、失败和异常的数量，并返回退出码。
+    line: 212-220
+    name: summary
+  name: testing
+desc: 该代码定义了一个轻量级、自包含的 C++ 测试框架结构体 `testing`，它支持测试用例的注册与执行、断言、性能基准测试、结果统计以及可选的过滤和详细输出功能，用于单元测试和简单的基准测试场景。
+file: tests/testing.h
+funcs: []

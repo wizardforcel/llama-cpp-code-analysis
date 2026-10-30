@@ -1,0 +1,108 @@
+classes:
+- desc: 一个参数结构体，用于封装和传递softmax操作所需的全部元数据，包括张量维度、步长、缩放因子及ALiBi斜率参数。
+  methods:
+  - code:
+    - struct soft_max_params {
+    - '    int64_t nheads;          // 头数量'
+    - '    uint32_t n_head_log2;    // 头数量的log2值'
+    - '    int64_t ncols;           // 输入列数'
+    - '    int64_t nrows_x;         // 输入行数'
+    - '    int64_t nrows_y;         // 输出行数'
+    - '    int64_t ne00;            // 输入维度0'
+    - '    int64_t ne01;            // 输入维度1'
+    - '    int64_t ne02;            // 输入维度2'
+    - '    int64_t ne03;            // 输入维度3'
+    - '    int64_t nb11;            // 掩码步长1'
+    - '    int64_t nb12;            // 掩码步长2'
+    - '    int64_t nb13;            // 掩码步长3'
+    - '    int64_t ne12;            // 掩码维度2'
+    - '    int64_t ne13;            // 掩码维度3'
+    - '    float scale;             // 缩放因子'
+    - '    float max_bias;          // ALiBi最大偏置'
+    - '    float m0;                // ALiBi斜率0'
+    - '    float m1;                // ALiBi斜率1'
+    - '};'
+    desc: 结构体的隐式默认构造函数，用于初始化所有成员变量。不执行任何操作，只是C++中隐式生成的。
+    line: 18-41
+    name: soft_max_params
+  name: soft_max_params
+desc: 该文件是ggml框架中SYCL (SYstem Compute Language) 后端softmax操作的实现。它提供了在SYCL设备上执行softmax前向和反向传播的优化内核，支持可选的掩码（mask）和衰减项（sinks），并包含ALiBi斜率计算、共享内存使用、动态块大小选择等特性，以适配不同尺寸的输入张量。
+file: ggml/src/ggml-sycl/softmax.cpp
+funcs:
+- code:
+  - template <typename T> static __dpct_inline__ float t2f32(T val) {
+  - '    return (float) val;'
+  - '}'
+  - ''
+  - template <> float __dpct_inline__ t2f32<sycl::half>(sycl::half val) {
+  - '  return sycl::vec<sycl::half, 1>(val)'
+  - '      .convert<float, sycl::rounding_mode::automatic>()[0];'
+  - '}'
+  desc: 模板全局函数，用于将不同类型的值（T）转换为32位浮点数。为半精度（sycl::half）提供了特化版本，使用SYCL向量转换以确保精度。
+  line: 12-17
+  name: t2f32
+- code:
+  - template <bool use_shared, int ncols_template, int block_size_template, typename
+    T>
+  - static void soft_max_f32(const float * x, const T * mask, const float * sinks,
+    float * dst, const soft_max_params p, uint8_t * dpct_local) {
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    // ... 详细实现省略，包括计算行索引、处理局部数据、计算最大值、指数和及最终输出 ...'
+  - '}'
+  desc: 核心的softmax前向内核函数，用于SYCL设备。该函数在给定输入x、可选的掩码mask和衰减项sinks的情况下，计算softmax输出dst。它采用分块处理的方式，先计算每个块的最大值，再计算指数和及归一化因子。支持使用共享内存（use_shared）来提高性能，并允许通过模板参数固定列数和块大小以实现循环展开优化。
+  line: 57-180
+  name: soft_max_f32
+- code:
+  - static void soft_max_back_f32(const float *grad, const float *dstf, float *dst,
+    const int ncols, const float scale) {
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    // ... 具体实现，包括计算点积并使用它以调整梯度 ...'
+  - '}'
+  desc: softmax的反向传播内核函数，根据输入的梯度grad和正向传播的输出dstf，计算应传播的梯度dst。该函数计算梯度与输出的点积，然后据此调整梯度。
+  line: 182-203
+  name: soft_max_back_f32
+- code:
+  - template <int... Ns, typename T>
+  - static void launch_soft_max_kernels(const float * x, const T * mask, const float
+    * sinks, float * dst, const soft_max_params & p, dpct::queue_ptr stream, dpct::dim3
+    block_dims, dpct::dim3 block_nums, size_t nbytes_shared) {
+  - '    // ... 通过lambda和折叠表达式尝试匹配最佳内核 ...'
+  - '}'
+  desc: 辅助模板函数，负责在已知列数（ncols）的情况下，选择并启动最适当的softmax内核。它通过展开一组预设的列数（32, 64, ...）来尝试匹配。如果匹配成功，则启动性能优化的内核；否则，启动一个动态处理列数的通用内核。
+  line: 205-268
+  name: launch_soft_max_kernels
+- code:
+  - template <typename T>
+  - static void soft_max_f32_sycl(const float *x, const T *mask, const float *sinks,
+    float *dst, const soft_max_params &params, dpct::queue_ptr stream, int device)
+    {
+  - '    // ... 确定块大小和共享内存需求，并选择合适的启动策略 ...'
+  - '}'
+  desc: softmax前向操作的SYCL入口点。根据输入列数和设备能力，此函数动态决定块大小（nth），并检查持共享内存的可用性。如果条件允许，则调用launch_soft_max_kernels以利用预编译的内核；否则，调用一个使用少共享内存的通用内核版本。
+  line: 270-325
+  name: soft_max_f32_sycl
+- code:
+  - static void soft_max_back_f32_sycl(const float * grad, const float * dstf, float
+    * dst, const int ncols, const int nrows, const float scale, dpct::queue_ptr stream)
+    {
+  - '    // ... 设置工作组尺寸并提交内核 ...'
+  - '}'
+  desc: softmax反向传播的SYCL入口点。此函数配置一维的工作组（大小为WARP_SIZE），并为每一行启动一个内核实例来执行反向传播计算。
+  line: 327-340
+  name: soft_max_back_f32_sycl
+- code:
+  - void ggml_sycl_op_soft_max(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    // ... 提取源张量、参数，并调用核心SYCL实现 ...'
+  - '}'
+  desc: 面向ggml框架的公共API，用于执行softmax前向操作。它从ggml的tensor结构中解析输入、掩码和可选衰减项，从操作参数中提取缩放因子和ALiBi最大偏置，并计算相应的斜率。根据掩码类型（F16或F32）选择合适的SYCL内核执行。
+  line: 342-392
+  name: ggml_sycl_op_soft_max
+- code:
+  - void ggml_sycl_op_soft_max_back(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    // ... 解析梯度和输出，调用反向SYCL实现 ...'
+  - '}'
+  desc: 面向ggml框架的公共API，用于执行softmax反向传播操作。它从ggml的tensor结构中解析梯度和正向输出，提取缩放因子，并断言最大偏置为0（该版本不支持带ALiBi的反向传播）。最后，调用SYCL反向内核。
+  line: 394-419
+  name: ggml_sycl_op_soft_max_back

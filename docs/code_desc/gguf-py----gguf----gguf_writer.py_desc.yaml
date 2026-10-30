@@ -1,0 +1,2175 @@
+classes:
+- desc: 一个数据类，用于存储单个张量的形状、数据类型、字节数及可选的原始numpy张量数据。
+  methods: []
+  name: TensorInfo
+- desc: 一个数据类，用于存储一个键值对的值、数据类型和可选子类型。
+  methods: []
+  name: GGUFValue
+- desc: 枚举类，定义GGUF文件写入流程的状态机（NO_FILE、EMPTY、HEADER、KV_DATA、TI_DATA、WEIGHTS）。
+  methods: []
+  name: WriterState
+- desc: 核心类，负责生成GGUF格式模型文件。它管理输出文件、临时文件、张量/键值内部列表，实现了文件头的写入、元数据与权重数据的序列化，并提供了大量便捷方法用于添加模型架构特定的KV数据。
+  methods:
+  - code:
+    - def __init__(
+    - '    self, path: os.PathLike[str] | str | None, arch: str, use_temp_file: bool
+      = False, endianess: GGUFEndian = GGUFEndian.LITTLE,'
+    - '    split_max_tensors: int = 0, split_max_size: int = 0, dry_run: bool = False,
+      small_first_shard: bool = False'
+    - '):'
+    - '    self.fout = None'
+    - '    self.path = Path(path) if path else None'
+    - '    self.arch = arch'
+    - '    self.endianess = endianess'
+    - '    self.data_alignment = GGUF_DEFAULT_ALIGNMENT'
+    - '    self.use_temp_file = use_temp_file'
+    - '    self.temp_file = None'
+    - '    self.tensors = [{}]'
+    - '    self.kv_data = [{}]'
+    - '    self.split_max_tensors = split_max_tensors'
+    - '    self.split_max_size = split_max_size'
+    - '    self.dry_run = dry_run'
+    - '    self.small_first_shard = small_first_shard'
+    - '    logger.info("gguf: This GGUF file is for {0} Endian only".format('
+    - '        "Big" if self.endianess == GGUFEndian.BIG else "Little",'
+    - '    ))'
+    - '    self.state = WriterState.NO_FILE'
+    - ''
+    - '    if self.small_first_shard:'
+    - '        self.tensors.append({})'
+    - ''
+    - '    self.add_architecture()'
+    desc: 初始化GGUFWriter实例，设置输出路径、架构名称、端序、对齐、分片与干运行等参数，并添加架构键。
+    line: 215-249
+    name: __init__
+  - code:
+    - 'def get_total_parameter_count(self) -> tuple[int, int, int, int]:'
+    - '    total_params = 0'
+    - '    shared_params = 0'
+    - '    expert_params = 0'
+    - ''
+    - '    expert_sum = 0'
+    - '    n_expert_tensors = 0'
+    - ''
+    - '    last_lora_a: tuple[str, TensorInfo] | None = None'
+    - ''
+    - '    for tensors in self.tensors:'
+    - '        for name, info in tensors.items():'
+    - ''
+    - '            shape = info.shape'
+    - ''
+    - '            if name.endswith(".lora_a"):'
+    - '                last_lora_a = (name, info)'
+    - '                continue'
+    - '            elif name.endswith(".lora_b"):'
+    - '                if last_lora_a is None or last_lora_a[0] != name[:-1] + "a":'
+    - '                    # Bail when the LoRA pair can''t be found trivially'
+    - '                    logger.warning("can''t measure LoRA size correctly, tensor
+      order is unusual")'
+    - '                    return 0, 0, 0, 0'
+    - '                else:'
+    - '                    shape = (*shape[:-1], last_lora_a[1].shape[-1])'
+    - ''
+    - '            size = prod(shape)'
+    - ''
+    - '            if "_exps." in name:'
+    - '                if len(shape) >= 3:'
+    - '                    expert_count = shape[-2 if ".bias" in name else -3]'
+    - '                    expert_params += (size // expert_count)'
+    - '                    expert_sum += expert_count'
+    - '                    n_expert_tensors += 1'
+    - '                else:'
+    - '                    shared_params += size'
+    - '            else:'
+    - '                shared_params += size'
+    - ''
+    - '            total_params += size'
+    - ''
+    - '        # Hopefully this should work even for variable-expert-count models'
+    - '        expert_count = (expert_sum // n_expert_tensors) if n_expert_tensors
+      > 0 else 0'
+    - ''
+    - '        # Negate the total to signal it''s likely not exact'
+    - '        if last_lora_a is not None:'
+    - '            total_params = -total_params'
+    - ''
+    - '        # NOTE: keep the output in the same order as accepted by ''size_label''
+      in gguf-py/gguf/utility.py'
+    - '        return total_params, shared_params, expert_params, expert_count'
+    desc: 计算总计、共享及专家的参数量，并处理LoRA张量的特殊处理。
+    line: 251-294
+    name: get_total_parameter_count
+  - code:
+    - 'def format_shard_names(self, path: Path) -> list[Path]:'
+    - '    if len(self.tensors) == 1:'
+    - '        return [path]'
+    - '    return [path.with_name(SHARD_NAME_FORMAT.format(path.stem, i + 1, len(self.tensors)))
+      for i in range(len(self.tensors))]'
+    desc: 根据分片数量生成输出文件名列表。
+    line: 296-298
+    name: format_shard_names
+  - code:
+    - 'def open_output_file(self, path: Path | None = None) -> None:'
+    - '    if self.state is WriterState.EMPTY and self.fout is not None and (path
+      is None or path == self.path):'
+    - '        # allow calling this multiple times as long as the path is the same'
+    - '        return'
+    - ''
+    - '    if self.state is not WriterState.NO_FILE:'
+    - '        raise ValueError(f''Expected output file to be not yet opened, got
+      {self.state}'')'
+    - ''
+    - '    if path is not None:'
+    - '        self.path = path'
+    - ''
+    - '    if self.path is not None:'
+    - '        filenames = self.print_plan()'
+    - '        self.fout = [open(filename, "wb") for filename in filenames]'
+    - '        self.state = WriterState.EMPTY'
+    desc: 打开输出文件（如果路径与状态允许），并设置状态为EMPTY。
+    line: 300-313
+    name: open_output_file
+  - code:
+    - 'def print_plan(self) -> list[Path]:'
+    - '    logger.info("Writing the following files:")'
+    - '    assert self.path is not None'
+    - '    filenames = self.format_shard_names(self.path)'
+    - '    assert len(filenames) == len(self.tensors)'
+    - '    for name, tensors in zip(filenames, self.tensors):'
+    - '        logger.info(f"{name}: n_tensors = {len(tensors)}, total_size = {GGUFWriter.format_n_bytes_to_str(sum(ti.nbytes
+      for ti in tensors.values()))}")'
+    - ''
+    - '    if self.dry_run:'
+    - '        logger.info("Dry run, not writing files")'
+    - '        for name in filenames:'
+    - '            print(name)  # noqa: NP100'
+    - '        exit()'
+    - ''
+    - '    return filenames'
+    desc: 打印写入计划（文件名、每个分片的张量数和大小），如果干运行则退出。
+    line: 315-329
+    name: print_plan
+  - code:
+    - 'def add_shard_kv_data(self) -> None:'
+    - '    if len(self.tensors) == 1:'
+    - '        return'
+    - ''
+    - '    total_tensors = sum(len(t) for t in self.tensors)'
+    - '    assert self.fout is not None'
+    - '    total_splits = len(self.fout)'
+    - '    self.kv_data.extend({} for _ in range(len(self.kv_data), total_splits))'
+    - '    for i, kv_data in enumerate(self.kv_data):'
+    - '        kv_data[Keys.Split.LLM_KV_SPLIT_NO] = GGUFValue(i, GGUFValueType.UINT16)'
+    - '        kv_data[Keys.Split.LLM_KV_SPLIT_COUNT] = GGUFValue(total_splits, GGUFValueType.UINT16)'
+    - '        kv_data[Keys.Split.LLM_KV_SPLIT_TENSORS_COUNT] = GGUFValue(total_tensors,
+      GGUFValueType.INT32)'
+    desc: 为多分片文件添加分片相关的KV数据（序号、数量、张量总数）。
+    line: 331-342
+    name: add_shard_kv_data
+  - code:
+    - 'def write_header_to_file(self, path: Path | None = None) -> None:'
+    - '    if len(self.tensors) == 1 and (self.split_max_tensors != 0 or self.split_max_size
+      != 0):'
+    - '        logger.warning("Model fails split requirements, not splitting")'
+    - ''
+    - '    self.open_output_file(path)'
+    - ''
+    - '    if self.state is not WriterState.EMPTY:'
+    - '        raise ValueError(f''Expected output file to be empty, got {self.state}'')'
+    - ''
+    - '    assert self.fout is not None'
+    - '    assert len(self.fout) == len(self.tensors)'
+    - '    assert len(self.kv_data) == 1'
+    - ''
+    - '    self.add_shard_kv_data()'
+    - ''
+    - '    for fout, tensors, kv_data in zip(self.fout, self.tensors, self.kv_data):'
+    - '        fout.write(self._pack("<I", GGUF_MAGIC, skip_pack_prefix = True))'
+    - '        fout.write(self._pack("I", GGUF_VERSION))'
+    - '        fout.write(self._pack("Q", len(tensors)))'
+    - '        fout.write(self._pack("Q", len(kv_data)))'
+    - '        fout.flush()'
+    - '    self.state = WriterState.HEADER'
+    desc: 打开文件（如果必要），写入GGUF文件头（magic、版本、张量和KV数据数量）。
+    line: 344-364
+    name: write_header_to_file
+  - code:
+    - 'def write_kv_data_to_file(self) -> None:'
+    - '    if self.state is not WriterState.HEADER:'
+    - '        raise ValueError(f''Expected output file to contain the header, got
+      {self.state}'')'
+    - '    assert self.fout is not None'
+    - ''
+    - '    for fout, kv_data in zip(self.fout, self.kv_data):'
+    - '        kv_bytes = bytearray()'
+    - ''
+    - '        for key, val in kv_data.items():'
+    - '            kv_bytes += self._pack_val(key, GGUFValueType.STRING, add_vtype=False)'
+    - '            kv_bytes += self._pack_val(val.value, val.type, add_vtype=True,
+      sub_type=val.sub_type)'
+    - ''
+    - '        fout.write(kv_bytes)'
+    - ''
+    - '    self.flush()'
+    - '    self.state = WriterState.KV_DATA'
+    desc: 将键值元数据序列化并写入文件。
+    line: 366-381
+    name: write_kv_data_to_file
+  - code:
+    - 'def write_ti_data_to_file(self) -> None:'
+    - '    if self.state is not WriterState.KV_DATA:'
+    - '        raise ValueError(f''Expected output file to contain KV data, got {self.state}'')'
+    - '    assert self.fout is not None'
+    - ''
+    - '    for fout, tensors in zip(self.fout, self.tensors):'
+    - '        ti_data = bytearray()'
+    - '        offset_tensor = 0'
+    - ''
+    - '        for name, ti in tensors.items():'
+    - '            ti_data += self._pack_val(name, GGUFValueType.STRING, add_vtype=False)'
+    - '            n_dims = len(ti.shape)'
+    - '            ti_data += self._pack("I", n_dims)'
+    - '            for j in range(n_dims):'
+    - '                ti_data += self._pack("Q", ti.shape[n_dims - 1 - j])'
+    - '            ti_data += self._pack("I", ti.dtype)'
+    - '            ti_data += self._pack("Q", offset_tensor)'
+    - '            offset_tensor += GGUFWriter.ggml_pad(ti.nbytes, self.data_alignment)'
+    - ''
+    - '        fout.write(ti_data)'
+    - '        fout.flush()'
+    - '    self.state = WriterState.TI_DATA'
+    desc: 写入所有张量信息（名称、形状、类型和偏移）。
+    line: 383-402
+    name: write_ti_data_to_file
+  - code:
+    - 'def add_key_value(self, key: str, val: Any, vtype: GGUFValueType, sub_type:
+      GGUFValueType | None = None) -> None:'
+    - '    if any(key in kv_data for kv_data in self.kv_data):'
+    - '        logger.warning(f''Duplicated key name {key!r}, overwriting it with
+      new value {val!r} of type {vtype.name}'')'
+    - ''
+    - '    self.kv_data[0][key] = GGUFValue(value=val, type=vtype, sub_type=sub_type)'
+    desc: 添加一个键值对到KV数据列表，并处理重复键。
+    line: 404-408
+    name: add_key_value
+  - code:
+    - 'def add_uint8(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key,val, GGUFValueType.UINT8)'
+    desc: 添加一个UINT8类型的KV数据。
+    line: 410-411
+    name: add_uint8
+  - code:
+    - 'def add_int8(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.INT8)'
+    desc: 添加一个INT8类型的KV数据。
+    line: 413-414
+    name: add_int8
+  - code:
+    - 'def add_uint16(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.UINT16)'
+    desc: 添加一个UINT16类型的KV数据。
+    line: 416-417
+    name: add_uint16
+  - code:
+    - 'def add_int16(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.INT16)'
+    desc: 添加一个INT16类型的KV数据。
+    line: 419-420
+    name: add_int16
+  - code:
+    - 'def add_uint32(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.UINT32)'
+    desc: 添加一个UINT32类型的KV数据。
+    line: 422-423
+    name: add_uint32
+  - code:
+    - 'def add_int32(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.INT32)'
+    desc: 添加一个INT32类型的KV数据。
+    line: 425-426
+    name: add_int32
+  - code:
+    - 'def add_float32(self, key: str, val: float) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.FLOAT32)'
+    desc: 添加一个FLOAT32类型的KV数据。
+    line: 428-429
+    name: add_float32
+  - code:
+    - 'def add_uint64(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.UINT64)'
+    desc: 添加一个UINT64类型的KV数据。
+    line: 431-432
+    name: add_uint64
+  - code:
+    - 'def add_int64(self, key: str, val: int) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.INT64)'
+    desc: 添加一个INT64类型的KV数据。
+    line: 434-435
+    name: add_int64
+  - code:
+    - 'def add_float64(self, key: str, val: float) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.FLOAT64)'
+    desc: 添加一个FLOAT64类型的KV数据。
+    line: 437-438
+    name: add_float64
+  - code:
+    - 'def add_bool(self, key: str, val: bool) -> None:'
+    - '    self.add_key_value(key, val, GGUFValueType.BOOL)'
+    desc: 添加一个BOOL类型的KV数据。
+    line: 440-441
+    name: add_bool
+  - code:
+    - 'def add_string(self, key: str, val: str) -> None:'
+    - '    if not val:'
+    - '        return'
+    - '    self.add_key_value(key, val, GGUFValueType.STRING)'
+    desc: 添加一个STRING类型的KV数据，空字符串会被忽略。
+    line: 443-446
+    name: add_string
+  - code:
+    - 'def add_array(self, key: str, val: Sequence[Any]) -> None:'
+    - '    if len(val) == 0:'
+    - '        return'
+    - '    self.add_key_value(key, val, GGUFValueType.ARRAY)'
+    desc: 添加一个ARRAY类型的KV数据，空数组会被忽略。
+    line: 448-451
+    name: add_array
+  - code:
+    - '    @staticmethod'
+    - '    def ggml_pad(x: int, n: int) -> int:'
+    - '        return ((x + n - 1) // n) * n'
+    desc: 静态方法，计算给定大小x到对齐值n的向上取整对齐。
+    line: 452-454
+    name: ggml_pad
+  - code:
+    - def add_tensor_info(
+    - '    self, name: str, tensor_shape: Sequence[int], tensor_dtype: np.dtype,'
+    - '    tensor_nbytes: int, raw_dtype: GGMLQuantizationType | None = None,'
+    - ') -> None:'
+    - '    if self.state is not WriterState.NO_FILE:'
+    - '        raise ValueError(f''Expected output file to be not yet opened, got
+      {self.state}'')'
+    - ''
+    - '    if any(name in tensors for tensors in self.tensors):'
+    - '        raise ValueError(f''Duplicated tensor name {name!r}'')'
+    - ''
+    - '    if raw_dtype is None:'
+    - '        if tensor_dtype == np.float16:'
+    - '            dtype = GGMLQuantizationType.F16'
+    - '        elif tensor_dtype == np.float32:'
+    - '            dtype = GGMLQuantizationType.F32'
+    - '        elif tensor_dtype == np.float64:'
+    - '            dtype = GGMLQuantizationType.F64'
+    - '        elif tensor_dtype == np.int8:'
+    - '            dtype = GGMLQuantizationType.I8'
+    - '        elif tensor_dtype == np.int16:'
+    - '            dtype = GGMLQuantizationType.I16'
+    - '        elif tensor_dtype == np.int32:'
+    - '            dtype = GGMLQuantizationType.I32'
+    - '        elif tensor_dtype == np.int64:'
+    - '            dtype = GGMLQuantizationType.I64'
+    - '        else:'
+    - '            raise ValueError("Only F16, F32, F64, I8, I16, I32, I64 tensors
+      are supported for now")'
+    - '    else:'
+    - '        dtype = raw_dtype'
+    - '        if tensor_dtype == np.uint8:'
+    - '            tensor_shape = quant_shape_from_byte_shape(tensor_shape, raw_dtype)'
+    - ''
+    - '    # make sure there is at least one tensor before splitting'
+    - '    if len(self.tensors[-1]) > 0:'
+    - '        if (  # split when over tensor limit'
+    - '            self.split_max_tensors != 0'
+    - '            and len(self.tensors[-1]) >= self.split_max_tensors'
+    - '        ) or (   # split when over size limit'
+    - '            self.split_max_size != 0'
+    - '            and sum(ti.nbytes for ti in self.tensors[-1].values()) + tensor_nbytes
+      > self.split_max_size'
+    - '        ):'
+    - '            self.tensors.append({})'
+    - ''
+    - '    self.tensors[-1][name] = TensorInfo(shape=tensor_shape, dtype=dtype, nbytes=tensor_nbytes)'
+    desc: 添加张量信息到内部张量列表，处理数据类型推理和分片触发。
+    line: 456-493
+    name: add_tensor_info
+  - code:
+    - def add_tensor(
+    - '    self, name: str, tensor: np.ndarray[Any, Any], raw_shape: Sequence[int]
+      | None = None,'
+    - '    raw_dtype: GGMLQuantizationType | None = None, tensor_endianess: GGUFEndian
+      | None = None'
+    - ') -> None:'
+    - '    # if tensor endianness is not passed, assume it''s native to system'
+    - '    if tensor_endianess is None:'
+    - '        tensor_endianess = GGUFEndian.BIG if sys.byteorder == ''big'' else
+      GGUFEndian.LITTLE'
+    - ''
+    - '    if tensor_endianess != self.endianess:'
+    - '        # Don''t byteswap inplace since lazy copies cannot handle it'
+    - '        tensor = tensor.byteswap(inplace=False)'
+    - '    if self.use_temp_file and self.temp_file is None:'
+    - '        fp = tempfile.SpooledTemporaryFile(mode="w+b", max_size=256 * 1024
+      * 1024)'
+    - '        fp.seek(0)'
+    - '        self.temp_file = fp'
+    - ''
+    - '    shape: Sequence[int] = raw_shape if raw_shape is not None else tensor.shape'
+    - '    self.add_tensor_info(name, shape, tensor.dtype, tensor.nbytes, raw_dtype=raw_dtype)'
+    - ''
+    - '    if self.temp_file is None:'
+    - '        self.tensors[-1][name].tensor = tensor'
+    - '        return'
+    - ''
+    - '    tensor.tofile(self.temp_file)'
+    - '    self.write_padding(self.temp_file, tensor.nbytes)'
+    desc: 添加一个张量到内部列表，处理字节序转换和使用临时文件。
+    line: 495-514
+    name: add_tensor
+  - code:
+    - 'def write_padding(self, fp: IO[bytes], n: int, align: int | None = None) ->
+      None:'
+    - '    pad = GGUFWriter.ggml_pad(n, align if align is not None else self.data_alignment)
+      - n'
+    - '    if pad != 0:'
+    - '        fp.write(bytes([0] * pad))'
+    desc: 向文件对象写入零填充字节以实现对齐。
+    line: 516-519
+    name: write_padding
+  - code:
+    - 'def write_tensor_data(self, tensor: np.ndarray[Any, Any], tensor_endianess:
+      GGUFEndian | None = None) -> None:'
+    - '    if self.state is not WriterState.TI_DATA and self.state is not WriterState.WEIGHTS:'
+    - '        raise ValueError(f''Expected output file to contain tensor info or
+      weights, got {self.state}'')'
+    - '    assert self.fout is not None'
+    - ''
+    - '    # if tensor endianness is not passed, assume it''s native to system'
+    - '    if tensor_endianess is None:'
+    - '        tensor_endianess = GGUFEndian.BIG if sys.byteorder == ''big'' else
+      GGUFEndian.LITTLE'
+    - ''
+    - '    if tensor_endianess != self.endianess:'
+    - '        # Don''t byteswap inplace since lazy copies cannot handle it'
+    - '        tensor = tensor.byteswap(inplace=False)'
+    - ''
+    - '    file_id = -1'
+    - '    for i, tensors in enumerate(self.tensors):'
+    - '        if len(tensors) > 0:'
+    - '            file_id = i'
+    - '            break'
+    - ''
+    - '    fout = self.fout[file_id]'
+    - ''
+    - '    # pop the first tensor info'
+    - '    first_tensor_name = next(iter(self.tensors[file_id]))'
+    - '    ti = self.tensors[file_id].pop(first_tensor_name)'
+    - '    assert ti.nbytes == tensor.nbytes'
+    - ''
+    - '    self.write_padding(fout, fout.tell())'
+    - '    tensor.tofile(fout)'
+    - '    self.write_padding(fout, tensor.nbytes)'
+    - ''
+    - '    self.state = WriterState.WEIGHTS'
+    desc: 写入单个张量数据（处理字节序转换和从内部列表弹出）。
+    line: 521-547
+    name: write_tensor_data
+  - code:
+    - 'def write_tensors_to_file(self, *, progress: bool = False) -> None:'
+    - '    self.write_ti_data_to_file()'
+    - ''
+    - '    assert self.fout is not None'
+    - ''
+    - '    for fout in self.fout:'
+    - '        self.write_padding(fout, fout.tell())'
+    - ''
+    - '    if self.temp_file is None:'
+    - '        shard_bar = None'
+    - '        bar = None'
+    - ''
+    - '        if progress:'
+    - '            from tqdm import tqdm'
+    - ''
+    - '            total_bytes = sum(ti.nbytes for t in self.tensors for ti in t.values())'
+    - ''
+    - '            if len(self.fout) > 1:'
+    - '                shard_bar = tqdm(desc=f"Shard (0/{len(self.fout)})", total=None,
+      unit="byte", unit_scale=True)'
+    - '            bar = tqdm(desc="Writing", total=total_bytes, unit="byte", unit_scale=True)'
+    - ''
+    - '        for i, (fout, tensors) in enumerate(zip(self.fout, self.tensors)):'
+    - '            if shard_bar is not None:'
+    - '                shard_bar.set_description(f"Shard ({i + 1}/{len(self.fout)})")'
+    - '                total = sum(ti.nbytes for ti in tensors.values())'
+    - '                shard_bar.reset(total=(total if total > 0 else None))'
+    - ''
+    - '            # relying on the fact that Python dicts preserve insertion order
+      (since 3.7)'
+    - '            for ti in tensors.values():'
+    - '                assert ti.tensor is not None  # can only iterate once over
+      the tensors'
+    - '                assert ti.tensor.nbytes == ti.nbytes'
+    - '                ti.tensor.tofile(fout)'
+    - '                if shard_bar is not None:'
+    - '                    shard_bar.update(ti.nbytes)'
+    - '                if bar is not None:'
+    - '                    bar.update(ti.nbytes)'
+    - '                self.write_padding(fout, ti.nbytes)'
+    - '                ti.tensor = None'
+    - '    else:'
+    - '        self.temp_file.seek(0)'
+    - ''
+    - '        shutil.copyfileobj(self.temp_file, self.fout[0 if not self.small_first_shard
+      else 1])'
+    - '        self.flush()'
+    - '        self.temp_file.close()'
+    - ''
+    - '    self.state = WriterState.WEIGHTS'
+    desc: 批量写入所有张量权重数据，支持进度条和分片处理。
+    line: 549-591
+    name: write_tensors_to_file
+  - code:
+    - 'def flush(self) -> None:'
+    - '    assert self.fout is not None'
+    - '    for fout in self.fout:'
+    - '        fout.flush()'
+    desc: 刷新所有输出文件缓冲区。
+    line: 593-596
+    name: flush
+  - code:
+    - 'def close(self) -> None:'
+    - '    if self.fout is not None:'
+    - '        for fout in self.fout:'
+    - '            fout.close()'
+    - '        self.fout = None'
+    desc: 关闭所有输出文件并清空文件句柄。
+    line: 598-602
+    name: close
+  - code:
+    - 'def add_type(self, type_name: str) -> None:'
+    - '    self.add_string(Keys.General.TYPE, type_name)'
+    desc: 添加模型类型KV数据。
+    line: 604-605
+    name: add_type
+  - code:
+    - 'def add_architecture(self) -> None:'
+    - '    self.add_string(Keys.General.ARCHITECTURE, self.arch)'
+    desc: 添加模型架构KV数据。
+    line: 607-608
+    name: add_architecture
+  - code:
+    - 'def add_quantization_version(self, quantization_version: int) -> None:'
+    - '    self.add_uint32(Keys.General.QUANTIZATION_VERSION, quantization_version)'
+    desc: 添加量化版本KV数据。
+    line: 610-611
+    name: add_quantization_version
+  - code:
+    - 'def add_custom_alignment(self, alignment: int) -> None:'
+    - '    if alignment <= 0 or (alignment & (alignment - 1)) != 0:'
+    - '        raise ValueError(''Invalid alignment: must be a non-zero power of two'')'
+    - '    self.data_alignment = alignment'
+    - '    self.add_uint32(Keys.General.ALIGNMENT, alignment)'
+    desc: 设置自定义对齐（校验为2的幂）并添加校准KV数据。
+    line: 613-617
+    name: add_custom_alignment
+  - code:
+    - 'def add_file_type(self, ftype: int) -> None:'
+    - '    self.add_uint32(Keys.General.FILE_TYPE, ftype)'
+    desc: 添加文件类型KV数据。
+    line: 619-620
+    name: add_file_type
+  - code:
+    - 'def add_sampling_sequence(self, sequence: str) -> None:'
+    - '    self.add_string(Keys.General.SAMPLING_SEQUENCE, sequence)'
+    desc: 添加采样序列KV数据。
+    line: 622-623
+    name: add_sampling_sequence
+  - code:
+    - 'def add_sampling_top_k(self, top_k: int) -> None:'
+    - '    self.add_int32(Keys.General.SAMPLING_TOP_K, top_k)'
+    desc: 添加采样top-k KV数据。
+    line: 625-626
+    name: add_sampling_top_k
+  - code:
+    - 'def add_sampling_top_p(self, top_p: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_TOP_P, top_p)'
+    desc: 添加采样top-p KV数据。
+    line: 628-629
+    name: add_sampling_top_p
+  - code:
+    - 'def add_sampling_min_p(self, min_p: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_MIN_P, min_p)'
+    desc: 添加采样min-p KV数据。
+    line: 631-632
+    name: add_sampling_min_p
+  - code:
+    - 'def add_sampling_xtc_probability(self, xtc_probability: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_XTC_PROBABILITY, xtc_probability)'
+    desc: 添加XTC采样概率KV数据。
+    line: 634-635
+    name: add_sampling_xtc_probability
+  - code:
+    - 'def add_sampling_xtc_threshold(self, xtc_threshold: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_XTC_THRESHOLD, xtc_threshold)'
+    desc: 添加XTC采样阈值KV数据。
+    line: 637-638
+    name: add_sampling_xtc_threshold
+  - code:
+    - 'def add_sampling_temp(self, temp: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_TEMP, temp)'
+    desc: 添加采样温度KV数据。
+    line: 640-641
+    name: add_sampling_temp
+  - code:
+    - 'def add_sampling_penalty_last_n(self, penalty_last_n: int) -> None:'
+    - '    self.add_int32(Keys.General.SAMPLING_PENALTY_LAST_N, penalty_last_n)'
+    desc: 添加重复惩罚last_n KV数据。
+    line: 643-644
+    name: add_sampling_penalty_last_n
+  - code:
+    - 'def add_sampling_penalty_repeat(self, penalty_repeat: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_PENALTY_REPEAT, penalty_repeat)'
+    desc: 添加重复惩罚率KV数据。
+    line: 646-647
+    name: add_sampling_penalty_repeat
+  - code:
+    - 'def add_sampling_mirostat(self, mirostat: int) -> None:'
+    - '    self.add_int32(Keys.General.SAMPLING_MIROSTAT, mirostat)'
+    desc: 添加Mirostat采样模式KV数据。
+    line: 649-650
+    name: add_sampling_mirostat
+  - code:
+    - 'def add_sampling_mirostat_tau(self, mirostat_tau: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_MIROSTAT_TAU, mirostat_tau)'
+    desc: 添加Mirostat tau参数KV数据。
+    line: 652-653
+    name: add_sampling_mirostat_tau
+  - code:
+    - 'def add_sampling_mirostat_eta(self, mirostat_eta: float) -> None:'
+    - '    self.add_float32(Keys.General.SAMPLING_MIROSTAT_ETA, mirostat_eta)'
+    desc: 添加Mirostat eta参数KV数据。
+    line: 655-656
+    name: add_sampling_mirostat_eta
+  - code:
+    - 'def add_name(self, name: str) -> None:'
+    - '    self.add_string(Keys.General.NAME, name)'
+    desc: 添加模型名称KV数据。
+    line: 658-659
+    name: add_name
+  - code:
+    - 'def add_author(self, author: str) -> None:'
+    - '    self.add_string(Keys.General.AUTHOR, author)'
+    desc: 添加作者KV数据。
+    line: 661-662
+    name: add_author
+  - code:
+    - 'def add_version(self, version: str) -> None:'
+    - '    self.add_string(Keys.General.VERSION, version)'
+    desc: 添加版本KV数据。
+    line: 664-665
+    name: add_version
+  - code:
+    - 'def add_organization(self, organization: str) -> None:'
+    - '    self.add_string(Keys.General.ORGANIZATION, organization)'
+    desc: 添加组织KV数据。
+    line: 667-668
+    name: add_organization
+  - code:
+    - 'def add_finetune(self, finetune: str) -> None:'
+    - '    self.add_string(Keys.General.FINETUNE, finetune)'
+    desc: 添加微调信息KV数据。
+    line: 670-671
+    name: add_finetune
+  - code:
+    - 'def add_basename(self, basename: str) -> None:'
+    - '    self.add_string(Keys.General.BASENAME, basename)'
+    desc: 添加基础名称KV数据。
+    line: 673-674
+    name: add_basename
+  - code:
+    - 'def add_description(self, description: str) -> None:'
+    - '    self.add_string(Keys.General.DESCRIPTION, description)'
+    desc: 添加描述KV数据。
+    line: 676-677
+    name: add_description
+  - code:
+    - 'def add_quantized_by(self, quantized: str) -> None:'
+    - '    self.add_string(Keys.General.QUANTIZED_BY, quantized)'
+    desc: 添加量化者KV数据。
+    line: 679-680
+    name: add_quantized_by
+  - code:
+    - 'def add_size_label(self, size_label: str) -> None:'
+    - '    self.add_string(Keys.General.SIZE_LABEL, size_label)'
+    desc: 添加尺寸标签KV数据。
+    line: 682-683
+    name: add_size_label
+  - code:
+    - 'def add_license(self, license: str) -> None:'
+    - '    self.add_string(Keys.General.LICENSE, license)'
+    desc: 添加许可证KV数据。
+    line: 685-686
+    name: add_license
+  - code:
+    - 'def add_license_name(self, license: str) -> None:'
+    - '    self.add_string(Keys.General.LICENSE_NAME, license)'
+    desc: 添加许可证名称KV数据。
+    line: 688-689
+    name: add_license_name
+  - code:
+    - 'def add_license_link(self, license: str) -> None:'
+    - '    self.add_string(Keys.General.LICENSE_LINK, license)'
+    desc: 添加许可证链接KV数据。
+    line: 691-692
+    name: add_license_link
+  - code:
+    - 'def add_url(self, url: str) -> None:'
+    - '    self.add_string(Keys.General.URL, url)'
+    desc: 添加URL KV数据。
+    line: 694-695
+    name: add_url
+  - code:
+    - 'def add_doi(self, doi: str) -> None:'
+    - '    self.add_string(Keys.General.DOI, doi)'
+    desc: 添加DOI KV数据。
+    line: 697-698
+    name: add_doi
+  - code:
+    - 'def add_uuid(self, uuid: str) -> None:'
+    - '    self.add_string(Keys.General.UUID, uuid)'
+    desc: 添加UUID KV数据。
+    line: 700-701
+    name: add_uuid
+  - code:
+    - 'def add_repo_url(self, repo_url: str) -> None:'
+    - '    self.add_string(Keys.General.REPO_URL, repo_url)'
+    desc: 添加仓库URL KV数据。
+    line: 703-704
+    name: add_repo_url
+  - code:
+    - 'def add_source_url(self, url: str) -> None:'
+    - '    self.add_string(Keys.General.SOURCE_URL, url)'
+    desc: 添加源URL KV数据。
+    line: 706-707
+    name: add_source_url
+  - code:
+    - 'def add_source_doi(self, doi: str) -> None:'
+    - '    self.add_string(Keys.General.SOURCE_DOI, doi)'
+    desc: 添加源DOI KV数据。
+    line: 709-710
+    name: add_source_doi
+  - code:
+    - 'def add_source_uuid(self, uuid: str) -> None:'
+    - '    self.add_string(Keys.General.SOURCE_UUID, uuid)'
+    desc: 添加源UUID KV数据。
+    line: 712-713
+    name: add_source_uuid
+  - code:
+    - 'def add_source_repo_url(self, repo_url: str) -> None:'
+    - '    self.add_string(Keys.General.SOURCE_REPO_URL, repo_url)'
+    desc: 添加源仓库URL KV数据。
+    line: 715-716
+    name: add_source_repo_url
+  - code:
+    - 'def add_base_model_count(self, source_count: int) -> None:'
+    - '    self.add_uint32(Keys.General.BASE_MODEL_COUNT, source_count)'
+    desc: 添加基础模型数量KV数据。
+    line: 718-719
+    name: add_base_model_count
+  - code:
+    - 'def add_base_model_name(self, source_id: int, name: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_NAME.format(id=source_id), name)'
+    desc: 添加指定基础模型的名称KV数据。
+    line: 721-722
+    name: add_base_model_name
+  - code:
+    - 'def add_base_model_author(self, source_id: int, author: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_AUTHOR.format(id=source_id), author)'
+    desc: 添加指定基础模型的作者KV数据。
+    line: 724-725
+    name: add_base_model_author
+  - code:
+    - 'def add_base_model_version(self, source_id: int, version: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_VERSION.format(id=source_id), version)'
+    desc: 添加指定基础模型的版本KV数据。
+    line: 727-728
+    name: add_base_model_version
+  - code:
+    - 'def add_base_model_organization(self, source_id: int, organization: str) ->
+      None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_ORGANIZATION.format(id=source_id),
+      organization)'
+    desc: 添加指定基础模型的组织KV数据。
+    line: 730-731
+    name: add_base_model_organization
+  - code:
+    - 'def add_base_model_description(self, source_id: int, description: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_DESCRIPTION.format(id=source_id),
+      description)'
+    desc: 添加指定基础模型的描述KV数据。
+    line: 733-734
+    name: add_base_model_description
+  - code:
+    - 'def add_base_model_url(self, source_id: int, url: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_URL.format(id=source_id), url)'
+    desc: 添加指定基础模型的URL KV数据。
+    line: 736-737
+    name: add_base_model_url
+  - code:
+    - 'def add_base_model_doi(self, source_id: int, doi: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_DOI.format(id=source_id), doi)'
+    desc: 添加指定基础模型的DOI KV数据。
+    line: 739-740
+    name: add_base_model_doi
+  - code:
+    - 'def add_base_model_uuid(self, source_id: int, uuid: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_UUID.format(id=source_id), uuid)'
+    desc: 添加指定基础模型的UUID KV数据。
+    line: 742-743
+    name: add_base_model_uuid
+  - code:
+    - 'def add_base_model_repo_url(self, source_id: int, repo_url: str) -> None:'
+    - '    self.add_string(Keys.General.BASE_MODEL_REPO_URL.format(id=source_id),
+      repo_url)'
+    desc: 添加指定基础模型的仓库URL KV数据。
+    line: 745-746
+    name: add_base_model_repo_url
+  - code:
+    - 'def add_dataset_count(self, source_count: int) -> None:'
+    - '    self.add_uint32(Keys.General.DATASET_COUNT, source_count)'
+    desc: 添加数据集数量KV数据。
+    line: 748-749
+    name: add_dataset_count
+  - code:
+    - 'def add_dataset_name(self, source_id: int, name: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_NAME.format(id=source_id), name)'
+    desc: 添加指定数据集的名称KV数据。
+    line: 751-752
+    name: add_dataset_name
+  - code:
+    - 'def add_dataset_author(self, source_id: int, author: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_AUTHOR.format(id=source_id), author)'
+    desc: 添加指定数据集的作者KV数据。
+    line: 754-755
+    name: add_dataset_author
+  - code:
+    - 'def add_dataset_version(self, source_id: int, version: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_VERSION.format(id=source_id), version)'
+    desc: 添加指定数据集的版本KV数据。
+    line: 757-758
+    name: add_dataset_version
+  - code:
+    - 'def add_dataset_organization(self, source_id: int, organization: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_ORGANIZATION.format(id=source_id),
+      organization)'
+    desc: 添加指定数据集的组织KV数据。
+    line: 760-761
+    name: add_dataset_organization
+  - code:
+    - 'def add_dataset_description(self, source_id: int, description: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_DESCRIPTION.format(id=source_id),
+      description)'
+    desc: 添加指定数据集的描述KV数据。
+    line: 763-764
+    name: add_dataset_description
+  - code:
+    - 'def add_dataset_url(self, source_id: int, url: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_URL.format(id=source_id), url)'
+    desc: 添加指定数据集的URL KV数据。
+    line: 766-767
+    name: add_dataset_url
+  - code:
+    - 'def add_dataset_doi(self, source_id: int, doi: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_DOI.format(id=source_id), doi)'
+    desc: 添加指定数据集的DOI KV数据。
+    line: 769-770
+    name: add_dataset_doi
+  - code:
+    - 'def add_dataset_uuid(self, source_id: int, uuid: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_UUID.format(id=source_id), uuid)'
+    desc: 添加指定数据集的UUID KV数据。
+    line: 772-773
+    name: add_dataset_uuid
+  - code:
+    - 'def add_dataset_repo_url(self, source_id: int, repo_url: str) -> None:'
+    - '    self.add_string(Keys.General.DATASET_REPO_URL.format(id=source_id), repo_url)'
+    desc: 添加指定数据集的仓库URL KV数据。
+    line: 775-776
+    name: add_dataset_repo_url
+  - code:
+    - 'def add_tags(self, tags: Sequence[str]) -> None:'
+    - '    self.add_array(Keys.General.TAGS, tags)'
+    desc: 添加标签数组KV数据。
+    line: 778-779
+    name: add_tags
+  - code:
+    - 'def add_languages(self, languages: Sequence[str]) -> None:'
+    - '    self.add_array(Keys.General.LANGUAGES, languages)'
+    desc: 添加语言数组KV数据。
+    line: 781-782
+    name: add_languages
+  - code:
+    - 'def add_tensor_data_layout(self, layout: str) -> None:'
+    - '    self.add_string(Keys.LLM.TENSOR_DATA_LAYOUT.format(arch=self.arch), layout)'
+    desc: 添加张量数据布局KV数据。
+    line: 784-785
+    name: add_tensor_data_layout
+  - code:
+    - 'def add_vocab_size(self, size: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.VOCAB_SIZE.format(arch=self.arch), size)'
+    desc: 添加词汇表大小KV数据。
+    line: 787-788
+    name: add_vocab_size
+  - code:
+    - 'def add_context_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.CONTEXT_LENGTH.format(arch=self.arch), length)'
+    desc: 添加上下文长度KV数据。
+    line: 790-791
+    name: add_context_length
+  - code:
+    - 'def add_embedding_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EMBEDDING_LENGTH.format(arch=self.arch), length)'
+    desc: 添加嵌入长度KV数据。
+    line: 793-794
+    name: add_embedding_length
+  - code:
+    - 'def add_embedding_length_out(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EMBEDDING_LENGTH_OUT.format(arch=self.arch), length)'
+    desc: 添加输出嵌入长度KV数据。
+    line: 796-797
+    name: add_embedding_length_out
+  - code:
+    - 'def add_features_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.FEATURES_LENGTH.format(arch=self.arch), length)'
+    desc: 添加特征长度KV数据。
+    line: 799-800
+    name: add_features_length
+  - code:
+    - 'def add_posnet_embedding_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.PosNet.EMBEDDING_LENGTH.format(arch=self.arch), length)'
+    desc: 添加PosNet嵌入长度KV数据。
+    line: 802-803
+    name: add_posnet_embedding_length
+  - code:
+    - 'def add_posnet_block_count(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.PosNet.BLOCK_COUNT.format(arch=self.arch), length)'
+    desc: 添加PosNet块数量KV数据。
+    line: 805-806
+    name: add_posnet_block_count
+  - code:
+    - 'def add_convnext_embedding_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.ConvNext.EMBEDDING_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加ConvNext嵌入长度KV数据。
+    line: 808-809
+    name: add_convnext_embedding_length
+  - code:
+    - 'def add_convnext_block_count(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.ConvNext.BLOCK_COUNT.format(arch=self.arch), length)'
+    desc: 添加ConvNext块数量KV数据。
+    line: 811-812
+    name: add_convnext_block_count
+  - code:
+    - 'def add_shortconv_l_cache(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.ShortConv.L_CACHE.format(arch=self.arch), length)'
+    desc: 添加ShortConv L cache KV数据。
+    line: 814-815
+    name: add_shortconv_l_cache
+  - code:
+    - 'def add_block_count(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.BLOCK_COUNT.format(arch=self.arch), length)'
+    desc: 添加块数量KV数据。
+    line: 817-818
+    name: add_block_count
+  - code:
+    - 'def add_leading_dense_block_count(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.LEADING_DENSE_BLOCK_COUNT.format(arch=self.arch),
+      length)'
+    desc: 添加前导稠密块数量KV数据。
+    line: 820-821
+    name: add_leading_dense_block_count
+  - code:
+    - 'def add_full_attention_interval(self, interval: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.FULL_ATTENTION_INTERVAL.format(arch=self.arch),
+      interval)'
+    desc: 添加全注意力间隔KV数据。
+    line: 823-824
+    name: add_full_attention_interval
+  - code:
+    - 'def add_feed_forward_length(self, length: int | Sequence[int]) -> None:'
+    - '    if isinstance(length, int):'
+    - '        self.add_uint32(Keys.LLM.FEED_FORWARD_LENGTH.format(arch=self.arch),
+      length)'
+    - '    else:'
+    - '        self.add_array(Keys.LLM.FEED_FORWARD_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加前馈网络长度KV数据，支持整数或数组。
+    line: 826-830
+    name: add_feed_forward_length
+  - code:
+    - 'def add_expert_feed_forward_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_FEED_FORWARD_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加专家前馈网络长度KV数据。
+    line: 832-833
+    name: add_expert_feed_forward_length
+  - code:
+    - 'def add_expert_shared_feed_forward_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_SHARED_FEED_FORWARD_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加共享专家前馈网络长度KV数据。
+    line: 835-836
+    name: add_expert_shared_feed_forward_length
+  - code:
+    - 'def add_expert_chunk_feed_forward_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_CHUNK_FEED_FORWARD_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加分块专家前馈网络长度KV数据。
+    line: 838-839
+    name: add_expert_chunk_feed_forward_length
+  - code:
+    - 'def add_parallel_residual(self, use: bool) -> None:'
+    - '    self.add_bool(Keys.LLM.USE_PARALLEL_RESIDUAL.format(arch=self.arch), use)'
+    desc: 添加并行残差标志KV数据。
+    line: 841-842
+    name: add_parallel_residual
+  - code:
+    - 'def add_decoder_start_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.DECODER_START_TOKEN_ID.format(arch=self.arch),
+      id)'
+    desc: 添加解码器起始令牌ID KV数据。
+    line: 844-845
+    name: add_decoder_start_token_id
+  - code:
+    - 'def add_decoder_block_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.DECODER_BLOCK_COUNT.format(arch=self.arch), value)'
+    desc: 添加解码器块数量KV数据。
+    line: 847-848
+    name: add_decoder_block_count
+  - code:
+    - 'def add_embedding_length_per_layer_input(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EMBD_LENGTH_PER_LAYER_INP.format(arch=self.arch),
+      value)'
+    desc: 添加每层输入嵌入长度KV数据。
+    line: 850-851
+    name: add_embedding_length_per_layer_input
+  - code:
+    - 'def add_altup_active_idx(self, val: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.ALTUP_ACTIVE_IDX.format(arch=self.arch), val)'
+    desc: 添加ALTUP激活索引KV数据。
+    line: 853-854
+    name: add_altup_active_idx
+  - code:
+    - 'def add_altup_num_inputs(self, val: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.ALTUP_NUM_INPUTS.format(arch=self.arch), val)'
+    desc: 添加ALTUP输入数量KV数据。
+    line: 856-857
+    name: add_altup_num_inputs
+  - code:
+    - 'def add_activation_sparsity_scale(self, values: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.LLM.ACTIVATION_SPARSITY_SCALE.format(arch=self.arch),
+      values)'
+    desc: 添加激活稀疏度缩放数组KV数据。
+    line: 859-860
+    name: add_activation_sparsity_scale
+  - code:
+    - 'def add_head_count(self, count: int | Sequence[int]) -> None:'
+    - '    if isinstance(count, int):'
+    - '        self.add_uint32(Keys.Attention.HEAD_COUNT.format(arch=self.arch), count)'
+    - '    else:'
+    - '        self.add_array(Keys.Attention.HEAD_COUNT.format(arch=self.arch), count)'
+    desc: 添加注意力头数量KV数据，支持整数或数组。
+    line: 862-866
+    name: add_head_count
+  - code:
+    - 'def add_head_count_kv(self, count: int | Sequence[int]) -> None:'
+    - '    if isinstance(count, int):'
+    - '        self.add_uint32(Keys.Attention.HEAD_COUNT_KV.format(arch=self.arch),
+      count)'
+    - '    else:'
+    - '        self.add_array(Keys.Attention.HEAD_COUNT_KV.format(arch=self.arch),
+      count)'
+    desc: 添加KV头数量KV数据，支持整数或数组。
+    line: 868-872
+    name: add_head_count_kv
+  - code:
+    - 'def add_key_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.KEY_LENGTH.format(arch=self.arch), length)'
+    desc: 添加键长度KV数据。
+    line: 874-875
+    name: add_key_length
+  - code:
+    - 'def add_value_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.VALUE_LENGTH.format(arch=self.arch), length)'
+    desc: 添加值长度KV数据。
+    line: 877-878
+    name: add_value_length
+  - code:
+    - 'def add_key_length_mla(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.KEY_LENGTH_MLA.format(arch=self.arch), length)'
+    desc: 添加MLA键长度KV数据。
+    line: 880-881
+    name: add_key_length_mla
+  - code:
+    - 'def add_value_length_mla(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.VALUE_LENGTH_MLA.format(arch=self.arch),
+      length)'
+    desc: 添加MLA值长度KV数据。
+    line: 883-884
+    name: add_value_length_mla
+  - code:
+    - 'def add_key_length_swa(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.KEY_LENGTH_SWA.format(arch=self.arch), length)'
+    desc: 添加SWA键长度KV数据。
+    line: 886-887
+    name: add_key_length_swa
+  - code:
+    - 'def add_value_length_swa(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.VALUE_LENGTH_SWA.format(arch=self.arch),
+      length)'
+    desc: 添加SWA值长度KV数据。
+    line: 889-890
+    name: add_value_length_swa
+  - code:
+    - 'def add_indexer_head_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.Indexer.HEAD_COUNT.format(arch=self.arch),
+      count)'
+    desc: 添加Indexer头数量KV数据。
+    line: 892-893
+    name: add_indexer_head_count
+  - code:
+    - 'def add_indexer_key_length(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.Indexer.KEY_LENGTH.format(arch=self.arch),
+      length)'
+    desc: 添加Indexer键长度KV数据。
+    line: 895-896
+    name: add_indexer_key_length
+  - code:
+    - 'def add_indexer_top_k(self, top_k: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.Indexer.TOP_K.format(arch=self.arch), top_k)'
+    desc: 添加Indexer top-k KV数据。
+    line: 898-899
+    name: add_indexer_top_k
+  - code:
+    - 'def add_max_alibi_bias(self, bias: float) -> None:'
+    - '    self.add_float32(Keys.Attention.MAX_ALIBI_BIAS.format(arch=self.arch),
+      bias)'
+    desc: 添加最大ALiBi偏置KV数据。
+    line: 901-902
+    name: add_max_alibi_bias
+  - code:
+    - 'def add_clamp_kqv(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.CLAMP_KQV.format(arch=self.arch), value)'
+    desc: 添加KQV裁剪值KV数据。
+    line: 904-905
+    name: add_clamp_kqv
+  - code:
+    - 'def add_shared_kv_layers(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.SHARED_KV_LAYERS.format(arch=self.arch),
+      value)'
+    desc: 添加共享KV层数KV数据。
+    line: 907-908
+    name: add_shared_kv_layers
+  - code:
+    - 'def add_sliding_window_pattern(self, value: int | Sequence[bool]) -> None:'
+    - '    key = Keys.Attention.SLIDING_WINDOW_PATTERN.format(arch=self.arch)'
+    - '    if isinstance(value, int):'
+    - '        self.add_uint32(key, value)'
+    - '    else:'
+    - '        self.add_array(key, value)'
+    desc: 添加滑动窗口模式KV数据，支持整数或布尔数组。
+    line: 910-914
+    name: add_sliding_window_pattern
+  - code:
+    - 'def add_dense_features_dims(self, dense:str, in_f:int, out_f:int) -> None:'
+    - '    self.add_uint32(Keys.LLM.DENSE_FEAT_IN_SIZE.format(arch=self.arch, dense=dense),
+      in_f)'
+    - '    self.add_uint32(Keys.LLM.DENSE_FEAT_OUT_SIZE.format(arch=self.arch, dense=dense),
+      out_f)'
+    desc: 添加稠密特征维度KV数据（输入和输出大小）。
+    line: 916-918
+    name: add_dense_features_dims
+  - code:
+    - 'def add_logit_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.LOGIT_SCALE.format(arch=self.arch), value)'
+    desc: 添加logit缩放KV数据。
+    line: 920-921
+    name: add_logit_scale
+  - code:
+    - 'def add_attn_logit_softcapping(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.ATTN_LOGIT_SOFTCAPPING.format(arch=self.arch),
+      value)'
+    desc: 添加注意力logit softcap KV数据。
+    line: 923-924
+    name: add_attn_logit_softcapping
+  - code:
+    - 'def add_router_logit_softcapping(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.ROUTER_LOGIT_SOFTCAPPING.format(arch=self.arch),
+      value)'
+    desc: 添加路由器logit softcap KV数据。
+    line: 926-927
+    name: add_router_logit_softcapping
+  - code:
+    - 'def add_final_logit_softcapping(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.FINAL_LOGIT_SOFTCAPPING.format(arch=self.arch),
+      value)'
+    desc: 添加最终logit softcap KV数据。
+    line: 929-930
+    name: add_final_logit_softcapping
+  - code:
+    - 'def add_expert_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_COUNT.format(arch=self.arch), count)'
+    desc: 添加专家数量KV数据。
+    line: 932-933
+    name: add_expert_count
+  - code:
+    - 'def add_expert_used_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_USED_COUNT.format(arch=self.arch), count)'
+    desc: 添加实际使用的专家数量KV数据。
+    line: 935-936
+    name: add_expert_used_count
+  - code:
+    - 'def add_expert_shared_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_SHARED_COUNT.format(arch=self.arch), count)'
+    desc: 添加共享专家数量KV数据。
+    line: 938-939
+    name: add_expert_shared_count
+  - code:
+    - 'def add_expert_group_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_GROUP_COUNT.format(arch=self.arch), count)'
+    desc: 添加专家组数量KV数据。
+    line: 941-942
+    name: add_expert_group_count
+  - code:
+    - 'def add_expert_group_used_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_GROUP_USED_COUNT.format(arch=self.arch),
+      count)'
+    desc: 添加实际使用的专家组数量KV数据。
+    line: 944-945
+    name: add_expert_group_used_count
+  - code:
+    - 'def add_expert_weights_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.EXPERT_WEIGHTS_SCALE.format(arch=self.arch),
+      value)'
+    desc: 添加专家权重缩放KV数据。
+    line: 947-948
+    name: add_expert_weights_scale
+  - code:
+    - 'def add_expert_weights_norm(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.LLM.EXPERT_WEIGHTS_NORM.format(arch=self.arch), value)'
+    desc: 添加专家权重归一化标志KV数据。
+    line: 950-951
+    name: add_expert_weights_norm
+  - code:
+    - 'def add_expert_gating_func(self, value: ExpertGatingFuncTy'
+    desc: 添加专家门控函数类型KV数据。
+    line: 953-954
+    name: add_expert_gating_func
+  name: GGUFWriter
+- desc: GGUF格式文件的写入器类，负责将各种模型参数和配置信息序列化为GGUF格式的二进制数据
+  methods:
+  - code:
+    - 'def add_expert_group_used_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_GROUP_USED_COUNT.format(arch=self.arch),
+      count)'
+    desc: 添加专家分组使用的数量参数
+    line: 847-848
+    name: add_expert_group_used_count
+  - code:
+    - 'def add_expert_weights_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.EXPERT_WEIGHTS_SCALE.format(arch=self.arch),
+      value)'
+    desc: 添加专家权重的缩放参数
+    line: 850-851
+    name: add_expert_weights_scale
+  - code:
+    - 'def add_expert_weights_norm(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.LLM.EXPERT_WEIGHTS_NORM.format(arch=self.arch), value)'
+    desc: 添加专家权重的归一化参数
+    line: 853-854
+    name: add_expert_weights_norm
+  - code:
+    - 'def add_expert_gating_func(self, value: ExpertGatingFuncType) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERT_GATING_FUNC.format(arch=self.arch), value.value)'
+    desc: 添加专家门控函数类型参数
+    line: 856-857
+    name: add_expert_gating_func
+  - code:
+    - 'def add_swiglu_clamp_exp(self, values: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.LLM.SWIGLU_CLAMP_EXP.format(arch=self.arch), values)'
+    desc: 添加Swiglu激活函数的指数钳位参数
+    line: 859-860
+    name: add_swiglu_clamp_exp
+  - code:
+    - 'def add_swiglu_clamp_shexp(self, values: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.LLM.SWIGLU_CLAMP_SHEXP.format(arch=self.arch), values)'
+    desc: 添加Swiglu激活函数的shexp钳位参数
+    line: 862-863
+    name: add_swiglu_clamp_shexp
+  - code:
+    - 'def add_expert_group_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.EXPERT_GROUP_SCALE.format(arch=self.arch), value)'
+    desc: 添加专家分组的缩放参数
+    line: 865-866
+    name: add_expert_group_scale
+  - code:
+    - 'def add_experts_per_group(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.EXPERTS_PER_GROUP.format(arch=self.arch), count)'
+    desc: 添加每组专家数量参数
+    line: 868-869
+    name: add_experts_per_group
+  - code:
+    - 'def add_moe_every_n_layers(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.MOE_EVERY_N_LAYERS.format(arch=self.arch), value)'
+    desc: 添加MoE层间隔参数
+    line: 871-872
+    name: add_moe_every_n_layers
+  - code:
+    - 'def add_moe_latent_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.MOE_LATENT_SIZE.format(arch=self.arch), value)'
+    desc: 添加MoE隐空间大小参数
+    line: 874-875
+    name: add_moe_latent_size
+  - code:
+    - 'def add_nextn_predict_layers(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.NEXTN_PREDICT_LAYERS.format(arch=self.arch), count)'
+    desc: 添加NextN预测层数量参数
+    line: 877-878
+    name: add_nextn_predict_layers
+  - code:
+    - 'def add_swin_norm(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.LLM.SWIN_NORM.format(arch=self.arch), value)'
+    desc: 添加Swin归一化参数
+    line: 880-881
+    name: add_swin_norm
+  - code:
+    - 'def add_rescale_every_n_layers(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.RESCALE_EVERY_N_LAYERS.format(arch=self.arch),
+      count)'
+    desc: 添加重缩放间隔层数参数
+    line: 883-884
+    name: add_rescale_every_n_layers
+  - code:
+    - 'def add_time_mix_extra_dim(self, dim: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.TIME_MIX_EXTRA_DIM.format(arch=self.arch), dim)'
+    desc: 添加时间混合额外维度参数
+    line: 886-887
+    name: add_time_mix_extra_dim
+  - code:
+    - 'def add_time_decay_extra_dim(self, dim: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.TIME_DECAY_EXTRA_DIM.format(arch=self.arch), dim)'
+    desc: 添加时间衰减额外维度参数
+    line: 889-890
+    name: add_time_decay_extra_dim
+  - code:
+    - 'def add_residual_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.RESIDUAL_SCALE.format(arch=self.arch), value)'
+    desc: 添加残差缩放参数
+    line: 892-893
+    name: add_residual_scale
+  - code:
+    - 'def add_embedding_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.LLM.EMBEDDING_SCALE.format(arch=self.arch), value)'
+    desc: 添加嵌入层缩放参数
+    line: 895-896
+    name: add_embedding_scale
+  - code:
+    - 'def add_wkv_head_size(self, size: int) -> None:'
+    - '    self.add_uint32(Keys.WKV.HEAD_SIZE.format(arch=self.arch), size)'
+    desc: 添加WKV头部大小参数
+    line: 898-899
+    name: add_wkv_head_size
+  - code:
+    - 'def add_token_shift_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.TOKEN_SHIFT_COUNT.format(arch=self.arch), count)'
+    desc: 添加Token移位数量参数
+    line: 901-902
+    name: add_token_shift_count
+  - code:
+    - 'def add_interleave_moe_layer_step(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.INTERLEAVE_MOE_LAYER_STEP.format(arch=self.arch),
+      value)'
+    desc: 添加交错MoE层步长参数
+    line: 904-905
+    name: add_interleave_moe_layer_step
+  - code:
+    - 'def add_layer_norm_eps(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.LAYERNORM_EPS.format(arch=self.arch), value)'
+    desc: 添加LayerNorm的epsilon参数
+    line: 907-908
+    name: add_layer_norm_eps
+  - code:
+    - 'def add_layer_norm_rms_eps(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.LAYERNORM_RMS_EPS.format(arch=self.arch),
+      value)'
+    desc: 添加RMSNorm的epsilon参数
+    line: 910-911
+    name: add_layer_norm_rms_eps
+  - code:
+    - 'def add_group_norm_eps(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.GROUPNORM_EPS.format(arch=self.arch), value)'
+    desc: 添加GroupNorm的epsilon参数
+    line: 913-914
+    name: add_group_norm_eps
+  - code:
+    - 'def add_group_norm_groups(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.GROUPNORM_GROUPS.format(arch=self.arch),
+      value)'
+    desc: 添加GroupNorm的分组数参数
+    line: 916-917
+    name: add_group_norm_groups
+  - code:
+    - 'def add_causal_attention(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Attention.CAUSAL.format(arch=self.arch), value)'
+    desc: 添加因果注意力参数
+    line: 919-920
+    name: add_causal_attention
+  - code:
+    - 'def add_q_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.Q_LORA_RANK.format(arch=self.arch), length)'
+    desc: 添加Q_LoRA秩参数
+    line: 922-923
+    name: add_q_lora_rank
+  - code:
+    - 'def add_kv_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.KV_LORA_RANK.format(arch=self.arch), length)'
+    desc: 添加KV_LoRA秩参数
+    line: 925-926
+    name: add_kv_lora_rank
+  - code:
+    - 'def add_decay_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.DECAY_LORA_RANK.format(arch=self.arch),
+      length)'
+    desc: 添加衰减LoRA秩参数
+    line: 928-929
+    name: add_decay_lora_rank
+  - code:
+    - 'def add_iclr_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.ICLR_LORA_RANK.format(arch=self.arch), length)'
+    desc: 添加ICLR LoRA秩参数
+    line: 931-932
+    name: add_iclr_lora_rank
+  - code:
+    - 'def add_value_residual_mix_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.VALUE_RESIDUAL_MIX_LORA_RANK.format(arch=self.arch),
+      length)'
+    desc: 添加值残差混合LoRA秩参数
+    line: 934-935
+    name: add_value_residual_mix_lora_rank
+  - code:
+    - 'def add_rope_freq_base_swa(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.FREQ_BASE_SWA.format(arch=self.arch), value)'
+    desc: 添加滑动窗口注意力的RoPE频率基数参数
+    line: 937-938
+    name: add_rope_freq_base_swa
+  - code:
+    - 'def add_gate_lora_rank(self, length: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.GATE_LORA_RANK.format(arch=self.arch), length)'
+    desc: 添加门控LoRA秩参数
+    line: 940-941
+    name: add_gate_lora_rank
+  - code:
+    - 'def add_relative_attn_buckets_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.REL_BUCKETS_COUNT.format(arch=self.arch),
+      value)'
+    desc: 添加相对注意力桶数量参数
+    line: 943-944
+    name: add_relative_attn_buckets_count
+  - code:
+    - 'def add_sliding_window(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.SLIDING_WINDOW.format(arch=self.arch), value)'
+    desc: 添加滑动窗口大小参数
+    line: 946-947
+    name: add_sliding_window
+  - code:
+    - 'def add_attention_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.SCALE.format(arch=self.arch), value)'
+    desc: 添加注意力缩放参数
+    line: 949-950
+    name: add_attention_scale
+  - code:
+    - 'def add_attn_output_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.OUTPUT_SCALE.format(arch=self.arch), value)'
+    desc: 添加上下文输出缩放参数
+    line: 952-953
+    name: add_attn_output_scale
+  - code:
+    - 'def add_attn_temperature_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Attention.TEMPERATURE_LENGTH.format(arch=self.arch),
+      value)'
+    desc: 添加上下文温度长度参数
+    line: 955-956
+    name: add_attn_temperature_length
+  - code:
+    - 'def add_attn_temperature_scale(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Attention.TEMPERATURE_SCALE.format(arch=self.arch),
+      value)'
+    desc: 添加上下文温度缩放参数
+    line: 958-959
+    name: add_attn_temperature_scale
+  - code:
+    - 'def add_pooling_type(self, value: PoolingType) -> None:'
+    - '    self.add_uint32(Keys.LLM.POOLING_TYPE.format(arch=self.arch), value.value)'
+    desc: 添加池化类型参数
+    line: 961-962
+    name: add_pooling_type
+  - code:
+    - 'def add_num_deepstack_layers(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.LLM.NUM_DEEPSTACK_LAYERS.format(arch=self.arch), count)'
+    desc: 添加深度堆叠层数量参数
+    line: 964-965
+    name: add_num_deepstack_layers
+  - code:
+    - 'def add_rope_dimension_count(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.Rope.DIMENSION_COUNT.format(arch=self.arch), count)'
+    desc: 添加RoPE维度数量参数
+    line: 967-968
+    name: add_rope_dimension_count
+  - code:
+    - 'def add_rope_dimension_count_swa(self, count: int) -> None:'
+    - '    self.add_uint32(Keys.Rope.DIMENSION_COUNT_SWA.format(arch=self.arch), count)'
+    desc: 添加滑动窗口注意力RoPE维度数量参数
+    line: 970-971
+    name: add_rope_dimension_count_swa
+  - code:
+    - 'def add_rope_dimension_sections(self, dims: Sequence[int]) -> None:'
+    - '    self.add_array(Keys.Rope.DIMENSION_SECTIONS.format(arch=self.arch), dims)'
+    desc: 添加RoPE维度分段参数
+    line: 973-974
+    name: add_rope_dimension_sections
+  - code:
+    - 'def add_rope_freq_base(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.FREQ_BASE.format(arch=self.arch), value)'
+    desc: 添加RoPE频率基数参数
+    line: 976-977
+    name: add_rope_freq_base
+  - code:
+    - 'def add_rope_scaling_type(self, value: RopeScalingType) -> None:'
+    - '    self.add_string(Keys.Rope.SCALING_TYPE.format(arch=self.arch), value.value)'
+    desc: 添加RoPE缩放类型参数
+    line: 979-980
+    name: add_rope_scaling_type
+  - code:
+    - 'def add_rope_scaling_factor(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_FACTOR.format(arch=self.arch), value)'
+    desc: 添加RoPE缩放因子参数
+    line: 982-983
+    name: add_rope_scaling_factor
+  - code:
+    - 'def add_rope_scaling_attn_factors(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_ATTN_FACTOR.format(arch=self.arch),
+      value)'
+    desc: 添加RoPE缩放注意力因子参数
+    line: 985-986
+    name: add_rope_scaling_attn_factors
+  - code:
+    - 'def add_rope_scaling_orig_ctx_len(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Rope.SCALING_ORIG_CTX_LEN.format(arch=self.arch),
+      value)'
+    desc: 添加RoPE缩放原始上下文长度参数
+    line: 988-989
+    name: add_rope_scaling_orig_ctx_len
+  - code:
+    - 'def add_rope_scaling_finetuned(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Rope.SCALING_FINETUNED.format(arch=self.arch), value)'
+    desc: 添加RoPE缩放微调参数
+    line: 991-992
+    name: add_rope_scaling_finetuned
+  - code:
+    - 'def add_rope_scaling_yarn_log_mul(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_YARN_LOG_MUL.format(arch=self.arch),
+      value)'
+    desc: 添加YARN缩放对数乘法参数
+    line: 994-995
+    name: add_rope_scaling_yarn_log_mul
+  - code:
+    - 'def add_rope_scaling_yarn_ext_factor(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_YARN_EXT_FACTOR.format(arch=self.arch),
+      value)'
+    desc: 添加YARN缩放外部因子参数
+    line: 997-998
+    name: add_rope_scaling_yarn_ext_factor
+  - code:
+    - 'def add_rope_scaling_yarn_attn_factor(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_YARN_ATTN_FACTOR.format(arch=self.arch),
+      value)'
+    desc: 添加YARN缩放注意力因子参数
+    line: 1000-1001
+    name: add_rope_scaling_yarn_attn_factor
+  - code:
+    - 'def add_rope_scaling_yarn_beta_fast(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_YARN_BETA_FAST.format(arch=self.arch),
+      value)'
+    desc: 添加YARN缩放快速beta参数
+    line: 1003-1004
+    name: add_rope_scaling_yarn_beta_fast
+  - code:
+    - 'def add_rope_scaling_yarn_beta_slow(self, value: float) -> None:'
+    - '    self.add_float32(Keys.Rope.SCALING_YARN_BETA_SLOW.format(arch=self.arch),
+      value)'
+    desc: 添加YARN缩放慢速beta参数
+    line: 1006-1007
+    name: add_rope_scaling_yarn_beta_slow
+  - code:
+    - 'def add_ssm_conv_kernel(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.SSM.CONV_KERNEL.format(arch=self.arch), value)'
+    desc: 添加SSM卷积核大小参数
+    line: 1009-1010
+    name: add_ssm_conv_kernel
+  - code:
+    - 'def add_ssm_inner_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.SSM.INNER_SIZE.format(arch=self.arch), value)'
+    desc: 添加SSM内部大小参数
+    line: 1012-1013
+    name: add_ssm_inner_size
+  - code:
+    - 'def add_ssm_state_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.SSM.STATE_SIZE.format(arch=self.arch), value)'
+    desc: 添加SSM状态大小参数
+    line: 1015-1016
+    name: add_ssm_state_size
+  - code:
+    - 'def add_ssm_time_step_rank(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.SSM.TIME_STEP_RANK.format(arch=self.arch), value)'
+    desc: 添加SSM时间步秩参数
+    line: 1018-1019
+    name: add_ssm_time_step_rank
+  - code:
+    - 'def add_ssm_group_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.SSM.GROUP_COUNT.format(arch=self.arch), value)'
+    desc: 添加SSM分组数量参数
+    line: 1021-1022
+    name: add_ssm_group_count
+  - code:
+    - 'def add_ssm_dt_b_c_rms(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.SSM.DT_B_C_RMS.format(arch=self.arch), value)'
+    desc: 添加SSM的dt_b_c_rms标志参数
+    line: 1024-1025
+    name: add_ssm_dt_b_c_rms
+  - code:
+    - 'def add_kda_head_dim(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.KDA.HEAD_DIM.format(arch=self.arch), value)'
+    desc: 添加KDA头部维度参数
+    line: 1027-1028
+    name: add_kda_head_dim
+  - code:
+    - 'def add_tokenizer_model(self, model: str) -> None:'
+    - '    self.add_string(Keys.Tokenizer.MODEL, model)'
+    desc: 添加分词器模型类型参数
+    line: 1030-1031
+    name: add_tokenizer_model
+  - code:
+    - 'def add_tokenizer_pre(self, pre: str) -> None:'
+    - '    self.add_string(Keys.Tokenizer.PRE, pre)'
+    desc: 添加分词器预处理类型参数
+    line: 1033-1034
+    name: add_tokenizer_pre
+  - code:
+    - 'def add_token_list(self, tokens: Sequence[str] | Sequence[bytes] | Sequence[bytearray])
+      -> None:'
+    - '    self.add_array(Keys.Tokenizer.LIST, tokens)'
+    desc: 添加分词器词汇表参数
+    line: 1036-1037
+    name: add_token_list
+  - code:
+    - 'def add_token_merges(self, merges: Sequence[str] | Sequence[bytes] | Sequence[bytearray])
+      -> None:'
+    - '    self.add_array(Keys.Tokenizer.MERGES, merges)'
+    desc: 添加分词器合并规则参数
+    line: 1039-1040
+    name: add_token_merges
+  - code:
+    - 'def add_token_types(self, types: Sequence[TokenType] | Sequence[int]) -> None:'
+    - '    self.add_array(Keys.Tokenizer.TOKEN_TYPE, types)'
+    desc: 添加分词器Token类型参数
+    line: 1042-1043
+    name: add_token_types
+  - code:
+    - 'def add_token_type_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.TOKEN_TYPE_COUNT, value)'
+    desc: 添加分词器Token类型数量参数
+    line: 1045-1046
+    name: add_token_type_count
+  - code:
+    - 'def add_token_scores(self, scores: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.Tokenizer.SCORES, scores)'
+    desc: 添加分词器Token分数参数
+    line: 1048-1049
+    name: add_token_scores
+  - code:
+    - 'def add_bos_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.BOS_ID, id)'
+    desc: 添加BOS（句子开始）Token ID参数
+    line: 1051-1052
+    name: add_bos_token_id
+  - code:
+    - 'def add_eos_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.EOS_ID, id)'
+    desc: 添加EOS（句子结束）Token ID参数
+    line: 1054-1055
+    name: add_eos_token_id
+  - code:
+    - 'def add_unk_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.UNK_ID, id)'
+    desc: 添加UNK（未知）Token ID参数
+    line: 1057-1058
+    name: add_unk_token_id
+  - code:
+    - 'def add_sep_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.SEP_ID, id)'
+    desc: 添加SEP（分隔符）Token ID参数
+    line: 1060-1061
+    name: add_sep_token_id
+  - code:
+    - 'def add_pad_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.PAD_ID, id)'
+    desc: 添加PAD（填充）Token ID参数
+    line: 1063-1064
+    name: add_pad_token_id
+  - code:
+    - 'def add_mask_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.MASK_ID, id)'
+    desc: 添加MASK（掩码）Token ID参数
+    line: 1066-1067
+    name: add_mask_token_id
+  - code:
+    - 'def add_add_bos_token(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Tokenizer.ADD_BOS, value)'
+    desc: 添加是否在开头添加BOS Token的标志参数
+    line: 1069-1070
+    name: add_add_bos_token
+  - code:
+    - 'def add_add_eos_token(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Tokenizer.ADD_EOS, value)'
+    desc: 添加是否在结尾添加EOS Token的标志参数
+    line: 1072-1073
+    name: add_add_eos_token
+  - code:
+    - 'def add_add_sep_token(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Tokenizer.ADD_SEP, value)'
+    desc: 添加是否添加SEP Token的标志参数
+    line: 1075-1076
+    name: add_add_sep_token
+  - code:
+    - 'def add_add_space_prefix(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Tokenizer.ADD_PREFIX, value)'
+    desc: 添加是否添加空格前缀的标志参数
+    line: 1078-1079
+    name: add_add_space_prefix
+  - code:
+    - 'def add_remove_extra_whitespaces(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Tokenizer.REMOVE_EXTRA_WS, value)'
+    desc: 添加是否移除额外空白的标志参数
+    line: 1081-1082
+    name: add_remove_extra_whitespaces
+  - code:
+    - 'def add_precompiled_charsmap(self, charsmap: bytes) -> None:'
+    - '    self.add_array(Keys.Tokenizer.PRECOMPILED_CHARSMAP, charsmap)'
+    desc: 添加预编译字符映射参数
+    line: 1084-1085
+    name: add_precompiled_charsmap
+  - code:
+    - 'def add_chat_template(self, value: str | Sequence[Mapping[str, str]]) -> None:'
+    - '    if not isinstance(value, str):'
+    - '        template_default = None'
+    - '        template_names = set()'
+    - '        for choice in value:'
+    - '            name = choice.get(''name'', '''')'
+    - '            template = choice.get(''template'')'
+    - '            name = ''''.join((c if c in ascii_letters + digits else ''_'' for
+      c in name))'
+    - '            if name and template is not None:'
+    - '                if name == ''default'':'
+    - '                    template_default = template'
+    - '                else:'
+    - '                    template_names.add(name)'
+    - '                    self.add_string(Keys.Tokenizer.CHAT_TEMPLATE_N.format(name=name),
+      template)'
+    - '        if template_names:'
+    - '            self.add_array(Keys.Tokenizer.CHAT_TEMPLATES, list(template_names))'
+    - '        if template_default is None:'
+    - '            return'
+    - '        value = template_default'
+    - '    self.add_string(Keys.Tokenizer.CHAT_TEMPLATE, value)'
+    desc: 添加聊天模板参数，支持单个模板或多个模板的选择
+    line: 1087-1110
+    name: add_chat_template
+  - code:
+    - 'def add_eot_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.EOT_ID, id)'
+    desc: 添加EOT（文本结束）Token ID参数
+    line: 1112-1113
+    name: add_eot_token_id
+  - code:
+    - 'def add_eom_token_id(self, id: int) -> None:'
+    - '    self.add_uint32(Keys.Tokenizer.EOM_ID, id)'
+    desc: 添加EOM（消息结束）Token ID参数
+    line: 1115-1116
+    name: add_eom_token_id
+  - code:
+    - 'def add_classifier_output_labels(self, labels: Sequence[str]) -> None:'
+    - '    self.add_array(Keys.Classifier.OUTPUT_LABELS.format(arch=self.arch), labels)'
+    desc: 添加分类器输出标签参数
+    line: 1118-1119
+    name: add_classifier_output_labels
+  - code:
+    - 'def add_clip_has_vision_encoder(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Clip.HAS_VISION_ENCODER, value)'
+    desc: 添加CLIP是否具有视觉编码器的标志参数
+    line: 1122-1123
+    name: add_clip_has_vision_encoder
+  - code:
+    - 'def add_clip_has_audio_encoder(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Clip.HAS_AUDIO_ENCODER, value)'
+    desc: 添加CLIP是否具有音频编码器的标志参数
+    line: 1125-1126
+    name: add_clip_has_audio_encoder
+  - code:
+    - 'def add_clip_projector_type(self, value: str) -> None:'
+    - '    self.add_string(Keys.Clip.PROJECTOR_TYPE, value)'
+    desc: 添加CLIP投影器类型参数
+    line: 1128-1129
+    name: add_clip_projector_type
+  - code:
+    - 'def add_clip_vision_projector_type(self, value: str) -> None:'
+    - '    self.add_string(Keys.ClipVision.PROJECTOR_TYPE, value)'
+    desc: 添加CLIP视觉投影器类型参数
+    line: 1131-1132
+    name: add_clip_vision_projector_type
+  - code:
+    - 'def add_vision_projection_dim(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.PROJECTION_DIM, value)'
+    desc: 添加视觉投影维度参数
+    line: 1134-1135
+    name: add_vision_projection_dim
+  - code:
+    - 'def add_vision_patch_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.PATCH_SIZE, value)'
+    desc: 添加视觉图像块大小参数
+    line: 1137-1138
+    name: add_vision_patch_size
+  - code:
+    - 'def add_vision_embedding_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.EMBEDDING_LENGTH, value)'
+    desc: 添加视觉嵌入长度参数
+    line: 1140-1141
+    name: add_vision_embedding_length
+  - code:
+    - 'def add_vision_feed_forward_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.FEED_FORWARD_LENGTH, value)'
+    desc: 添加视觉前馈网络长度参数
+    line: 1143-1144
+    name: add_vision_feed_forward_length
+  - code:
+    - 'def add_vision_block_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.BLOCK_COUNT, value)'
+    desc: 添加视觉块数量参数
+    line: 1146-1147
+    name: add_vision_block_count
+  - code:
+    - 'def add_vision_head_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.Attention.HEAD_COUNT, value)'
+    desc: 添加视觉注意力头数量参数
+    line: 1149-1150
+    name: add_vision_head_count
+  - code:
+    - 'def add_vision_attention_layernorm_eps(self, value: float) -> None:'
+    - '    self.add_float32(Keys.ClipVision.Attention.LAYERNORM_EPS, value)'
+    desc: 添加视觉注意力层归一化的epsilon参数
+    line: 1152-1153
+    name: add_vision_attention_layernorm_eps
+  - code:
+    - 'def add_vision_image_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.IMAGE_SIZE, value)'
+    desc: 添加视觉图像大小参数
+    line: 1155-1156
+    name: add_vision_image_size
+  - code:
+    - 'def add_vision_max_pixels(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.IMAGE_MAX_PIXELS, value)'
+    desc: 添加视觉图像最大像素参数
+    line: 1158-1159
+    name: add_vision_max_pixels
+  - code:
+    - 'def add_vision_min_pixels(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.IMAGE_MIN_PIXELS, value)'
+    desc: 添加视觉图像最小像素参数
+    line: 1161-1162
+    name: add_vision_min_pixels
+  - code:
+    - 'def add_vision_preproc_max_tiles(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.PREPROC_MAX_TILES, value)'
+    desc: 添加视觉预处理最大瓦片数量参数
+    line: 1164-1165
+    name: add_vision_preproc_max_tiles
+  - code:
+    - 'def add_vision_preproc_min_tiles(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.PREPROC_MIN_TILES, value)'
+    desc: 添加视觉预处理最小瓦片数量参数
+    line: 1167-1168
+    name: add_vision_preproc_min_tiles
+  - code:
+    - 'def add_vision_preproc_image_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.PREPROC_IMAGE_SIZE, value)'
+    desc: 添加视觉预处理图像大小参数
+    line: 1170-1171
+    name: add_vision_preproc_image_size
+  - code:
+    - 'def add_vision_image_mean(self, values: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.ClipVision.IMAGE_MEAN, values)'
+    desc: 添加视觉图像均值参数
+    line: 1173-1174
+    name: add_vision_image_mean
+  - code:
+    - 'def add_vision_image_std(self, values: Sequence[float]) -> None:'
+    - '    self.add_array(Keys.ClipVision.IMAGE_STD, values)'
+    desc: 添加视觉图像标准差参数
+    line: 1176-1177
+    name: add_vision_image_std
+  - code:
+    - 'def add_vision_spatial_merge_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.SPATIAL_MERGE_SIZE, value)'
+    desc: 添加视觉空间合并大小参数
+    line: 1179-1180
+    name: add_vision_spatial_merge_size
+  - code:
+    - 'def add_vision_use_gelu(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.ClipVision.USE_GELU, value)'
+    desc: 添加视觉使用GELU激活函数的标志参数
+    line: 1182-1183
+    name: add_vision_use_gelu
+  - code:
+    - 'def add_vision_use_silu(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.ClipVision.USE_SILU, value)'
+    desc: 添加视觉使用SILU激活函数的标志参数
+    line: 1185-1186
+    name: add_vision_use_silu
+  - code:
+    - 'def add_vision_projector_scale_factor(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.Projector.SCALE_FACTOR, value)'
+    desc: 添加视觉投影器缩放因子参数
+    line: 1188-1189
+    name: add_vision_projector_scale_factor
+  - code:
+    - 'def add_vision_n_wa_pattern(self, value: int) -> None:'
+    - '    """Add window attention pattern interval for vision models.'
+    - ''
+    - '    This defines the pattern interval for window attention vs full attention
+      layers.'
+    - '    For example, if n_wa_pattern=4, then layers 3, 7, 11, ... use full attention,'
+    - '    while other layers use window attention.'
+    - ''
+    - '    Used by models like Qwen2.5-VL where full attention layers follow a regular
+      pattern.'
+    - '    """'
+    - '    self.add_uint32(Keys.ClipVision.N_WA_PATTERN, value)'
+    desc: 添加视觉模型窗口注意力模式间隔参数，定义全注意力层的规律间隔模式
+    line: 1191-1202
+    name: add_vision_n_wa_pattern
+  - code:
+    - 'def add_vision_wa_layer_indexes(self, layers: Sequence[int]) -> None:'
+    - '    """Add explicit layer indexes that use full attention in vision models.'
+    - ''
+    - '    This specifies the exact layer indices (0-based) that should use full attention'
+    - '    instead of window attention. All other layers will use window attention.'
+    - ''
+    - '    Args:'
+    - '        layers: List of layer indices that use full attention (e.g., [3, 7,
+      11, 15])'
+    - ''
+    - '    Used by models like YoutuVL where full attention layers are explicitly
+      specified'
+    - '    rather than following a regular pattern.'
+    - ''
+    - '    Difference from add_vision_n_wa_pattern:'
+    - '    - n_wa_pattern: Defines a regular interval pattern (every Nth layer uses
+      full attention)'
+    - '    - wa_layer_indexes: Explicitly lists which layers use full attention (irregular
+      pattern)'
+    - '    """'
+    - '    self.add_array(Keys.ClipVision.WA_LAYER_INDEXES, layers)'
+    desc: 添加视觉模型使用全注意力的显式层索引列表参数
+    line: 1204-1222
+    name: add_vision_wa_layer_indexes
+  - code:
+    - 'def add_vision_is_deepstack_layers(self, layers: Sequence[bool]) -> None:'
+    - '    self.add_array(Keys.ClipVision.IS_DEEPSTACK_LAYERS, layers)'
+    desc: 添加视觉深度堆叠层标志列表参数
+    line: 1224-1225
+    name: add_vision_is_deepstack_layers
+  - code:
+    - 'def add_vision_window_size(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.WINDOW_SIZE, value)'
+    desc: 添加视觉窗口大小参数
+    line: 1227-1228
+    name: add_vision_window_size
+  - code:
+    - 'def add_vision_sam_layers_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.SAM.BLOCK_COUNT, value)'
+    desc: 添加视觉SAM层数量参数
+    line: 1230-1231
+    name: add_vision_sam_layers_count
+  - code:
+    - 'def add_vision_sam_embedding_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.SAM.EMBEDDING_LENGTH, value)'
+    desc: 添加视觉SAM嵌入长度参数
+    line: 1233-1234
+    name: add_vision_sam_embedding_length
+  - code:
+    - 'def add_vision_sam_head_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipVision.SAM.HEAD_COUNT, value)'
+    desc: 添加视觉SAM头数量参数
+    line: 1236-1237
+    name: add_vision_sam_head_count
+  - code:
+    - 'def add_clip_audio_projector_type(self, value: str) -> None:'
+    - '    self.add_string(Keys.ClipAudio.PROJECTOR_TYPE, value)'
+    desc: 添加CLIP音频投影器类型参数
+    line: 1240-1241
+    name: add_clip_audio_projector_type
+  - code:
+    - 'def add_audio_projection_dim(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.PROJECTION_DIM, value)'
+    desc: 添加上下文投影维度参数
+    line: 1243-1244
+    name: add_audio_projection_dim
+  - code:
+    - 'def add_audio_embedding_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.EMBEDDING_LENGTH, value)'
+    desc: 添加上下文嵌入长度参数
+    line: 1246-1247
+    name: add_audio_embedding_length
+  - code:
+    - 'def add_audio_feed_forward_length(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.FEED_FORWARD_LENGTH, value)'
+    desc: 添加上下文前馈网络长度参数
+    line: 1249-1250
+    name: add_audio_feed_forward_length
+  - code:
+    - 'def add_audio_block_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.BLOCK_COUNT, value)'
+    desc: 添加上下文块数量参数
+    line: 1252-1253
+    name: add_audio_block_count
+  - code:
+    - 'def add_audio_head_count(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.Attention.HEAD_COUNT, value)'
+    desc: 添加上下文注意力头数量参数
+    line: 1255-1256
+    name: add_audio_head_count
+  - code:
+    - 'def add_audio_attention_layernorm_eps(self, value: float) -> None:'
+    - '    self.add_float32(Keys.ClipAudio.Attention.LAYERNORM_EPS, value)'
+    desc: 添加上下文注意力层归一化的epsilon参数
+    line: 1258-1259
+    name: add_audio_attention_layernorm_eps
+  - code:
+    - 'def add_audio_num_mel_bins(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.NUM_MEL_BINS, value)'
+    desc: 添加上下文梅尔频带数量参数
+    line: 1261-1262
+    name: add_audio_num_mel_bins
+  - code:
+    - 'def add_audio_stack_factor(self, value: int) -> None:'
+    - '    self.add_uint32(Keys.ClipAudio.Projector.STACK_FACTOR, value)'
+    desc: 添加上下文堆叠因子参数
+    line: 1264-1265
+    name: add_audio_stack_factor
+  - code:
+    - 'def add_xielu_alpha_p(self, values: Sequence[float]):'
+    - '    self.add_array(Keys.xIELU.ALPHA_P, values)'
+    desc: 添加xielu激活函数正alpha参数
+    line: 1267-1268
+    name: add_xielu_alpha_p
+  - code:
+    - 'def add_xielu_alpha_n(self, values: Sequence[float]):'
+    - '    self.add_array(Keys.xIELU.ALPHA_N, values)'
+    desc: 添加xielu激活函数负alpha参数
+    line: 1270-1271
+    name: add_xielu_alpha_n
+  - code:
+    - 'def add_xielu_beta(self, values: Sequence[float]):'
+    - '    self.add_array(Keys.xIELU.BETA, values)'
+    desc: 添加xielu激活函数beta参数
+    line: 1273-1274
+    name: add_xielu_beta
+  - code:
+    - 'def add_xielu_eps(self, values: Sequence[float]):'
+    - '    self.add_array(Keys.xIELU.EPS, values)'
+    desc: 添加xielu激活函数epsilon参数
+    line: 1276-1277
+    name: add_xielu_eps
+  - code:
+    - 'def add_diffusion_shift_logits(self, value: bool) -> None:'
+    - '    self.add_bool(Keys.Diffusion.SHIFT_LOGITS, value)'
+    desc: 添加扩散模型logits移位标志参数
+    line: 1280-1281
+    name: add_diffusion_shift_logits
+  - code:
+    - 'def _pack(self, fmt: str, value: Any, skip_pack_prefix: bool = False) -> bytes:'
+    - '    pack_prefix = '''''
+    - '    if not skip_pack_prefix:'
+    - '        pack_prefix = ''<'' if self.endianess == GGUFEndian.LITTLE else ''>'''
+    - '    return struct.pack(f''{pack_prefix}{fmt}'', value)'
+    desc: 将指定格式的值打包为二进制数据
+    line: 1283-1287
+    name: _pack
+  - code:
+    - 'def _pack_val(self, val: Any, vtype: GGUFValueType, add_vtype: bool, sub_type:
+      GGUFValueType | None = None) -> bytes:'
+    - '    kv_data = bytearray()'
+    - '    if add_vtype:'
+    - '        kv_data += self._pack("I", vtype)'
+    - '    pack_fmt = self._simple_value_packing.get(vtype)'
+    - '    if pack_fmt is not None:'
+    - '        kv_data += self._pack(pack_fmt, val, skip_pack_prefix = vtype == GGUFValueType.BOOL)'
+    - '    elif vtype == GGUFValueType.STRING:'
+    - '        encoded_val = val.encode("utf-8") if isinstance(val, str) else val'
+    - '        kv_data += self._pack("Q", len(encoded_val))'
+    - '        kv_data += encoded_val'
+    - '    elif vtype == GGUFValueType.ARRAY:'
+    - '        if not isinstance(val, Sequence):'
+    - '            raise ValueError("Invalid GGUF metadata array, expecting sequence")'
+    - '        if len(val) == 0:'
+    - '            raise ValueError("Invalid GGUF metadata array. Empty array")'
+    - '        if sub_type is not None:'
+    - '            ltype = sub_type'
+    - '        elif isinstance(val, bytes):'
+    - '            ltype = GGUFValueType.UINT8'
+    - '        else:'
+    - '            ltype = GGUFValueType.get_type(val[0])'
+    - '            if not all(GGUFValueType.get_type(i) is ltype for i in val[1:]):'
+    - '                raise ValueError("All items in a GGUF array should be of the
+      same type")'
+    - '        kv_data += self._pack("I", ltype)'
+    - '        kv_data += self._pack("Q", len(val))'
+    - '        for item in val:'
+    - '            kv_data += self._pack_val(item, ltype, add_vtype=False)'
+    - '    else:'
+    - '        raise ValueError("Invalid GGUF metadata value type or value")'
+    - '    return bytes(kv_data)'
+    desc: 将值按其GGUF值类型打包为二进制数据，支持基本类型、字符串、数组等
+    line: 1289-1317
+    name: _pack_val
+  - code:
+    - '@staticmethod'
+    - 'def format_n_bytes_to_str(num: int) -> str:'
+    - '    if num == 0:'
+    - '        return "negligible - metadata only"'
+    - '    fnum = float(num)'
+    - '    for unit in ("", "K", "M", "G"):'
+    - '        if abs(fnum) < 1000.0:'
+    - '            return f"{fnum:3.1f}{unit}"'
+    - '        fnum /= 1000.0'
+    - '    return f"{fnum:.1f}T - over 1TB, split recommended"'
+    desc: 将字节数格式化为人类可读的字符串表示
+    line: 1319-1327
+    name: format_n_bytes_to_str
+  name: GGUFWriter
+desc: 该文件定义了一个用于生成GGUF（GPT-Generated Unified Format）模型文件的GGUFWriter类。GGUF是一种用于存储LLM模型权重及元数据的二进制格式。该类负责按规范顺序写入文件头（magic、版本、张量及KV数据数量）、键值元数据、张量信息与权重数据，并支持模型分片、临时文件、字节序转换、数据对齐及多种模型架构的元数据添加。该文件是GGUF（GPT-Generated
+  Unified Format）模型文件的写入器实现，提供了一系列方法用于向GGUF文件添加各类模型元数据，包括模型架构参数、注意力机制参数、RoPE（旋转位置编码）参数、SSM（状态空间模型）参数、分词器配置、视觉/音频模型参数以及扩散模型参数等，是模型导出和转换过程中的核心工具类。
+file: gguf-py/gguf/gguf_writer.py
+funcs:
+- code: []
+  desc: 全局作用域，包含模块导入、常量定义（SHARD_NAME_FORMAT）和日志记录器初始化。
+  line: 1-41
+  name: __main__

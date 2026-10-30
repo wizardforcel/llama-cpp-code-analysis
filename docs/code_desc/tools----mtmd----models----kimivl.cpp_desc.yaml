@@ -1,0 +1,62 @@
+classes:
+- desc: 负责构建Kimi VL视觉模型的推理计算图，集成2D位置编码、ViT特征提取和投影层。
+  methods:
+  - code:
+    - ggml_cgraph * clip_graph_kimivl::build() {
+    - '    // 创建2D位置张量'
+    - '    ggml_tensor * pos_h = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_patches);'
+    - '    ggml_set_name(pos_h, "pos_h");'
+    - '    ggml_set_input(pos_h);'
+    - '    '
+    - '    ggml_tensor * pos_w = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_patches);'
+    - '    ggml_set_name(pos_w, "pos_w");'
+    - '    ggml_set_input(pos_w);'
+    - '    '
+    - '    ggml_tensor * learned_pos_embd = resize_position_embeddings();'
+    - '    '
+    - '    // 定义添加2D位置编码的函数'
+    - '    auto add_pos = [&](ggml_tensor * cur, const clip_layer &) {'
+    - '        return build_rope_2d(ctx0, cur, pos_w, pos_h, hparams.rope_theta, false);'
+    - '    };'
+    - '    '
+    - '    // 构建输入和ViT主干'
+    - '    ggml_tensor * inp = build_inp();'
+    - '    ggml_tensor * cur = build_vit(inp, n_patches, NORM_TYPE_NORMAL, hparams.ffn_op,
+      learned_pos_embd, add_pos);'
+    - '    '
+    - '    cb(cur, "vit_out", -1);'
+    - '    '
+    - '    {'
+    - '        // patch合并'
+    - '        const int scale_factor = model.hparams.n_merge;'
+    - '        cur = build_patch_merge_permute(cur, scale_factor);'
+    - '        '
+    - '        // 投影归一化层'
+    - '        int proj_inp_dim = cur->ne[0];'
+    - '        cur = ggml_view_2d(ctx0, cur, n_embd, cur->ne[1] * scale_factor * scale_factor,
+      ggml_row_size(cur->type, n_embd), 0);'
+    - '        cur = ggml_norm(ctx0, cur, 1e-5);'
+    - '        cur = ggml_mul(ctx0, cur, model.mm_input_norm_w);'
+    - '        cur = ggml_add(ctx0, cur, model.mm_input_norm_b);'
+    - '        cur = ggml_view_2d(ctx0, cur, proj_inp_dim, cur->ne[1] / scale_factor
+      / scale_factor, ggml_row_size(cur->type, proj_inp_dim), 0);'
+    - '        cb(cur, "proj_inp_normed", -1);'
+    - '        '
+    - '        // MLP投影'
+    - '        cur = build_ffn(cur, model.mm_1_w, model.mm_1_b, nullptr, nullptr,
+      model.mm_2_w, model.mm_2_b, FFN_GELU, -1);'
+    - '        cb(cur, "proj_out", -1);'
+    - '    }'
+    - '    '
+    - '    // 构建计算图'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '    '
+    - '    return gf;'
+    - '}'
+    desc: 构建完整的视觉编码计算图，返回前向传播图对象
+    line: 7-49
+    name: build
+  name: clip_graph_kimivl
+desc: 该文件实现了Kimi VL模型的视觉编码器图构建逻辑，通过组合2D旋转位置编码、ViT主干和投影层，将图像patch序列转换为适合语言模型输入的嵌入表示。核心流程包括：根据输入位置生成2D编码，构建ViT层，执行patch合并与归一化，最后经过MLP投影输出。
+file: tools/mtmd/models/kimivl.cpp
+funcs: []

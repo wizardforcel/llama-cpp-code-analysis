@@ -1,0 +1,566 @@
+code_map:
+- gguf-py/gguf/scripts/
+- '├── gguf_dump.py                    # 全息扫描仪：多格式元数据导出'
+- '│   ├── get_file_host_endian()      # 字节序侦探：区分主机与文件字节序（处理 ''S'' 交换标记）'
+- '│   ├── dump_metadata()             # 文本模式：键值对列表 + 60字符截断 + 张量维度统计'
+- '│   ├── dump_metadata_json()        # JSON模式：递归序列化 ReaderField，支持 --json-array
+  开关'
+- '│   ├── markdown_table_with_alignment_support()  # Markdown表格生成器：动态列宽计算与对齐控制'
+- '│   ├── element_count_rounded_notation()         # 数字美化：K/M/B/T/Q 数量级缩写与波浪号标记'
+- '│   ├── translate_tensor_name()     # 张量名翻译官：标准词典映射（attn_qkv→Attention query-key-value）'
+- '│   ├── dump_markdown_metadata()    # Markdown报告：分组统计（blk.N/enc/dec）、BPW计算、偏移量表'
+- '│   ├── main()                      # CLI 入口：解析参数，分发到文本/JSON/Markdown/Offset 模式'
+- '│   └── __main__                    # 模块入口：调用 main()'
+- │
+- '├── gguf_convert_endian.py        # 字节序转换：跨平台「灵魂翻译官」'
+- '│   ├── byteswap_noop()             # 空操作占位：MXFP4/NVFP4 等现代格式无需交换'
+- '│   ├── byteswap_q4_0()             # Q4_0 手术：仅交换块首2字节 f16 delta 缩放因子'
+- '│   ├── byteswap_q8_0()             # Q8_0 手术：仅交换块首2字节 f16 delta 缩放因子'
+- '│   ├── byteswap_q4_k()             # Q4_K 手术：交换块首两个连续 f16 字段（offsets 0-2, 2-4）'
+- '│   ├── byteswap_q6_k()             # Q6_K 手术：交换偏移 208 处的 f16 字段'
+- '│   ├── convert_byteorder()         # 核心转换流程：检测→校验白名单→YES确认→字段级byteswap→分块张量处理'
+- '│   ├── main()                      # CLI 入口：解析字节序参数，以 ''r+'' 或 ''r'' 模式加载 Reader'
+- '│   └── __main__                    # 模块入口'
+- │
+- '├── gguf_set_metadata.py          # 微创手术刀：单字段精准修改'
+- '│   ├── minimal_example()           # 教学示例：演示 field.parts 结构与 data 索引的桥接作用'
+- '│   ├── set_metadata()              # 类型检查→值转换→幂等检查→dry-run/force控制→原地写入 parts[field.data[0]]'
+- '│   ├── main()                      # CLI 入口：解析 key/value，以 r+ 模式打开文件'
+- '│   └── __main__                    # 模块入口'
+- │
+- '├── gguf_new_metadata.py          # 全量重建：模型的「无损搬家与装修」'
+- '│   ├── get_field_data()            # 字段提取：reader.get_field() 的安全包装'
+- '│   ├── find_token()                # 特殊Token定位：词表搜索与多匹配歧义处理'
+- '│   ├── copy_with_new_metadata()    # 流式复制：四策略处理（跳过/修改/复制/删除）→ 聊天模板替换 → 张量数据流式写入'
+- '│   ├── main()                      # CLI 入口：处理特殊Token ID、删除警告、覆盖确认、实例化 GGUFWriter'
+- '│   └── __main__                    # 模块入口'
+- │
+- '├── gguf_hash.py                  # 数字指纹生成器'
+- '│   ├── gguf_hash()                 # 三层哈希体系：SHA-1(兼容)/SHA-256(安全)/UUIDv5(内容寻址)，非持久化张量过滤'
+- '│   ├── main()                      # CLI 入口：解析 --no-layer 与 --progressbar 选项'
+- '│   └── __main__                    # 模块入口'
+- │
+- '└── gguf_editor_gui.py            # 可视化控制台（PySide6）'
+- '    ├── KEY_TO_ENUM_TYPE            # 元数据键到枚举类型的映射表（TokenType/RopeScalingType等）'
+- '    ├── TOKENIZER_LINKED_KEYS       # 分词器关联键定义（tokens/token_types/scores）'
+- '    ├── GGUFEditorWindow            # 主窗口：标签页布局、文件加载（GGUFReader）、保存（GGUFWriter）'
+- '    │   ├── __init__()              # 初始化：变更追踪器（metadata_changes/metadata_to_remove）'
+- '    │   ├── init_ui()               # 界面初始化：菜单栏、工具栏、表格控件组装'
+- '    │   ├── setup_ui()              # 文件控制栏与标签页布局设置'
+- '    │   ├── create_actions()        # 创建 QAction：打开、保存、退出等操作'
+- '    │   ├── create_menu()           # 菜单栏构建：文件菜单与编辑菜单'
+- '    │   ├── create_toolbar()        # 工具栏构建：快捷操作按钮'
+- '    │   ├── load_file()             # 文件加载：只读模式打开，初始化元数据与张量视图'
+- '    │   ├── open_file()             # 文件对话框：选择 GGUF 文件路径'
+- '    │   ├── load_metadata()         # 元数据渲染：枚举映射、格式化显示、变更标记'
+- '    │   ├── load_tensors()          # 张量信息渲染：名称、类型、形状、元素数、大小'
+- '    │   ├── extract_array_values()  # 数组提取：从 ReaderField 中读取字符串或数值数组'
+- '    │   ├── get_enum_for_key()      # 枚举查找：根据键名获取对应的枚举类型'
+- '    │   ├── format_enum_value()     # 枚举格式化：将值转为 ''NAME (value)'' 显示格式'
+- '    │   ├── format_field_value()    # 字段值格式化：处理字符串、数字、数组、枚举的显示'
+- '    │   ├── on_metadata_changed()   # 变更回调：验证类型转换，记录到 metadata_changes'
+- '    │   ├── edit_metadata_enum()    # 枚举编辑：弹出下拉选择对话框修改枚举值'
+- '    │   ├── edit_array_metadata()   # 数组编辑：调用 ArrayEditorDialog 或 TokenizerEditorDialog'
+- '    │   ├── edit_tokenizer_metadata() # 分词器编辑：联动修改 tokens/token_types/scores'
+- '    │   ├── update_tokenizer_display() # 更新分词器字段在表格中的显示'
+- '    │   ├── add_metadata()          # 添加元数据：调用 AddMetadataDialog'
+- '    │   ├── remove_metadata()       # 删除元数据：确认后从表格移除并记录待删除键'
+- '    │   └── save_file()             # 保存流程：应用变更集→写入新文件→状态重置'
+- '    ├── TokenizerEditorDialog       # 分词器编辑对话框'
+- '    │   ├── __init__()              # 初始化：三列联动布局（Token/Type/Score）+ 分页控件'
+- '    │   ├── setup_ui()              # UI 构建：表格、过滤器、分页按钮、操作按钮'
+- '    │   ├── apply_filter()          # 过滤逻辑：按文本搜索 token'
+- '    │   ├── load_page()             # 分页加载：渲染当前页的 tokens 到表格'
+- '    │   ├── previous_page()         # 翻页控制：上一页'
+- '    │   ├── next_page()             # 翻页控制：下一页'
+- '    │   ├── handle_cell_double_click() # 双击处理：Type 列触发编辑'
+- '    │   ├── edit_token_type()       # TokenType 编辑：枚举下拉选择器'
+- '    │   ├── add_token()             # 添加 Token：默认 type=normal, score=0'
+- '    │   ├── remove_selected()       # 删除选中：同步删除三列数据'
+- '    │   └── get_data()              # 数据返回：编辑后的三列表'
+- '    ├── ArrayEditorDialog           # 通用数组编辑对话框'
+- '    │   ├── __init__()              # 初始化：接收数组值、元素类型、键名'
+- '    │   ├── setup_ui()              # UI 构建：表格、枚举信息显示、批量编辑按钮'
+- '    │   ├── apply_filter()          # 过滤逻辑：支持按枚举名/值/索引搜索'
+- '    │   ├── load_page()             # 分页加载：渲染数组值，枚举列显示友好名称'
+- '    │   ├── previous_page()         # 翻页控制'
+- '    │   ├── next_page()             # 翻页控制'
+- '    │   ├── edit_array_enum_value() # 枚举编辑入口：单个值修改'
+- '    │   ├── bulk_edit_selected()    # 批量编辑：统一设置多个选中行的枚举值'
+- '    │   ├── add_item()              # 添加项：根据类型添加默认值'
+- '    │   ├── remove_selected()       # 删除选中'
+- '    │   ├── edit_enum_value()       # 枚举值编辑：对话框选择并验证'
+- '    │   └── get_array_values()      # 返回编辑后的数组'
+- '    ├── AddMetadataDialog           # 添加元数据对话框'
+- '    │   ├── __init__()              # 初始化：表单布局（Key/Type/Value）'
+- '    │   ├── setup_ui()              # UI 构建：类型下拉框（排除 ARRAY）、文本输入'
+- '    │   └── get_data()              # 数据获取：类型转换（UINT8/INT32/FLOAT32/BOOL/STRING）'
+- '    ├── main()                      # 程序入口：QApplication 初始化与窗口显示'
+- '    └── __main__                    # 模块入口：环境配置与包导入路径设置'
+exercises:
+- contents:
+  - 阅读 `gguf-py/gguf/scripts/gguf_convert_endian.py` 的 `convert_byteorder` 函数（83-161行）。
+  - 1. 找出一个包含 Q4_0 和 Q6_K 量化张量的 GGUF 模型文件（或使用 gguf_new_metadata 构造测试文件）
+  - 2. 使用 `--dry-run` 参数运行转换工具，观察日志输出中关于张量类型检查的警告信息
+  - 3. 尝试在不支持的字节序环境下强制转换（如小端主机转大端），记录工具如何阻止或警告该行为
+  - 思考问题：
+  - '- 为什么 Q4_0 和 Q4_K 的字节交换策略不同？如果错误地对 Q4_K 使用 Q4_0 的交换逻辑会发生什么？'
+  - '- `byteswap_noop` 存在的意义是什么？哪些现代量化格式会被标记为无需交换？'
+  'no': 1
+  title: 字节序转换风险评估实验
+- contents:
+  - 基于 `gguf_set_metadata.py` 的 `minimal_example` 和 `set_metadata` 函数（19-80行）。
+  - 1. 复制一个测试用 GGUF 文件，尝试修改 `tokenizer.ggml.bos_token_id` 字段
+  - 2. 观察 `field.parts` 和 `field.data` 在修改前后的内存地址变化，理解 NDArray 切片的原地修改特性
+  - 3. 先以 `--dry-run` 模式运行，再去掉该参数实际执行，对比两次的日志输出差异
+  - 4. 尝试将字段设置为当前已有的值，观察工具的幂等性检查如何提前退出
+  - 思考问题：
+  - '- 如果尝试修改一个数组类型（ARRAY）的字段会发生什么？工具如何防护这类误操作？'
+  - '- `field.data` 列表与 `field.parts` 列表的索引关系是什么？为什么要设计间接层？'
+  'no': 2
+  title: 元数据精准修改与幂等性验证
+- contents:
+  - 研究 `gguf_new_metadata.py` 的 `copy_with_new_metadata` 函数（38-76行）。
+  - 1. 创建一个包含自定义聊天模板（chat_template）的 GGUF 文件
+  - 2. 使用该工具替换聊天模板，并添加一个新的自定义元数据字段（如 `general.author`）
+  - 3. 使用 tqdm 进度条观察张量数据复制过程，计算大文件（>1GB）时的写入吞吐量
+  - 4. 对比原文件与新文件的大小差异，解释为什么工具采用流式写入而非全量加载
+  - 思考问题：
+  - '- 代码中如何处理「跳过旧聊天模板」与「添加新聊天模板」的逻辑冲突？'
+  - '- 如果源文件包含 `GGUF.` 开头的虚拟字段，工具会如何处理？为什么？'
+  'no': 3
+  title: 全量重建与流式写入分析
+- contents:
+  - 分析 `gguf_editor_gui.py` 中 `GGUFEditorWindow.save_file` 方法（约921-1000行）与 `TokenizerEditorDialog.get_data`
+    方法。
+  - 1. 追踪一次完整的编辑流程：加载文件 → 修改分词器 Token Type → 点击 Save As
+  - 2. 绘制 `metadata_changes` 字典的数据流向图，理解变更如何暂存并最终批量应用
+  - 3. 检查 `TOKENIZER_LINKED_KEYS` 机制，解释为什么 tokens、token_types、scores 必须同步编辑
+  - 思考问题：
+  - '- 为什么 GUI 采用「Save As」而非「覆盖保存」策略？这与 CLI 工具的 `r+` 模式有何本质区别？'
+  - '- 如果用户同时删除某个元数据字段又修改了它，保存逻辑如何处理这种冲突？'
+  'no': 4
+  title: GUI 编辑器的事件驱动架构
+- contents:
+  - 深入 `gguf_hash.py` 的 `gguf_hash` 函数（25-75行）。
+  - 1. 运行哈希工具对一个多层模型计算 SHA-256，记录输出
+  - 2. 使用二进制编辑器手动修改模型中间的某个权重字节，重新计算哈希，观察变化
+  - 3. 分析代码中过滤 `.attention.masked_bias` 等后缀的逻辑，理解为什么这些张量不计入哈希
+  - 4. 尝试启用 `--no-layer` 参数，对比分层哈希与整体哈希在故障定位时的优劣
+  - 思考问题：
+  - '- UUID v5 哈希与 SHA-256 在用途上有何本质区别？为什么需要命名空间（UUID_NAMESPACE_LLAMA_CPP）？'
+  - '- 进度条基于 `total_weights`（元素数）而非文件大小，这种设计在量化模型中有何优势？'
+  'no': 5
+  title: 哈希校验与权重过滤策略
+- contents:
+  - 研究 `gguf_editor_gui.py` 中 `TokenizerEditorDialog` 的分页机制（`previous_page`/`next_page`/`load_page`）。
+  - 1. 加载一个包含 5000+ token 的 GGUF 模型，观察 GUI 的响应速度
+  - 2. 在第 3 页修改某个 Token 的 Type，然后翻到第 5 页再返回，验证修改是否被正确保存到 `self.tokens` 等列表
+  - 3. 使用过滤功能搜索特定 token，修改其值后清除过滤，确认修改持久化
+  - 思考问题：
+  - '- 为什么对话框使用 `filtered_indices` 列表而不是直接删除/隐藏表格行？'
+  - '- 当 `remove_selected` 删除多行时，为什么要按降序排序索引（`sort(reverse=True)`）？'
+  'no': 6
+  title: GUI 分页与数据同步机制
+learning_targets:
+- 掌握 GGUF 命令行工具链的核心分类：只读扫描仪（dump/hash）与读写手术刀（set/new/convert）的本质区别
+- 理解 gguf_dump 的多格式输出机制，包括文本的树状展示、JSON 的结构化序列化以及 Markdown 的报表生成
+- 精通跨平台字节序转换原理，掌握不同量化格式（Q4_0/Q4_K/Q6_K/BF16）的字节交换差异与风险防控
+- 熟练运用元数据编辑工具进行单字段精准修改（set_metadata）与全量重建（new_metadata）
+- 掌握基于 SHA-1/SHA-256/UUID v5 的模型完整性校验体系与分层哈希策略
+- 了解 GGUF GUI 编辑器的架构设计，包括分词器、数组、枚举类型的可视化编辑流程与状态管理
+life_analogy:
+- 想象 GGUF 文件是一个**标准化的海运集装箱**，而这一章的工具链就是码头上的「运维百宝箱」：
+- '- **gguf_dump** = 集装箱 X 光扫描仪：不开箱就能生成内容清单（文本/JSON/Markdown 三种报告格式）'
+- '- **gguf_convert_endian** = 跨国电压转换器：不同国家（CPU 架构）的电流标准（字节序）不同，需要专业设备转换，乱接会烧坏设备（文件损坏）'
+- '- **gguf_set_metadata** = 激光标签打印机：精准修改箱外的一个标签（如把 BOS Token 从 1 改成 2），无需开封'
+- '- **gguf_new_metadata** = 整体翻新流水线：把货物倒出来，重新装修内部（修改元数据），再装回新箱子'
+- '- **gguf_hash** = 防伪指纹采集器：为整个集装箱生成独一无二的指纹（SHA-256），或按层生成货物批次码'
+- '- **gguf_editor_gui** = 可视化控制台：给理货员一个图形界面，用鼠标点击就能修改清单，不用背命令行'
+- ''
+- '**安全法则**：就像高压电作业必须先断电再操作，所有会修改集装箱的工具（`r+` 模式）都配备了「双保险」：'
+- 1. **dry-run 预览**：先模拟操作看结果，确认无误再真动手
+- 2. **YES 确认**：高危操作前必须输入大写 YES，防止手滑
+'no': 64
+summary:
+- concept: GGUFReader 'r' vs 'r+' 模式
+  desc: 只读扫描用 'r'，原地修改用 'r+'，后者风险如心脏手术
+- concept: 字节序 'S' 标记
+  desc: 表示文件字节序与主机相反，需要交换（Swap）处理
+- concept: Q4_0/Q8_0 字节交换
+  desc: 仅交换块首 2 字节 f16 缩放因子，量化数据本身无需变动
+- concept: Q4_K 字节交换
+  desc: 需交换块首两个连续 f16 字段（offset 0-2, 2-4）
+- concept: Q6_K 字节交换
+  desc: 特殊偏移 208 处交换 f16 字段，布局异于 K-quants 家族
+- concept: BF16 特殊处理
+  desc: 默认按 1 字节读取，需先 view 为 uint16 再执行 byteswap
+- concept: field.parts 结构
+  desc: Part 0=键长, 1=键名, 2=类型, 3=值；field.data[0] 指向值索引
+- concept: 元数据修改四策略
+  desc: GGUFWriter 重建流程中的 Skip/Modify/Copy/Delete 决策树
+- concept: 三层哈希体系
+  desc: SHA-1（兼容旧系统）+ SHA-256（安全校验）+ UUIDv5（内容寻址命名）
+- concept: 非持久化张量过滤
+  desc: 哈希计算时排除 .attention.masked_bias 等推理缓存张量
+- concept: BPW (Bits Per Weight)
+  desc: 每权重比特数 = (张量字节数 × 8) / 元素数，量化效率核心指标
+- concept: dry-run 哲学
+  desc: 所有破坏性操作提供预览模式，遵循「先观察，后动手」原则
+- concept: YES 确认机制
+  desc: 高危操作强制交互确认，防止脚本自动化导致的意外损坏
+- concept: KEY_TO_ENUM_TYPE
+  desc: GUI 中自动关联元数据键与 TokenType 等枚举类型的映射表
+- concept: TOKENIZER_LINKED_KEYS
+  desc: tokens/token_types/scores 三数组的一体化联动编辑机制
+- concept: GUI 变更追踪
+  desc: metadata_changes 与 metadata_to_remove 暂存修改，Save As 时批量应用
+- concept: 分页加载机制
+  desc: 大数组通过 page_size=100 分页显示，避免 GUI 卡顿
+units:
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 350-380
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 383-384
+    method_or_func: __main__
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 164-188
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 190-191
+    method_or_func: __main__
+  - file: gguf-py/gguf/scripts/gguf_set_metadata.py
+    line: 81-100
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_set_metadata.py
+    line: 1-18
+    method_or_func: __main__
+  name: GGUF 运维工具链全景 —— 模型文件的「集装箱维修站」总览
+  'no': 1
+  points:
+  - '**为什么需要命令行工具集？** 大模型部署常面临字节序兼容、元数据修正、完整性校验等「最后一公里」问题'
+  - '**只读 vs 读写：** 识别哪些工具是「扫描仪」（只读）、哪些是「手术刀」（原地修改）'
+  - '**安全红线：** 理解 GGUF 文件原地修改的风险 —— 写入中断即文件损坏'
+  - '**模式速查：** `r` 模式（GGUFReader）用于查看，`r+` 模式用于原地修改'
+  - '**dry-run 哲学：** 所有破坏性操作都提供 `--dry-run` 预览，遵循「先观察，后动手」'
+  - '**入口一致性：** 所有脚本通过 `__main__` 判断与 `main()` 函数启动，支持 `--help` 自动触发'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 32-38
+    method_or_func: get_file_host_endian()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 44-75
+    method_or_func: dump_metadata()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 78-107
+    method_or_func: dump_metadata_json()
+  name: gguf_dump 基础篇 —— 「全息扫描仪」的文本与 JSON 透视
+  'no': 2
+  points:
+  - '**字节序侦探：** `get_file_host_endian()` 如何区分主机当前字节序与文件存储字节序，处理 ''S''（交换）标记的特殊情况'
+  - '**文本转储三部曲：** 键值对列表（类型/长度/名称）、字符串/标量值截断显示、张量维度统计（对齐补零技巧）'
+  - '**JSON 结构化输出：** `dump_metadata_json()` 如何将 ReaderField 递归转换为可序列化字典，处理 ARRAY 类型的嵌套'
+  - '**大数组的优雅截断：** 文本模式下超过 60 字符的字符串截断、JSON 模式下 `--json-array` 开关控制完整数组输出'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 110-152
+    method_or_func: markdown_table_with_alignment_support()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 155-177
+    method_or_func: element_count_rounded_notation()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 180-221
+    method_or_func: translate_tensor_name()
+  - file: gguf-py/gguf/scripts/gguf_dump.py
+    line: 224-347
+    method_or_func: dump_markdown_metadata()
+  name: gguf_dump 进阶篇 —— Markdown 报告生成的「数据可视化大师」
+  'no': 3
+  points:
+  - '**动态表格对齐：** `markdown_table_with_alignment_support()` 的左/中/右对齐算法与列宽自适应计算'
+  - '**人类可读的数字：** `element_count_rounded_notation()` 实现 K/M/B/T/Q 数量级缩写与波浪号近似标记'
+  - '**张量名称翻译官：** `translate_tensor_name()` 内置的标准张量词典（attn_qkv→Attention query-key-value）'
+  - '**分组统计逻辑：** 按 `blk.N`/`enc`/`dec` 前缀自动分组张量，计算各组元素占比与 BPW（Bits Per Weight）'
+  - '**全局统计：** 总参数量估算、整体 BPW 计算与文件级数据偏移量报告'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 83-161
+    method_or_func: convert_byteorder()
+  name: 字节序转换核心 —— 跨平台的「灵魂翻译官」
+  'no': 4
+  points:
+  - '**字节序检测与决策树：** 读取文件字节序 → 判断主机字节序 → 对比目标字节序 → 触发转换或退出'
+  - '**兼容性白名单：** 仅允许 F32/F16/BF16 及特定量化类型（byteswap_tensors 注册表），拒绝未知类型防止损坏'
+  - '**高危操作防护盾：** 目标与主机字节序不同时的加载警告 + 强制输入 `YES` 的二次确认机制'
+  - '**字段级交换：** `field.parts` 的逐 part 原地 byteswap，覆盖所有元数据标量与数组'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 24-26
+    method_or_func: byteswap_noop()
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 28-35
+    method_or_func: byteswap_q4_0()
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 38-45
+    method_or_func: byteswap_q8_0()
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 48-58
+    method_or_func: byteswap_q4_k()
+  - file: gguf-py/gguf/scripts/gguf_convert_endian.py
+    line: 61-68
+    method_or_func: byteswap_q6_k()
+  name: 量化数据块的精细手术 —— 字节交换的「微观操作」
+  'no': 5
+  points:
+  - '**量化格式差异化处理：** 为什么 Q4_0/Q8_0 只换 delta 缩放因子（2 字节 f16），Q4_K 换两个 f16，Q6_K 换偏移 208
+    处的 f16'
+  - '**空操作优化：** `byteswap_noop()` 处理 MXFP4/NVFP4 等无需交换的现代格式'
+  - '**分块循环策略：** 先展平张量 → 按 block_size 切分 → 逐块调用专用函数 → 恢复原始形状'
+  - '**BF16 特殊范式：** 默认 1 字节视图需先 view 为 uint16，再执行标准 byteswap'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_new_metadata.py
+    line: 26-29
+    method_or_func: get_field_data()
+  - file: gguf-py/gguf/scripts/gguf_new_metadata.py
+    line: 31-36
+    method_or_func: find_token()
+  - file: gguf-py/gguf/scripts/gguf_new_metadata.py
+    line: 38-76
+    method_or_func: copy_with_new_metadata()
+  - file: gguf-py/gguf/scripts/gguf_new_metadata.py
+    line: 78-154
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_new_metadata.py
+    line: 156-157
+    method_or_func: __main__
+  name: 全量元数据重建 —— 模型的「无损搬家与装修」
+  'no': 6
+  points:
+  - '**Reader→Writer 管道：** 遍历原文件所有字段，按「跳过/修改/复制/删除」四策略处理，流向 GGUFWriter'
+  - '**聊天模板替换：** 检测旧模板字段，支持多种来源覆盖（JSON 字符串、`tokenizer_config.json`、Jinja 文件）'
+  - '**特殊 Token 定位：** `find_token()` 在词表中搜索 token 值或 ID，处理多匹配歧义（取首个并警告）'
+  - '**危险操作确认机制：** 删除元数据前的警告、目标文件已存在时的覆盖确认'
+  - '**流式写入流水线：** Header → KV Data → TI Data → Tensor Data 的完整状态机推进，附带字节进度条'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_set_metadata.py
+    line: 19-50
+    method_or_func: minimal_example()
+  - file: gguf-py/gguf/scripts/gguf_set_metadata.py
+    line: 51-80
+    method_or_func: set_metadata()
+  name: 单字段精准修改 —— 「微创手术」的最佳实践
+  'no': 7
+  points:
+  - '**GGUF 字段结构解剖：** 理解 `field.parts` 的组成 —— Part 0(键长)/Part 1(键名)/Part 2(类型)/Part
+    3(值)，以及 `field.data` 索引的桥接作用'
+  - '**标量修改三板斧：** 类型检查（仅支持简单数值）→ 类型转换（bool/int/float/string）→ 原地写入 `parts[field.data[0]]`'
+  - '**只读探测与强制模式：** `dry_run` 仅打印计划，`force` 跳过交互确认，默认需输入 YES'
+  - '**幂等性检查：** 当前值等于目标值时直接退出的优化逻辑'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_hash.py
+    line: 25-75
+    method_or_func: gguf_hash()
+  - file: gguf-py/gguf/scripts/gguf_hash.py
+    line: 78-87
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_hash.py
+    line: 89-90
+    method_or_func: __main__
+  name: 模型完整性校验 —— 「数字指纹」的生成艺术
+  'no': 8
+  points:
+  - '**三层哈希体系：** SHA-1（兼容性）、SHA-256（安全性）、UUID v5（确定性命名，基于模型内容）'
+  - '**分层哈希策略：** 逐层张量数据的独立 SHA 计算，支持快速定位损坏层'
+  - '**权重过滤规则：** 排除 `.attention.masked_bias`、`.rotary_emb.inv_freq` 等非持久化张量'
+  - '**进度条精度：** 基于 `total_weights`（元素数）而非文件大小的进度估算，大模型下更线性'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 733-750
+    method_or_func: GGUFEditorWindow.__init__()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 752-809
+    method_or_func: GGUFEditorWindow.setup_ui()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 31-100
+    method_or_func: GGUFEditorWindow.init_ui()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 101-150
+    method_or_func: GGUFEditorWindow.create_actions()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 151-200
+    method_or_func: GGUFEditorWindow.create_menu()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 201-250
+    method_or_func: GGUFEditorWindow.create_toolbar()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 251-300
+    method_or_func: GGUFEditorWindow.load_file()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 301-350
+    method_or_func: GGUFEditorWindow.open_file()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 511-560
+    method_or_func: GGUFEditorWindow.load_tensors()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 461-470
+    method_or_func: GGUFEditorWindow.get_enum_for_key()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 471-480
+    method_or_func: GGUFEditorWindow.format_enum_value()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 481-510
+    method_or_func: GGUFEditorWindow.format_field_value()
+  name: 可视化编辑器架构 —— GUI 的「集装箱控制台」基建
+  'no': 9
+  points:
+  - '**主窗口骨架：** `GGUFEditorWindow` 的初始化流程、UI 组装（setup_ui/init_ui）与状态管理（modified 标记）'
+  - '**菜单与工具栏：** `create_actions()`/`create_menu()`/`create_toolbar()` 构建的完整操作体系'
+  - '**文件生命周期：** `open_file()` 对话框选择 → `load_file()` 加载解析 → `load_metadata()`/`load_tensors()`
+    渲染视图'
+  - '**枚举映射基础设施：** `get_enum_for_key()`、`format_enum_value()`、`format_field_value()`
+    的显示层封装'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 561-640
+    method_or_func: GGUFEditorWindow.on_metadata_changed()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 681-720
+    method_or_func: GGUFEditorWindow.edit_metadata_enum()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 721-780
+    method_or_func: GGUFEditorWindow.edit_array_metadata()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 881-920
+    method_or_func: GGUFEditorWindow.add_metadata()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 641-680
+    method_or_func: GGUFEditorWindow.remove_metadata()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 781-840
+    method_or_func: GGUFEditorWindow.edit_tokenizer_metadata()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 841-880
+    method_or_func: GGUFEditorWindow.update_tokenizer_display()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 421-460
+    method_or_func: GGUFEditorWindow.extract_array_values()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 351-420
+    method_or_func: GGUFEditorWindow.load_metadata()
+  name: 元数据编辑与变更管理 —— GUI 的「实时修改引擎」
+  'no': 10
+  points:
+  - '**变更追踪机制：** `on_metadata_changed()` 如何捕获表格编辑事件，类型转换与验证逻辑'
+  - '**枚举专项编辑：** `edit_metadata_enum()` 通过下拉对话框修改枚举类型字段'
+  - '**数组编辑桥接：** `edit_array_metadata()` 根据键名分发到通用数组编辑器或分词器专用编辑器'
+  - '**添加与删除：** `add_metadata()` 调用 AddMetadataDialog，`remove_metadata()` 确认后标记删除'
+  - '**分词器联动更新：** `edit_tokenizer_metadata()` 与 `update_tokenizer_display()` 的三数组同步机制'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 58-132
+    method_or_func: TokenizerEditorDialog.__init__()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 1121-1170
+    method_or_func: TokenizerEditorDialog.setup_ui()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 134-150
+    method_or_func: TokenizerEditorDialog.apply_filter()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 168-203
+    method_or_func: TokenizerEditorDialog.load_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 152-158
+    method_or_func: TokenizerEditorDialog.previous_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 160-166
+    method_or_func: TokenizerEditorDialog.next_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 205-212
+    method_or_func: TokenizerEditorDialog.handle_cell_double_click()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 214-245
+    method_or_func: TokenizerEditorDialog.edit_token_type()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 247-263
+    method_or_func: TokenizerEditorDialog.add_token()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 265-300
+    method_or_func: TokenizerEditorDialog.remove_selected()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 302-304
+    method_or_func: TokenizerEditorDialog.get_data()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 307-417
+    method_or_func: ArrayEditorDialog.__init__()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 1031-1070
+    method_or_func: ArrayEditorDialog.setup_ui()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 419-448
+    method_or_func: ArrayEditorDialog.apply_filter()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 466-508
+    method_or_func: ArrayEditorDialog.load_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 450-456
+    method_or_func: ArrayEditorDialog.previous_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 458-464
+    method_or_func: ArrayEditorDialog.next_page()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 524-559
+    method_or_func: ArrayEditorDialog.bulk_edit_selected()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 561-578
+    method_or_func: ArrayEditorDialog.add_item()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 580-625
+    method_or_func: ArrayEditorDialog.remove_selected()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 627-674
+    method_or_func: ArrayEditorDialog.edit_enum_value()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 510-522
+    method_or_func: ArrayEditorDialog.edit_array_enum_value()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 676-679
+    method_or_func: ArrayEditorDialog.get_array_values()
+  name: 分词器与数组的精细编辑 —— 对话框的「数据雕刻」
+  'no': 11
+  points:
+  - '**TokenizerEditorDialog 数据管理：** 三列并行数组（Token/Type/Score）的初始化、长度对齐与默认值填充'
+  - '**分页与过滤：** `apply_filter()` 文本搜索、`load_page()` 分页渲染、`previous_page()`/`next_page()`
+    导航控制'
+  - '**交互编辑：** `handle_cell_double_click()` 触发类型编辑、`edit_token_type()` 枚举下拉选择、`add_token()`/`remove_selected()`
+    增删操作'
+  - '**ArrayEditorDialog 通用逻辑：** 枚举感知过滤（按名称/值搜索）、批量编辑（`bulk_edit_selected()`）、增删改查'
+  - '**数据提取接口：** `get_data()` 与 `get_array_values()` 的最终数据收集'
+- codes:
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 682-705
+    method_or_func: AddMetadataDialog.__init__()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 1221-1270
+    method_or_func: AddMetadataDialog.setup_ui()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 707-730
+    method_or_func: AddMetadataDialog.get_data()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 921-1000
+    method_or_func: GGUFEditorWindow.save_file()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 1301-1340
+    method_or_func: main()
+  - file: gguf-py/gguf/scripts/gguf_editor_gui.py
+    line: 1-57
+    method_or_func: __main__
+  name: 辅助对话框与保存流程 —— 「数据出口」的最终保障
+  'no': 12
+  points:
+  - '**AddMetadataDialog：** 动态类型转换（GGUFValueType → NumPy 类型）、表单验证与数据封装'
+  - '**保存流程（Save As）：** `save_file()` 如何应用变更集（changes）、处理删除集（removals）、通过 GGUFWriter
+    生成新文件'
+  - '**GUI 主入口：** `main()` 函数的 QApplication 管理与 `__main__` 模块的本地包导入配置'
+  - '**编辑闭环：** 从对话框确认到主窗口标记 `modified`，再到提示保存的完整状态机'

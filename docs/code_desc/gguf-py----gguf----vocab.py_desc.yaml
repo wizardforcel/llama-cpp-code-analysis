@@ -1,0 +1,1043 @@
+classes:
+- desc: 负责从 tokenizer.json、config.json 和 merges.txt 等文件中加载和管理特殊词汇（如 BOS、EOS、UNK 等），以及聊天模板（chat
+    template）等元数据，并提供方法将这些信息添加到 GGUFWriter 中。
+  methods:
+  - code:
+    - def __init__(
+    - '    self, path: str | os.PathLike[str], load_merges: bool = False,'
+    - '    special_token_types: Iterable[str] | None = None,'
+    - '    n_vocab: int | None = None,'
+    - '):'
+    - '    self.special_token_ids = {}'
+    - '    self.add_special_token = {}'
+    - '    self.n_vocab = n_vocab'
+    - '    self.load_merges = load_merges'
+    - '    self.merges = []'
+    - '    self.chat_template = None'
+    - '    if special_token_types is not None:'
+    - '        self.special_token_types = special_token_types'
+    - '    else:'
+    - '        self.special_token_types = (''bos'', ''eos'', ''unk'', ''sep'', ''pad'',
+      ''cls'', ''mask'')'
+    - '    self._load(Path(path))'
+    desc: 初始化 SpecialVocab 实例，根据提供的路径和参数加载特殊词汇信息。
+    line: 35-55
+    name: __init__
+  - code:
+    - 'def __repr__(self) -> str:'
+    - '    return ''<SpecialVocab with {} merges, special tokens {}, add special tokens
+      {}>''.format('
+    - '        len(self.merges), self.special_token_ids or "unset", self.add_special_token
+      or "unset",'
+    - '    )'
+    desc: 返回 SpecialVocab 实例的字符串表示形式，包含合并数、特殊令牌和特殊令牌添加信息。
+    line: 57-60
+    name: __repr__
+  - code:
+    - 'def add_to_gguf(self, gw: GGUFWriter, quiet: bool = False) -> None:'
+    - '    if self.merges:'
+    - '        if not quiet:'
+    - '            logger.info(f''Adding {len(self.merges)} merge(s).'')'
+    - '        gw.add_token_merges(self.merges)'
+    - '    elif self.load_merges:'
+    - '        logger.warning(''Adding merges requested but no merges found, output
+      may be non-functional.'')'
+    - '    for typ, tokid in self.special_token_ids.items():'
+    - '        id_handler: Callable[[int], None] | None = getattr(gw, f''add_{typ}_token_id'',
+      None)'
+    - '        if id_handler is None:'
+    - '            logger.warning(f''No handler for special token type {typ} with
+      id {tokid} - skipping'')'
+    - '            continue'
+    - '        if not quiet:'
+    - '            logger.info(f''Setting special token type {typ} to {tokid}'')'
+    - '        id_handler(tokid)'
+    - '    for typ, value in self.add_special_token.items():'
+    - '        add_handler: Callable[[bool], None] | None = getattr(gw, f''add_add_{typ}_token'',
+      None)'
+    - '        if add_handler is None:'
+    - '            logger.warning(f''No handler for add_{typ}_token with value {value}
+      - skipping'')'
+    - '            continue'
+    - '        if not quiet:'
+    - '            logger.info(f''Setting add_{typ}_token to {value}'')'
+    - '        add_handler(value)'
+    - '    if self.chat_template is not None:'
+    - '        if not quiet:'
+    - '            logger.info(f''Setting chat_template to {self.chat_template}'')'
+    - '        gw.add_chat_template(self.chat_template)'
+    desc: 将加载的特殊词汇、合并规则和聊天模板信息添加到 GGUFWriter 实例中。
+    line: 62-84
+    name: add_to_gguf
+  - code:
+    - 'def _load(self, path: Path) -> None:'
+    - '    self._try_load_from_tokenizer_json(path)'
+    - '    self._try_load_from_config_json(path)'
+    - '    if self.load_merges and not self.merges:'
+    - '        self._try_load_merges_txt(path)'
+    desc: 从 tokenizer.json、config.json 和 merges.txt 文件中加载特殊词汇信息。
+    line: 86-89
+    name: _load
+  - code:
+    - 'def _try_load_merges_txt(self, path: Path) -> bool:'
+    - '    merges_file = path / ''merges.txt'''
+    - '    if not merges_file.is_file():'
+    - '        return False'
+    - '    with open(merges_file, ''r'', encoding = ''utf-8'') as fp:'
+    - '        first_line = next(fp, '''').strip()'
+    - '        if not first_line.startswith(''#''):'
+    - '            fp.seek(0)'
+    - '            line_num = 0'
+    - '        else:'
+    - '            line_num = 1'
+    - '        merges = []'
+    - '        for line in fp:'
+    - '            line_num += 1'
+    - '            line = line.strip()'
+    - '            if not line:'
+    - '                continue'
+    - '            parts = line.split(None, 3)'
+    - '            if len(parts) != 2:'
+    - '                logger.warning(f''{merges_file.name}: Line {line_num}: Entry
+      malformed, ignoring'')'
+    - '                continue'
+    - '            merges.append(f''{parts[0]} {parts[1]}'')'
+    - '    self.merges = merges'
+    - '    return True'
+    desc: 尝试从 merges.txt 文件中加载 BPE 合并规则。
+    line: 91-115
+    name: _try_load_merges_txt
+  - code:
+    - 'def _set_special_token(self, typ: str, tid: Any) -> None:'
+    - '    if not isinstance(tid, int):'
+    - '        return'
+    - '    if tid < 0:'
+    - '        raise ValueError(f''invalid value for special token type {typ}: {tid}'')'
+    - '    if self.n_vocab is None or tid < self.n_vocab:'
+    - '        if typ in self.special_token_ids:'
+    - '            return'
+    - '        self.special_token_ids[typ] = tid'
+    - '        return'
+    - '    logger.warning(f''Special token type {typ}, id {tid} out of range, must
+      be under {self.n_vocab} - skipping'')'
+    desc: 设置特殊令牌的 ID，并进行有效性检查，如果 ID 超出词汇表大小则忽略。
+    line: 117-127
+    name: _set_special_token
+  - code:
+    - 'def _try_load_from_tokenizer_json(self, path: Path) -> bool:'
+    - '    tokenizer = None'
+    - '    tokenizer_file = path / ''tokenizer.json'''
+    - '    if tokenizer_file.is_file():'
+    - '        with open(tokenizer_file, encoding = ''utf-8'') as f:'
+    - '            tokenizer = json.load(f)'
+    - '        if self.load_merges:'
+    - '            merges = tokenizer.get(''model'', {}).get(''merges'')'
+    - '            if isinstance(merges, list) and merges:'
+    - '                if isinstance(merges[0], str):'
+    - '                    self.merges = merges'
+    - '                elif isinstance(merges[0], list) and len(merges[0]) == 2 and
+      isinstance(merges[0][0], str):'
+    - '                    # New format since transformers 4.45 to support spaces
+      in merges'
+    - '                    # ref: https://github.com/ggml-org/llama.cpp/issues/9692'
+    - '                    # TODO: internally store as the new format instead of converting
+      to old'
+    - '                    if any('' '' in s for pair in merges for s in pair):'
+    - '                        logger.warning(f''Spaces in merges detected, encoding
+      as {chr(ord(" ") + 256)!r}'')'
+    - '                    self.merges = ['
+    - '                        '' ''.join('
+    - '                            ['
+    - '                                # ensure the spaces are properly encoded'
+    - '                                ''''.join('
+    - '                                    chr(ord(c) + 256) if c == '' '' else c'
+    - '                                    for c in part'
+    - '                                )'
+    - '                                for part in pair'
+    - '                            ]'
+    - '                        )'
+    - '                        for pair in merges'
+    - '                    ]'
+    - '                else:'
+    - '                    raise ValueError("Unknown tokenizer merges format")'
+    - '            added_tokens = tokenizer.get(''added_tokens'', {})'
+    - '    else:'
+    - '        added_tokens = {}'
+    - '    tokenizer_config = None'
+    - '    tokenizer_config_file = path / ''tokenizer_config.json'''
+    - '    if tokenizer_config_file.is_file():'
+    - '        with open(tokenizer_config_file, encoding = ''utf-8'') as f:'
+    - '            tokenizer_config = json.load(f)'
+    - '    if tokenizer:'
+    - '        special_bos = (tokenizer_config or {}).get(''bos_token'')'
+    - '        special_cls = (tokenizer_config or {}).get(''cls_token'')'
+    - '        special_eos = (tokenizer_config or {}).get(''eos_token'')'
+    - '        special_sep = (tokenizer_config or {}).get(''sep_token'')'
+    - '        if not special_bos and special_cls and tokenizer_config:'
+    - '            tokenizer_config[''bos_token''] = special_bos = special_cls'
+    - '        if not special_eos and special_sep and tokenizer_config:'
+    - '            tokenizer_config[''eos_token''] = special_eos = special_sep'
+    - '        if post_processor := tokenizer.get(''post_processor''):'
+    - '            for processor in post_processor.get(''processors'', [post_processor]):'
+    - '                if processor.get(''type'') == ''RobertaProcessing'':'
+    - '                    self.add_special_token[''bos''] = True'
+    - '                    self.add_special_token[''eos''] = True'
+    - '                    self.add_special_token[''sep''] = True'
+    - '                    if not special_cls and tokenizer_config:'
+    - '                        special_cls = processor.get(''cls'', [special_bos])[0]'
+    - '                        tokenizer_config[''cls_token''] = special_cls'
+    - '                    if not special_sep and tokenizer_config:'
+    - '                        special_sep = processor.get(''sep'', [special_eos])[0]'
+    - '                        tokenizer_config[''sep_token''] = special_sep'
+    - '                    continue'
+    - '                # Crude parsing of TemplateProcessing to determine if BOS/SEP/EOS
+      should be added'
+    - '                # Only works with simple templates, **will** get it wrong on
+      unusual sequences'
+    - '                if processor.get(''type'') == ''TemplateProcessing'':'
+    - '                    tmpl_single = processor.get(''single'', [])'
+    - '                    tmpl_pair = processor.get(''pair'', [])'
+    - '                    special_first = None'
+    - '                    special_last = None'
+    - '                    if len(tmpl_single) > 1:'
+    - '                        if special_first := tmpl_single[0].get(''SpecialToken'',
+      {}).get(''id''):'
+    - '                            if not tokenizer_config:'
+    - '                                special_bos = special_first'
+    - '                            self.add_special_token[''bos''] = True if special_first
+      in (special_bos, special_cls) else False'
+    - '                            if special_first not in (special_bos, special_cls):'
+    - '                                logger.warning(f''Unknown leading special token
+      {special_first!r} in TemplateProcessing<single>'')'
+    - '                        if special_last := tmpl_single[-1].get(''SpecialToken'',
+      {}).get(''id''):'
+    - '                            if not tokenizer_config:'
+    - '                                special_eos = special_last'
+    - '                            elif special_last != special_eos:'
+    - '                                if ''eot'' not in self.special_token_types:'
+    - '                                    self.special_token_types = tuple(self.special_token_types)
+      + (''eot'', )'
+    - '                                    tokenizer_config[''eot_token''] = special_eos'
+    - '                                elif ''eom'' not in self.special_token_types:'
+    - '                                    self.special_token_types = tuple(self.special_token_types)
+      + (''eom'', )'
+    - '                                    tokenizer_config[''eom_token''] = special_eos'
+    - '                                else:'
+    - '                                    logger.warning(f''Overriding EOS token
+      {special_eos!r} with {special_last!r} without EOT/EOM fallback!'')'
+    - '                                tokenizer_config[''eos_token''] = special_eos
+      = special_last'
+    - '                            self.add_special_token[''eos''] = True if special_last
+      == special_eos else False'
+    - '                            if special_last != special_eos:'
+    - '                                logger.warning(f''Unknown trailing special
+      token {special_last!r} in TemplateProcessing<single>'')'
+    - '                    if tmpl_pair:'
+    - '                        seq_start = 1 if special_first and tmpl_pair[0].get(''SpecialToken'',
+      {}).get(''id'') == special_first else 0'
+    - '                        seq_stop = -1 if special_last and tmpl_pair[-1].get(''SpecialToken'',
+      {}).get(''id'') == special_last else None'
+    - '                        if (special_first and seq_start == 0) or (special_last
+      and seq_stop is None):'
+    - '                            logger.warning(''TemplateProcessing<single> leading/trailing
+      special tokens do not match TemplateProcessing<pair>'')'
+    - '                        if tmpl_pair := tmpl_pair[slice(seq_start, seq_stop)]:'
+    - '                            tmpl_a = tmpl_pair[0].get(''Sequence'', {}).get(''id'')'
+    - '                            tmpl_b = tmpl_pair[-1].get(''Sequence'', {}).get(''id'')'
+    - '                            if tmpl_a != ''A'' or tmpl_b != ''B'':'
+    - '                                logger.warning(f''Unknown sequence {tmpl_a}...{tmpl_b}
+      in TemplateProcessing<pair>'')'
+    - '                            # A [sep] [eos] B'
+    - '                            if tmpl_a == ''A'' and tmpl_b == ''B'' and (tmpl_pair
+      := tmpl_pair[1:-1]):'
+    - '                                add_sep = False'
+    - '                                if special_entry := tmpl_pair[0].get(''SpecialToken'',
+      {}).get(''id''):'
+    - '                                    if special_entry in (special_sep, special_eos)
+      and not special_last:'
+    - '                                        add_sep = True'
+    - '                                    if special_entry not in (special_sep, special_eos):'
+    - '                                        logger.warning(f''Unknown separator
+      token {special_entry!r} in TemplateProcessing<pair>'')'
+    - '                                else:'
+    - '                                    logger.warning(f''Unknown middle sequence
+      {tmpl_pair[0]!r} in TemplateProcessing<pair>'')'
+    - '                                if len(tmpl_pair) == 2:'
+    - '                                    if special_entry := tmpl_pair[1].get(''SpecialToken'',
+      {}).get(''id''):'
+    - '                                        if special_entry in (special_sep, special_eos):'
+    - '                                            add_sep = True'
+    - '                                        if special_entry not in (special_sep,
+      special_eos):'
+    - '                                            logger.warning(f''Unknown second
+      separator token {special_entry!r} in TemplateProcessing<pair>'')'
+    - '                                    else:'
+    - '                                        logger.warning(f''Unknown second middle
+      sequence {tmpl_pair[1]!r} in TemplateProcessing<pair>'')'
+    - '                                self.add_special_token[''sep''] = add_sep'
+    - '                                if add_sep and not special_sep and tokenizer_config:'
+    - '                                    tokenizer_config[''sep_token''] = special_eos'
+    - '                        continue'
+    - '    if not tokenizer_config:'
+    - '        return True'
+    - '    chat_template_alt = None'
+    - '    chat_template_json = path / ''chat_template.json'''
+    - '    chat_template_jinja = path / ''chat_template.jinja'''
+    - '    if chat_template_jinja.is_file():'
+    - '        with open(chat_template_jinja, encoding = ''utf-8'') as f:'
+    - '            chat_template_alt = f.read()'
+    - '        if additional_templates := list((path / ''additional_chat_templates'').glob(''*.jinja'')):'
+    - '            chat_template_alt = [{''name'': ''default'', ''template'': chat_template_alt}]'
+    - '            for template_path in additional_templates:'
+    - '                with open(template_path, encoding = ''utf-8'') as fp:'
+    - '                    chat_template_alt.append({''name'': template_path.stem,
+      ''template'': fp.read()})'
+    - '    elif chat_template_json.is_file():'
+    - '        with open(chat_template_json, encoding = ''utf-8'') as f:'
+    - '            chat_template_alt = json.load(f).get(''chat_template'')'
+    - '    chat_template = tokenizer_config.get(''chat_template'', chat_template_alt)'
+    - '    if chat_template is None or isinstance(chat_template, (str, list)):'
+    - '        self.chat_template = chat_template'
+    - '    else:'
+    - '        logger.warning(f''Bad type for chat_template field in {tokenizer_config_file!r}
+      - ignoring'')'
+    - '    for typ in self.special_token_types:'
+    - '        add_entry = tokenizer_config.get(f''add_{typ}_token'')'
+    - '        if isinstance(add_entry, bool):'
+    - '            self.add_special_token[typ] = add_entry'
+    - '        entry = tokenizer_config.get(f''{typ}_token'')'
+    - '        if isinstance(entry, str):'
+    - '            tc_content = entry'
+    - '        elif isinstance(entry, dict):'
+    - '            entry_content = entry.get(''content'')'
+    - '            if not isinstance(entry_content, str):'
+    - '                continue'
+    - '            tc_content = entry_content'
+    - '        else:'
+    - '            continue'
+    - '        # We only need the first match here.'
+    - '        maybe_token_id = next('
+    - '            (atok.get(''id'') for atok in added_tokens if atok.get(''content'')
+      == tc_content),'
+    - '            None,'
+    - '        )'
+    - '        self._set_special_token(typ, maybe_token_id)'
+    - '    return True'
+    desc: 尝试从 tokenizer.json 和 tokenizer_config.json 文件中加载合并规则、特殊令牌和聊天模板等数据。
+    line: 129-252
+    name: _try_load_from_tokenizer_json
+  - code:
+    - 'def _try_load_from_config_json(self, path: Path) -> bool:'
+    - '    config_file = path / ''config.json'''
+    - '    if not config_file.is_file():'
+    - '        return False'
+    - '    with open(config_file, encoding = ''utf-8'') as f:'
+    - '        config = json.load(f)'
+    - '    for typ in self.special_token_types:'
+    - '        token_id = config.get(f''{typ}_token_id'')'
+    - '        # If not found at root, check in text_config (for multimodal models
+      like Kimi-VL)'
+    - '        if token_id is None and ''text_config'' in config:'
+    - '            token_id = config[''text_config''].get(f''{typ}_token_id'')'
+    - '        self._set_special_token(typ, token_id)'
+    - '    return True'
+    desc: 尝试从 config.json 文件中加载特殊令牌 ID。
+    line: 254-264
+    name: _try_load_from_config_json
+  name: SpecialVocab
+- desc: 一个运行时检查的协议类，定义了所有词汇表类都应具有的类变量 tokenizer_model 和 name，作为词汇表类的基础接口。
+  methods: []
+  name: BaseVocab
+- desc: 一个运行时检查的协议类，继承自 BaseVocab，定义了词汇表类应具备的实例属性和方法，如 vocab_size、added_tokens_dict、all_tokens
+    等，是所有具体词汇表类的接口规范。
+  methods:
+  - code:
+    - 'def __init__(self, base_path: Path): ...'
+    desc: Protocol 中的初始化方法声明。
+    line: '272'
+    name: __init__
+  - code:
+    - 'def all_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]: ...'
+    desc: 协议中定义的抽象方法，返回所有令牌的迭代器。
+    line: '273'
+    name: all_tokens
+  name: Vocab
+- desc: 一个表示没有词汇表的模型的基础类，设置了 tokenizer_model 为 no_vocab 和 name 为 no_vocab。
+  methods:
+  - code:
+    - 'def __repr__(self) -> str:'
+    - '    return "<NoVocab for a model without integrated vocabulary>"'
+    desc: 返回 NoVocab 实例的字符串表示。
+    line: 277-278
+    name: __repr__
+  name: NoVocab
+- desc: 用于处理 GPT-2 风格的 BPE 分词器词汇表，从 vocab.json 或 tokenizer.json 文件中加载词汇和添加的令牌。
+  methods:
+  - code:
+    - 'def __init__(self, base_path: Path):'
+    - '    added_tokens: dict[str, int] = {}'
+    - ''
+    - '    if (fname_tokenizer := base_path / ''vocab.json'').exists():'
+    - '        # "slow" tokenizer'
+    - '        with open(fname_tokenizer, encoding="utf-8") as f:'
+    - '            self.vocab = json.load(f)'
+    - ''
+    - '        try:'
+    - '            # FIXME: Verify that added tokens here _cannot_ overlap with the
+      main vocab.'
+    - '            with open(base_path / ''added_tokens.json'', encoding="utf-8")
+      as f:'
+    - '                added_tokens = json.load(f)'
+    - '        except FileNotFoundError:'
+    - '            pass'
+    - '    else:'
+    - '        # "fast" tokenizer'
+    - '        fname_tokenizer = base_path / ''tokenizer.json'''
+    - ''
+    - '        # if this fails, FileNotFoundError propagates to caller'
+    - '        with open(fname_tokenizer, encoding="utf-8") as f:'
+    - '            tokenizer_json = json.load(f)'
+    - ''
+    - '        tokenizer_model: dict[str, Any] = tokenizer_json[''model'']'
+    - '        if ('
+    - '            tokenizer_model[''type''] != ''BPE'' or tokenizer_model.get(''byte_fallback'',
+      False)'
+    - '            or tokenizer_json[''decoder''][''type''] != ''ByteLevel'''
+    - '        ):'
+    - '            raise FileNotFoundError(''Cannot find GPT-2 BPE tokenizer'')'
+    - ''
+    - '        self.vocab = tokenizer_model["vocab"]'
+    - ''
+    - '        if (added := tokenizer_json.get(''added_tokens'')) is not None:'
+    - '            # Added tokens here can be duplicates of the main vocabulary.'
+    - '            added_tokens = {item[''content'']: item[''id'']'
+    - '                            for item in added'
+    - '                            if item[''content''] not in self.vocab}'
+    - ''
+    - '    vocab_size   = len(self.vocab)'
+    - '    expected_ids = list(range(vocab_size, vocab_size + len(added_tokens)))'
+    - '    actual_ids   = sorted(added_tokens.values())'
+    - '    if expected_ids != actual_ids:'
+    - '        expected_end_id = vocab_size + len(actual_ids) - 1'
+    - '        raise ValueError(f"Expected the {len(actual_ids)} added token ID(s)
+      to be sequential in the range "'
+    - '                         f"{vocab_size} - {expected_end_id}; got {actual_ids}")'
+    - ''
+    - '    items = sorted(added_tokens.items(), key=lambda text_idx: text_idx[1])'
+    - '    self.added_tokens_dict    = added_tokens'
+    - '    self.added_tokens_list    = [text for (text, idx) in items]'
+    - '    self.vocab_size_base      = vocab_size'
+    - '    self.vocab_size           = self.vocab_size_base + len(self.added_tokens_list)'
+    - '    self.fname_tokenizer      = fname_tokenizer'
+    desc: 初始化 BpeVocab 实例，加载 BPE 词汇表和添加的令牌，并验证其 ID 顺序。
+    line: 283-324
+    name: __init__
+  - code:
+    - 'def bpe_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    reverse_vocab = {id: encoded_tok for encoded_tok, id in self.vocab.items()}'
+    - ''
+    - '    for i, _ in enumerate(self.vocab):'
+    - '        yield reverse_vocab[i], 0.0, gguf.TokenType.NORMAL'
+    desc: 生成基础 BPE 词汇表中的所有令牌及其分数和类型。
+    line: 326-329
+    name: bpe_tokens
+  - code:
+    - 'def added_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    for text in self.added_tokens_list:'
+    - '        score = -1000.0'
+    - '        yield text.encode("utf-8"), score, gguf.TokenType.CONTROL'
+    desc: 生成添加的令牌（added tokens）的迭代器，其类型为 CONTROL。
+    line: 331-334
+    name: added_tokens
+  - code:
+    - 'def all_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    yield from self.bpe_tokens()'
+    - '    yield from self.added_tokens()'
+    desc: 生成所有令牌（包含基础 BPE 令牌和添加的令牌）的迭代器。
+    line: 336-339
+    name: all_tokens
+  - code:
+    - 'def __repr__(self) -> str:'
+    - '    return f"<BpeVocab with {self.vocab_size_base} base tokens and {len(self.added_tokens_list)}
+      added tokens>"'
+    desc: 返回 BpeVocab 实例的字符串表示。
+    line: 341-342
+    name: __repr__
+  name: BpeVocab
+- desc: 用于处理 SentencePiece 风格的分词器词汇表，从 tokenizer.model 和 added_tokens.json 文件中加载词汇。
+  methods:
+  - code:
+    - 'def __init__(self, base_path: Path):'
+    - '    if SentencePieceProcessor is None:'
+    - '        raise RuntimeError("sentencepiece is not installed")'
+    - ''
+    - '    added_tokens: dict[str, int] = {}'
+    - '    if (fname_tokenizer := base_path / ''tokenizer.model'').exists():'
+    - '        # normal location'
+    - '        try:'
+    - '            with open(base_path / ''added_tokens.json'', encoding="utf-8")
+      as f:'
+    - '                added_tokens = json.load(f)'
+    - '        except FileNotFoundError:'
+    - '            pass'
+    - '    elif not (fname_tokenizer := base_path.parent / ''tokenizer.model'').exists():'
+    - '        # not found in alternate location either'
+    - '        raise FileNotFoundError(''Cannot find tokenizer.model'')'
+    - ''
+    - '    self.sentencepiece_tokenizer = SentencePieceProcessor()'
+    - '    self.sentencepiece_tokenizer.LoadFromFile(str(fname_tokenizer))'
+    - '    vocab_size = self.sentencepiece_tokenizer.vocab_size()'
+    - ''
+    - '    new_tokens       = {id: piece for piece, id in added_tokens.items() if
+      id >= vocab_size}'
+    - '    expected_new_ids = list(range(vocab_size, vocab_size + len(new_tokens)))'
+    - '    actual_new_ids   = sorted(new_tokens.keys())'
+    - ''
+    - '    if expected_new_ids != actual_new_ids:'
+    - '        raise ValueError(f"Expected new token IDs {expected_new_ids} to be
+      sequential; got {actual_new_ids}")'
+    - ''
+    - '    # Token pieces that were added to the base vocabulary.'
+    - '    self.added_tokens_dict  = added_tokens'
+    - '    self.added_tokens_list  = [new_tokens[id] for id in actual_new_ids]'
+    - '    self.vocab_size_base    = vocab_size'
+    - '    self.vocab_size         = self.vocab_size_base + len(self.added_tokens_list)'
+    - '    self.fname_tokenizer    = fname_tokenizer'
+    desc: 初始化 SentencePieceVocab 实例，使用 sentencepiece 库加载模型并处理添加的令牌。
+    line: 348-381
+    name: __init__
+  - code:
+    - 'def sentencepiece_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    tokenizer = self.sentencepiece_tokenizer'
+    - '    for i in range(tokenizer.vocab_size()):'
+    - '        piece = tokenizer.IdToPiece(i)'
+    - '        text         = piece.encode("utf-8")'
+    - '        score: float = tokenizer.GetScore(i)'
+    - ''
+    - '        toktype = gguf.TokenType.NORMAL'
+    - '        if tokenizer.IsUnknown(i):'
+    - '            toktype = gguf.TokenType.UNKNOWN'
+    - '        if tokenizer.IsControl(i):'
+    - '            toktype = gguf.TokenType.CONTROL'
+    - ''
+    - '        # NOTE: I think added_tokens are user defined.'
+    - '        # ref: https://github.com/google/sentencepiece/blob/master/src/sentencepiece_model.proto'
+    - '        # if tokenizer.is_user_defined(i): toktype = gguf.TokenType.USER_DEFINED'
+    - ''
+    - '        if tokenizer.IsUnused(i):'
+    - '            toktype = gguf.TokenType.UNUSED'
+    - '        if tokenizer.IsByte(i):'
+    - '            toktype = gguf.TokenType.BYTE'
+    - ''
+    - '        yield text, score, toktype'
+    desc: 生成 SentencePiece 词汇表中的所有令牌及其分数和类型。
+    line: 383-402
+    name: sentencepiece_tokens
+  - code:
+    - 'def added_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    for text in self.added_tokens_list:'
+    - '        score = -1000.0'
+    - '        yield text.encode("utf-8"), score, gguf.TokenType.USER_DEFINED'
+    desc: 生成添加到基础词汇表中的令牌的迭代器，类型为 USER_DEFINED。
+    line: 404-407
+    name: added_tokens
+  - code:
+    - 'def all_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    yield from self.sentencepiece_tokens()'
+    - '    yield from self.added_tokens()'
+    desc: 生成所有令牌（包含 SentencePiece 令牌和添加的令牌）的迭代器。
+    line: 409-412
+    name: all_tokens
+  - code:
+    - 'def __repr__(self) -> str:'
+    - '    return f"<SentencePieceVocab with {self.vocab_size_base} base tokens and
+      {len(self.added_tokens_list)} added tokens>"'
+    desc: 返回 SentencePieceVocab 实例的字符串表示。
+    line: 414-415
+    name: __repr__
+  name: SentencePieceVocab
+- desc: 用于处理 Llama 模型的 HuggingFace Transformers 分词器词汇表，从 tokenizer.json 文件中加载，并通过
+    transformers 库获取详细的词汇和特殊令牌信息。
+  methods:
+  - code:
+    - 'def __init__(self, base_path: Path):'
+    - '    fname_tokenizer = base_path / ''tokenizer.json'''
+    - '    # if this fails, FileNotFoundError propagates to caller'
+    - '    with open(fname_tokenizer, encoding=''utf-8'') as f:'
+    - '        tokenizer_json = json.load(f)'
+    - ''
+    - '    # pre-check so we know if we need transformers'
+    - '    tokenizer_model: dict[str, Any] = tokenizer_json[''model'']'
+    - '    is_llama3 = ('
+    - '        tokenizer_model[''type''] == ''BPE'' and tokenizer_model.get(''ignore_merges'',
+      False)'
+    - '        and not tokenizer_model.get(''byte_fallback'', True)'
+    - '    )'
+    - '    if is_llama3:'
+    - '        raise TypeError(''Llama 3 must be converted with BpeVocab'')'
+    - ''
+    - '    if not is_llama3 and ('
+    - '        tokenizer_model[''type''] != ''BPE'' or not tokenizer_model.get(''byte_fallback'',
+      False)'
+    - '        or tokenizer_json[''decoder''][''type''] != ''Sequence'''
+    - '    ):'
+    - '        raise FileNotFoundError(''Cannot find Llama BPE tokenizer'')'
+    - ''
+    - '    try:'
+    - '        from transformers import AutoTokenizer'
+    - '    except ImportError as e:'
+    - '        raise ImportError('
+    - '            "To use LlamaHfVocab, please install the `transformers` package.
+      "'
+    - '            "You can install it with `pip install transformers`."'
+    - '        ) from e'
+    - ''
+    - '    # Allow the tokenizer to default to slow or fast versions.'
+    - '    # Explicitly set tokenizer to use local paths.'
+    - '    self.tokenizer = AutoTokenizer.from_pretrained('
+    - '        base_path,'
+    - '        cache_dir=base_path,'
+    - '        local_files_only=True,'
+    - '    )'
+    - '    assert self.tokenizer.is_fast  # assume tokenizer.json is used'
+    - ''
+    - '    # Initialize lists and dictionaries for added tokens'
+    - '    self.added_tokens_list = []'
+    - '    self.added_tokens_dict = dict()'
+    - '    self.added_tokens_ids  = set()'
+    - ''
+    - '    # Process added tokens'
+    - '    for tok, tokidx in sorted('
+    - '        self.tokenizer.get_added_vocab().items(), key=lambda x: x[1]'
+    - '    ):'
+    - '        # Only consider added tokens that are not in the base vocabulary'
+    - '        if tokidx >= self.tokenizer.vocab_size:'
+    - '            self.added_tokens_list.append(tok)'
+    - '            self.added_tokens_dict[tok] = tokidx'
+    - '            self.added_tokens_ids.add(tokidx)'
+    - ''
+    - '    # Store special tokens and their IDs'
+    - '    self.specials = {'
+    - '        tok: self.tokenizer.get_vocab()[tok]'
+    - '        for tok in self.tokenizer.all_special_tokens'
+    - '    }'
+    - '    self.special_ids = set(self.tokenizer.all_special_ids)'
+    - ''
+    - '    # Set vocabulary sizes'
+    - '    self.vocab_size_base = self.tokenizer.vocab_size'
+    - '    self.vocab_size      = self.vocab_size_base + len(self.added_tokens_list)'
+    - ''
+    - '    self.fname_tokenizer = fname_tokenizer'
+    desc: 初始化 LlamaHfVocab 实例，通过 transformers 库加载分词器并提取基础词汇和添加的令牌。
+    line: 420-488
+    name: __init__
+  - code:
+    - 'def hf_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    reverse_vocab = {'
+    - '        id: encoded_tok for encoded_tok, id in self.tokenizer.get_vocab().items()'
+    - '    }'
+    - ''
+    - '    for token_id in range(self.vocab_size_base):'
+    - '        # Skip processing added tokens here'
+    - '        if token_id in self.added_tokens_ids:'
+    - '            continue'
+    - ''
+    - '        # Convert token text to bytes'
+    - '        token_text = reverse_vocab[token_id].encode("utf-8")'
+    - ''
+    - '        # Yield token text, score, and type'
+    - '        yield token_text, self.get_token_score(token_id), self.get_token_type('
+    - '            token_id, token_text, self.special_ids  # Reuse already stored
+      special IDs'
+    - '        )'
+    desc: 生成基于 HuggingFace 分词器的基础词汇表中的所有令牌及其分数和类型。
+    line: 490-503
+    name: hf_tokens
+  - code:
+    - 'def get_token_type(self, token_id: int, token_text: bytes, special_ids: set[int])
+      -> gguf.TokenType:'
+    - '    # Special case for byte tokens'
+    - '    if re.fullmatch(br"<0x[0-9A-Fa-f]{2}>", token_text):'
+    - '        return gguf.TokenType.BYTE'
+    - ''
+    - '    # Determine token type based on whether it''s a special token'
+    - '    return gguf.TokenType.CONTROL if token_id in special_ids else gguf.TokenType.NORMAL'
+    desc: 根据令牌 ID 和文本确定令牌的类型，如 BYTE、CONTROL 或 NORMAL。
+    line: 505-510
+    name: get_token_type
+  - code:
+    - 'def get_token_score(self, token_id: int) -> float:'
+    - '    # Placeholder for actual logic to determine the token''s score'
+    - '    # This needs to be implemented based on specific requirements'
+    - '    return -1000.0  # Default score'
+    desc: 返回令牌的分数，此方法为占位符，实际逻辑需要根据具体需求实现。
+    line: 512-515
+    name: get_token_score
+  - code:
+    - 'def added_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    for text in self.added_tokens_list:'
+    - '        if text in self.specials:'
+    - '            toktype = self.get_token_type(self.specials[text], b'''', self.special_ids)'
+    - '            score = self.get_token_score(self.specials[text])'
+    - '        else:'
+    - '            toktype = gguf.TokenType.USER_DEFINED'
+    - '            score = -1000.0'
+    - ''
+    - '        yield text.encode("utf-8"), score, toktype'
+    desc: 生成添加的令牌的迭代器，其类型根据令牌是否为特殊令牌而定。
+    line: 517-525
+    name: added_tokens
+  - code:
+    - 'def has_newline_token(self):'
+    - '    return "<0x0A>" in self.tokenizer.vocab or "\n" in self.tokenizer.vocab'
+    desc: 检查分词器中是否包含换行符令牌。
+    line: 527-528
+    name: has_newline_token
+  - code:
+    - 'def all_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    yield from self.hf_tokens()'
+    - '    yield from self.added_tokens()'
+    desc: 生成所有令牌（包含基于 HF 的令牌和添加的令牌）的迭代器。
+    line: 530-533
+    name: all_tokens
+  - code:
+    - 'def __repr__(self) -> str:'
+    - '    return f"<LlamaHfVocab with {self.vocab_size_base} base tokens and {len(self.added_tokens_list)}
+      added tokens>"'
+    desc: 返回 LlamaHfVocab 实例的字符串表示。
+    line: 535-536
+    name: __repr__
+  name: LlamaHfVocab
+- desc: 一个枚举类，用于表示 Mistral 分词器的类型，目前支持 spm（SentencePiece）和 tekken 两种。
+  methods: []
+  name: MistralTokenizerType
+- desc: 用于处理 Mistral 模型的分词器词汇表，支持 spm 和 tekken 两种分词器类型，通过 mistral_common 库进行加载。
+  methods:
+  - code:
+    - 'def __init__(self, base_path: Path):'
+    - '    if not _mistral_common_installed:'
+    - '        raise ImportError('
+    - '            "To use MistralVocab, please install the `mistral-common` package.
+      "'
+    - '            "You can install it with `pip install mistral-common`."'
+    - '        )'
+    - '    assert _filter_valid_tokenizer_files is not None, "mistral_common is not
+      installed"'
+    - '    assert MistralTokenizer is not None, "mistral_common is not installed"'
+    - '    assert Tekkenizer is not None, "mistral_common is not installed"'
+    - ''
+    - '    logger.info(f"Loading Mistral tokenizer from {base_path}")'
+    - ''
+    - '    # Find the tokenizer files'
+    - '    all_files = [f.as_posix() for f in base_path.glob("**/*") if f.is_file()]'
+    - ''
+    - '    if get_one_valid_tokenizer_file is not None:'
+    - '        tokenizer_file_path = get_one_valid_tokenizer_file(all_files)'
+    - '    else:'
+    - '        valid_tokenizer_files = _filter_valid_tokenizer_files(all_files)'
+    - ''
+    - '        if len(valid_tokenizer_files) == 0:'
+    - '            raise ValueError(f"No tokenizer file found in the directory: {base_path}")'
+    - '        # If there are multiple tokenizer files, we use tekken.json if it exists,
+      otherwise the versioned one.'
+    - '        if len(valid_tokenizer_files) > 1:'
+    - '            if "tekken.json" in valid_tokenizer_files:'
+    - '                tokenizer_file = "tekken.json"'
+    - '            else:'
+    - '                tokenizer_file = sorted(valid_tokenizer_files)[-1]'
+    - '            logger.warning('
+    - '                f"Multiple tokenizer files found in {base_path}. Using {tokenizer_file}"'
+    - '            )'
+    - '        else:'
+    - '            tokenizer_file = valid_tokenizer_files[0]'
+    - ''
+    - '        tokenizer_file_path = base_path / tokenizer_file'
+    - ''
+    - '    self.tokenizer: Any = MistralTokenizer.from_file('
+    - '        tokenizer_file_path'
+    - '    ).instruct_tokenizer.tokenizer'
+    - '    self.tokenizer_type = ('
+    - '        MistralTokenizerType.tekken'
+    - '        if isinstance(self.tokenizer, Tekkenizer)'
+    - '        else MistralTokenizerType.spm'
+    - '    )'
+    - '    self.vocab_size = self.tokenizer.n_words'
+    - '    self.fname_tokenizer = tokenizer_file_path'
+    - '    self._name = ('
+    - '        "mistral-" + self.tokenizer_type.value + "-" + self.tokenizer.version'
+    - '    )'
+    desc: 初始化 MistralVocab 实例，通过 mistral_common 库加载分词器并确定其类型。
+    line: 568-623
+    name: __init__
+  - code:
+    - '@property'
+    - 'def tokenizer_name(self) -> str:'
+    - '    return self._name'
+    desc: 属性方法，返回分词器的名称。
+    line: 625-627
+    name: tokenizer_name
+  - code:
+    - '@property'
+    - 'def gguf_tokenizer_model(self) -> str:'
+    - '    return "llama" if self.tokenizer_type == MistralTokenizerType.spm else
+      "gpt2"'
+    desc: 属性方法，返回 GGUF 中使用的分词器模型名称，spm 对应 llama，tekken 对应 gpt2。
+    line: 629-631
+    name: gguf_tokenizer_model
+  - code:
+    - 'def _sentencepiece_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    assert SentencePieceTokenizer is not None, "mistral_common is not installed"'
+    - '    assert isinstance(self.tokenizer, SentencePieceTokenizer), ('
+    - '        f"Expected SentencePieceTokenizer, got {type(self.tokenizer)}"'
+    - '    )'
+    - ''
+    - '    for i in range(self.tokenizer._model.vocab_size()):'
+    - '        piece = self.tokenizer._model.IdToPiece(i)'
+    - '        text = piece.encode("utf-8")'
+    - '        score: float = self.tokenizer._model.GetScore(i)'
+    - ''
+    - '        toktype = gguf.TokenType.NORMAL'
+    - '        if self.tokenizer._model.IsUnknown(i):'
+    - '            toktype = gguf.TokenType.UNKNOWN'
+    - '        if self.tokenizer._model.IsControl(i):'
+    - '            toktype = gguf.TokenType.CONTROL'
+    - ''
+    - '        if self.tokenizer._model.IsUnused(i):'
+    - '            toktype = gguf.TokenType.UNUSED'
+    - '        if self.tokenizer._model.IsByte(i):'
+    - '            toktype = gguf.TokenType.BYTE'
+    - ''
+    - '        yield text, score, toktype'
+    desc: 生成 Mistral spm 分词器的所有令牌及其分数和类型。
+    line: 633-650
+    name: _sentencepiece_tokens
+  - code:
+    - 'def _tekken_tokens(self) -> Iterable[tuple[bytes, float, gguf.TokenType]]:'
+    - '    assert Tekkenizer is not None, "mistral_common is not installed"'
+    - '    assert isinstance(self.tokenizer, Tekkenizer), ('
+    - '        f"Expected Tekkenizer, got {type(self.tokenizer)}"'
+    - '    )'
+    - ''
+    - '    byte_encoder = bytes_to_unicode'
+    desc: 生成 Mistral tekken 分词器的所有令牌及其分数和类型（该方法体在提供的代码中被截断）。
+    line: 652-657
+    name: _tekken_tokens
+  name: MistralVocab
+- desc: 负责处理 Mistral 分词器词汇表的转换类，支持 SentencePiece 和 Tekken 两种分词器类型。
+  methods:
+  - code:
+    - toktype = gguf.TokenType.UNUSED
+    - 'if self.tokenizer._model.IsByte(i):'
+    - '    toktype = gguf.TokenType.BYTE'
+    - ''
+    - yield text, score, toktype
+    desc: 迭代生成 SentencePiece 分词器的 token 数据，包含 token ID、分数和类型。
+    line: 758-764
+    name: _sentencepiece_tokens
+  - code:
+    - assert Tekkenizer is not None, "mistral_common is not installed"
+    - assert isinstance(self.tokenizer, Tekkenizer), (
+    - '    f"Expected Tekkenizer, got {type(self.tokenizer)}"'
+    - )
+    - ''
+    - byte_encoder = bytes_to_unicode()
+    - 'for token_id in range(self.tokenizer.num_special_tokens):'
+    - '    yield ('
+    - '        self.tokenizer.id_to_piece(token_id).encode("utf-8"),'
+    - '        0,'
+    - '        gguf.TokenType.CONTROL'
+    - '    )'
+    - 'for token in self.tokenizer._tekken_token2id_nospecial:'
+    - '    yield ('
+    - '        self.token_bytes_to_string(token, byte_encoder).encode("utf-8"),'
+    - '        0,'
+    - '        gguf.TokenType.NORMAL,'
+    - '    )'
+    desc: 迭代生成 Tekken 分词器的 token 数据，包括特殊 token 和常规 token。
+    line: 765-786
+    name: _tekken_tokens
+  - code:
+    - assert SentencePieceTokenizer is not None and Tekkenizer is not None, "mistral_common
+      is not installed"
+    - 'if self.tokenizer_type == MistralTokenizerType.spm:'
+    - '    assert isinstance(self.tokenizer, SentencePieceTokenizer)'
+    - '    return self.tokenizer._vocab.index(token)'
+    - 'elif self.tokenizer_type == MistralTokenizerType.tekken:'
+    - '    assert isinstance(self.tokenizer, Tekkenizer)'
+    - '    return ('
+    - '        self.tokenizer._vocab.index(token) + self.tokenizer.num_special_tokens'
+    - '    )'
+    - 'else:'
+    - '    raise ValueError(f"Unknown tokenizer type: {self.tokenizer_type}")'
+    desc: 根据 token 字符串返回对应的 token ID，处理不同类型的分词器。
+    line: 787-799
+    name: get_token_id
+  - code:
+    - return self.tokenizer.bos_id
+    desc: 返回句子开始（BOS）的 token ID。
+    line: 800-802
+    name: bos_id
+  - code:
+    - return self.tokenizer.eos_id
+    desc: 返回句子结束（EOS）的 token ID。
+    line: 803-805
+    name: eos_id
+  - code:
+    - 'if self.tokenizer.pad_id == -1:'
+    - '    return self.eos_id'
+    - return self.tokenizer.pad_id
+    desc: 返回填充（PAD）的 token ID，若无则使用 EOS ID。
+    line: 806-810
+    name: pad_id
+  - code:
+    - return self.tokenizer.unk_id
+    desc: 返回未知（UNK）的 token ID。
+    line: 811-813
+    name: unk_id
+  - code:
+    - return self.tokenizer.id_to_piece(self.tokenizer.bos_id)
+    desc: 返回句子开始（BOS）的 token 字符串。
+    line: 814-816
+    name: bos_token
+  - code:
+    - return self.tokenizer.id_to_piece(self.tokenizer.eos_id)
+    desc: 返回句子结束（EOS）的 token 字符串。
+    line: 817-819
+    name: eos_token
+  - code:
+    - return self.tokenizer.id_to_piece(self.tokenizer.pad_id)
+    desc: 返回填充（PAD）的 token 字符串。
+    line: 820-822
+    name: pad_token
+  - code:
+    - return self.tokenizer.id_to_piece(self.tokenizer.unk_id)
+    desc: 返回未知（UNK）的 token 字符串。
+    line: 823-825
+    name: unk_token
+  - code:
+    - 'if self.tokenizer_type == MistralTokenizerType.spm:'
+    - '    yield from self._sentencepiece_tokens()'
+    - ''
+    - 'elif self.tokenizer_type == MistralTokenizerType.tekken:'
+    - '    yield from self._tekken_tokens()'
+    - ''
+    - 'else:'
+    - '    raise ValueError(f"Unknown tokenizer type: {self.tokenizer_type}")'
+    desc: 根据分词器类型获取所有 token 的迭代器。
+    line: 826-837
+    name: all_tokens
+  - code:
+    - return "".join([byte_encoder[ord(char)] for char in b.decode("latin-1")])
+    desc: 将字节序列转换为字符串，使用字节编码器处理特殊字符。
+    line: 838-842
+    name: token_bytes_to_string
+  - code:
+    - assert Tekkenizer is not None and isinstance(self.tokenizer, Tekkenizer), (
+    - '    f"Expected Tekkenizer, got {type(self.tokenizer)}"'
+    - )
+    - mergeable_ranks = self.tokenizer._model._mergeable_ranks
+    - token_bytes_map = {
+    - '    rank: token_bytes for token_bytes, rank in mergeable_ranks.items()'
+    - '}'
+    - merge_pairs = []
+    - ''
+    - 'for i in range(256, self.vocab_size - self.tokenizer.num_special_tokens):'
+    - '    merged_token = token_bytes_map[i]'
+    - '    local = []'
+    - '    for j in range(1, len(merged_token)):'
+    - '        left = merged_token[:j]'
+    - '        right = merged_token[j:]'
+    - '        if ('
+    - '            left in mergeable_ranks'
+    - '            and right in mergeable_ranks'
+    - '            and (left + right) in mergeable_ranks'
+    - '        ):'
+    - '            local.append((left, right, i))'
+    - '    if not local:'
+    - '        raise ValueError('
+    - '            f"Could not find valid merge for token at rank {i}: {merged_token.decode(''latin-1'')}"'
+    - '        )'
+    - '    local = sorted('
+    - '        local,'
+    - '        key=lambda x: (mergeable_ranks[x[0]], mergeable_ranks[x[1]]),'
+    - '        reverse=False,'
+    - '    )'
+    - '    merge_pairs.extend(local)'
+    - 'merge_pairs = sorted(merge_pairs, key=lambda val: val[2], reverse=False)'
+    - ''
+    - byte_encoder = bytes_to_unicode()
+    - ''
+    - decoded_merge_pairs = [
+    - '    ['
+    - '        self.token_bytes_to_string(val[0], byte_encoder),'
+    - '        self.token_bytes_to_string(val[1], byte_encoder),'
+    - '    ]'
+    - '    for val in merge_pairs'
+    - ']'
+    - ''
+    - merges = [
+    - '    " ".join('
+    - '        ['
+    - '            "".join(chr(ord(c) + 256) if c == " " else c for c in part)'
+    - '            for part in pair'
+    - '        ]'
+    - '    )'
+    - '    for pair in decoded_merge_pairs'
+    - ']'
+    - ''
+    - return merges
+    desc: 从 Tekken 模型中提取 BPE 合并对并转换为 GGUF 格式的 merges 列表。
+    line: 843-900
+    name: extract_vocab_merges_from_model
+  name: MistralVocabConverter
+desc: 该文件定义了多种词汇表（vocabulary）处理类，用于从不同的分词器格式（如 BPE、SentencePiece、HuggingFace Transformers
+  等）中提取和整理词汇信息，并转换为 GGUF 格式所需的统一接口。它包含了负责处理特殊词汇（如 BOS、EOS）的 SpecialVocab 类，以及针对特定模型架构的
+  BpeVocab、SentencePieceVocab、LlamaHfVocab 和 MistralVocab 类，还定义了一个全局的 bytes_to_unicode
+  工具函数。这些类都实现了统一的 Vocab 协议，能够输出令牌（token）、分数（score）和类型（type）的迭代器，以便后续在 GGUF 文件中构建词汇表。该代码是
+  gguf-py 工具库中 vocab.py 的一部分，专注于 Mistral 分词器的词汇表（vocabulary）处理。它定义了一个类（根据上下文推断为 MistralVocab
+  或类似名称），用于将 Mistral 分词器（支持 SentencePiece 和 Tekken 两种类型）的词汇信息提取并转换为 GGUF 格式所需的 token
+  列表、token ID 映射及 token 合并规则（merges）。该类通过迭代生成 token 数据、提供特殊 token 的 ID 与字符串属性，并能从
+  Tekken 模型中提取 BPE 合并对，最终服务于 GGUF 模型文件的生成。
+file: gguf-py/gguf/vocab.py
+funcs:
+- code:
+  - 'def bytes_to_unicode() -> dict[int, str]:'
+  - '    """'
+  - '    Returns list of utf-8 byte and a mapping to unicode strings. We specifically
+    avoids mapping to whitespace/control'
+  - '    characters the bpe code barfs on.'
+  - ''
+  - '    The reversible bpe codes work on unicode strings. This means you need a large
+    # of unicode characters in your vocab'
+  - '    if you want to avoid UNKs. When you''re at something like a 10B token dataset
+    you end up needing around 5K for'
+  - '    decent coverage. This is a significant percentage of your normal, say, 32K
+    bpe vocab. To avoid that, we want lookup'
+  - '    tables between utf-8 bytes and unicode strings.'
+  - '    """'
+  - '    bs = ('
+  - '        list(range(ord("!"), ord("~") + 1))'
+  - '        + list(range(ord("¡"), ord("¬") + 1))'
+  - '        + list(range(ord("®"), ord("ÿ") + 1))'
+  - '    )'
+  - '    cs = bs[:]'
+  - '    n = 0'
+  - '    for b in range(2**8):'
+  - '        if b not in bs:'
+  - '            bs.append(b)'
+  - '            cs.append(2**8 + n)'
+  - '            n += 1'
+  - '    cs_str = [chr(n) for n in cs]'
+  - '    return dict(zip(bs, cs_str))'
+  desc: 返回从 UTF-8 字节到 Unicode 字符串的映射表，以避免 BPE 编码在处理空白字符时出现问题。
+  line: 553-574
+  name: bytes_to_unicode
+- code:
+  - '    toktype = gguf.TokenType.UNUSED  # 属于类方法内部'
+  - '    # 类定义之前的代码未显示，类定义在此处开始'
+  - 'class MistralVocabConverter:'
+  - '    # 类的初始化和其他方法省略'
+  - '    # 类的方法定义如上所示'
+  desc: 类定义外部的全局代码，包括对 mistral_common 的导入检查、bytes_to_unicode 函数的使用，以及类的定义和初始化部分。
+  line: 758-900
+  name: __main__

@@ -1,0 +1,413 @@
+classes:
+- desc: 保存 CANN 设备数量以及每个设备的计算能力、共享内存、虚拟内存和显存等信息。
+  methods: []
+  name: ggml_cann_device_info
+- desc: 保存单个 CANN 设备的硬件能力和内存属性。
+  methods: []
+  name: ggml_cann_device_info::cann_device_info
+- desc: CANN 内存池的抽象基类，定义内存分配和释放接口。
+  methods:
+  - code:
+    - virtual ~ggml_cann_pool() = default;
+    desc: 提供虚析构函数，确保通过基类指针销毁派生内存池对象时行为正确。
+    line: 83-83
+    name: ~ggml_cann_pool
+  - code:
+    - virtual void * alloc(size_t size, size_t * actual_size) = 0;
+    desc: 从内存池中分配指定大小的内存，并返回实际分配大小。
+    line: 95-95
+    name: alloc
+  - code:
+    - virtual void free(void * ptr, size_t size) = 0;
+    desc: 释放此前从内存池分配的内存块。
+    line: 105-105
+    name: free
+  name: ggml_cann_pool
+- desc: 以内存池为基础的 RAII 内存分配包装器，负责自动释放分配的 CANN 内存。
+  methods:
+  - code:
+    - ggml_cann_pool_alloc() = default;
+    desc: 构造一个未绑定内存池的分配器对象。
+    line: 123-123
+    name: ggml_cann_pool_alloc
+  - code:
+    - 'explicit ggml_cann_pool_alloc(ggml_cann_pool & pool) : pool(&pool) {}'
+    desc: 构造分配器并绑定指定内存池。
+    line: 130-130
+    name: ggml_cann_pool_alloc
+  - code:
+    - 'ggml_cann_pool_alloc(ggml_cann_pool & pool, size_t size) : pool(&pool) { alloc(size);
+      }'
+    desc: 构造分配器、绑定内存池并立即分配指定大小的内存。
+    line: 138-138
+    name: ggml_cann_pool_alloc
+  - code:
+    - ~ggml_cann_pool_alloc() {
+    - '    if (ptr != nullptr) {'
+    - '        pool->free(ptr, actual_size);'
+    - '    }'
+    - '}'
+    desc: 析构时自动释放已经分配的内存块。
+    line: 145-149
+    name: ~ggml_cann_pool_alloc
+  - code:
+    - void * alloc(size_t size) {
+    - '    GGML_ASSERT(pool != nullptr);'
+    - '    GGML_ASSERT(ptr == nullptr);'
+    - '    ptr = pool->alloc(size, &this->actual_size);'
+    - '    return ptr;'
+    - '}'
+    desc: 从已绑定的内存池中分配指定大小的内存。
+    line: 157-162
+    name: alloc
+  - code:
+    - void * alloc(ggml_cann_pool & pool, size_t size) {
+    - '    this->pool = &pool;'
+    - '    return alloc(size);'
+    - '}'
+    desc: 绑定指定内存池并分配指定大小的内存。
+    line: 170-173
+    name: alloc
+  - code:
+    - void * get() { return ptr; }
+    desc: 返回当前已分配内存块的指针。
+    line: 180-180
+    name: get
+  name: ggml_cann_pool_alloc
+- desc: 记录 ggml 计算图节点的地址、类型、形状、步长、输入源和操作参数，用于判断节点是否发生变化。
+  methods:
+  - code:
+    - bool has_matching_properties(ggml_tensor * node) {
+    - '    if (node->data != this->node_address && node->op != GGML_OP_VIEW) {'
+    - '        return false;'
+    - '    }'
+    - '    if (node->op != this->node_op) {'
+    - '        return false;'
+    - '    }'
+    - '    if (node->type != this->node_type) {'
+    - '        return false;'
+    - '    }'
+    - '    for (int i = 0; i < GGML_MAX_DIMS; i++) {'
+    - '        if (node->ne[i] != this->ne[i] || node->nb[i] != this->nb[i]) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+    - '        if (node->src[i]) {'
+    - '            if (node->src[i]->data != this->src_address[i] && node->op != GGML_OP_VIEW)
+      {'
+    - '                return false;'
+    - '            }'
+    - '            if (node->src[i]->type != this->src_type[i]) {'
+    - '                return false;'
+    - '            }'
+    - '            for (int d = 0; d < GGML_MAX_DIMS; d++) {'
+    - '                if (node->src[i]->ne[d] != this->src_ne[i][d] || node->src[i]->nb[d]
+      != this->src_nb[i][d]) {'
+    - '                    return false;'
+    - '                }'
+    - '            }'
+    - '        } else if (this->src_address[i] != nullptr) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return memcmp(this->op_params, node->op_params, GGML_MAX_OP_PARAMS) ==
+      0;'
+    - '}'
+    desc: 比较给定 ggml 张量节点与已保存属性是否一致，从而判断节点是否可以复用。
+    line: 201-250
+    name: has_matching_properties
+  name: ggml_graph_node_properties
+- desc: 封装 CANN ACL 图及其对应的 ggml 节点属性，并支持从 ggml 计算图创建、匹配和自动销毁。
+  methods:
+  - code:
+    - ~ggml_cann_graph() {
+    - '    if (graph != nullptr) {'
+    - '        ACL_CHECK(aclmdlRIDestroy(graph));'
+    - '    }'
+    - '}'
+    desc: 析构时销毁底层 CANN ACL 图对象。
+    line: 256-260
+    name: ~ggml_cann_graph
+  - code:
+    - static ggml_cann_graph * create_from_cgraph(ggml_cgraph * cgraph) {
+    - '    ggml_cann_graph * new_graph = new ggml_cann_graph();'
+    - '    new_graph->ggml_graph_properties.resize(cgraph->n_nodes);'
+    - '    for (int node_idx = 0; node_idx < cgraph->n_nodes; ++node_idx) {'
+    - '        ggml_tensor * node = cgraph->nodes[node_idx];'
+    - '        auto & prop = new_graph->ggml_graph_properties[node_idx];'
+    - '        prop.node_address = node->data;'
+    - '        prop.node_op = node->op;'
+    - '        prop.node_type = node->type;'
+    - '        std::copy_n(node->ne, GGML_MAX_DIMS, prop.ne);'
+    - '        std::copy_n(node->nb, GGML_MAX_DIMS, prop.nb);'
+    - '        for (int src = 0; src < GGML_MAX_SRC; ++src) {'
+    - '            if (node->src[src]) {'
+    - '                prop.src_address[src] = node->src[src]->data;'
+    - '                prop.src_type[src] = node->src[src]->type;'
+    - '                std::copy_n(node->src[src]->ne, GGML_MAX_DIMS, prop.src_ne[src]);'
+    - '                std::copy_n(node->src[src]->nb, GGML_MAX_DIMS, prop.src_nb[src]);'
+    - '            } else {'
+    - '                prop.src_address[src] = nullptr;'
+    - '                prop.src_type[src] = GGML_TYPE_COUNT;'
+    - '                std::fill_n(prop.src_ne[src], GGML_MAX_DIMS, 0);'
+    - '                std::fill_n(prop.src_nb[src], GGML_MAX_DIMS, 0);'
+    - '            }'
+    - '        }'
+    - '        memcpy(prop.op_params, node->op_params, GGML_MAX_OP_PARAMS);'
+    - '    }'
+    - '    return new_graph;'
+    - '}'
+    desc: 根据 ggml 计算图创建并填充一个 CANN 图对象及其节点属性快照。
+    line: 281-321
+    name: create_from_cgraph
+  - code:
+    - bool matches_cgraph(ggml_cgraph * cgraph) {
+    - '    if (this->ggml_graph_properties.size() != static_cast<size_t>(cgraph->n_nodes))
+      {'
+    - '        return false;'
+    - '    }'
+    - '    for (int i = 0; i < cgraph->n_nodes; ++i) {'
+    - '        if (!this->ggml_graph_properties[i].has_matching_properties(cgraph->nodes[i]))
+      {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 比较缓存图的节点数量和全部节点属性是否与指定 ggml 计算图一致。
+    line: 334-345
+    name: matches_cgraph
+  name: ggml_cann_graph
+- desc: 用于缓存 CANN 图对象的最近最少使用缓存，支持容量限制、查找提升和清空释放。
+  methods:
+  - code:
+    - ggml_cann_graph_lru_cache() {
+    - '    capacity = parse_integer(get_env_as_lowercase("GGML_CANN_GRAPH_CACHE_CAPACITY").value_or("12"));'
+    - '}'
+    desc: 根据环境变量初始化图缓存容量，默认容量为 12。
+    line: 365-367
+    name: ggml_cann_graph_lru_cache
+  - code:
+    - void push(ggml_cann_graph * new_node) {
+    - '    if (cache_list.size() >= capacity) {'
+    - '        ggml_cann_graph * old = cache_list.back();'
+    - '        cache_list.pop_back();'
+    - '        delete old;'
+    - '    }'
+    - '    cache_list.push_front(new_node);'
+    - '}'
+    desc: 将新图放入缓存头部，并在超出容量时删除最久未使用的图。
+    line: 375-383
+    name: push
+  - code:
+    - void clear() {
+    - '    for (auto ptr : cache_list) {'
+    - '        delete ptr;'
+    - '    }'
+    - '    cache_list.clear();'
+    - '}'
+    desc: 删除缓存中的全部 CANN 图并清空缓存列表。
+    line: 389-395
+    name: clear
+  - code:
+    - ~ggml_cann_graph_lru_cache() { clear(); }
+    desc: 析构时清空缓存并释放所有缓存图。
+    line: 401-401
+    name: ~ggml_cann_graph_lru_cache
+  - code:
+    - bool find_and_move_to_front(ggml_cgraph * cgraph) {
+    - '    for (auto & graph_ptr : this->cache_list) {'
+    - '        if (graph_ptr->matches_cgraph(cgraph)) {'
+    - '            cache_list.remove(graph_ptr);'
+    - '            cache_list.push_front(graph_ptr);'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 查找与指定 ggml 计算图匹配的缓存图，找到后将其提升到 LRU 缓存头部。
+    line: 413-423
+    name: find_and_move_to_front
+  name: ggml_cann_graph_lru_cache
+- desc: 缓存 RoPE 推理所需的设备端和主机端数据，并保存用于判断缓存是否可复用的参数。
+  methods:
+  - code:
+    - ~ggml_cann_rope_cache() {
+    - '    if (theta_scale_cache) ACL_CHECK(aclrtFree(theta_scale_cache));'
+    - '    if (sin_cache) ACL_CHECK(aclrtFree(sin_cache));'
+    - '    if (cos_cache) ACL_CHECK(aclrtFree(cos_cache));'
+    - '    if (position_select_index) ACL_CHECK(aclrtFree(position_select_index));'
+    - '    if (theta_scale_exp_host) free(theta_scale_exp_host);'
+    - '    if (position_select_index_host) free(position_select_index_host);'
+    - '    if (yarn_ramp_cache) ACL_CHECK(aclrtFree(yarn_ramp_cache));'
+    - '}'
+    desc: 释放 RoPE 缓存中的设备端和主机端资源。
+    line: 430-443
+    name: ~ggml_cann_rope_cache
+  - code:
+    - bool equal(int64_t theta_scale_length, int64_t position_length, float ext_factor,
+      float theta_scale, float freq_scale, float attn_factor, bool is_neox, bool indep_sects,
+      bool mrope_used, bool is_imrope, int sections[4]) {
+    - '    return this->theta_scale_length == theta_scale_length && this->position_length
+      == position_length &&'
+    - '           this->ext_factor == ext_factor && this->theta_scale == theta_scale
+      && this->freq_scale == freq_scale &&'
+    - '           this->attn_factor == attn_factor && this->is_neox == is_neox &&
+      this->indep_sects == indep_sects &&'
+    - '           this->mrope_used == mrope_used && this->is_imrope == is_imrope &&
+      this->sections[0] == sections[0] &&'
+    - '           this->sections[1] == sections[1] && this->sections[2] == sections[2]
+      && this->sections[3] == sections[3];'
+    - '}'
+    desc: 比较当前 RoPE 缓存参数与给定参数是否完全一致。
+    line: 457-465
+    name: equal
+  - code:
+    - void set(int64_t theta_scale_length, int64_t position_length, float ext_factor,
+      float theta_scale, float freq_scale, float attn_factor, bool is_neox, bool indep_sects,
+      bool mrope_used, bool is_imrope, int sections[4]) {
+    - '    this->theta_scale_length = theta_scale_length;'
+    - '    this->position_length = position_length;'
+    - '    this->ext_factor = ext_factor;'
+    - '    this->theta_scale = theta_scale;'
+    - '    this->freq_scale = freq_scale;'
+    - '    this->attn_factor = attn_factor;'
+    - '    this->is_neox = is_neox;'
+    - '    this->indep_sects = indep_sects;'
+    - '    this->mrope_used = mrope_used;'
+    - '    this->is_imrope = is_imrope;'
+    - '    this->sections[0] = sections[0];'
+    - '    this->sections[1] = sections[1];'
+    - '    this->sections[2] = sections[2];'
+    - '    this->sections[3] = sections[3];'
+    - '}'
+    desc: 更新 RoPE 缓存的长度、缩放因子、模式和分段参数。
+    line: 477-493
+    name: set
+  name: ggml_cann_rope_cache
+- desc: 保存 CANN 设备端张量缓存及其大小，并在析构时自动释放设备内存。
+  methods:
+  - code:
+    - ~ggml_cann_tensor_cache() {
+    - '    if (cache != nullptr) {'
+    - '        ACL_CHECK(aclrtFree(cache));'
+    - '    }'
+    - '}'
+    desc: 析构时释放设备端张量缓存。
+    line: 530-534
+    name: ~ggml_cann_tensor_cache
+  name: ggml_cann_tensor_cache
+- desc: 管理 CANN 后端设备的执行上下文，包括设备信息、事件、计算流、图缓存、RoPE 缓存、常量缓存和内存池。
+  methods:
+  - code:
+    - 'explicit ggml_backend_cann_context(int device) : device(device), name("CANN"
+      + std::to_string(device)) {'
+    - '    ggml_cann_set_device(device);'
+    - '    description = aclrtGetSocName();'
+    - '#ifdef USE_ACL_GRAPH'
+    - '    acl_graph_mode = parse_bool(get_env_as_lowercase("GGML_CANN_ACL_GRAPH").value_or("on"));'
+    - '    GGML_LOG_INFO("%s: device %d execution mode is %s (%s)\n", __func__, device,
+      acl_graph_mode ? "GRAPH" : "EAGER",'
+    - '                  acl_graph_mode ? "acl graph enabled" : "acl graph disabled");'
+    - '#endif'
+    - '}'
+    desc: 初始化指定 CANN 设备的后端上下文，并根据环境变量配置 ACL Graph 执行模式。
+    line: 572-583
+    name: ggml_backend_cann_context
+  - code:
+    - ~ggml_backend_cann_context() {
+    - '    ggml_cann_set_device(device);'
+    - '    if (copy_event != nullptr) {'
+    - '        ACL_CHECK(aclrtDestroyEvent(copy_event));'
+    - '    }'
+    - '    for (int i = 0; i < GGML_CANN_MAX_STREAMS; ++i) {'
+    - '        if (streams[i] != nullptr) {'
+    - '            ACL_CHECK(aclrtDestroyStream(streams[i]));'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 销毁复制事件和所有已创建的 CANN 执行流，释放上下文资源。
+    line: 589-600
+    name: ~ggml_backend_cann_context
+  - code:
+    - aclrtStream stream(int stream) {
+    - '    if (streams[stream] == nullptr) {'
+    - '        ACL_CHECK(aclrtSetDevice(device));'
+    - '        ACL_CHECK(aclrtCreateStream(&streams[stream]));'
+    - '    }'
+    - '    return streams[stream];'
+    - '}'
+    desc: 按索引获取 CANN 流；如果流尚未创建，则设置设备并创建流。
+    line: 608-615
+    name: stream
+  - code:
+    - aclrtStream stream() { return stream(0); }
+    desc: 获取默认的第 0 个 CANN 执行流。
+    line: 622-622
+    name: stream
+  - code:
+    - static std::unique_ptr<ggml_cann_pool> new_pool_for_device(int device);
+    desc: 为指定 CANN 设备创建新的内存池；具体实现由后端源文件提供。
+    line: 631-631
+    name: new_pool_for_device
+  - code:
+    - ggml_cann_pool & pool() {
+    - '    if (mem_pool == nullptr) {'
+    - '        mem_pool = new_pool_for_device(device);'
+    - '    }'
+    - '    return *mem_pool;'
+    - '}'
+    desc: 延迟创建并返回当前上下文对应的 CANN 内存池。
+    line: 637-642
+    name: pool
+  name: ggml_backend_cann_context
+desc: 该头文件为 ggml 的 CANN 后端提供公共基础设施，包含 CANN 错误处理宏与函数、设备信息查询、环境变量解析、内存池抽象及 RAII 分配器，并在启用
+  ACL Graph 时提供计算图属性匹配和 LRU 缓存机制，同时定义 RoPE 缓存、张量缓存以及后端设备上下文，用于管理 CANN 设备、流、事件、内存池和相关推理资源。
+file: ggml/src/ggml-cann/common.h
+funcs:
+- code:
+  - '[[noreturn]] void ggml_cann_error(const char * stmt, const char * func, const
+    char * file, int line, const char * msg);'
+  desc: 输出 CANN 错误信息以及发生位置，并终止程序执行。
+  line: 55-55
+  name: ggml_cann_error
+- code:
+  - const ggml_cann_device_info & ggml_cann_info();
+  desc: 返回全局 CANN 设备信息对象的常量引用。
+  line: 69-69
+  name: ggml_cann_info
+- code:
+  - void ggml_cann_set_device(int32_t device);
+  desc: 设置当前使用的 CANN 设备。
+  line: 71-71
+  name: ggml_cann_set_device
+- code:
+  - std::optional<std::string> get_env_as_lowercase(const std::string & name);
+  desc: 读取指定环境变量并以小写字符串形式返回其值；未设置时返回空 optional。
+  line: 73-73
+  name: get_env_as_lowercase
+- code:
+  - bool parse_bool(const std::string & value);
+  desc: 将字符串解析为布尔值。
+  line: 74-74
+  name: parse_bool
+- code:
+  - int parse_integer(const std::string & value);
+  desc: 将字符串解析为整数。
+  line: 75-75
+  name: parse_integer
+- code:
+  - '#ifndef CANN_COMMON_H'
+  - '#define CANN_COMMON_H'
+  - '#include "../ggml-impl.h"'
+  - '#include "../include/ggml-cann.h"'
+  - '#include "../include/ggml.h"'
+  - '#define MATRIX_ROW_PADDING 512'
+  - '#define GGML_CANN_MAX_STREAMS 8'
+  - '#define ACL_CHECK_GEN(stmt, success, error_fn) ...'
+  - '#define ACL_CHECK(stmt) ACL_CHECK_GEN(stmt, 0, aclGetRecentErrMsg)'
+  - '#endif  // CANN_COMMON_H'
+  desc: 文件级全局代码，包括头文件保护、项目和 CANN 依赖引入、常量定义、错误检查宏以及各类全局类型和函数声明。
+  line: 1-671
+  name: __main__

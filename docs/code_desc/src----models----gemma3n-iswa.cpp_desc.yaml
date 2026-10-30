@@ -1,0 +1,257 @@
+classes:
+- desc: Gemma3n-ISWA模型计算图构建器的实现类，负责组织模型的推理计算流程。
+  methods:
+  - code:
+    - 'llm_build_gemma3n_iswa::llm_build_gemma3n_iswa(const llama_model & model, const
+      llm_graph_params & params) :'
+    - '    llm_graph_context(params),'
+    - '    model(model),'
+    - '    n_embd_head(model.hparams.n_embd_head_k()),'
+    - '    n_embd_altup(model.hparams.n_embd_altup),'
+    - '    n_altup(model.hparams.n_altup),'
+    - '    i_altup_act(model.hparams.i_altup_act) {'
+    - '    ggml_tensor * cur;'
+    - '    ggml_tensor * inpL;'
+    - '    '
+    - '    inpL = build_inp_embd(model.tok_embd);'
+    - '    '
+    - '    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);'
+    - '    cb(inpL, "inp_scaled", -1);'
+    - '    '
+    - '    ggml_tensor * inp_pos = build_inp_pos();'
+    - '    '
+    - '    auto * inp_attn = build_attn_inp_kv_iswa();'
+    - '    '
+    - '    ggml_tensor * inp_per_layer = project_per_layer_inputs(inpL, get_per_layer_inputs());'
+    - '    '
+    - '    {'
+    - '        ggml_tensor * target_magnitude = calc_magnitude(inpL);'
+    - '        ggml_tensor * inp_repeated     = ggml_repeat_4d(ctx0, inpL, n_embd,
+      n_tokens, n_altup - 1, 1);'
+    - '        ggml_tensor * altup_added ='
+    - '            ggml_mul_mat(ctx0, model.altup_proj, inp_repeated);'
+    - '        ggml_tensor * new_magnitude = calc_magnitude(altup_added);'
+    - '        altup_added                 = ggml_div(ctx0, ggml_mul(ctx0, altup_added,
+      target_magnitude), new_magnitude);'
+    - '        inpL                        = ggml_concat(ctx0, inpL, altup_added,
+      2);'
+    - '        cb(inpL, "inp_stacked", -1);'
+    - '    }'
+    - '    '
+    - '    for (int il = 0; il < n_layer; ++il) {'
+    - '        ...'
+    - '        ggml_tensor * predictions = altup_predict(cur, il);'
+    - '        ...'
+    - '        ggml_tensor * corrected = altup_correct(predictions, attn_ffw_laurel_gated,
+      il);'
+    - '        ...'
+    - '        inpL = cur;'
+    - '    }'
+    - '    cur = inpL;'
+    - '    '
+    - '    {'
+    - '        ...'
+    - '        for (int i = 0; i < n_altup - 1; ++i) {'
+    - '            cur = ggml_add(ctx0, cur, view_2d_slice(altup_unembd, i));'
+    - '        }'
+    - '        cur = ggml_scale(ctx0, cur, 1.0f / float(n_altup));'
+    - '        cb(cur, "unembd_merged", -1);'
+    - '    }'
+    - '    '
+    - '    {'
+    - '        ggml_tensor * inp_out_ids = build_inp_out_ids();'
+    - '        cur                       = ggml_get_rows(ctx0, cur, inp_out_ids);'
+    - '    }'
+    - '    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);'
+    - '    '
+    - '    cb(cur, "result_norm", -1);'
+    - '    res->t_embd = cur;'
+    - '    '
+    - '    cur = build_lora_mm(model.output, cur);'
+    - '    '
+    - '    {'
+    - '        cur = ggml_scale(ctx0, cur, 1.0f / hparams.f_final_logit_softcapping);'
+    - '        cur = ggml_tanh(ctx0, cur);'
+    - '        cur = ggml_scale(ctx0, cur, hparams.f_final_logit_softcapping);'
+    - '    }'
+    - '    cb(cur, "result_output", -1);'
+    - '    res->t_logits = cur;'
+    - '    '
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构造函数，构建整个ISWA模型的计算图，包括嵌入堆叠、逐层处理、多路径融合和输出生成。
+    line: 8-142
+    name: llm_build_gemma3n_iswa
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::calc_magnitude(ggml_tensor * x) {
+    - '    return ggml_sqrt(ctx0, ggml_sum_rows(ctx0, ggml_sqr(ctx0, x)));'
+    - '}'
+    desc: 计算张量每个列向量的L2范数（幅度），用于多路径表示的归一化。
+    line: 144-146
+    name: calc_magnitude
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::view_2d_slice(ggml_tensor * x, int idx)
+      {
+    - '    GGML_ASSERT(idx < (int) x->ne[2]);'
+    - '    return ggml_view_2d(ctx0, x, x->ne[0], x->ne[1], ggml_row_size(x->type,
+      x->ne[0]),'
+    - '                        idx * x->ne[0] * x->ne[1] * ggml_element_size(x));'
+    - '}'
+    desc: 从3D张量中提取指定索引的2D切片视图，用于访问多路径表示中的单个路径。
+    line: 149-153
+    name: view_2d_slice
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::get_per_layer_inputs() {
+    - '    auto inp = std::make_unique<llm_graph_input_embd>(n_embd);'
+    - '    ggml_tensor * inp_per_layer;'
+    - '    if (ubatch.token) {'
+    - '        inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);'
+    - '        ggml_set_input(inp->tokens);'
+    - '        res->t_inp_tokens = inp->tokens;'
+    - '        inp_per_layer = ggml_get_rows(ctx0, model.tok_embd_per_layer, inp->tokens);'
+    - '        inp_per_layer = ggml_reshape_3d(ctx0, inp_per_layer, n_embd_altup,
+      n_layer, n_tokens);'
+    - '        inp_per_layer = ggml_scale(ctx0, inp_per_layer, sqrtf((float) n_embd_altup));'
+    - '        cb(inp_per_layer, "inp_per_layer_selected", -1);'
+    - '        res->add_input(std::move(inp));'
+    - '    } else {'
+    - '        const int64_t embd_size = model.tok_embd_per_layer->ne[0];'
+    - '        ggml_tensor * padding = ggml_view_1d(ctx0, model.tok_embd_per_layer,
+      embd_size, 0);'
+    - '        inp_per_layer = ggml_cast(ctx0, padding, GGML_TYPE_F32);'
+    - '        inp_per_layer = ggml_reshape_3d(ctx0, inp_per_layer, n_embd_altup,
+      n_layer, 1);'
+    - '        cb(inp_per_layer, "inp_per_layer_vision", -1);'
+    - '    }'
+    - '    return inp_per_layer;'
+    - '}'
+    desc: 获取每层的额外输入嵌入，从词元嵌入矩阵中提取词元对应的嵌入向量（或使用padding token的嵌入），并重塑为3D形式。
+    line: 156-173
+    name: get_per_layer_inputs
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::project_per_layer_inputs(ggml_tensor *
+      inputs_embeds, ggml_tensor * inp_per_layer) {
+    - '    const float per_layer_projection_scale = 1.0f / sqrtf((float) n_embd);'
+    - '    const float per_layer_input_scale      = 1.0f / sqrtf(2.0f);'
+    - '    '
+    - '    ggml_tensor * per_layer_proj = ggml_mul_mat(ctx0, model.per_layer_model_proj,
+      inputs_embeds);'
+    - '    per_layer_proj               = ggml_scale(ctx0, per_layer_proj, per_layer_projection_scale);'
+    - '    per_layer_proj               = ggml_reshape_3d(ctx0, per_layer_proj, n_embd_altup,
+      n_layer, n_tokens);'
+    - '    per_layer_proj               = build_norm(per_layer_proj, model.per_layer_proj_norm,
+      NULL, LLM_NORM_RMS,'
+    - '                                              -1);'
+    - '    cb(per_layer_proj, "per_layer_proj", -1);'
+    - '    '
+    - '    inp_per_layer = ggml_add(ctx0, per_layer_proj, inp_per_layer);'
+    - '    inp_per_layer = ggml_scale(ctx0, inp_per_layer, per_layer_input_scale);'
+    - '    cb(inp_per_layer, "inp_per_layer", -1);'
+    - '    '
+    - '    inp_per_layer = ggml_cont(ctx0, ggml_permute(ctx0, inp_per_layer, 0, 2,
+      1, 3));'
+    - '    return inp_per_layer;'
+    - '}'
+    desc: 将输入嵌入投影到每层输入空间，与原始每层输入相加并缩放，最后重排维度使其包含层数作为最后一个维度。
+    line: 176-190
+    name: project_per_layer_inputs
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::laurel(ggml_tensor * cur, int il) {
+    - '    ggml_tensor * tmp = cur;'
+    - '    tmp               = build_lora_mm(model.layers[il].laurel_l, tmp);'
+    - '    tmp               = build_lora_mm(model.layers[il].laurel_r, tmp);'
+    - '    tmp               = build_norm(tmp, model.layers[il].laurel_post_norm,
+      NULL, LLM_NORM_RMS, il);'
+    - '    tmp               = ggml_add(ctx0, tmp, cur);'
+    - '    cb(tmp, "laurel_out", il);'
+    - '    return tmp;'
+    - '}'
+    desc: 实现Laurel模块，包括两层线性变换、归一化和残差连接，用于增强特征表示。
+    line: 193-201
+    name: laurel
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::gaussian_topk(ggml_tensor * x) {
+    - '    ggml_tensor * mean = ggml_mean(ctx0, x);'
+    - '    ggml_tensor * std  = ggml_sqrt(ctx0, ggml_scale(ctx0, ggml_sum_rows(ctx0,
+      ggml_sqr(ctx0, ggml_sub(ctx0, x, mean))),'
+    - '                                                    1.0f / (float) (x->ne[0]
+      - 1)));'
+    - '    ggml_tensor * cutoff_x = ggml_add(ctx0, mean, ggml_scale(ctx0, std, f_sparsity_std_mul));'
+    - '    return ggml_relu(ctx0, ggml_sub(ctx0, x, cutoff_x));'
+    - '}'
+    desc: 应用高斯TopK激活稀疏化，基于均值和标准差计算截断值，通过ReLU保留显著激活。
+    line: 204-210
+    name: gaussian_topk
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::altup_compute_router_modalities(ggml_tensor
+      * x, int il) {
+    - '    ggml_tensor * router_inputs = build_norm(x, model.layers[il].altup_router_norm,
+      NULL, LLM_NORM_RMS, il);'
+    - '    '
+    - '    router_inputs = ggml_scale(ctx0, router_inputs, 1.0f / (float) n_embd);'
+    - '    '
+    - '    ggml_tensor * output = ggml_mul_mat(ctx0, model.layers[il].altup_router,
+      router_inputs);'
+    - '    return ggml_tanh(ctx0, output);'
+    - '}'
+    desc: 计算路由模态权重，对输入进行归一化、缩放、线性变换和tanh激活，输出各路径的加权系数。
+    line: 215-223
+    name: altup_compute_router_modalities
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::altup_predict(ggml_tensor * cur, int il)
+      {
+    - '    ggml_tensor * activated  = view_2d_slice(cur, i_altup_act);'
+    - '    ggml_tensor * modalities = altup_compute_router_modalities(activated, il);'
+    - '    cb(modalities, "modalities", il);'
+    - '    '
+    - '    ggml_tensor * all_coefs = build_lora_mm(model.layers[il].altup_predict_coef,
+      modalities);'
+    - '    cb(all_coefs, "all_coefs", il);'
+    - '    all_coefs = ggml_reshape_3d(ctx0, all_coefs, n_altup, n_altup, n_tokens);'
+    - '    '
+    - '    ggml_tensor * cur_permuted = ggml_cont(ctx0, ggml_permute(ctx0, cur, 1,
+      2, 0, 3));'
+    - '    ggml_tensor * predictions  = ggml_mul_mat(ctx0, cur_permuted, all_coefs);'
+    - '    '
+    - '    predictions = ggml_cont(ctx0, ggml_permute(ctx0, predictions, 0, 2, 1,
+      3));'
+    - '    predictions = ggml_add(ctx0, predictions, cur);'
+    - '    cb(predictions, "predictions", il);'
+    - '    '
+    - '    return predictions;'
+    - '}'
+    desc: 实现多路径预测，使用路由模态生成系数矩阵，对当前路径表示进行线性组合预测，并添加残差连接。
+    line: 227-241
+    name: altup_predict
+  - code:
+    - ggml_tensor * llm_build_gemma3n_iswa::altup_correct(ggml_tensor * predictions,
+      ggml_tensor * activated, int il) {
+    - '    ggml_tensor * modalities = altup_compute_router_modalities(activated, il);'
+    - '    cb(modalities, "modalities", il);'
+    - '    '
+    - '    ggml_tensor * active_prediction = view_2d_slice(predictions, i_altup_act);'
+    - '    ggml_tensor * innovation        = ggml_sub(ctx0, activated, active_prediction);'
+    - '    cb(innovation, "innovation", il);'
+    - '    '
+    - '    ggml_tensor * all_coefs = build_lora_mm(model.layers[il].altup_correct_coef,
+      modalities);'
+    - '    all_coefs               = ggml_scale_bias(ctx0, all_coefs, 1.0f, 1.0f);'
+    - '    cb(all_coefs, "all_coefs", il);'
+    - '    all_coefs = ggml_transpose(ctx0, all_coefs);'
+    - '    all_coefs = ggml_cont_3d(ctx0, all_coefs, 1, n_tokens, n_altup);'
+    - '    '
+    - '    innovation              = ggml_repeat_4d(ctx0, innovation, n_embd, n_tokens,
+      n_altup, 1);'
+    - '    ggml_tensor * corrected = ggml_mul(ctx0, innovation, all_coefs);'
+    - '    corrected               = ggml_add(ctx0, corrected, predictions);'
+    - '    cb(corrected, "corrected", il);'
+    - '    '
+    - '    return corrected;'
+    - '}'
+    desc: 实现多路径修正机制，计算创新项，与系数矩阵结合后对预测结果进行调整。
+    line: 246-263
+    name: altup_correct
+  name: llm_build_gemma3n_iswa
+desc: 该文件实现了Gemma3n-ISWA（Iterative Self-Weighted Alternating）模型的基础构建逻辑，包括多路径（altup）表示的堆叠、逐层处理（自注意力、Laurel模块、前馈网络和交替修正机制）、以及最终的多路径融合输出。文件的核心构建函数负责将输入嵌入与逐层输入投影结合，通过若干辅助函数实现路径间的预测、修正和归一化操作，最终生成模型的logits输出。
+file: src/models/gemma3n-iswa.cpp
+funcs: []

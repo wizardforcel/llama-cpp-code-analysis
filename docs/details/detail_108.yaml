@@ -1,0 +1,441 @@
+code_map:
+- tests/
+- ├── test-arg-parser.cpp
+- │   └── main()
+- │       ├── 参数注册防重检测（seen_args/seen_env_vars 集合扫描）
+- │       ├── 参数顺序校验（短参数必须在前）
+- │       ├── 无效输入测试（缺值、类型错误、非法枚举、跨示例参数、否定参数）
+- │       ├── 有效参数解析测试（-m, -t, --verbose, --predict, --batch-size）
+- │       ├── CSV 多值解析（--lora 带引号转义与嵌套逗号）
+- │       ├── 环境变量测试（LLAMA_ARG_* 系列、优先级覆盖、否定语义）
+- │       └── 远程下载测试（HTTP 200/404、max_size 限制异常）
+- ''
+- ├── test-llama-grammar.cpp
+- │   └── main()
+- │       ├── 手工语法构建（symbol_ids 表 + 13 条 rules 规则集）
+- │       ├── llama_grammar_init_impl() 实例化
+- │       ├── 语法栈状态验证（llama_grammar_get_stacks 逐元素比对 type/value）
+- │       ├── 候选拒绝测试（23 个 code point 候选 × 8 种栈状态的拒绝矩阵）
+- │       └── 资源释放（delete[] code_points + llama_grammar_free_impl）
+- ''
+- ├── test-mtmd-c-api.c
+- │   └── main()
+- │       ├── mtmd_context_params_default() 默认图像标记检查
+- │       ├── mtmd_test_create_input_chunks() 创建混合输入
+- │       ├── 文本块处理（mtmd_input_chunk_get_tokens_text 逐 token 校验）
+- │       ├── 图像块处理（nx/ny/id 空间元信息获取）
+- │       └── mtmd_input_chunks_free() 资源释放验证
+- ''
+- ├── test-opt.cpp
+- │   ├── helper_ctx_data 结构体（优化器测试上下文容器）
+- │   ├── 基础设施
+- │   │   ├── helper_get_test_opt_pars()（清零 AdamW 参数，lr=1）
+- │   │   ├── helper_get_ctx_data()（构建数据集、静态/计算图上下文、后端 buffer）
+- │   │   ├── helper_free_ctx_data()（资源释放链）
+- │   │   └── helper_after_test*() 结果打印与统计家族
+- │   ├── 核心测试函数
+- │   │   ├── test_dataset()（分片/shuffle/批次对齐验证）
+- │   │   ├── test_grad()（梯度累积历史轨迹追踪）
+- │   │   ├── test_forward_backward()（前后向结果、loss/uncertainty 统计、高层 epoch vs 低层手工循环对拍）
+- │   │   ├── test_epoch_vs_fit()（ggml_opt_epoch vs ggml_opt_fit 权重一致性）
+- │   │   ├── test_idata_split()（前 2/3 训练 + 后 1/3 验证的分流测试）
+- │   │   ├── test_gradient_accumulation()（SUM/MEAN loss × 不同 physical batch 的微观梯度行为）
+- │   │   └── test_regression()（带噪声线性回归拟合，验证 a*x+b 参数收敛）
+- │   └── main()（后端遍历：ggml_backend_load_all → 按 optimizer×device 组合执行 → SKIPPED/OK
+  判定）
+- ''
+- ├── test-reasoning-budget.cpp
+- │   ├── test_reasoning_budget()
+- │   │   ├── mock vocab 与 logits 构造（基于 token ID 的 logf 值）
+- │   │   ├── 状态机跟踪（finite_count==1 识别强制触发）
+- │   │   └── 5 大场景（自然结束、预算耗尽、立即激活、无配置、计数后强制）
+- │   ├── test_utf8_boundary_detection()
+- │   │   └── common_utf8_is_complete 边界测试（完整/半截/混合 ASCII 与多字节）
+- │   └── main()（测试用例调度与结果汇总）
+- ''
+- └── test-rope.cpp
+- 随机数据工具（frand/irand/get_random_dims/get_random_tensor_f32）
+- ggml_graph_compute_helper（图执行工作区管理）
+- main()
+- 标准/NeoX 模式（ggml_rope + 1D 位置）
+- MROPE/VISION/IMROPE 模式（ggml_rope_multi + 4D 位置扩展 + sections 分区）
+- Context Swap 验证（r0→r1 路径 vs r2 直接路径的数值等价性）
+- 相对误差校验（sum0/sum1/diff 统计，阈值 1e-4）
+exercises:
+- contents:
+  - 阅读 `tests/test-arg-parser.cpp` 第 1-160 行与 `common/arg.cpp` 中的参数解析实现。
+  - 回答问题：
+  - 1. 为什么测试要求短参数必须排在长参数之前？这防止了哪类解析歧义？
+  - 2. 在 CSV 解析测试中，`"file3""3"".gguf"` 为什么能被正确解析为包含双引号的文件名？
+  - 3. 如果要添加一个新的布尔类型参数 `--feature-x`，需要注意哪些与 `LLAMA_ARG_NO_*` 环境变量的兼容性问题？
+  'no': 1
+  title: 命令行解析器的边界探索
+- contents:
+  - 深入分析 `tests/test-llama-grammar.cpp` 中手工构造的 13 条规则（rule 0-12）。
+  - 动手任务：
+  - 1. 在纸上画出 `root`（rule 0）→ `root_1`（rule 1）→ `expr`（rule 2）的完整推导树，标注每个 `LLAMA_GRETYPE_*`
+    元素在栈中的行为。
+  - 2. 解释为什么栈中同时存在 `CHAR 61`（'='）和 `RULE_REF 7`（表达式后续）时，候选拒绝列表会排除 37-47 号 code point。
+  - 3. 如果要把语法改为支持 `==` 双字符比较符，需要修改哪些 rule 和哪些预期拒绝表？
+  'no': 2
+  title: 语法栈的状态机推演
+- contents:
+  - 阅读 `tests/test-opt.cpp` 的 `test_gradient_accumulation()` 函数（616-712 行）。
+  - 设计实验：
+  - 1. 假设 `ndata=6`，`nbatch_physical=2`，`loss_type=SUM`，手动计算第 2 个 epoch 结束后 `weights`
+    的理论值，并与代码中的断言比对。
+  - 2. 修改代码让 `nbatch_physical=3`，重新编译运行测试，观察哪些断言会失败，并解释为什么梯度累积的数学期望会发生变化。
+  - 3. 在 `helper_get_test_opt_pars` 中将 `beta1` 改为 0.9，预测 `test_forward_backward` 中
+    `weights_after_forward_backward` 的期望值会如何变化？
+  'no': 3
+  title: 优化器梯度累积的数学验证
+- contents:
+  - 研究 `tests/test-rope.cpp` 第 108-226 行的测试逻辑。
+  - 思考问题：
+  - 1. 为什么 `r0 -> r1`（先编码到 100 再转回 -67）在数学上严格等于 `r2`（直接编码到 33）？用旋转矩阵的乘法性质解释。
+  - 2. 如果 `n_past_0=100` 且 `n_past_2=200`（即未来位置在前），测试是否仍然会通过？为什么？
+  - 3. MROPE 的 `sections={16, 24, 24, 0}` 意味着什么？如果将其改为 `{32, 32, 0, 0}` 会对位置编码的维度产生什么影响？
+  'no': 4
+  title: RoPE 的 Context Swap 数学证明
+- contents:
+  - 阅读 `tests/test-mtmd-c-api.c` 与 `tools/mtmd/mtmd.h` 中的相关定义。
+  - 完成以下任务：
+  - 1. 绘制 `mtmd_input_chunks` 从 `mtmd_test_create_input_chunks()` 到 `mtmd_input_chunks_free()`
+    的完整生命周期状态图，标注所有权的转移点。
+  - 2. 如果忘记调用 `mtmd_input_chunks_free()`，在 32 位嵌入式设备上可能导致多长时间的内存泄漏？（假设每个图像 chunk 占用
+    256x256x3 float 内存）
+  - 3. 设计一个新的测试用例：验证当混合输入中图像 chunk 排在文本 chunk 之前时，`mtmd_input_chunk_get_tokens_image()`
+    是否仍然返回正确的 `nx/ny` 值。
+  'no': 5
+  title: 多模态 C API 的所有权审计
+- contents:
+  - 结合 `tests/test-reasoning-budget.cpp` 与 `common/unicode.cpp` 中的 UTF-8 处理逻辑。
+  - 场景设计：
+  - 1. 假设 reasoning budget 强制触发时，最后一个完整 token 恰好是一个 4 字节 UTF-8 字符（如 emoji）的中间字节，系统应该如何处理？描述
+    `common_utf8_is_complete` 在此时的保护作用。
+  - 2. 修改 `test_reasoning_budget` 的 Test 2（budget exhausted forcing），将 `forced_tokens`
+    改为包含多字节 UTF-8 字符的 token 序列，编写新的断言确保强制阶段结束后输出流仍是合法的 UTF-8。
+  - 3. 为什么测试中使用 `logf((float)(j+1))` 作为 mock logits 而不是随机值？这如何帮助验证 `-INFINITY` 的检测逻辑？
+  'no': 6
+  title: 推理预算与 UTF-8 的流式协同
+learning_targets:
+- 掌握 `common_params_parse` 的防御性测试策略：重复参数检测、类型校验、环境变量覆盖与优先级规则
+- 理解 `llama_grammar` 的手工构造测试方法：符号表建立、语法栈状态追踪与候选 token 的精确拒绝机制
+- 学会使用 `mtmd` C API 处理多模态输入：统一 chunk 抽象、文本与图像块的差异化访问及资源生命周期管理
+- 深入 `ggml-opt` 优化器测试体系：数据集分片、梯度累积、前向/反向传播验证、高级 API（epoch）与低级 API（fit）的一致性对拍
+- 掌握推理控制组件的测试方法：reasoning budget 状态机的强制触发验证与 UTF-8 流式边界安全性检查
+- 理解 RoPE 的数值正确性验证：多模式（Standard/NeoX/MROPE/Vision/IMROPE）、路径无关性（context swap）与相对误差容忍度控制
+life_analogy:
+- 想象 llama.cpp 的测试体系是一座**大型国际机场的安检与调度中心**：
+- '- **test-arg-parser** = **行李分拣系统的入口安检**：'
+- '  - 重复参数检测 = 防止两个行李牌贴同一个箱子（冲突检测）'
+- '  - 环境变量 vs 命令行 = VIP 通道与普通通道的优先级仲裁'
+- '  - 远程下载测试 = 行李 X 光机的尺寸/重量超标拦截'
+- '- **test-llama-grammar** = **海关边检的护照核验**：'
+- '  - 手工语法规则 = 预先录入的签证类型数据库'
+- '  - 语法栈 = 边检官员脑中记住的当前查验流程（先看护照→再看签证→最后盖章）'
+- '  - 候选拒绝 = 精确识别哪些旅客证件类型不被允许入境'
+- '- **test-mtmd-c-api** = **货运站的集装箱分拣**：'
+- '  - 统一 chunk = 标准尺寸的集装箱（文本/图像混装）'
+- '  - 类型检查 = 开箱查验是普货（文本 token）还是危险品（图像元数据）'
+- '- **test-opt** = **飞行学员的模拟训练舱**：'
+- '  - helper_ctx_data = 每次训练前重置的座舱环境（数据集、仪表盘、油门）'
+- '  - Gradient Accumulation = 多个教官指令的叠加效果验证'
+- '  - Epoch vs Fit = 自动驾驶仪与手动驾驶的操作结果一致性校验'
+- '  - Regression = 最终考核：能否让飞机沿预定航线（a*x+b）平稳飞行'
+- '- **test-reasoning-budget** = **飞机燃油管理系统**：'
+- '  - 预算耗尽 = 燃油报警触发时强制返航（forcing token）'
+- '  - UTF-8 边界 = 确保无线电通讯在跨时区（多字节字符）时不会断在半个字'
+- '- **test-rope** = **惯性导航系统的陀螺仪校准**：'
+- '  - Context Swap = 飞机掉头后，航迹推算应与从新起点直接计算完全一致'
+- '  - 多模式（MROPE/VISION）= 经度/纬度/高度/时间的多维坐标系同时校准'
+'no': 107
+summary:
+- concept: '`common_params_parse`'
+  desc: 命令行参数解析的防御性测试，覆盖无效输入、环境变量覆盖与 CSV 多值解析
+- concept: '`LLAMA_ARG_*` 环境变量'
+  desc: 第二命令行通道，测试 CLI 优先级高于环境变量，支持否定语义（如 LLAMA_ARG_NO_PERF）
+- concept: '`llama_grammar_init_impl`'
+  desc: 从手工构造的 symbol_ids 和 rules 实例化可运行的语法状态机
+- concept: '`llama_grammar_get_stacks`'
+  desc: 暴露语法推导栈的当前状态，用于验证解析器在特定位置的内部状态正确性
+- concept: '`llama_grammar_reject_candidates_for_stack`'
+  desc: 基于当前栈状态精确过滤候选 token，实现语法约束的逐字符拒绝机制
+- concept: '`mtmd_input_chunk`'
+  desc: 多模态输入的统一抽象，支持文本 token 序列与图像空间元数据（nx/ny/id）的差异化访问
+- concept: '`helper_ctx_data`'
+  desc: 优化器测试的上下文容器，封装数据集、张量、后端 buffer 与结果对象的全生命周期
+- concept: '`ggml_opt_epoch` vs `ggml_opt_fit`'
+  desc: 高层训练循环 API 与低层拟合 API 的语义一致性对拍验证
+- concept: '`test_gradient_accumulation`'
+  desc: 验证不同 physical batch size 与 loss 类型（SUM/MEAN）下的梯度累积数学正确性
+- concept: '`test_regression`'
+  desc: 端到端验证：带噪声线性回归数据拟合，测试优化器能否收敛到真实参数 a 和 b
+- concept: '`common_reasoning_budget`'
+  desc: 推理预算采样器的状态机，通过强制将 logits 设为 -inf 实现思考链条的硬性截断
+- concept: '`common_utf8_is_complete`'
+  desc: UTF-8 流式安全边界检测，确保多字节字符不会在 chunk 边界处被截断
+- concept: '`ggml_rope` 路径无关性'
+  desc: Context Swap 性质：rope(x, p0)→rope(r0, p1) ≡ rope(x, p2)，验证位置编码的线性对称性
+- concept: '`ggml_rope_multi`'
+  desc: 多维 RoPE 支持（MROPE/VISION/IMROPE），处理 4D 位置张量与 sections 分区
+- concept: 相对误差校验（rel err）
+  desc: RoPE 测试接受 1e-4 级别的浮点误差，通过 sum0/sum1/diff 统计量验证数值一致性
+units:
+- codes:
+  - file: tests/test-arg-parser.cpp
+    line: 1-160
+    method_or_func: __main__
+  name: 测试命令行竞技场 —— 从重复参数侦察到远程下载拦截
+  'no': 1
+  points:
+  - '**为什么要先手撕重复参数？**'
+  - '- `test-arg-parser.cpp` 一开始不急着跑推理，而是先对所有 `LLAMA_EXAMPLE_*` 场景做参数注册检查'
+  - '- 通过 `seen_args` / `seen_env_vars` 两个 `unordered_set`，把同一个命令行参数或环境变量被重复绑定的问题提前抓出来'
+  - '- 本质上是在给整个 CLI 生态做“重名路口排查”，避免不同 handler 抢同一个入口'
+  - '**为什么参数还有顺序要求？**'
+  - '- 代码额外检查短参数必须排在长参数之前，连 `args_neg` 这种否定参数也要遵守同样规则'
+  - '- 这像是车站安检口的排队规则：先短后长，既便于解析器扫描，也减少歧义'
+  - '**`common_params_parse()` 的“边界感”从哪来？**'
+  - '- 测试覆盖了缺值、类型错误、非法枚举、跨示例不可用参数、否定参数等多类坏输入'
+  - '- 说明 `common_params_parse()` 不只是“能解析”，还必须“会拒绝”非法输入'
+  - '**CSV 参数解析是隐藏考点**'
+  - '- `--lora` 的多值输入不是简单逗号切分，而是能识别引号包裹、转义引号、逗号嵌套'
+  - '- 这体现了解析器对“参数是一个结构化字符串而非裸字符串”的理解'
+  - '**环境变量是第二命令行**'
+  - '- 测试显式验证 `LLAMA_ARG_MODEL`、`LLAMA_ARG_THREADS` 等环境变量可生效'
+  - '- 还验证了“命令行覆盖环境变量”的优先级，以及否定环境变量如 `LLAMA_ARG_NO_PERF` 的兼容路径'
+  - '**远程下载函数也不是边角料**'
+  - '- `common_remote_get_content()` 被直接拿来测 200、404、超大响应限制'
+  - '- 说明 llama.cpp 的参数系统天然和远程模型获取能力绑在一起，不只是命令行糖衣'
+- codes:
+  - file: tests/test-llama-grammar.cpp
+    line: 12-264
+    method_or_func: __main__
+  name: 手工铸造语法王国 —— 规则、栈与候选拒绝的精准审判
+  'no': 2
+  points:
+  - '**为什么这个测试要“手工搭文法”？**'
+  - '- `test-llama-grammar.cpp` 不是从文本规则自动解析，而是直接构造 `parsed_grammar.symbol_ids` 和 `rules`'
+  - '- 这相当于先人工铸好一台语法机器的零件，再验证装配后的机器是否严格按图纸运转'
+  - '**`llama_grammar_init_impl()` 是点火开关**'
+  - '- 它把手工构造的 grammar rules 和 symbol 表变成真正可运行的 `llama_grammar` 对象'
+  - '- 测试重点不是“能不能编译”，而是编译后能否稳定暴露正确的内部状态'
+  - '**语法栈为什么是核心观察窗口？**'
+  - '- `llama_grammar_get_stacks()` 暴露当前推导栈，测试逐一比对栈中元素的 `type` 和 `value`'
+  - '- 这相当于检查编译器在某一时刻脑子里到底记住了哪些“待匹配符号”'
+  - '**候选 token 拒绝机制像门卫**'
+  - '- `llama_grammar_reject_candidates_for_stack()` 会对一堆 code point 候选进行筛选'
+  - '- 测试用 23 个连续 code point 候选去验证哪些该被拦下，精确对应某条栈状态下的合法输入空间'
+  - '**为什么值要这么“碎”？**'
+  - '- 预期栈、预期拒绝表都被硬编码得非常细，说明语法系统的正确性依赖高度确定性的状态推进'
+  - '- 这类测试是在守护 grammar 模块最底层、最容易被后续优化悄悄改坏的部分'
+  - '**资源释放同样是语义一部分**'
+  - '- 手动 `delete[] candidate.code_points` 和 `llama_grammar_free_impl()` 明示了 grammar/candidate
+    生命周期管理边界'
+  - '- 这对 C ABI 风格 API 尤其重要，测试也在守护内存所有权约定'
+- codes:
+  - file: tests/test-mtmd-c-api.c
+    line: 9-72
+    method_or_func: __main__
+  name: 多模态积木试装间 —— 文本块与图像块的统一体检
+  'no': 3
+  points:
+  - '**`mtmd_context_params_default()` 是入口钥匙**'
+  - '- 测试先打印默认 `image_marker`，确认多模态上下文在未定制时的默认标识符'
+  - '- 这类似先检查翻译机的默认语言提示词，确认它一开箱就能识别“这里要插图片”'
+  - '**`mtmd_test_create_input_chunks()` 是数据装配线**'
+  - '- 它把文本与图像混排输入拆成统一 chunk 序列，供后续遍历'
+  - '- 测试关心的是：这个装配线既能产出块，而且每块必须可被再次取回'
+  - '**文本块与图像块共享同一条流水带**'
+  - '- 对每个 chunk 调 `mtmd_input_chunk_get_type()`，再按类型走不同访问器'
+  - '- 这体现出 mtmd 的抽象重点：统一容器，异构内容'
+  - '**文本 chunk 的重点是 token 序列**'
+  - '- `mtmd_input_chunk_get_tokens_text()` 返回 token 数组和长度'
+  - '- 测试逐 token 校验非负，确保文本侧已经彻底切到模型可消费的 token 世界'
+  - '**图像 chunk 的重点是空间元信息**'
+  - '- 图像侧不仅要看 token 数，还要看 `nx/ny/id`'
+  - '- 这说明图像 token 不是“一维标签串”，而是带有分辨率、身份标识的空间结构'
+  - '**释放资源不是形式动作**'
+  - '- `mtmd_input_chunks_free()` 验证 C API 的所有权边界'
+  - '- 对多模态输入这种“大块内存 + 多次传递”的结构来说，释放路径必须和创建路径一样可靠'
+- codes:
+  - file: tests/test-opt.cpp
+    line: 35-53
+    method_or_func: helper_ctx_data.helper_ctx_data()
+  - file: tests/test-opt.cpp
+    line: 1-27
+    method_or_func: __main__
+  - file: tests/test-opt.cpp
+    line: 29-31
+    method_or_func: almost_equal()
+  - file: tests/test-opt.cpp
+    line: 57-69
+    method_or_func: helper_get_test_opt_pars()
+  - file: tests/test-opt.cpp
+    line: 72-159
+    method_or_func: helper_get_ctx_data()
+  - file: tests/test-opt.cpp
+    line: 161-170
+    method_or_func: helper_free_ctx_data()
+  - file: tests/test-opt.cpp
+    line: 172-174
+    method_or_func: print_ok()
+  - file: tests/test-opt.cpp
+    line: 176-185
+    method_or_func: helper_after_test()
+  - file: tests/test-opt.cpp
+    line: 187-193
+    method_or_func: print_ok()
+  - file: tests/test-opt.cpp
+    line: 196-267
+    method_or_func: test_dataset()
+  - file: tests/test-opt.cpp
+    line: 294-337
+    method_or_func: test_grad()
+  - file: tests/test-opt.cpp
+    line: 339-347
+    method_or_func: helper_after_test_forward_backward()
+  - file: tests/test-opt.cpp
+    line: 349-453
+    method_or_func: test_forward_backward()
+  - file: tests/test-opt.cpp
+    line: 480-513
+    method_or_func: test_epoch_vs_fit()
+  - file: tests/test-opt.cpp
+    line: 515-521
+    method_or_func: helper_after_test_idata_split()
+  - file: tests/test-opt.cpp
+    line: 523-601
+    method_or_func: test_idata_split()
+  - file: tests/test-opt.cpp
+    line: 603-614
+    method_or_func: helper_after_test_gradient_accumulation()
+  - file: tests/test-opt.cpp
+    line: 616-712
+    method_or_func: test_gradient_accumulation()
+  - file: tests/test-opt.cpp
+    line: 714-716
+    method_or_func: __main__
+  - file: tests/test-opt.cpp
+    line: 718-724
+    method_or_func: helper_get_regression_opt_pars()
+  - file: tests/test-opt.cpp
+    line: 726-824
+    method_or_func: test_regression()
+  - file: tests/test-opt.cpp
+    line: 826-854
+    method_or_func: test_backend()
+  - file: tests/test-opt.cpp
+    line: 956-1037
+    method_or_func: __main__
+  - file: tests/test-opt.cpp
+    line: 908-955
+    method_or_func: test_backend()
+  name: 优化器试炼场 —— 从数据分片到回归收敛的全链路压测
+  'no': 4
+  points:
+  - '**`helper_ctx_data` 像一间实验准备室**'
+  - '- 它把 dataset、静态图上下文、计算图上下文、优化器参数、结果对象、后端 buffer 全部装在一个结构里'
+  - '- 好处是每个测试子函数都像进了一间设备齐全的实验室，不必临时东拼西凑'
+  - '**`helper_get_ctx_data()` 承担了绝大多数“布景工作”**'
+  - '- 构造监督数据集、无监督数据集、输入/权重/输出张量、后端 buffer、优化器上下文'
+  - '- 这意味着测试真正关心的是优化器行为，而不是被初始化样板代码淹没'
+  - '**为什么要自定义 `helper_get_test_opt_pars()`？**'
+  - '- 测试把 AdamW 的 `beta1/beta2/eps/wd` 清零、把学习率设为 1，是为了让数学结果可预测'
+  - '- 这相当于把优化器调回“教学模型”，方便断言每一步更新是否符合手算结果'
+  - '**`test_dataset()` 验证的是“取批”与“洗牌”的可信度**'
+  - '- 它分别测试不同 shard、不同 batch、有无 shuffle 三种组合'
+  - '- 核心不是性能，而是：数据标签对应关系不能乱、每个样本该出现一次就只能出现一次'
+  - '**`test_grad()` 盯住的是梯度累计轨迹**'
+  - '- 每次喂一个样本，取回 `weights` 的累加梯度写入 `grad_history`'
+  - '- 该测试把梯度累积看成一条时间序列，验证它是否按预期逐个累加'
+  - '**`test_forward_backward()` 是主干剧情**'
+  - '- 它比较前向结果、前向+反向结果、权重变化、loss/uncertainty 的统计值'
+  - '- 还在高层 `ggml_opt_epoch()` 与低层手工循环之间对拍，确保两条 API 路径语义一致'
+  - '**`test_epoch_vs_fit()` 像两把刻度尺互校**'
+  - '- 一个走高层 epoch 接口，一个走低层 `ggml_opt_fit()`'
+  - '- 最终只比一个数：权重是否完全一致，直接验证“便捷封装没有偷偷换逻辑”'
+  - '**`test_idata_split()` 检查训练/验证分流**'
+  - '- 前 2/3 用于反传训练，后 1/3 只前向评估'
+  - '- 这模拟了真实训练中 train/valid 切分后结果对象、loss 统计、参数更新必须分明'
+  - '**`test_gradient_accumulation()` 是优化器微观行为审判庭**'
+  - '- 分别测 `SUM` / `MEAN` 两种 loss 和不同 `physical batch size`'
+  - '- 官司焦点是：梯度到底是按样本求和还是按批归一，权重更新是否严格匹配理论值'
+  - '**`test_regression()` 把测试拉回真正学习任务**'
+  - '- 用带噪声的线性回归数据去拟合 `a*x + b`'
+  - '- 这是从“算子正确”跨到“能学出模型参数”的关键一跳'
+  - '**`main()` 的后端遍历策略很有工程味**'
+  - '- 先 `ggml_backend_load_all()` 拉齐所有设备，再按 optimizer×device 组合全部过一遍'
+  - '- 若某后端不支持对应优化 op，就明确 `SKIPPED`，区分“未支持”与“做错了”'
+- codes:
+  - file: tests/test-reasoning-budget.cpp
+    line: 19-108
+    method_or_func: test_reasoning_budget()
+  - file: tests/test-reasoning-budget.cpp
+    line: 111-129
+    method_or_func: test_utf8_boundary_detection()
+  - file: tests/test-reasoning-budget.cpp
+    line: 132-188
+    method_or_func: main()
+  name: 推理节制阀与字符闸门 —— 预算强制落幕与 UTF-8 完整性哨兵
+  'no': 5
+  points:
+  - '**`test_reasoning_budget()` 测的是“什么时候该闭嘴”**'
+  - '- 它构造 start/end/forced token 和预算值，观察推理预算采样器何时开始强制输出'
+  - '- 本质上是在验证一套“思考额度用完后，必须收尾”的行为约束'
+  - '**为什么用 mock vocab？**'
+  - '- 测试没有加载真实模型，而是手工构造一段 token 词表和 logits'
+  - '- 这样可以把 sampler 状态机和真实模型行为彻底解耦，专盯控制逻辑'
+  - '**有限 logit 数就是强制开关的灯**'
+  - '- 当 forcing 生效时，除了一个 token 外其它 logit 都应变成 `-inf`'
+  - '- 测试正是通过 `finite_count == 1` 来识别强制阶段开始的'
+  - '**5 个场景拼出完整状态机**'
+  - '- 自然结束、预算耗尽、立即激活、未配置 start/end、计数后强制，这 5 组覆盖了 reasoning budget 的主要分支'
+  - '- 说明这个 sampler 不是简单截断，而是有明确的“何时开始逼停”的状态跃迁规则'
+  - '**`test_utf8_boundary_detection()` 是流式文本的安全闸**'
+  - '- 它验证 `common_utf8_is_complete()` 对完整字符、半截多字节、混合文本的判断'
+  - '- 这对流式输出尤其关键，因为一个 UTF-8 字符可能被拆在两次回调之间'
+  - '**ASCII + 多字节混排是重点边界**'
+  - '- 比如 `hello\xC3` 应判定为不完整，而 `hello\xC3\xA9` 判定完整'
+  - '- 这个测试守护的是“模型输出流最后几个字节能否安全渲染”的底线'
+- codes:
+  - file: tests/test-rope.cpp
+    line: 43-45
+    method_or_func: frand()
+  - file: tests/test-rope.cpp
+    line: 47-50
+    method_or_func: irand()
+  - file: tests/test-rope.cpp
+    line: 52-58
+    method_or_func: get_random_dims()
+  - file: tests/test-rope.cpp
+    line: 60-96
+    method_or_func: get_random_tensor_f32()
+  - file: tests/test-rope.cpp
+    line: 98-106
+    method_or_func: ggml_graph_compute_helper()
+  - file: tests/test-rope.cpp
+    line: 108-226
+    method_or_func: main()
+  name: 旋转坐标试验塔 —— 五种 RoPE 模式的旋转变换勘误
+  'no': 6
+  points:
+  - '**RoPE 测试为什么强调“路径无关”？**'
+  - '- `main()` 构造了 `r0 -> r1` 与直接 `r2` 两条路径，结果理当一致'
+  - '- 这验证的是旋转位置编码的线性对称性：先转再反向“忘记过去”，应等于从最近位置直接编码'
+  - '**标准 RoPE 与 NeoX 是最基础的两种姿态**'
+  - '- 前两个 mode 分别对应 `GGML_ROPE_TYPE_NORMAL` 与 `GGML_ROPE_TYPE_NEOX`'
+  - '- 测试用同一输入、不同模式检查“context swap”后能否对齐参考结果'
+  - '**MROPE / VISION / IMROPE 属于多维位置家族**'
+  - '- 后三个 mode 走 `ggml_rope_multi()`，位置张量不再是单一标量序列，而是 4 维扩展'
+  - '- 这反映了多模态、视觉或新型插值模式下位置编码不再只是一条时间轴'
+  - '**测试手工堆出了一个小型数值实验室**'
+  - '- `frand()`、`irand()`、`get_random_dims()`、`get_random_tensor_f32()` 生成随机输入'
+  - '`ggml_graph_compute_helper()` 负责为计算图分配临时工作区并执行'
+  - '**误差比对方式很工程化**'
+  - '- 不是逐点严格相等，而是统计 `sum0/sum1/diff` 的相对误差'
+  - '- 这说明 RoPE 测试接受浮点微小偏差，但必须控制在 `1e-4` 级别以内'
+  - '**这个文件守护的是推理正确性的“角度”**'
+  - '- 很多模型一旦 RoPE 错了，输出表面还能生成文本，但语义会迅速漂移'
+  - '- 所以这里专测数值一致性，防止位置编码细节在后端演进中被悄悄带偏'

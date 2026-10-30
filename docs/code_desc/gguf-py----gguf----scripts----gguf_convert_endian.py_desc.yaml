@@ -1,0 +1,193 @@
+classes: []
+desc: 该文件实现了一个将 GGUF (GPT-Generated Unified Format) 模型文件的字节序（大端/小端）进行转换的命令行工具，支持通过命令行参数指定目标字节序，并提供
+  dry-run 模式用于预览，在真实转换前会进行安全确认，且针对不同量化类型实现了专门的字节交换逻辑。
+file: gguf-py/gguf/scripts/gguf_convert_endian.py
+funcs:
+- code:
+  - 'def byteswap_noop(tensor, block_offs):'
+  - '    # this function is used when byteswapping is not needed'
+  - '    pass'
+  desc: 空操作函数，用于在不需要进行字节交换的量化类型（如 MXFP4、NVFP4）中占位，直接跳过处理。
+  line: 24-26
+  name: byteswap_noop
+- code:
+  - 'def byteswap_q4_0(tensor, block_offs):'
+  - '    # Each block_q4_0 consists of an f16 delta (scaling factor) followed by 16
+    int8 quantizations.'
+  - ''
+  - '    # Byte-Swap f16 sized delta field'
+  - '    delta = tensor.data[block_offs:block_offs + 2].view(dtype=np.uint16)'
+  - '    delta.byteswap(inplace=True)'
+  desc: 针对 Q4_0 量化类型的专用字节交换函数，只交换位于数据块开头的 f16 缩放因子（delta 字段）。
+  line: 28-35
+  name: byteswap_q4_0
+- code:
+  - 'def byteswap_q8_0(tensor, block_offs):'
+  - '    # Each block_q8_0 consists of an f16 delta (scaling factor) followed by 32
+    int8 quantizations.'
+  - ''
+  - '    # Byte-Swap f16 sized delta field'
+  - '    delta = tensor.data[block_offs:block_offs + 2].view(dtype=np.uint16)'
+  - '    delta.byteswap(inplace=True)'
+  desc: 针对 Q8_0 量化类型的专用字节交换函数，只交换位于数据块开头的 f16 缩放因子（delta 字段）。
+  line: 38-45
+  name: byteswap_q8_0
+- code:
+  - 'def byteswap_q4_k(tensor, block_offs):'
+  - '    # Each block_q4_k consists of 2 f16 values followed by 140 int8 values.'
+  - ''
+  - '    # Byte-Swap f16 sized fields'
+  - '    delta = tensor.data[block_offs:block_offs + 2].view(dtype=np.uint16)'
+  - '    delta.byteswap(inplace=True)'
+  - ''
+  - '    delta = tensor.data[block_offs + 2:block_offs + 4].view(dtype=np.uint16)'
+  - '    delta.byteswap(inplace=True)'
+  desc: 针对 Q4_K 量化类型的专用字节交换函数，交换数据块中两个独立的 f16 字段（delta 字段）。
+  line: 48-58
+  name: byteswap_q4_k
+- code:
+  - 'def byteswap_q6_k(tensor, block_offs):'
+  - '    # Each block_q6_k consists of 208 int8 values followed by 1 f16 value.'
+  - ''
+  - '    # Byte-Swap f16 sized field'
+  - '    delta = tensor.data[block_offs + 208:block_offs + 210].view(dtype=np.uint16)'
+  - '    delta.byteswap(inplace=True)'
+  desc: 针对 Q6_K 量化类型的专用字节交换函数，交换数据块中位于偏移 208 字节处的 f16 字段（delta 字段）。
+  line: 61-68
+  name: byteswap_q6_k
+- code:
+  - 'def convert_byteorder(reader: gguf.GGUFReader, args: argparse.Namespace) -> None:'
+  - '    file_endian = reader.endianess.name'
+  - '    if reader.byte_order == ''S'':'
+  - '        host_endian = ''BIG'' if file_endian == ''LITTLE'' else ''LITTLE'''
+  - '    else:'
+  - '        host_endian = file_endian'
+  - '    order = host_endian if args.order == "native" else args.order.upper()'
+  - '    logger.info(f"* Host is {host_endian} endian, GGUF file seems to be {file_endian}
+    endian")'
+  - '    if file_endian == order:'
+  - '        logger.info(f"* File is already {order} endian. Nothing to do.")'
+  - '        sys.exit(0)'
+  - '    logger.info("* Checking tensors for conversion compatibility")'
+  - '    for tensor in reader.tensors:'
+  - '        if tensor.tensor_type not in byteswap_tensors and \'
+  - '           tensor.tensor_type not in ('
+  - '                gguf.GGMLQuantizationType.F32,'
+  - '                gguf.GGMLQuantizationType.F16,'
+  - '                gguf.GGMLQuantizationType.BF16,'
+  - '           ):'
+  - '            raise ValueError(f"Cannot handle type {tensor.tensor_type.name} for
+    tensor {repr(tensor.name)}")'
+  - '    logger.info(f"* Preparing to convert from {file_endian} to {order}")'
+  - '    if args.dry_run:'
+  - '        return'
+  - '    logger.warning("*** Warning *** Warning *** Warning **")'
+  - '    logger.warning("* This conversion process may damage the file. Ensure you
+    have a backup.")'
+  - '    if order != host_endian:'
+  - '        logger.warning("* Requested endian differs from host, you will not be
+    able to load the model on this machine.")'
+  - '    logger.warning("* The file will be modified immediately, so if conversion
+    fails or is interrupted")'
+  - '    logger.warning("* the file will be corrupted. Enter exactly YES if you are
+    positive you want to proceed:")'
+  - '    response = input("YES, I am sure> ")'
+  - '    if response != "YES":'
+  - '        logger.warning("You didn''t enter YES. Okay then, see ya!")'
+  - '        sys.exit(0)'
+  - '    logger.info(f"* Converting fields ({len(reader.fields)})")'
+  - '    for idx, field in enumerate(reader.fields.values()):'
+  - '        logger.info(f"- {idx:4}: Converting field {repr(field.name)}, part count:
+    {len(field.parts)}")'
+  - '        for part in field.parts:'
+  - '            part.byteswap(inplace=True)'
+  - '    logger.info(f"* Converting tensors ({len(reader.tensors)})")'
+  - ''
+  - '    for idx, tensor in enumerate(pbar := tqdm(reader.tensors, desc="Converting
+    tensor")):'
+  - '        log_message = ('
+  - '            f"Converting tensor {repr(tensor.name)}, "'
+  - '            f"type={tensor.tensor_type.name}, "'
+  - '            f"elements={tensor.n_elements} "'
+  - '        )'
+  - ''
+  - '        # Byte-swap each part of the tensor''s field'
+  - '        for part in tensor.field.parts:'
+  - '            part.byteswap(inplace=True)'
+  - ''
+  - '        # Byte-swap tensor data if necessary'
+  - '        if tensor.tensor_type in byteswap_tensors:'
+  - '            # first flatten structure'
+  - '            oldshape = tensor.data.shape'
+  - '            newshape = 1'
+  - '            for i in tensor.data.shape:'
+  - '                newshape *= i'
+  - ''
+  - '            tensor.data.resize(newshape)'
+  - ''
+  - '            block_size    = gguf.constants.GGML_QUANT_SIZES[tensor.tensor_type][1]'
+  - '            byteswap_func = byteswap_tensors[tensor.tensor_type]'
+  - ''
+  - '            n_blocks = len(tensor.data) // block_size'
+  - '            for block_num in (inner_pbar := tqdm(range(n_blocks), desc="Byte-swapping
+    Blocks", leave=False)):'
+  - '                block_offs = block_num * block_size'
+  - ''
+  - '                byteswap_func(tensor, block_offs)'
+  - ''
+  - '                if block_num % 100000 == 0:'
+  - '                    inner_pbar.set_description(f"Byte-swapping Blocks [{(n_blocks
+    - block_num) // n_blocks}]")'
+  - ''
+  - '            # restore old shape in case it''s ever used'
+  - '            tensor.data.resize(oldshape)'
+  - '        elif tensor.tensor_type == gguf.GGMLQuantizationType.BF16:'
+  - '            # Special case for BF16'
+  - '            # It is 2-bytes data, but by default view loads it as 1-byte data.'
+  - '            # Change to correct view before byteswapping.'
+  - '            tensor.data.view(dtype=np.uint16).byteswap(inplace=True)'
+  - '        else:'
+  - '            # Handle other tensor types'
+  - '            tensor.data.byteswap(inplace=True)'
+  - ''
+  - '        pbar.set_description(log_message)'
+  - ''
+  - '    logger.info("* Completion")'
+  desc: 核心转换函数，负责检查文件的当前字节序，验证所有张量类型的兼容性，提示用户确认后，对文件中的所有字段和张量数据进行字节序转换，并支持 dry-run
+    模式。
+  line: 83-161
+  name: convert_byteorder
+- code:
+  - 'def main() -> None:'
+  - '    parser = argparse.ArgumentParser(description="Convert GGUF file byte order")'
+  - '    parser.add_argument('
+  - '        "model", type=str,'
+  - '        help="GGUF format model filename",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "order", type=str, choices=[''big'', ''little'', ''native''],'
+  - '        help="Requested byte order",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--dry-run", action="store_true",'
+  - '        help="Don''t actually change anything",'
+  - '    )'
+  - '    parser.add_argument("--verbose", action="store_true", help="increase output
+    verbosity")'
+  - ''
+  - '    args = parser.parse_args(None if len(sys.argv) > 1 else ["--help"])'
+  - ''
+  - '    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)'
+  - ''
+  - '    logger.info(f''* Loading: {args.model}'')'
+  - '    reader = gguf.GGUFReader(args.model, ''r'' if args.dry_run else ''r+'')'
+  - '    convert_byteorder(reader, args)'
+  desc: 程序入口函数，负责解析命令行参数，配置日志级别，加载 GGUF 文件，并调用 convert_byteorder 执行转换。
+  line: 164-188
+  name: main
+- code:
+  - 'if __name__ == "__main__":'
+  - '    main()'
+  desc: 文件顶层入口，当脚本作为主程序执行时调用 main() 函数。
+  line: 190-191
+  name: __main__

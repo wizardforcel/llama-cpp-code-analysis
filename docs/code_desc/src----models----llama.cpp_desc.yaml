@@ -1,0 +1,62 @@
+classes:
+- desc: LLaMA 模型的神经图构建器，负责将模型参数转换为可执行的 ggml 计算图。
+  methods:
+  - code:
+    - 'llm_build_llama<embed>::llm_build_llama(const llama_model & model, const llm_graph_params
+      & params) : llm_graph_context(params) {'
+    - '    // 初始化并验证关键维度参数'
+    - '    inpL = build_inp_embd(model.tok_embd);'
+    - '    ggml_tensor * inp_pos = build_inp_pos();'
+    - '    // 根据模式构建注意力输入'
+    - '    inp_attn_type * inp_attn = nullptr;'
+    - '    if constexpr (embed) {'
+    - '        inp_attn = build_attn_inp_no_cache();'
+    - '    } else {'
+    - '        inp_attn = build_attn_inp_kv();'
+    - '    }'
+    - '    // 主循环：构建每一层 Transformer'
+    - '    for (int il = 0; il < n_layer; ++il) {'
+    - '        // 构建 QKV 投影并应用 RoPE'
+    - '        Qcur = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s);'
+    - '        Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);'
+    - '        Vcur = build_lora_mm(model.layers[il].wv, cur, model.layers[il].wv_s);'
+    - '        // 应用旋转位置嵌入'
+    - '        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, rope_factors, n_rot, rope_type,
+      n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);'
+    - '        // 构建注意力输出'
+    - '        cur = build_attn(inp_attn, model.layers[il].wo, model.layers[il].bo,
+      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);'
+    - '        // 构建前馈网络（支持标准 FFN 和 MoE）'
+    - '        if (model.layers[il].ffn_gate_inp == nullptr) {'
+    - '            cur = build_ffn(cur, model.layers[il].ffn_up, model.layers[il].ffn_up_b,
+      model.layers[il].ffn_up_s, model.layers[il].ffn_gate, model.layers[il].ffn_gate_b,
+      model.layers[il].ffn_gate_s, model.layers[il].ffn_down, model.layers[il].ffn_down_b,
+      model.layers[il].ffn_down_s, NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);'
+    - '        } else {'
+    - '            // MoE 分支'
+    - '            cur = build_moe_ffn(cur, model.layers[il].ffn_gate_inp, model.layers[il].ffn_up_exps,
+      model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr, n_expert,
+      n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX,
+      il, nullptr, nullptr, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s,
+      model.layers[il].ffn_down_exps_s);'
+    - '        }'
+    - '        // 残差连接和层输出'
+    - '        cur = ggml_add(ctx0, cur, ffn_inp);'
+    - '        inpL = cur;'
+    - '    }'
+    - '    // 构建最终输出层'
+    - '    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);'
+    - '    if constexpr (!embed) {'
+    - '        cur = build_lora_mm(model.output, cur);'
+    - '        res->t_logits = cur;'
+    - '    }'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构造函数，执行 LLaMA 模型的完整构建流程，包括嵌入层、多层自注意力与 FFN 的堆叠，以及最终输出层。
+    line: 7-101
+    name: constructor
+  name: llm_build_llama<embed>
+desc: 该代码文件实现了 LLaMA 架构的神经网络图构建过程，通过模板元编程支持嵌入（embedding）和标准生成（generation）两种模式，负责构建包含自注意力机制、前馈网络（含
+  MoE 变体）和层归一化的完整 Transformer 解码器结构，并集成了 RoPE 位置编码、KQ 归一化等高级特性。
+file: src/models/llama.cpp
+funcs: []

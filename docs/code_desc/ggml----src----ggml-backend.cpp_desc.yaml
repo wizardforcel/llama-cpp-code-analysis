@@ -1,0 +1,1916 @@
+classes:
+- desc: 多缓冲区上下文结构体，用于管理由多个子缓冲区组成的复合缓冲区，持有缓冲区数组及其数量。
+  methods:
+  - code:
+    - struct ggml_backend_multi_buffer_context {
+    - '    ggml_backend_buffer_t * buffers;'
+    - '    size_t n_buffers;'
+    - '};'
+    desc: 构造函数，初始化多缓冲区上下文，设置缓冲数组和数量。
+    line: 406-409
+    name: _init_
+  name: ggml_backend_multi_buffer_context
+- desc: 调度器分割结构体，用于描述计算图的一个分割片段，包含后端 ID、节点范围、输入列表和对应的子图。
+  methods:
+  - code:
+    - struct ggml_backend_sched_split {
+    - '    int backend_id;'
+    - '    int i_start;'
+    - '    int i_end;'
+    - '    struct ggml_tensor * inputs[GGML_SCHED_MAX_SPLIT_INPUTS];'
+    - '    int n_inputs;'
+    - '    // graph view of this split'
+    - '    struct ggml_cgraph graph;'
+    - '};'
+    desc: 构造函数，初始化调度器分割结构，记录后端ID、起始和结束索引、输入张量数组等字段。
+    line: 531-538
+    name: _init_
+  name: ggml_backend_sched_split
+- desc: 后端调度器结构体，负责管理多后端上的计算图调度，包括后端列表、缓冲区类型、图节点映射、分割管理等功能。
+  methods:
+  - code:
+    - void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph
+      * graph) {
+    - '    // reset splits'
+    - '    sched->n_splits = 0;'
+    - '    sched->n_graph_inputs = 0;'
+    - '    sched->is_reset = false;'
+    - ''
+    - '    struct ggml_init_params params = {'
+    - '        /* .mem_size =   */ sched->context_buffer_size,'
+    - '        /* .mem_buffer = */ sched->context_buffer,'
+    - '        /* .no_alloc =   */ true'
+    - '    };'
+    - ''
+    - '    ggml_free(sched->ctx);'
+    - ''
+    - '    sched->ctx = ggml_init(params);'
+    - '    if (sched->ctx == NULL) {'
+    - '        GGML_ABORT("%s: failed to initialize context\n", __func__);'
+    - '    }'
+    - ''
+    - '    // pass 1: assign backends to ops with pre-allocated inputs'
+    - '    for (int i = 0; i < graph->n_leafs; i++) {'
+    - '        struct ggml_tensor * leaf = graph->leafs[i];'
+    - '        int * leaf_backend_id = &tensor_backend_id(leaf);'
+    - '        // do not overwrite user assignments'
+    - '        if (*leaf_backend_id == -1) {'
+    - '            *leaf_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+      leaf);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    for (int i = 0; i < graph->n_nodes; i++) {'
+    - '        struct ggml_tensor * node = graph->nodes[i];'
+    - '        int * node_backend_id = &tensor_backend_id(node);'
+    - '        // do not overwrite user assignments'
+    - '        if (*node_backend_id == -1) {'
+    - '            *node_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+      node);'
+    - ''
+    - '            #if 0'
+    - '            // src'
+    - '            if (node->op == GGML_OP_NONE) {'
+    - '                continue;'
+    - '            }'
+    - ''
+    - '            for (int j = 0; j < GGML_MAX_SRC; j++) {'
+    - '                struct ggml_tensor * src = node->src[j];'
+    - '                if (src == NULL) {'
+    - '                    continue;'
+    - '                }'
+    - '                int * src_backend_id = &tensor_backend_id(src);'
+    - '                if (*src_backend_id == -1) {'
+    - '                    *src_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+      src);'
+    - '                }'
+    - '            }'
+    - '            #endif'
+    - '        }'
+    - '    }'
+    - ''
+    - '    // pass 2: expand current backend assignments'
+    - '    // assign the same backend to adjacent nodes'
+    - '    // expand gpu backends (i.e. non last prio) up and down, ignoring cpu (the
+      lowest priority backend)'
+    - '    // thus, cpu will never be used unless weights are on cpu, or there are
+      no gpu ops between cpu ops'
+    - '    // ops unsupported by the backend being expanded will be left unassigned
+      so that they can be assigned later when the locations of its inputs are known'
+    - '    // expand gpu down'
+    - '    {'
+    - '        int cur_backend_id = -1;'
+    - '        for (int i = 0; i < graph->n_nodes; i++) {'
+    - '            struct ggml_tensor * node = graph->nodes[i];'
+    - '            if (ggml_is_view_op(node->op)) {'
+    - '                continue;'
+    - '            }'
+    - '            int * node_backend_id = &tensor_backend_id(node);'
+    - '            if (*node_backend_id != -1) {'
+    - '                if (*node_backend_id == sched->n_backends - 1) {'
+    - '                    // skip cpu (lowest prio backend)'
+    - '                    cur_backend_id = -1;'
+    - '                } else {'
+    - '                    cur_backend_id = *node_backend_id;'
+    - '                }'
+    - '            } else if (cur_backend_id != -1) {'
+    - '                ggml_backend_sched_set_if_supported(sched, node, cur_backend_id,
+      node_backend_id);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    // expand gpu up'
+    - '    {'
+    - '        int cur_backend_id = -1;'
+    - '        for (int i = graph->n_nodes - 1; i >= 0; i--) {'
+    - '            struct ggml_tensor * node = graph->nodes[i];'
+    - '            if (ggml_is'
+    - '    '
+    desc: 将计算图分割成可以在不同后端上执行的子图，分配后端ID并更新调度器的分割列表。
+    line: 450-540
+    name: ggml_backend_sched_split_graph
+  name: ggml_backend_sched
+desc: 该文件是 ggml 项目中的后端实现核心文件，提供了一系列关于后端设备、缓冲区、张量操作和计算图调度的 C 接口函数，实现多后端的内存管理和计算调度功能。它定义了缓冲区类型和缓冲区操作的封装，后端设备和后端注册表的接口，并通过一个调度器
+  (scheduler) 来管理多后端上的计算图分割和执行。该文件是GGML框架的后端调度器（backend scheduler）核心实现，负责将计算图（cgraph）中的节点分配到不同的后端（如CPU或GPU）执行，并通过图分割、数据复制和异步计算等机制优化多后端并行执行效率。文件包含调度器的内存分配、节点后端分配、图分割和计算执行等核心逻辑。该代码位于
+  ggml-backend.cpp 的后半部分，主要实现 GGML 后端调度器的状态管理、图分割与计算、后端及张量属性查询、张量和计算图复制与比较工具，以及 CPU
+  后端缓冲区的分配、释放、读写、清零和外部指针映射功能。
+file: ggml/src/ggml-backend.cpp
+funcs:
+- code:
+  - const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
+  - '    GGML_ASSERT(buft);'
+  - '    return buft->iface.get_name(buft);'
+  - '}'
+  desc: 获取缓冲区类型的名称。
+  line: 31-34
+  name: ggml_backend_buft_name
+- code:
+  - ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    GGML_ASSERT(buft);'
+  - '    if (size == 0) {'
+  - '        // return a dummy buffer for zero-sized allocations'
+  - '        return ggml_backend_buffer_init(buft, {}, NULL, 0);'
+  - '    }'
+  - '    return buft->iface.alloc_buffer(buft, size);'
+  - '}'
+  desc: 根据缓冲区类型和大小分配缓冲区，对于零大小分配返回一个哑缓冲区。
+  line: 36-43
+  name: ggml_backend_buft_alloc_buffer
+- code:
+  - size_t ggml_backend_buft_get_alignment(ggml_backend_buffer_type_t buft) {
+  - '    GGML_ASSERT(buft);'
+  - '    return buft->iface.get_alignment(buft);'
+  - '}'
+  desc: 获取缓冲区类型的对齐要求。
+  line: 45-48
+  name: ggml_backend_buft_get_alignment
+- code:
+  - size_t ggml_backend_buft_get_max_size(ggml_backend_buffer_type_t buft) {
+  - '    GGML_ASSERT(buft);'
+  - '    // get_max_size is optional, defaults to SIZE_MAX'
+  - '    if (buft->iface.get_max_size) {'
+  - '        return buft->iface.get_max_size(buft);'
+  - '    }'
+  - '    return SIZE_MAX;'
+  - '}'
+  desc: 获取缓冲区类型的最大尺寸，默认为SIZE_MAX。
+  line: 50-57
+  name: ggml_backend_buft_get_max_size
+- code:
+  - size_t ggml_backend_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const
+    struct ggml_tensor * tensor) {
+  - '    GGML_ASSERT(buft);'
+  - '    // get_alloc_size is optional, defaults to ggml_nbytes'
+  - '    if (buft->iface.get_alloc_size) {'
+  - '        size_t size = buft->iface.get_alloc_size(buft, tensor);'
+  - '        assert(size >= ggml_nbytes(tensor));'
+  - '        return size;'
+  - '    }'
+  - '    return ggml_nbytes(tensor);'
+  - '}'
+  desc: 获取缓冲区类型为特定张量分配的字节大小，默认为ggml_nbytes。
+  line: 59-69
+  name: ggml_backend_buft_get_alloc_size
+- code:
+  - bool ggml_backend_buft_is_host(ggml_backend_buffer_type_t buft) {
+  - '    GGML_ASSERT(buft);'
+  - '    if (buft->iface.is_host) {'
+  - '        return buft->iface.is_host(buft);'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 检查缓冲区类型是否为宿主内存缓冲区。
+  line: 71-77
+  name: ggml_backend_buft_is_host
+- code:
+  - ggml_backend_dev_t ggml_backend_buft_get_device(ggml_backend_buffer_type_t buft)
+    {
+  - '    GGML_ASSERT(buft);'
+  - '    return buft->device;'
+  - '}'
+  desc: 获取缓冲区类型关联的设备。
+  line: 79-82
+  name: ggml_backend_buft_get_device
+- code:
+  - ggml_backend_buffer_t ggml_backend_buffer_init(
+  - '               ggml_backend_buffer_type_t buft,'
+  - '        struct ggml_backend_buffer_i      iface,'
+  - '               void *                     context,'
+  - '               size_t                     size) {'
+  - '    ggml_backend_buffer_t buffer = new ggml_backend_buffer {'
+  - '        /* .interface = */ iface,'
+  - '        /* .buft      = */ buft,'
+  - '        /* .context   = */ context,'
+  - '        /* .size      = */ size,'
+  - '        /* .usage     = */ GGML_BACKEND_BUFFER_USAGE_ANY'
+  - '    };'
+  - ''
+  - '    return buffer;'
+  - '}'
+  desc: 初始化一个新的后端缓冲区对象。
+  line: 88-106
+  name: ggml_backend_buffer_init
+- code:
+  - const char * ggml_backend_buffer_name(ggml_backend_buffer_t buffer) {
+  - '    return ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));'
+  - '}'
+  desc: 获取缓冲区名称，通过其类型获取。
+  line: 108-110
+  name: ggml_backend_buffer_name
+- code:
+  - void ggml_backend_buffer_free(ggml_backend_buffer_t buffer) {
+  - '    if (buffer == NULL) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    if (buffer->iface.free_buffer != NULL) {'
+  - '        buffer->iface.free_buffer(buffer);'
+  - '    }'
+  - '    delete buffer;'
+  - '}'
+  desc: 释放缓冲区资源，调用底层释放函数并删除缓冲区对象。
+  line: 112-123
+  name: ggml_backend_buffer_free
+- code:
+  - size_t ggml_backend_buffer_get_size(ggml_backend_buffer_t buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    return buffer->size;'
+  - '}'
+  desc: 获取缓冲区的大小。
+  line: 125-128
+  name: ggml_backend_buffer_get_size
+- code:
+  - void * ggml_backend_buffer_get_base(ggml_backend_buffer_t buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    // get_base is optional if the buffer is zero-sized'
+  - '    if (buffer->size == 0) {'
+  - '        return NULL;'
+  - '    }'
+  - ''
+  - '    // FIXME JG: a multi_buffer has a non-zero size, according to the above comment
+    get_base is not optional,'
+  - '    //     I don''t know whether the above comment is correct'
+  - '    if (!buffer->iface.get_base) {'
+  - '        return NULL;'
+  - '    }'
+  - ''
+  - '    void * base = buffer->iface.get_base(buffer);'
+  - ''
+  - '    GGML_ASSERT(base != NULL && "backend buffer base cannot be NULL");'
+  - ''
+  - '    return base;'
+  - '}'
+  desc: 获取缓冲区的基础内存指针，对于零大小缓冲区返回NULL。
+  line: 130-149
+  name: ggml_backend_buffer_get_base
+- code:
+  - enum ggml_status ggml_backend_buffer_init_tensor(ggml_backend_buffer_t buffer,
+    struct ggml_tensor * tensor) {
+  - '    GGML_ASSERT(buffer);'
+  - '    // init_tensor is optional'
+  - '    if (buffer->iface.init_tensor) {'
+  - '        return buffer->iface.init_tensor(buffer, tensor);'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 在缓冲区上初始化张量，可选操作。
+  line: 151-159
+  name: ggml_backend_buffer_init_tensor
+- code:
+  - void ggml_backend_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+  - '    GGML_ASSERT(buffer);'
+  - '    // clear is optional if the buffer is zero-sized'
+  - '    if (buffer->size == 0) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    buffer->iface.clear(buffer, value);'
+  - '}'
+  desc: 将缓冲区内容清除为指定值。
+  line: 161-171
+  name: ggml_backend_buffer_clear
+- code:
+  - size_t ggml_backend_buffer_get_alignment(ggml_backend_buffer_t buffer) {
+  - '    return ggml_backend_buft_get_alignment(ggml_backend_buffer_get_type(buffer));'
+  - '}'
+  desc: 获取缓冲区的对齐要求。
+  line: 173-175
+  name: ggml_backend_buffer_get_alignment
+- code:
+  - size_t ggml_backend_buffer_get_max_size(ggml_backend_buffer_t buffer) {
+  - '    return ggml_backend_buft_get_max_size(ggml_backend_buffer_get_type(buffer));'
+  - '}'
+  desc: 获取缓冲区的最大尺寸。
+  line: 177-179
+  name: ggml_backend_buffer_get_max_size
+- code:
+  - size_t ggml_backend_buffer_get_alloc_size(ggml_backend_buffer_t buffer, const
+    struct ggml_tensor * tensor) {
+  - '    return ggml_backend_buft_get_alloc_size(ggml_backend_buffer_get_type(buffer),
+    tensor);'
+  - '}'
+  desc: 获取缓冲区为特定张量分配的字节大小。
+  line: 181-183
+  name: ggml_backend_buffer_get_alloc_size
+- code:
+  - bool ggml_backend_buffer_is_host(ggml_backend_buffer_t buffer) {
+  - '    return ggml_backend_buft_is_host(ggml_backend_buffer_get_type(buffer));'
+  - '}'
+  desc: 检查缓冲区是否为宿主内存缓冲区。
+  line: 185-187
+  name: ggml_backend_buffer_is_host
+- code:
+  - void ggml_backend_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_backend_buffer_usage
+    usage) {
+  - '    GGML_ASSERT(buffer);'
+  - '    buffer->usage = usage;'
+  - ''
+  - '    // FIXME: add a generic callback to the buffer interface'
+  - '    if (ggml_backend_buffer_is_multi_buffer(buffer)) {'
+  - '        ggml_backend_multi_buffer_set_usage(buffer, usage);'
+  - '    }'
+  - '}'
+  desc: 设置缓冲区的使用方式，对于多缓冲区还会递归设置所有子缓冲区。
+  line: 189-199
+  name: ggml_backend_buffer_set_usage
+- code:
+  - enum ggml_backend_buffer_usage ggml_backend_buffer_get_usage(ggml_backend_buffer_t
+    buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    return buffer->usage;'
+  - '}'
+  desc: 获取缓冲区的当前使用方式。
+  line: 201-204
+  name: ggml_backend_buffer_get_usage
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_buffer_get_type(ggml_backend_buffer_t
+    buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    return buffer->buft;'
+  - '}'
+  desc: 获取缓冲区的类型。
+  line: 206-209
+  name: ggml_backend_buffer_get_type
+- code:
+  - void ggml_backend_buffer_reset(ggml_backend_buffer_t buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    if (buffer->iface.reset) {'
+  - '        buffer->iface.reset(buffer);'
+  - '    }'
+  - '}'
+  desc: 重置缓冲区状态，调用可选的重置函数。
+  line: 211-217
+  name: ggml_backend_buffer_reset
+- code:
+  - bool ggml_backend_buffer_copy_tensor(const struct ggml_tensor * src, struct ggml_tensor
+    * dst) {
+  - '    ggml_backend_buffer_t dst_buf = dst->view_src ? dst->view_src->buffer : dst->buffer;'
+  - '    if (dst_buf->iface.cpy_tensor) {'
+  - '        return dst_buf->iface.cpy_tensor(dst_buf, src, dst);'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 在缓冲区之间复制张量数据，如果目的地缓冲区支持复制函数则调用。
+  line: 219-226
+  name: ggml_backend_buffer_copy_tensor
+- code:
+  - ggml_guid_t ggml_backend_guid(ggml_backend_t backend) {
+  - '    if (backend == NULL) {'
+  - '        return NULL;'
+  - '    }'
+  - '    return backend->guid;'
+  - '}'
+  desc: 获取后端关联的GUID。
+  line: 229-235
+  name: ggml_backend_guid
+- code:
+  - const char * ggml_backend_name(ggml_backend_t backend) {
+  - '    if (backend == NULL) {'
+  - '        return "NULL";'
+  - '    }'
+  - '    return backend->iface.get_name(backend);'
+  - '}'
+  desc: 获取后端的名称，若为空则返回"NULL"。
+  line: 237-243
+  name: ggml_backend_name
+- code:
+  - void ggml_backend_free(ggml_backend_t backend) {
+  - '    if (backend == NULL) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    backend->iface.free(backend);'
+  - '}'
+  desc: 释放后端资源。
+  line: 245-253
+  name: ggml_backend_free
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_get_default_buffer_type(ggml_backend_t
+    backend) {
+  - '    GGML_ASSERT(backend);'
+  - '    return ggml_backend_dev_buffer_type(backend->device);'
+  - '}'
+  desc: 获取后端关联的默认缓冲区类型。
+  line: 255-259
+  name: ggml_backend_get_default_buffer_type
+- code:
+  - ggml_backend_buffer_t ggml_backend_alloc_buffer(ggml_backend_t backend, size_t
+    size) {
+  - '    return ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(backend),
+    size);'
+  - '}'
+  desc: 在后端默认缓冲区类型上分配缓冲区。
+  line: 261-263
+  name: ggml_backend_alloc_buffer
+- code:
+  - size_t ggml_backend_get_alignment(ggml_backend_t backend) {
+  - '    return ggml_backend_buft_get_alignment(ggml_backend_get_default_buffer_type(backend));'
+  - '}'
+  desc: 获取后端默认缓冲区的对齐要求。
+  line: 265-268
+  name: ggml_backend_get_alignment
+- code:
+  - size_t ggml_backend_get_max_size(ggml_backend_t backend) {
+  - '    return ggml_backend_buft_get_max_size(ggml_backend_get_default_buffer_type(backend));'
+  - '}'
+  desc: 获取后端默认缓冲区的最大尺寸。
+  line: 270-273
+  name: ggml_backend_get_max_size
+- code:
+  - void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor
+    * tensor, const void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(tensor);'
+  - '    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");'
+  - '    GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of
+    bounds");'
+  - ''
+  - '    if (backend->iface.set_tensor_async == NULL) {'
+  - '        ggml_backend_synchronize(backend);'
+  - '        ggml_backend_tensor_set(tensor, data, offset, size);'
+  - '    } else {'
+  - '        backend->iface.set_tensor_async(backend, tensor, data, offset, size);'
+  - '    }'
+  - '}'
+  desc: 异步设置张量数据，若后端不支持则回退到同步操作。
+  line: 275-288
+  name: ggml_backend_tensor_set_async
+- code:
+  - void ggml_backend_tensor_get_async(ggml_backend_t backend, const struct ggml_tensor
+    * tensor, void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(tensor);'
+  - '    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");'
+  - '    GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor read out of bounds");'
+  - ''
+  - '    if (backend->iface.get_tensor_async == NULL) {'
+  - '        ggml_backend_synchronize(backend);'
+  - '        ggml_backend_tensor_get(tensor, data, offset, size);'
+  - '    } else {'
+  - '        backend->iface.get_tensor_async(backend, tensor, data, offset, size);'
+  - '    }'
+  - '}'
+  desc: 异步获取张量数据，若后端不支持则回退到同步操作。
+  line: 290-303
+  name: ggml_backend_tensor_get_async
+- code:
+  - void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t
+    offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer :
+    tensor->buffer;'
+  - ''
+  - '    if (size == 0) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    GGML_ASSERT(buf != NULL && "tensor buffer not set");'
+  - '    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");'
+  - '    GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of
+    bounds");'
+  - ''
+  - '    buf->iface.set_tensor(buf, tensor, data, offset, size);'
+  - '}'
+  desc: 设置张量的数据内容。
+  line: 305-318
+  name: ggml_backend_tensor_set
+- code:
+  - void ggml_backend_tensor_get(const struct ggml_tensor * tensor, void * data, size_t
+    offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer :
+    tensor->buffer;'
+  - ''
+  - '    if (size == 0) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    GGML_ASSERT(buf != NULL && "tensor buffer not set");'
+  - '    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");'
+  - '    GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor read out of bounds");'
+  - ''
+  - '    buf->iface.get_tensor(buf, tensor, data, offset, size);'
+  - '}'
+  desc: 获取张量的数据内容。
+  line: 320-333
+  name: ggml_backend_tensor_get
+- code:
+  - void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size_t
+    offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer :
+    tensor->buffer;'
+  - ''
+  - '    if (size == 0) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    GGML_ASSERT(buf != NULL && "tensor buffer not set");'
+  - '    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");'
+  - '    GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of
+    bounds");'
+  - '    GGML_ASSERT(buf->iface.memset_tensor != NULL && "memset not implemented by
+    backend buffer");'
+  - ''
+  - '    buf->iface.memset_tensor(buf, tensor, value, offset, size);'
+  - '}'
+  desc: 将张量数据填充为指定值。
+  line: 335-348
+  name: ggml_backend_tensor_memset
+- code:
+  - void ggml_backend_synchronize(ggml_backend_t backend) {
+  - '    GGML_ASSERT(backend);'
+  - '    if (backend->iface.synchronize == NULL) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    backend->iface.synchronize(backend);'
+  - '}'
+  desc: 同步后端操作，确保所有异步操作完成。
+  line: 350-358
+  name: ggml_backend_synchronize
+- code:
+  - ggml_backend_graph_plan_t ggml_backend_graph_plan_create(ggml_backend_t backend,
+    struct ggml_cgraph * cgraph) {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(backend->iface.graph_plan_create != NULL);'
+  - ''
+  - '    return backend->iface.graph_plan_create(backend, cgraph);'
+  - '}'
+  desc: 创建一个计算图的执行计划。
+  line: 360-366
+  name: ggml_backend_graph_plan_create
+- code:
+  - void ggml_backend_graph_plan_free(ggml_backend_t backend, ggml_backend_graph_plan_t
+    plan) {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(backend->iface.graph_plan_free != NULL);'
+  - ''
+  - '    backend->iface.graph_plan_free(backend, plan);'
+  - '}'
+  desc: 释放计算图的执行计划。
+  line: 368-374
+  name: ggml_backend_graph_plan_free
+- code:
+  - enum ggml_status ggml_backend_graph_plan_compute(ggml_backend_t backend, ggml_backend_graph_plan_t
+    plan) {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(backend->iface.graph_plan_compute != NULL);'
+  - ''
+  - '    return backend->iface.graph_plan_compute(backend, plan);'
+  - '}'
+  desc: 执行计算图的预编译计划。
+  line: 376-382
+  name: ggml_backend_graph_plan_compute
+- code:
+  - enum ggml_status ggml_backend_graph_compute(ggml_backend_t backend, struct ggml_cgraph
+    * cgraph) {
+  - '    enum ggml_status err = ggml_backend_graph_compute_async(backend, cgraph);'
+  - '    ggml_backend_synchronize(backend);'
+  - '    return err;'
+  - '}'
+  desc: 计算一个计算图，先异步执行然后同步等待结果。
+  line: 384-389
+  name: ggml_backend_graph_compute
+- code:
+  - enum ggml_status ggml_backend_graph_compute_async(ggml_backend_t backend, struct
+    ggml_cgraph * cgraph) {
+  - '    GGML_ASSERT(backend);'
+  - '    return backend->iface.graph_compute(backend, cgraph);'
+  - '}'
+  desc: 异步计算一个计算图。
+  line: 391-395
+  name: ggml_backend_graph_compute_async
+- code:
+  - bool ggml_backend_supports_op(ggml_backend_t backend, const struct ggml_tensor
+    * op) {
+  - '    GGML_ASSERT(backend);'
+  - '    return ggml_backend_dev_supports_op(backend->device, op);'
+  - '}'
+  desc: 检查后端是否支持特定操作。
+  line: 397-401
+  name: ggml_backend_supports_op
+- code:
+  - bool ggml_backend_supports_buft(ggml_backend_t backend, ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_ASSERT(backend);'
+  - '    return ggml_backend_dev_supports_buft(backend->device, buft);'
+  - '}'
+  desc: 检查后端是否支持特定缓冲区类型。
+  line: 403-407
+  name: ggml_backend_supports_buft
+- code:
+  - bool ggml_backend_offload_op(ggml_backend_t backend, const struct ggml_tensor
+    * op) {
+  - '    GGML_ASSERT(backend);'
+  - '    return ggml_backend_dev_offload_op(backend->device, op);'
+  - '}'
+  desc: 检查后端是否支持将操作卸载到其他设备。
+  line: 409-413
+  name: ggml_backend_offload_op
+- code:
+  - ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend) {
+  - '    GGML_ASSERT(backend);'
+  - '    return backend->device;'
+  - '}'
+  desc: 获取后端关联的设备。
+  line: 415-419
+  name: ggml_backend_get_device
+- code:
+  - void ggml_backend_tensor_copy(struct ggml_tensor * src, struct ggml_tensor * dst)
+    {
+  - '    GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different
+    layouts");'
+  - ''
+  - '    if (src == dst) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    if (ggml_backend_buffer_is_host(src->buffer)) {'
+  - '        ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(src));'
+  - '    } else if (ggml_backend_buffer_is_host(dst->buffer)) {'
+  - '        ggml_backend_tensor_get(src, dst->data, 0, ggml_nbytes(src));'
+  - '    } else if (!ggml_backend_buffer_copy_tensor(src, dst)) {'
+  - '        #ifndef NDEBUG'
+  - '        GGML_LOG_DEBUG("%s: warning: slow copy from %s to %s\n", __func__, ggml_backend_buffer_name(src->buffer),
+    ggml_backend_buffer_name(dst->buffer));'
+  - '        #endif'
+  - '        size_t nbytes = ggml_nbytes(src);'
+  - '        void * data = malloc(nbytes);'
+  - '        ggml_backend_tensor_get(src, data, 0, nbytes);'
+  - '        ggml_backend_tensor_set(dst, data, 0, nbytes);'
+  - '        free(data);'
+  - '    }'
+  - '}'
+  desc: 在两个张量之间复制数据，支持不同缓冲区类型间复制。
+  line: 421-441
+  name: ggml_backend_tensor_copy
+- code:
+  - void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t
+    backend_dst, struct ggml_tensor * src, struct ggml_tensor * dst) {
+  - '    GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different
+    layouts");'
+  - ''
+  - '    if (src == dst) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    GGML_ASSERT(backend_dst);'
+  - '    if (backend_dst->iface.cpy_tensor_async != NULL) {'
+  - '        if (backend_dst->iface.cpy_tensor_async(backend_src, backend_dst, src,
+    dst)) {'
+  - '            return;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // an async copy would normally happen after all the queued operations on
+    both backends are completed'
+  - '    // to simulate the same behavior, we need to synchronize both backends first,
+    and do a blocking copy'
+  - '    ggml_backend_synchronize(backend_src);'
+  - '    ggml_backend_synchronize(backend_dst);'
+  - '    ggml_backend_tensor_copy(src, dst);'
+  - '}'
+  desc: 在两个张量之间异步复制数据，如果不支持异步则回退到同步。
+  line: 443-463
+  name: ggml_backend_tensor_copy_async
+- code:
+  - ggml_backend_event_t ggml_backend_event_new(ggml_backend_dev_t device) {
+  - '    // null device is allowed for the transition period to the device interface'
+  - '    if (device == NULL || device->iface.event_new == NULL) {'
+  - '        return NULL;'
+  - '    }'
+  - '    return device->iface.event_new(device);'
+  - '}'
+  desc: 创建异步事件对象，如果设备不支持则返回NULL。
+  line: 466-472
+  name: ggml_backend_event_new
+- code:
+  - void ggml_backend_event_free(ggml_backend_event_t event) {
+  - '    if (event == NULL) {'
+  - '        return;'
+  - '    }'
+  - '    event->device->iface.event_free(event->device, event);'
+  - '}'
+  desc: 释放异步事件对象。
+  line: 474-480
+  name: ggml_backend_event_free
+- code:
+  - void ggml_backend_event_record(ggml_backend_event_t event, ggml_backend_t backend)
+    {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(backend->iface.event_record != NULL);'
+  - ''
+  - '    backend->iface.event_record(backend, event);'
+  - '}'
+  desc: 在指定后端上记录事件。
+  line: 482-488
+  name: ggml_backend_event_record
+- code:
+  - void ggml_backend_event_synchronize(ggml_backend_event_t event) {
+  - '    GGML_ASSERT(event);'
+  - '    GGML_ASSERT(event->device->iface.event_synchronize);'
+  - ''
+  - '    event->device->iface.event_synchronize(event->device, event);'
+  - '}'
+  desc: 同步等待事件完成。
+  line: 490-495
+  name: ggml_backend_event_synchronize
+- code:
+  - void ggml_backend_event_wait(ggml_backend_t backend, ggml_backend_event_t event)
+    {
+  - '    GGML_ASSERT(backend);'
+  - '    GGML_ASSERT(backend->iface.event_wait != NULL);'
+  - ''
+  - '    backend->iface.event_wait(backend, event);'
+  - '}'
+  desc: 让后端等待事件完成。
+  line: 497-503
+  name: ggml_backend_event_wait
+- code:
+  - static void ggml_backend_graph_optimize(ggml_backend_t backend, struct ggml_cgraph
+    * cgraph) {
+  - '    GGML_ASSERT(backend);'
+  - '    if (backend->iface.graph_optimize != NULL) {'
+  - '        backend->iface.graph_optimize(backend, cgraph);'
+  - '    }'
+  - '}'
+  desc: 对计算图执行优化，若后端支持则调用优化函数。
+  line: 506-512
+  name: ggml_backend_graph_optimize
+- code:
+  - const char * ggml_backend_dev_name(ggml_backend_dev_t device) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.get_name(device);'
+  - '}'
+  desc: 获取设备名称。
+  line: 516-520
+  name: ggml_backend_dev_name
+- code:
+  - const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.get_description(device);'
+  - '}'
+  desc: 获取设备描述信息。
+  line: 522-524
+  name: ggml_backend_dev_description
+- code:
+  - void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t
+    * total) {
+  - '    GGML_ASSERT(device);'
+  - '    device->iface.get_memory(device, free, total);'
+  - '}'
+  desc: 获取设备的内存信息（空闲和总容量）。
+  line: 526-530
+  name: ggml_backend_dev_memory
+- code:
+  - enum ggml_backend_dev_type ggml_backend_dev_type(ggml_backend_dev_t device) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.get_type(device);'
+  - '}'
+  desc: 获取设备类型。
+  line: 532-535
+  name: ggml_backend_dev_type
+- code:
+  - void ggml_backend_dev_get_props(ggml_backend_dev_t device, struct ggml_backend_dev_props
+    * props) {
+  - '    memset(props, 0, sizeof(*props));'
+  - '    device->iface.get_props(device, props);'
+  - '}'
+  desc: 获取设备的属性信息。
+  line: 537-541
+  name: ggml_backend_dev_get_props
+- code:
+  - ggml_backend_reg_t ggml_backend_dev_backend_reg(ggml_backend_dev_t device) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->reg;'
+  - '}'
+  desc: 获取设备关联的后端注册表对象。
+  line: 543-547
+  name: ggml_backend_dev_backend_reg
+- code:
+  - ggml_backend_t ggml_backend_dev_init(ggml_backend_dev_t device, const char * params)
+    {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.init_backend(device, params);'
+  - '}'
+  desc: 初始化设备后端实例。
+  line: 549-552
+  name: ggml_backend_dev_init
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_dev_buffer_type(ggml_backend_dev_t device)
+    {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.get_buffer_type(device);'
+  - '}'
+  desc: 获取设备的默认缓冲区类型。
+  line: 554-558
+  name: ggml_backend_dev_buffer_type
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_dev_host_buffer_type(ggml_backend_dev_t
+    device) {
+  - '    GGML_ASSERT(device);'
+  - '    if (device->iface.get_host_buffer_type == NULL) {'
+  - '        return NULL;'
+  - '    }'
+  - ''
+  - '    return device->iface.get_host_buffer_type(device);'
+  - '}'
+  desc: 获取设备的宿主缓冲区类型，若无则返回NULL。
+  line: 560-567
+  name: ggml_backend_dev_host_buffer_type
+- code:
+  - ggml_backend_buffer_t ggml_backend_dev_buffer_from_host_ptr(ggml_backend_dev_t
+    device, void * ptr, size_t size, size_t max_tensor_size) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.buffer_from_host_ptr(device, ptr, size, max_tensor_size);'
+  - '}'
+  desc: 从宿主内存指针创建缓冲区。
+  line: 569-573
+  name: ggml_backend_dev_buffer_from_host_ptr
+- code:
+  - bool ggml_backend_dev_supports_op(ggml_backend_dev_t device, const struct ggml_tensor
+    * op) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.supports_op(device, op);'
+  - '}'
+  desc: 检查设备是否支持特定操作。
+  line: 575-579
+  name: ggml_backend_dev_supports_op
+- code:
+  - bool ggml_backend_dev_supports_buft(ggml_backend_dev_t device, ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_ASSERT(device);'
+  - '    return device->iface.supports_buft(device, buft);'
+  - '}'
+  desc: 检查设备是否支持特定缓冲区类型。
+  line: 581-585
+  name: ggml_backend_dev_supports_buft
+- code:
+  - bool ggml_backend_dev_offload_op(ggml_backend_dev_t device, const struct ggml_tensor
+    * op) {
+  - '    GGML_ASSERT(device);'
+  - '    if (device->iface.offload_op != NULL) {'
+  - '        return device->iface.offload_op(device, op);'
+  - '    }'
+  - ''
+  - '    return false;'
+  - '}'
+  desc: 检查设备是否支持将操作卸载到其他设备。
+  line: 587-594
+  name: ggml_backend_dev_offload_op
+- code:
+  - const char * ggml_backend_reg_name(ggml_backend_reg_t reg) {
+  - '    GGML_ASSERT(reg);'
+  - '    return reg->iface.get_name(reg);'
+  - '}'
+  desc: 获取后端注册表名称。
+  line: 597-601
+  name: ggml_backend_reg_name
+- code:
+  - size_t ggml_backend_reg_dev_count(ggml_backend_reg_t reg) {
+  - '    GGML_ASSERT(reg);'
+  - '    return reg->iface.get_device_count(reg);'
+  - '}'
+  desc: 获取后端注册表中的设备数量。
+  line: 603-607
+  name: ggml_backend_reg_dev_count
+- code:
+  - ggml_backend_dev_t ggml_backend_reg_dev_get(ggml_backend_reg_t reg, size_t index)
+    {
+  - '    GGML_ASSERT(reg);'
+  - '    return reg->iface.get_device(reg, index);'
+  - '}'
+  desc: 获取后端注册表中指定索引的设备。
+  line: 609-613
+  name: ggml_backend_reg_dev_get
+- code:
+  - void * ggml_backend_reg_get_proc_address(ggml_backend_reg_t reg, const char *
+    name) {
+  - '    GGML_ASSERT(reg);'
+  - '    if (!reg->iface.get_proc_address) {'
+  - '        return NULL;'
+  - '    }'
+  - '    return reg->iface.get_proc_address(reg, name);'
+  - '}'
+  desc: 获取后端注册表中函数的地址。
+  line: 615-623
+  name: ggml_backend_reg_get_proc_address
+- code:
+  - static void ggml_backend_multi_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    GGML_ASSERT(buffer);'
+  - '    ggml_backend_multi_buffer_context * ctx = (ggml_backend_multi_buffer_context
+    *) buffer->context;'
+  - '    for (size_t i = 0; i < ctx->n_buffers; i++) {'
+  - '        ggml_backend_buffer_free(ctx->buffers[i]);'
+  - '    }'
+  - ''
+  - '    free(ctx->buffers);'
+  - '    free(ctx);'
+  - '}'
+  desc: 释放多缓冲区对象，递归释放所有子缓冲区。
+  line: 631-641
+  name: ggml_backend_multi_buffer_free_buffer
+- code:
+  - static void ggml_backend_multi_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    GGML_ASSERT(buffer);'
+  - '    ggml_backend_multi_buffer_context * ctx = (ggml_backend_multi_buffer_context
+    *) buffer->context;'
+  - '    for (size_t i = 0; i < ctx->n_buffers; i++) {'
+  - '        ggml_backend_buffer_clear(ctx->buffers[i], value);'
+  - '    }'
+  - '}'
+  desc: 清除多缓冲区中的所有子缓冲区。
+  line: 643-651
+  name: ggml_backend_multi_buffer_clear
+- code:
+  - ggml_backend_buffer_t ggml_backend_multi_buffer_alloc_buffer(ggml_backend_buffer_t
+    * buffers, size_t n_buffers) {
+  - '    ggml_backend_multi_buffer_context * ctx = (ggml_backend_multi_buffer_context
+    *) malloc(sizeof(struct ggml_backend_multi_buffer_context));'
+  - '    ctx->n_buffers = n_buffers;'
+  - '    ctx->buffers = (ggml_backend_buffer_t *) malloc(n_buffers * sizeof(ggml_backend_buffer_t));'
+  - ''
+  - '    GGML_ASSERT(ctx->buffers != NULL);'
+  - ''
+  - '    size_t total_size = 0;'
+  - '    for (size_t i = 0; i < n_buffers; i++) {'
+  - '        ctx->buffers[i] = buffers[i];'
+  - '        total_size += ggml_backend_buffer_get_size(buffers[i]);'
+  - '    }'
+  - ''
+  - '    return ggml_backend_buffer_init(buffers[0]->buft, ggml_backend_multi_buffer_i,
+    ctx, total_size);'
+  - '}'
+  desc: 从多个子缓冲区创建复合多缓冲区。
+  line: 653-669
+  name: ggml_backend_multi_buffer_alloc_buffer
+- code:
+  - bool ggml_backend_buffer_is_multi_buffer(ggml_backend_buffer_t buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    return buffer->iface.free_buffer == ggml_backend_multi_buffer_free_buffer;'
+  - '}'
+  desc: 检查缓冲区是否为多缓冲区。
+  line: 671-676
+  name: ggml_backend_buffer_is_multi_buffer
+- code:
+  - void ggml_backend_multi_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml_backend_buffer_usage
+    usage) {
+  - '    GGML_ASSERT(buffer);'
+  - '    GGML_ASSERT(ggml_backend_buffer_is_multi_buffer(buffer));'
+  - '    ggml_backend_multi_buffer_context * ctx = (ggml_backend_multi_buffer_context
+    *) buffer->context;'
+  - '    for (size_t i = 0; i < ctx->n_buffers; i++) {'
+  - '        ggml_backend_buffer_set_usage(ctx->buffers[i], usage);'
+  - '    }'
+  - '}'
+  desc: 设置多缓冲区中所有子缓冲区的使用方式。
+  line: 678-686
+  name: ggml_backend_multi_buffer_set_usage
+- code:
+  - static struct ggml_tensor * ggml_dup_tensor_layout(struct ggml_context * ctx,
+    const struct ggml_tensor * tensor) {
+  - '    struct ggml_tensor * dup = ggml_dup_tensor(ctx, tensor);'
+  - '    for (int i = 0; i < GGML_MAX_DIMS; i++) {'
+  - '        dup->nb[i] = tensor->nb[i];'
+  - '    }'
+  - '    return dup;'
+  - '}'
+  desc: 复制张量，保持相同的内存布局。
+  line: 696-702
+  name: ggml_dup_tensor_layout
+- code:
+  - static bool ggml_is_view_op(enum ggml_op op) {
+  - '    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE
+    || op == GGML_OP_TRANSPOSE;'
+  - '}'
+  desc: 检查操作是否为视图操作。
+  line: 704-706
+  name: ggml_is_view_op
+- code:
+  - static int ggml_backend_sched_backend_id(ggml_backend_sched_t sched, ggml_backend_t
+    backend) {
+  - '    for (int i = 0; i < sched->n_backends; i++) {'
+  - '        if (sched->backends[i] == backend) {'
+  - '            return i;'
+  - '        }'
+  - '    }'
+  - '    return -1;'
+  - '}'
+  desc: 从调度器中获取指定后端的索引。
+  line: 555-563
+  name: ggml_backend_sched_backend_id
+- code:
+  - static int ggml_backend_sched_backend_from_buffer(ggml_backend_sched_t sched,
+    const struct ggml_tensor * tensor, const struct ggml_tensor * op) {
+  - '    ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer
+    : tensor->buffer;'
+  - '    if (buffer == NULL) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    // find highest prio backend that supports the buffer type and the op'
+  - '    for (int i = 0; i < sched->n_backends; i++) {'
+  - '        if (ggml_backend_supports_buft(sched->backends[i], buffer->buft) &&'
+  - '            ggml_backend_supports_op(sched->backends[i], op)) {'
+  - '            return i;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    #ifndef NDEBUG'
+  - '    GGML_LOG_DEBUG("%s: warning: no backend supports op %s with a weight with
+    buffer type %s used in tensor %s, the weight will need to be copied\n",'
+  - '        __func__, ggml_op_desc(tensor), ggml_backend_buffer_name(buffer), tensor->name);'
+  - '    #endif'
+  - ''
+  - '    return -1;'
+  - '}'
+  desc: 从张量缓冲区类型找到支持操作的优先级最高的后端。
+  line: 568-590
+  name: ggml_backend_sched_backend_from_buffer
+- code:
+  - static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched,
+    struct ggml_tensor * tensor) {
+  - '    // assign pre-allocated nodes to their backend'
+  - '    int cur_backend_id = ggml_backend_sched_backend_from_buffer(sched, tensor,
+    tensor);'
+  - '    if (cur_backend_id != -1) {'
+  - '        SET_CAUSE(tensor, "1.dst");'
+  - '        return cur_backend_id;'
+  - '    }'
+  - ''
+  - '    // view_src'
+  - '    if (tensor->view_src != NULL) {'
+  - '        cur_backend_id = ggml_backend_sched_backend_from_buffer(sched, tensor->view_src,
+    tensor);'
+  - '        if (cur_backend_id != -1) {'
+  - '            SET_CAUSE(tensor, "1.vsrc");'
+  - '            return cur_backend_id;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    if (tensor->buffer || (tensor->view_src && tensor->view_src->buffer)) {'
+  - '        // since the tensor is pre-allocated, it cannot be moved to another backend'
+  - '        ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer
+    : tensor->buffer;'
+  - '        GGML_ABORT("pre-allocated tensor (%s) in a buffer (%s) that cannot run
+    the operation (%s)", tensor->name, ggml_backend_buffer_name(buffer), ggml_op_name(tensor->op));'
+  - '    }'
+  - ''
+  - '    // graph input'
+  - '    if (tensor->flags & GGML_TENSOR_FLAG_INPUT) {'
+  - '        cur_backend_id = sched->n_backends - 1; // last backend (assumed CPU)'
+  - '        SET_CAUSE(tensor, "1.inp");'
+  - '        return cur_backend_id;'
+  - '    }'
+  - ''
+  - '    // operations with weights are preferably run on the same backend as the
+    weights'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        const struct ggml_tensor * src = tensor->src[i];'
+  - '        if (src == NULL) {'
+  - '            continue;'
+  - '        }'
+  - '        // skip ROPE since the rope freqs tensor is too small to choose a backend
+    based on it'
+  - '        // not an ideal solution'
+  - '        if (tensor->op != GGML_OP_ROPE && src->buffer != NULL && src->buffer->usage
+    == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {'
+  - '            int src_backend_id = ggml_backend_sched_backend_from_buffer(sched,
+    src, tensor);'
+  - '            // check if a backend with higher prio wants to offload the op'
+  - '            if (sched->op_offload && src_backend_id == sched->n_backends - 1
+    && ggml_backend_buffer_is_host(src->buffer)) {'
+  - '                for (int b = 0; b < src_backend_id; b++) {'
+  - '                    if (ggml_backend_supports_op(sched->backends[b], tensor)
+    && ggml_backend_offload_op(sched->backends[b], tensor)) {'
+  - '                        SET_CAUSE(tensor, "1.off");'
+  - '                        return b;'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '            SET_CAUSE(tensor, "1.wgt%d", i);'
+  - '            return src_backend_id;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return -1;'
+  - '}'
+  desc: 根据当前张量数据的位置确定应该使用的后端ID。
+  line: 600-650
+  name: ggml_backend_sched_backend_id_from_cur
+- code:
+  - static char * fmt_size(size_t size) {
+  - '    static char buffer[128];'
+  - '    if (size >= 1024*1024) {'
+  - '        snprintf(buffer, sizeof(buffer), "%zuM", size/1024/1024);'
+  - '    } else {'
+  - '        snprintf(buffer, sizeof(buffer), "%zuK", size/1024);'
+  - '    }'
+  - '    return buffer;'
+  - '}'
+  desc: 格式化字节大小为可读字符串。
+  line: 676-685
+  name: fmt_size
+- code:
+  - static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, struct
+    ggml_cgraph * graph) {
+  - '    int cur_split = 0;'
+  - '    for (int i = 0; i < graph->n_nodes; i++) {'
+  - '        if (cur_split < sched->n_splits && i == sched->splits[cur_split].i_start)
+    {'
+  - '            ggml_backend_t split_backend = sched->backends[sched->splits[cur_split].backend_id];'
+  - '            GGML_LOG_DEBUG("\n## SPLIT #%d: %s # %d inputs", cur_split, ggml_backend_name(split_backend),'
+  - '                sched->splits[cur_split].n_inputs);'
+  - '            for (int j = 0; j < sched->splits[cur_split].n_inputs; j++) {'
+  - '                if (j == 0) {'
+  - '                    GGML_LOG_DEBUG(": ");'
+  - '                }'
+  - '                GGML_LOG_DEBUG("[%s (%5.5s)] ", sched->splits[cur_split].inputs[j]->name,'
+  - '                    fmt_size(ggml_nbytes(sched->splits[cur_split].inputs[j])));'
+  - '            }'
+  - '            GGML_LOG_DEBUG("\n");'
+  - '            cur_split++;'
+  - '        }'
+  - '        struct ggml_tensor * node = graph->nodes[i];'
+  - '        if (ggml_is_view_op(node->op)) {'
+  - '            continue;'
+  - '        }'
+  - '        if (sched->debug > 1) {'
+  - '            ggml_backend_t tensor_backend = ggml_backend_sched_get_tensor_backend(sched,
+    node);'
+  - '            GGML_LOG_DEBUG("node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s]
+    use=%d,c=%d:", i, ggml_op_name(node->op), node->name,'
+  - '                fmt_size(ggml_nbytes(node)), tensor_backend ? ggml_backend_name(tensor_backend)
+    : "NULL", GET_CAUSE(node),'
+  - '                graph->use_counts[ggml_hash_find(&graph->visited_hash_set, node)],
+    node->flags & GGML_TENSOR_FLAG_COMPUTE ? 1 : 0);'
+  - '            for (int j = 0; j < GGML_MAX_SRC; j++) {'
+  - '                struct ggml_tensor * src = node->src[j];'
+  - '                if (src == NULL) {'
+  - '                    continue;'
+  - '                }'
+  - '                ggml_backend_t src_backend = ggml_backend_sched_get_tensor_backend(sched,
+    src);'
+  - '                GGML_LOG_DEBUG(" %20.20s (%5.5s) [%5.5s %8.8s]", src->name,'
+  - '                    fmt_size(ggml_nbytes(src)), src_backend ? ggml_backend_name(src_backend)
+    : "NULL", GET_CAUSE(src));'
+  - '            }'
+  - '            GGML_LOG_DEBUG("\n");'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 打印调度器的后端分配信息。
+  line: 690-735
+  name: ggml_backend_sched_print_assignments
+- code:
+  - static bool ggml_backend_sched_buffer_supported(ggml_backend_sched_t sched, struct
+    ggml_tensor * t, int backend_id) {
+  - '    ggml_backend_buffer_t buf = t->view_src ? t->view_src->buffer : t->buffer;'
+  - '    ggml_backend_buffer_type_t buft = NULL;'
+  - ''
+  - '    if (buf) {'
+  - '        // the tensor is already allocated'
+  - '        buft = buf->buft;'
+  - '    } else {'
+  - '        // see if the tensor already has a backend assigned, and use the buffer
+    type of that backend'
+  - '        int tensor_backend_id = tensor_backend_id(t);'
+  - '        if (tensor_backend_id == -1 && t->view_src) {'
+  - '            tensor_backend_id = tensor_backend_id(t->view_src);'
+  - '        }'
+  - '        if (tensor_backend_id != -1) {'
+  - '            buft = sched->bufts[tensor_backend_id];'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return buft != NULL && ggml_backend_supports_buft(sched->backends[backend_id],
+    buft);'
+  - '}'
+  desc: 检查张量缓冲区类型是否被指定后端支持。
+  line: 707-727
+  name: ggml_backend_sched_buffer_supported
+- code:
+  - static void ggml_backend_sched_set_if_supported(ggml_backend_sched_t sched, struct
+    ggml_tensor * node, int cur_backend_id, int * node_backend_id) {
+  - '    if (ggml_backend_supports_op(sched->backends[cur_backend_id], node)) {'
+  - '        *node_backend_id = cur_backend_id;'
+  - '        SET_CAUSE(node, "2.sup");'
+  - '    }'
+  - '}'
+  desc: 如果后端支持节点操作则设置其后端ID。
+  line: 730-738
+  name: ggml_backend_sched_set_if_supported
+- code:
+  - void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph
+    * graph) {
+  - '    // reset splits'
+  - '    sched->n_splits = 0;'
+  - '    sched->n_graph_inputs = 0;'
+  - '    sched->is_reset = false;'
+  - ''
+  - '    struct ggml_init_params params = {'
+  - '        /* .mem_size =   */ sched->context_buffer_size,'
+  - '        /* .mem_buffer = */ sched->context_buffer,'
+  - '        /* .no_alloc =   */ true'
+  - '    };'
+  - ''
+  - '    ggml_free(sched->ctx);'
+  - ''
+  - '    sched->ctx = ggml_init(params);'
+  - '    if (sched->ctx == NULL) {'
+  - '        GGML_ABORT("%s: failed to initialize context\n", __func__);'
+  - '    }'
+  - ''
+  - '    // pass 1: assign backends to ops with pre-allocated inputs'
+  - '    for (int i = 0; i < graph->n_leafs; i++) {'
+  - '        struct ggml_tensor * leaf = graph->leafs[i];'
+  - '        int * leaf_backend_id = &tensor_backend_id(leaf);'
+  - '        // do not overwrite user assignments'
+  - '        if (*leaf_backend_id == -1) {'
+  - '            *leaf_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+    leaf);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int i = 0; i < graph->n_nodes; i++) {'
+  - '        struct ggml_tensor * node = graph->nodes[i];'
+  - '        int * node_backend_id = &tensor_backend_id(node);'
+  - '        // do not overwrite user assignments'
+  - '        if (*node_backend_id == -1) {'
+  - '            *node_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+    node);'
+  - ''
+  - '            #if 0'
+  - '            // src'
+  - '            if (node->op == GGML_OP_NONE) {'
+  - '                continue;'
+  - '            }'
+  - ''
+  - '            for (int j = 0; j < GGML_MAX_SRC; j++) {'
+  - '                struct ggml_tensor * src = node->src[j];'
+  - '                if (src == NULL) {'
+  - '                    continue;'
+  - '                }'
+  - '                int * src_backend_id = &tensor_backend_id(src);'
+  - '                if (*src_backend_id == -1) {'
+  - '                    *src_backend_id = ggml_backend_sched_backend_id_from_cur(sched,
+    src);'
+  - '                }'
+  - '            }'
+  - '            #endif'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // pass 2: expand current backend assignments'
+  - '    // assign the same backend to adjacent nodes'
+  - '    // expand gpu backends (i.e. non last prio) up and down, ignoring cpu (the
+    lowest priority backend)'
+  - '    // thus, cpu will never be used unless weights are on cpu, or there are no
+    gpu ops between cpu ops'
+  - '    // ops unsupported by the backend being expanded will be left unassigned
+    so that they can be assigned later when the locations of its inputs are known'
+  - '    // expand gpu down'
+  - '    {'
+  - '        int cur_backend_id = -1;'
+  - '        for (int i = 0; i < graph->n_nodes; i++) {'
+  - '            struct ggml_tensor * node = graph->nodes[i];'
+  - '            if (ggml_is_view_op(node->op)) {'
+  - '                continue;'
+  - '            }'
+  - '            int * node_backend_id = &tensor_backend_id(node);'
+  - '            if (*node_backend_id != -1) {'
+  - '                if (*node_backend_id == sched->n_backends - 1) {'
+  - '                    // skip cpu (lowest prio backend)'
+  - '                    cur_backend_id = -1;'
+  - '                } else {'
+  - '                    cur_backend_id = *node_backend_id;'
+  - '                }'
+  - '            } else if (cur_backend_id != -1) {'
+  - '                ggml_backend_sched_set_if_supported(sched, node, cur_backend_id,
+    node_backend_id);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    // expand gpu up'
+  - '    {'
+  - '        int cur_backend_id = -1;'
+  - '        for (int i = graph->n_nodes - 1; i >= 0; i--) {'
+  - '            struct ggml_tensor * node = graph->nodes[i];'
+  - '            if (ggml_is'
+  - '    '
+  desc: 将计算图分割成子图并分配后端，这是调度器的核心函数。
+  line: 750-830
+  name: ggml_backend_sched_split_graph
+- code: []
+  desc: 该文件的主要逻辑是后端调度器的核心实现，包含图节点后端分配、图分割、内存分配和计算执行等关键流程。从第1012行开始包含多个静态辅助函数和公共API函数。
+  line: 1012-end
+  name: __main__
+- code:
+  - void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
+  - '    GGML_ASSERT(sched);'
+  - '    if (!sched->is_reset) {'
+  - '        ggml_hash_set_reset(&sched->hash_set);'
+  - '        memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));'
+  - '        memset(sched->hv_tensor_copies, 0, sched->hash_set.size * sched->n_backends
+    * sched->n_copies * sizeof(struct ggml_tensor *));'
+  - '        sched->is_reset = true;'
+  - '    }'
+  - '    sched->is_alloc = false;'
+  - '}'
+  desc: 重置后端调度器的图、张量映射和分配状态，为下一次执行准备环境。
+  line: 1748-1760
+  name: ggml_backend_sched_reset
+- code:
+  - void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph
+    * measure_graph, size_t * sizes) {
+  - '    GGML_ASSERT(sched);'
+  - '    GGML_ASSERT((int)sched->hash_set.size >= measure_graph->n_nodes + measure_graph->n_leafs);'
+  - '    GGML_ASSERT(sizes);'
+  - '    ggml_backend_sched_reset(sched);'
+  - '    ggml_backend_sched_synchronize(sched);'
+  - '    ggml_backend_sched_split_graph(sched, measure_graph);'
+  - '    ggml_gallocr_reserve_n_size(sched->galloc, &sched->graph, sched->node_backend_ids,
+    sched->leaf_backend_ids, sizes);'
+  - '}'
+  desc: 根据测量图拆分调度图并预留各后端所需的内存大小。
+  line: 1762-1773
+  name: ggml_backend_sched_reserve_size
+- code:
+  - bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph
+    * measure_graph) {
+  - '    GGML_ASSERT(sched);'
+  - '    GGML_ASSERT((int)sched->hash_set.size >= measure_graph->n_nodes + measure_graph->n_leafs);'
+  - '    ggml_backend_sched_synchronize(sched);'
+  - '    ggml_backend_sched_split_graph(sched, measure_graph);'
+  - '    if (!ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids,
+    sched->leaf_backend_ids)) {'
+  - '        return false;'
+  - '    }'
+  - '    ggml_backend_sched_reset(sched);'
+  - '    return true;'
+  - '}'
+  desc: 为测量图预留后端内存，并在成功后重置调度器状态。
+  line: 1775-1789
+  name: ggml_backend_sched_reserve
+- code:
+  - bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph
+    * graph) {
+  - '    GGML_ASSERT(sched);'
+  - '    GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);'
+  - '    GGML_ASSERT(!sched->is_alloc);'
+  - '    sched->cur_copy = sched->next_copy;'
+  - '    sched->next_copy = (sched->next_copy + 1) % sched->n_copies;'
+  - '    ggml_backend_sched_split_graph(sched, graph);'
+  - '    if (!ggml_backend_sched_alloc_splits(sched)) {'
+  - '        return false;'
+  - '    }'
+  - '    sched->is_alloc = true;'
+  - '    return true;'
+  - '}'
+  desc: 选择当前副本并为计算图拆分结果分配所需资源。
+  line: 1791-1807
+  name: ggml_backend_sched_alloc_graph
+- code:
+  - enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched,
+    struct ggml_cgraph * graph) {
+  - '    enum ggml_status err = ggml_backend_sched_graph_compute_async(sched, graph);'
+  - '    ggml_backend_sched_synchronize(sched);'
+  - '    return err;'
+  - '}'
+  desc: 同步执行计算图，先发起异步计算，再等待所有后端完成。
+  line: 1809-1813
+  name: ggml_backend_sched_graph_compute
+- code:
+  - enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched,
+    struct ggml_cgraph * graph) {
+  - '    GGML_ASSERT(sched);'
+  - '    if (!sched->is_reset && !sched->is_alloc) {'
+  - '        ggml_backend_sched_reset(sched);'
+  - '    }'
+  - '    if (!sched->is_alloc) {'
+  - '        if (!ggml_backend_sched_alloc_graph(sched, graph)) {'
+  - '            return GGML_STATUS_ALLOC_FAILED;'
+  - '        }'
+  - '    }'
+  - '    return ggml_backend_sched_compute_splits(sched);'
+  - '}'
+  desc: 异步准备并执行调度器管理的计算图。
+  line: 1815-1828
+  name: ggml_backend_sched_graph_compute_async
+- code:
+  - void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
+  - '    GGML_ASSERT(sched);'
+  - '    for (int i = 0; i < sched->n_backends; i++) {'
+  - '        ggml_backend_synchronize(sched->backends[i]);'
+  - '    }'
+  - '    if (!sched->is_alloc) {'
+  - '        sched->next_copy = 0;'
+  - '    }'
+  - '}'
+  desc: 同步所有已注册后端，并在未分配图时重置副本选择。
+  line: 1830-1840
+  name: ggml_backend_sched_synchronize
+- code:
+  - void ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback
+    callback, void * user_data) {
+  - '    GGML_ASSERT(sched);'
+  - '    sched->callback_eval = callback;'
+  - '    sched->callback_eval_user_data = user_data;'
+  - '}'
+  desc: 设置调度器的评估回调函数及其用户数据。
+  line: 1842-1846
+  name: ggml_backend_sched_set_eval_callback
+- code:
+  - int ggml_backend_sched_get_n_splits(ggml_backend_sched_t sched) {
+  - '    GGML_ASSERT(sched);'
+  - '    return sched->n_splits;'
+  - '}'
+  desc: 返回调度器中的图分割数量。
+  line: 1848-1851
+  name: ggml_backend_sched_get_n_splits
+- code:
+  - int ggml_backend_sched_get_n_copies(ggml_backend_sched_t sched) {
+  - '    GGML_ASSERT(sched);'
+  - '    return sched->n_copies;'
+  - '}'
+  desc: 返回调度器维护的图副本数量。
+  line: 1853-1856
+  name: ggml_backend_sched_get_n_copies
+- code:
+  - int ggml_backend_sched_get_n_backends(ggml_backend_sched_t sched) {
+  - '    GGML_ASSERT(sched);'
+  - '    return sched->n_backends;'
+  - '}'
+  desc: 返回调度器管理的后端数量。
+  line: 1858-1861
+  name: ggml_backend_sched_get_n_backends
+- code:
+  - ggml_backend_t ggml_backend_sched_get_backend(ggml_backend_sched_t sched, int
+    i) {
+  - '    GGML_ASSERT(sched);'
+  - '    GGML_ASSERT(i >= 0 && i < sched->n_backends);'
+  - '    return sched->backends[i];'
+  - '}'
+  desc: 按索引获取调度器中的后端实例。
+  line: 1863-1867
+  name: ggml_backend_sched_get_backend
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_sched_get_buffer_type(ggml_backend_sched_t
+    sched, ggml_backend_t backend) {
+  - '    GGML_ASSERT(sched);'
+  - '    int backend_index = ggml_backend_sched_backend_id(sched, backend);'
+  - '    GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);'
+  - '    return sched->bufts[backend_index];'
+  - '}'
+  desc: 获取指定后端对应的缓冲区类型。
+  line: 1869-1875
+  name: ggml_backend_sched_get_buffer_type
+- code:
+  - size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backend_t
+    backend) {
+  - '    GGML_ASSERT(sched);'
+  - '    int backend_index = ggml_backend_sched_backend_id(sched, backend);'
+  - '    GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);'
+  - '    return ggml_gallocr_get_buffer_size(sched->galloc, backend_index);'
+  - '}'
+  desc: 获取指定后端对应的图分配缓冲区大小。
+  line: 1877-1883
+  name: ggml_backend_sched_get_buffer_size
+- code:
+  - void ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct
+    ggml_tensor * node, ggml_backend_t backend) {
+  - '    GGML_ASSERT(sched);'
+  - '    int backend_index = ggml_backend_sched_backend_id(sched, backend);'
+  - '    GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);'
+  - '    tensor_backend_id(node) = backend_index;'
+  - '    SET_CAUSE(node, "usr");'
+  - '    sched->is_reset = false;'
+  - '}'
+  desc: 将张量绑定到指定后端并标记该绑定由用户设置。
+  line: 1885-1892
+  name: ggml_backend_sched_set_tensor_backend
+- code:
+  - ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
+    struct ggml_tensor * node) {
+  - '    GGML_ASSERT(sched);'
+  - '    int backend_index = tensor_backend_id(node);'
+  - '    if (backend_index == -1) {'
+  - '        return NULL;'
+  - '    }'
+  - '    return sched->backends[backend_index];'
+  - '}'
+  desc: 获取张量当前绑定的后端，未绑定时返回空指针。
+  line: 1894-1902
+  name: ggml_backend_sched_get_tensor_backend
+- code:
+  - enum ggml_status ggml_backend_view_init(struct ggml_tensor * tensor) {
+  - '    GGML_ASSERT(tensor);'
+  - '    GGML_ASSERT(tensor->buffer == NULL);'
+  - '    GGML_ASSERT(tensor->view_src != NULL);'
+  - '    GGML_ASSERT(tensor->view_src->buffer != NULL);'
+  - '    GGML_ASSERT(tensor->view_src->data != NULL);'
+  - '    tensor->buffer = tensor->view_src->buffer;'
+  - '    tensor->data = (char *)tensor->view_src->data + tensor->view_offs;'
+  - '    return ggml_backend_buffer_init_tensor(tensor->buffer, tensor);'
+  - '}'
+  desc: 根据源张量的缓冲区和偏移量初始化视图张量的数据地址。
+  line: 1906-1917
+  name: ggml_backend_view_init
+- code:
+  - enum ggml_status ggml_backend_tensor_alloc(ggml_backend_buffer_t buffer, struct
+    ggml_tensor * tensor, void * addr) {
+  - '    GGML_ASSERT(tensor);'
+  - '    GGML_ASSERT(tensor->buffer == NULL);'
+  - '    GGML_ASSERT(tensor->data == NULL);'
+  - '    GGML_ASSERT(tensor->view_src == NULL);'
+  - '    GGML_ASSERT(addr >= ggml_backend_buffer_get_base(buffer));'
+  - '    GGML_ASSERT((char *)addr + ggml_backend_buffer_get_alloc_size(buffer, tensor)
+    <='
+  - '                (char *)ggml_backend_buffer_get_base(buffer) + ggml_backend_buffer_get_size(buffer));'
+  - '    tensor->buffer = buffer;'
+  - '    tensor->data = addr;'
+  - '    return ggml_backend_buffer_init_tensor(buffer, tensor);'
+  - '}'
+  desc: 在指定后端缓冲区中为普通张量设置已分配的数据地址。
+  line: 1919-1932
+  name: ggml_backend_tensor_alloc
+- code:
+  - static struct ggml_tensor * graph_copy_dup_tensor(struct ggml_hash_set hash_set,
+    struct ggml_tensor ** node_copies,
+  - '    struct ggml_context * ctx_allocated, struct ggml_context * ctx_unallocated,
+    struct ggml_tensor * src) {'
+  - '    GGML_ASSERT(src != NULL);'
+  - '    GGML_ASSERT(src->data && "graph must be allocated");'
+  - '    size_t id = ggml_hash_insert(&hash_set, src);'
+  - '    if (id == GGML_HASHSET_ALREADY_EXISTS) {'
+  - '        return node_copies[ggml_hash_find(&hash_set, src)];'
+  - '    }'
+  - '    struct ggml_tensor * dst = ggml_dup_tensor_layout(src->data && !src->view_src
+    ? ctx_allocated : ctx_unallocated, src);'
+  - '    if (src->view_src != NULL) {'
+  - '        dst->view_src = graph_copy_dup_tensor(hash_set, node_copies, ctx_allocated,
+    ctx_unallocated, src->view_src);'
+  - '        dst->view_offs = src->view_offs;'
+  - '    }'
+  - '    dst->op = src->op;'
+  - '    dst->flags = src->flags;'
+  - '    memcpy(dst->op_params, src->op_params, sizeof(dst->op_params));'
+  - '    ggml_set_name(dst, src->name);'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        struct ggml_tensor * s = src->src[i];'
+  - '        if (s == NULL) continue;'
+  - '        dst->src[i] = graph_copy_dup_tensor(hash_set, node_copies, ctx_allocated,
+    ctx_unallocated, s);'
+  - '    }'
+  - '    node_copies[id] = dst;'
+  - '    return dst;'
+  - '}'
+  desc: 递归复制张量布局、视图关系、操作属性和源张量关系，并避免重复复制。
+  line: 1934-1962
+  name: graph_copy_dup_tensor
+- code:
+  - static void graph_copy_init_tensor(struct ggml_hash_set * hash_set, struct ggml_tensor
+    ** node_copies, bool * node_init, struct ggml_tensor * src) {
+  - '    size_t id = ggml_hash_find(hash_set, src);'
+  - '    if (node_init[id]) return;'
+  - '    node_init[id] = true;'
+  - '    struct ggml_tensor * dst = node_copies[id];'
+  - '    if (dst->view_src != NULL) {'
+  - '        graph_copy_init_tensor(hash_set, node_copies, node_init, src->view_src);'
+  - '        enum ggml_status status = ggml_backend_view_init(dst);'
+  - '        GGML_ASSERT(status == GGML_STATUS_SUCCESS);'
+  - '    } else {'
+  - '        ggml_backend_tensor_copy(src, dst);'
+  - '    }'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        struct ggml_tensor * s = src->src[i];'
+  - '        if (s == NULL) continue;'
+  - '        graph_copy_init_tensor(hash_set, node_copies, node_init, s);'
+  - '    }'
+  - '}'
+  desc: 递归初始化复制图中的视图张量或将源张量数据复制到目标张量。
+  line: 1964-1983
+  name: graph_copy_init_tensor
+- code:
+  - struct ggml_backend_graph_copy ggml_backend_graph_copy(ggml_backend_t backend,
+    struct ggml_cgraph * graph) {
+  - '    GGML_ASSERT(graph);'
+  - '    struct ggml_hash_set hash_set = ggml_hash_set_new(graph->visited_hash_set.size);'
+  - '    struct ggml_tensor ** node_copies = (ggml_tensor **) calloc(hash_set.size,
+    sizeof(node_copies[0]));'
+  - '    bool * node_init = (bool *) calloc(hash_set.size, sizeof(node_init[0]));'
+  - '    struct ggml_init_params params = {'
+  - '        .mem_size = ggml_tensor_overhead()*hash_set.size + ggml_graph_overhead_custom(graph->size,
+    false),'
+  - '        .mem_buffer = NULL,'
+  - '        .no_alloc = true'
+  - '    };'
+  - '    struct ggml_context * ctx_allocated = ggml_init(params);'
+  - '    struct ggml_context * ctx_unallocated = ggml_init(params);'
+  - '    if (ctx_allocated == NULL || ctx_unallocated == NULL) {'
+  - '        ggml_hash_set_free(&hash_set);'
+  - '        free(node_copies);'
+  - '        free(node_init);'
+  - '        ggml_free(ctx_allocated);'
+  - '        ggml_free(ctx_unallocated);'
+  - '        return { NULL, NULL, NULL, NULL };'
+  - '    }'
+  - '    for (int i = 0; i < graph->n_nodes; i++) {'
+  - '        graph_copy_dup_tensor(hash_set, node_copies, ctx_allocated, ctx_unallocated,
+    graph->nodes[i]);'
+  - '    }'
+  - '    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx_allocated,
+    backend);'
+  - '    if (buffer == NULL) {'
+  - '        ggml_hash_set_free(&hash_set);'
+  - '        free(node_copies);'
+  - '        free(node_init);'
+  - '        ggml_free(ctx_allocated);'
+  - '        ggml_free(ctx_unallocated);'
+  - '        return { NULL, NULL, NULL, NULL };'
+  - '    }'
+  - '    for (int i = 0; i < graph->n_nodes; i++) {'
+  - '        graph_copy_init_tensor(&hash_set, node_copies, node_init, graph->nodes[i]);'
+  - '    }'
+  - '    struct ggml_cgraph * graph_copy = ggml_new_graph_custom(ctx_allocated, graph->size,
+    false);'
+  - '    for (int i = 0; i < graph->n_nodes; i++) {'
+  - '        graph_copy->nodes[i] = node_copies[ggml_hash_find(&hash_set, graph->nodes[i])];'
+  - '    }'
+  - '    graph_copy->n_nodes = graph->n_nodes;'
+  - '    ggml_hash_set_free(&hash_set);'
+  - '    free(node_copies);'
+  - '    free(node_init);'
+  - '    return { buffer, ctx_allocated, ctx_unallocated, graph_copy };'
+  - '}'
+  desc: 在指定后端上创建计算图的深层副本，包括张量上下文、缓冲区、数据和拓扑关系。
+  line: 1985-2043
+  name: ggml_backend_graph_copy
+- code:
+  - void ggml_backend_graph_copy_free(struct ggml_backend_graph_copy copy) {
+  - '    ggml_backend_buffer_free(copy.buffer);'
+  - '    ggml_free(copy.ctx_allocated);'
+  - '    ggml_free(copy.ctx_unallocated);'
+  - '}'
+  desc: 释放计算图副本关联的缓冲区和两个上下文。
+  line: 2045-2049
+  name: ggml_backend_graph_copy_free
+- code:
+  - bool ggml_backend_compare_graph_backend(ggml_backend_t backend1, ggml_backend_t
+    backend2, struct ggml_cgraph * graph, ggml_backend_eval_callback callback, void
+    * user_data, struct ggml_tensor const * const * test_nodes, size_t num_test_nodes)
+    {
+  - '    struct ggml_backend_graph_copy copy = ggml_backend_graph_copy(backend2, graph);'
+  - '    if (copy.buffer == NULL) return false;'
+  - '    struct ggml_cgraph * g1 = graph;'
+  - '    struct ggml_cgraph * g2 = copy.graph;'
+  - '    assert(g1->n_nodes == g2->n_nodes);'
+  - '    if (num_test_nodes != 0) {'
+  - '        GGML_ASSERT(test_nodes);'
+  - '        ggml_backend_graph_compute(backend1, g1);'
+  - '        ggml_backend_graph_compute(backend2, g2);'
+  - '        bool verified = false;'
+  - '        for (int i = 0; i < g1->n_nodes; i++) {'
+  - '            for (size_t j = 0; j < num_test_nodes; ++j) {'
+  - '                if (g1->nodes[i] == test_nodes[j]) {'
+  - '                    callback(i, g1->nodes[i], g2->nodes[i], user_data);'
+  - '                    verified = true;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        GGML_ASSERT(verified);'
+  - '    } else {'
+  - '        for (int i = 0; i < g1->n_nodes; i++) {'
+  - '            struct ggml_tensor * t1 = g1->nodes[i];'
+  - '            struct ggml_tensor * t2 = g2->nodes[i];'
+  - '            assert(t1->op == t2->op && ggml_are_same_layout(t1, t2));'
+  - '            struct ggml_cgraph g1v = ggml_graph_view(g1, i, i + 1);'
+  - '            struct ggml_cgraph g2v = ggml_graph_view(g2, i, i + 1);'
+  - '            ggml_backend_graph_compute(backend1, &g1v);'
+  - '            ggml_backend_graph_compute(backend2, &g2v);'
+  - '            if (ggml_is_view_op(t1->op)) continue;'
+  - '            if (!callback(i, t1, t2, user_data)) break;'
+  - '        }'
+  - '    }'
+  - '    ggml_backend_graph_copy_free(copy);'
+  - '    return true;'
+  - '}'
+  desc: 在两个后端上执行同一计算图，并通过回调比较节点结果或指定测试张量。
+  line: 2051-2098
+  name: ggml_backend_compare_graph_backend
+- code:
+  - static void * ggml_backend_cpu_buffer_get_base(ggml_backend_buffer_t buffer) {
+  - '    GGML_ASSERT(buffer);'
+  - '    uintptr_t data = (uintptr_t)buffer->context;'
+  - '    if (data % TENSOR_ALIGNMENT != 0) data = GGML_PAD(data, TENSOR_ALIGNMENT);'
+  - '    return (void *)data;'
+  - '}'
+  desc: 获取 CPU 缓冲区的对齐基地址。
+  line: 2102-2110
+  name: ggml_backend_cpu_buffer_get_base
+- code:
+  - static void ggml_backend_cpu_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    GGML_ASSERT(buffer);'
+  - '    ggml_aligned_free(buffer->context, buffer->size);'
+  - '}'
+  desc: 释放 CPU 缓冲区拥有的对齐内存。
+  line: 2112-2115
+  name: ggml_backend_cpu_buffer_free_buffer
+- code:
+  - static void ggml_backend_cpu_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+    struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    memset((char *)tensor->data + offset, value, size);'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 使用指定字节值填充张量数据的指定范围。
+  line: 2117-2121
+  name: ggml_backend_cpu_buffer_memset_tensor
+- code:
+  - static void ggml_backend_cpu_buffer_set_tensor(ggml_backend_buffer_t buffer, struct
+    ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    memcpy((char *)tensor->data + offset, data, size);'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 将外部数据复制到 CPU 张量的指定范围。
+  line: 2123-2127
+  name: ggml_backend_cpu_buffer_set_tensor
+- code:
+  - static void ggml_backend_cpu_buffer_get_tensor(ggml_backend_buffer_t buffer, const
+    struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor);'
+  - '    memcpy(data, (const char *)tensor->data + offset, size);'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 将 CPU 张量指定范围的数据复制到外部内存。
+  line: 2129-2133
+  name: ggml_backend_cpu_buffer_get_tensor
+- code:
+  - static bool ggml_backend_cpu_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const
+    struct ggml_tensor * src, struct ggml_tensor * dst) {
+  - '    GGML_ASSERT(src);'
+  - '    if (ggml_backend_buffer_is_host(src->buffer)) {'
+  - '        memcpy(dst->data, src->data, ggml_nbytes(src));'
+  - '        return true;'
+  - '    }'
+  - '    return false;'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 当源张量位于主机内存时，将其完整内容复制到目标张量。
+  line: 2135-2143
+  name: ggml_backend_cpu_buffer_cpy_tensor
+- code:
+  - static void ggml_backend_cpu_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    GGML_ASSERT(buffer);'
+  - '    memset(buffer->context, value, buffer->size);'
+  - '}'
+  desc: 使用指定字节值清空整个 CPU 缓冲区。
+  line: 2145-2148
+  name: ggml_backend_cpu_buffer_clear
+- code:
+  - static const char * ggml_backend_cpu_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    return "CPU";'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回 CPU 缓冲区类型名称。
+  line: 2177-2180
+  name: ggml_backend_cpu_buffer_type_get_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_cpu_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    void * data = ggml_aligned_malloc(size);'
+  - '    if (data == NULL) {'
+  - '        GGML_LOG_ERROR("%s: failed to allocate buffer of size %zu\n", __func__,
+    size);'
+  - '        return NULL;'
+  - '    }'
+  - '    return ggml_backend_buffer_init(buft, ggml_backend_cpu_buffer_i, data, size);'
+  - '}'
+  desc: 分配对齐的 CPU 内存并创建后端缓冲区对象。
+  line: 2182-2191
+  name: ggml_backend_cpu_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_cpu_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    return TENSOR_ALIGNMENT;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回 CPU 缓冲区要求的张量对齐粒度。
+  line: 2193-2196
+  name: ggml_backend_cpu_buffer_type_get_alignment
+- code:
+  - static bool ggml_backend_cpu_buffer_type_is_host(ggml_backend_buffer_type_t buft)
+    {
+  - '    return true;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 标识 CPU 缓冲区类型位于主机内存中。
+  line: 2198-2201
+  name: ggml_backend_cpu_buffer_type_is_host
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void) {
+  - '    static struct ggml_backend_buffer_type ggml_backend_cpu_buffer_type = {'
+  - '        .iface = {'
+  - '            .get_name = ggml_backend_cpu_buffer_type_get_name,'
+  - '            .alloc_buffer = ggml_backend_cpu_buffer_type_alloc_buffer,'
+  - '            .get_alignment = ggml_backend_cpu_buffer_type_get_alignment,'
+  - '            .get_max_size = NULL,'
+  - '            .get_alloc_size = NULL,'
+  - '            .is_host = ggml_backend_cpu_buffer_type_is_host,'
+  - '        },'
+  - '        .device = NULL,'
+  - '        .context = NULL,'
+  - '    };'
+  - '    return &ggml_backend_cpu_buffer_type;'
+  - '}'
+  desc: 返回全局复用的标准 CPU 后端缓冲区类型描述。
+  line: 2203-2220
+  name: ggml_backend_cpu_buffer_type
+- code:
+  - static const char * ggml_backend_cpu_buffer_from_ptr_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    return "CPU_Mapped";'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回外部指针映射 CPU 缓冲区类型名称。
+  line: 2222-2225
+  name: ggml_backend_cpu_buffer_from_ptr_type_get_name
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void)
+    {
+  - '    static struct ggml_backend_buffer_type ggml_backend_cpu_buffer_type = {'
+  - '        .iface = {'
+  - '            .get_name = ggml_backend_cpu_buffer_from_ptr_type_get_name,'
+  - '            .alloc_buffer = ggml_backend_cpu_buffer_type_alloc_buffer,'
+  - '            .get_alignment = ggml_backend_cpu_buffer_type_get_alignment,'
+  - '            .get_max_size = NULL,'
+  - '            .get_alloc_size = NULL,'
+  - '            .is_host = ggml_backend_cpu_buffer_type_is_host,'
+  - '        },'
+  - '        .device = NULL,'
+  - '        .context = NULL,'
+  - '    };'
+  - '    return &ggml_backend_cpu_buffer_type;'
+  - '}'
+  desc: 返回基于外部内存指针的 CPU 缓冲区类型描述。
+  line: 2227-2244
+  name: ggml_backend_cpu_buffer_from_ptr_type
+- code:
+  - ggml_backend_buffer_t ggml_backend_cpu_buffer_from_ptr(void * ptr, size_t size)
+    {
+  - '    GGML_ASSERT((uintptr_t)ptr % TENSOR_ALIGNMENT == 0 && "buffer pointer must
+    be aligned");'
+  - '    return ggml_backend_buffer_init(ggml_backend_cpu_buffer_from_ptr_type(),
+    ggml_backend_cpu_buffer_from_ptr_i, ptr, size);'
+  - '}'
+  desc: 将调用方提供的对齐内存指针包装为 CPU 后端缓冲区。
+  line: 2246-2249
+  name: ggml_backend_cpu_buffer_from_ptr

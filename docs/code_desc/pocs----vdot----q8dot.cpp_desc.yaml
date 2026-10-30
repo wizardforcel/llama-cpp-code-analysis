@@ -1,0 +1,162 @@
+classes:
+- desc: 统计类，用于收集和报告性能测试结果，包括平均值、标准差和最大值。
+  methods:
+  - code:
+    - void addResult(double s, double t) {
+    - '    sum += s;'
+    - '    sumt += t; sumt2 += t*t; maxt = std::max(maxt, t);'
+    - '    ++nloop;'
+    - '}'
+    desc: 添加一次测试的累计结果，更新总和、总时间、总时间平方和最大时间。
+    line: 122-125
+    name: addResult
+  - code:
+    - void reportResult(const char* title) const {
+    - '    if (nloop < 1) {'
+    - '        printf("%s(%s): no result\n",__func__,title);'
+    - '        return;'
+    - '    }'
+    - '    printf("============ %s\n",title);'
+    - '    printf("<dot> = %g\n",sum/nloop);'
+    - '    auto t = sumt/nloop, dt = sumt2/nloop - t*t;'
+    - '    if (dt > 0) dt = sqrt(dt);'
+    - '    printf("<time> = %g +/- %g us. Max. time = %g us.\n",t,dt,maxt);'
+    - '}'
+    desc: 打印测试结果的统计信息，包括平均值、时间均值、标准差和最大值；若无结果则输出提示。
+    line: 126-137
+    name: reportResult
+  name: Stat
+desc: 该文件是一个性能基准测试程序，用于比较自定义实现的简单点积函数（支持Q4_0/Q4_1与Q8_0量化块）与ggml库中向量点积实现的性能和结果。程序通过随机数填充量化块数据，循环多轮计算点积，统计平均耗时和结果的均值和标准差，并对耗时进行测量和分析。
+file: pocs/vdot/q8dot.cpp
+funcs:
+- code:
+  - template <typename T>
+  - static void fillQ4blocks(std::vector<T>& blocks, std::mt19937& rndm) {
+  - '    for (auto& b : blocks) {'
+  - '        b.d = 1;'
+  - '        for (int i=0; i<QK4_1/2; ++i) {'
+  - '            uint8_t v1 = rndm() >> 28;'
+  - '            uint8_t v2 = rndm() >> 28;'
+  - '            b.qs[i] = v1 | (v2 << 4);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 模板函数，用于用随机生成的4位量化值填充Q4_0或Q4_1块向量。
+  line: 40-50
+  name: fillQ4blocks
+- code:
+  - static void fillQ80blocks(std::vector<block_q8_0>& blocks, std::mt19937& rndm)
+    {
+  - '    for (auto& b : blocks) {'
+  - '        b.d = 1;'
+  - '        int sum = 0;'
+  - '        for (int i=0; i<QK8_0; ++i) {'
+  - '            b.qs[i] = (rndm() >> 24) - 128;'
+  - '            sum += b.qs[i];'
+  - '        }'
+  - '        b.s = b.d * sum;'
+  - '    }'
+  - '}'
+  desc: 用随机生成的8位量化值填充Q8_0块向量，并计算和存储缩放因子与和值。
+  line: 52-63
+  name: fillQ80blocks
+- code:
+  - static float simpleDot(const block_q4_0& x, const block_q8_0& y) {
+  - '    int s1 = 0; //, s2 = 0;'
+  - '    for (int i=0; i<QK4_1/2; i+=2) {'
+  - '        int v1 = x.qs[i+0] & 0xf;'
+  - '        int v2 = x.qs[i+0] >> 4;'
+  - '        int v3 = x.qs[i+1] & 0xf;'
+  - '        int v4 = x.qs[i+1] >> 4;'
+  - '        int j = 2*i;'
+  - '        s1 += v1*y.qs[j] + v2*y.qs[j+1] + v3*y.qs[j+2] + v4*y.qs[j+3];'
+  - '        //s2 += y.qs[j] + y.qs[j+1] + y.qs[j+2] + y.qs[j+3];'
+  - '    }'
+  - '    return y.d * x.d * s1 - 8 * x.d * y.s;'
+  - '    //return y.d * x.d * (s1 - 8 * s2);'
+  - '}'
+  desc: 重载函数：针对block_q4_0与block_q8_0点积，通过dequantized的量化值计算点积，返回浮点结果。
+  line: 65-78
+  name: simpleDot
+- code:
+  - static float simpleDot(const block_q4_1& x, const block_q8_0& y) {
+  - '    int s1 = 0; //, s2 = 0;'
+  - '    for (int i=0; i<QK4_1/2; i+=2) {'
+  - '        int v1 = x.qs[i+0] & 0xf;'
+  - '        int v2 = x.qs[i+0] >> 4;'
+  - '        int v3 = x.qs[i+1] & 0xf;'
+  - '        int v4 = x.qs[i+1] >> 4;'
+  - '        int j = 2*i;'
+  - '        s1 += v1*y.qs[j] + v2*y.qs[j+1] + v3*y.qs[j+2] + v4*y.qs[j+3];'
+  - '        //s2 += y.qs[j] + y.qs[j+1] + y.qs[j+2] + y.qs[j+3];'
+  - '    }'
+  - '    return y.d * x.d * s1 + y.s * x.m;'
+  - '    //return y.d * (x.d * s1 + x.m * s2);'
+  - '}'
+  desc: 重载函数：针对block_q4_1与block_q8_0点积，通过量化的4位与8位值计算点积，返回浮点结果。
+  line: 80-93
+  name: simpleDot
+- code:
+  - int main(int argc, char** argv) {
+  - '    int nloop = argc > 1 ? atoi(argv[1]) : 10;'
+  - '    int type  = argc > 2 ? atoi(argv[2]) : 1;'
+  - '    std::mt19937 rndm(1234);'
+  - '    std::vector<block_q4_1> x41;'
+  - '    std::vector<block_q4_0> x40;'
+  - '    std::vector<block_q8_0> y(kVecSize);'
+  - '    if (type == 0) x40.resize(kVecSize);'
+  - '    else {'
+  - '        x41.resize(kVecSize);'
+  - '        for (auto& b : x41) b.m = 1;'
+  - '    }'
+  - '    auto ggml_type = type == 0 ? GGML_TYPE_Q4_0 : GGML_TYPE_Q4_1;'
+  - '    const auto * funcs = ggml_get_type_traits_cpu(ggml_type);'
+  - '    Stat simple, ggml;'
+  - '    for (int iloop=0; iloop<nloop; ++iloop) {'
+  - '        if (type == 0) fillQ4blocks(x40, rndm);'
+  - '        else fillQ4blocks(x41, rndm);'
+  - '        fillQ80blocks(y, rndm);'
+  - '        auto t1 = std::chrono::high_resolution_clock::now();'
+  - '        double s = 0;'
+  - '        if (type == 0) for (int i=0; i<kVecSize; ++i) s += simpleDot(x40[i],
+    y[i]);'
+  - '        else for (int i=0; i<kVecSize; ++i) s += simpleDot(x41[i], y[i]);'
+  - '        auto t2 = std::chrono::high_resolution_clock::now();'
+  - '        auto t = 1e-3*std::chrono::duration_cast<std::chrono::nanoseconds>(t2-t1).count();'
+  - '        if (iloop > 3) simple.addResult(s, t);'
+  - '        t1 = std::chrono::high_resolution_clock::now();'
+  - '        float fs;'
+  - '        if (type == 0) funcs->vec_dot(kVecSize * QK4_1, &fs, 0, x40.data(), 0,
+    y.data(), 0, 1);'
+  - '        else funcs->vec_dot(kVecSize * QK4_1, &fs, 0, x41.data(), 0, y.data(),
+    0, 1);'
+  - '        t2 = std::chrono::high_resolution_clock::now();'
+  - '        t = 1e-3*std::chrono::duration_cast<std::chrono::nanoseconds>(t2-t1).count();'
+  - '        if (iloop > 3) ggml.addResult(fs, t);'
+  - '    }'
+  - '    simple.reportResult("Simple");'
+  - '    ggml.reportResult("ggml");'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口函数，解析命令行参数，初始化数据，循环执行点积计算，分别使用简单实现和ggml库实现，并统计结果。
+  line: 140-181
+  name: main
+- code:
+  - '#include <cstdio>'
+  - '#include <vector>'
+  - '...'
+  - constexpr int kVecSize = 1 << 16;
+  - '#define QK4_0 32'
+  - typedef struct { ... } block_q4_0;
+  - static_assert(...);
+  - '#define QK4_1 32'
+  - typedef struct { ... } block_q4_1;
+  - static_assert(...);
+  - '#define QK8_0 32'
+  - typedef struct { ... } block_q8_0;
+  - static_assert(...);
+  - static_assert(QK4_1 == QK8_0, "QK4_1 and QK8_0 must be the same");
+  - static_assert(QK4_0 == QK8_0, "QK4_0 and QK8_0 must be the same");
+  desc: 全局代码区域，包含常量定义、数据类型定义和静态断言，为后续函数和类提供基础。
+  line: 1-38
+  name: __main__

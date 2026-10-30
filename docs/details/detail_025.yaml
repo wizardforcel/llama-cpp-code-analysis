@@ -1,0 +1,539 @@
+code_map:
+- src/llama-impl.h
+- ├── 时间获取
+- │   └── ggml_time_us() —— 底层时间获取
+- ├── 作用域计时器
+- │   ├── time_meas 类 —— RAII 风格作用域计时
+- │   ├── time_meas::reset() / get() / to_string()
+- ├── 字符串与格式化
+- │   ├── format() —— 安全的 printf 风格格式化（实现见 llama-impl.cpp）
+- │   ├── replace_all() —— 字符串全局替换（实现见 llama-impl.cpp）
+- │   ├── string_split() —— 字符串分隔拆分
+- │   ├── string_join() —— 字符串拼接
+- │   └── string_equals() / string_starts_with() 等判断
+- ├── 数值与位操作
+- │   ├── fp16_to_fp32() / fp32_to_fp16()
+- │   ├── swap_bytes() —— 字节序翻转
+- │   └── align_to() —— 字节对齐
+- └── 杂项工具
+- '    ├── LLAMA_MAX_N_THREADS 等常量'
+- '    ├── debug_prints 类与 LOG_DBG 宏'
+- '    └── LLAMA_ASSERT / LLAMA_ASSERT_FALSE 断言'
+- ''
+- src/llama-impl.cpp
+- ├── 计时器实现
+- │   ├── time_meas::reset()
+- │   ├── time_meas::get() —— 返回毫秒数
+- │   └── time_meas::to_string() —— 返回可读字符串
+- ├── 字符串工具实现
+- │   ├── format() 的 vsnprintf 封装
+- │   ├── replace_all() 的遍历替换
+- │   ├── string_split() 的分隔符解析
+- │   └── llama_format_tensor_shape() 的形状+类型组合
+- ├── GGUF 数据字符串化
+- │   ├── fmt_data_type() —— GGUF 类型名格式化
+- │   ├── fmt_arr_data_type() —— 数组类型格式化
+- │   ├── gguf_data_to_str() —— 标量值格式化
+- │   └── gguf_kv_to_str() —— KV 对格式化
+- └── 系统常量与初始化
+- '    ├── LLAMA_MAX_N_THREADS 计算逻辑'
+- '    └── 内部状态初始化'
+- ''
+- src/llama-io.h
+- ├── I/O 抽象接口
+- │   ├── llama_io_write_i —— 抽象写接口
+- │   │   ├── write() —— 写入字节块
+- │   │   └── tell() —— 获取当前位置
+- │   ├── llama_io_read_i —— 抽象读接口
+- │   │   ├── read() —— 读取字节块
+- │   │   ├── tell() / size() —— 位置与大小
+- │   │   └── seek() —— 跳转
+- │   └── deleter 模板 —— 自定义删除器（用于 unique_ptr）
+- └── 公共类型
+- '    ├── write_error / read_error 枚举'
+- '    └── I/O 异常封装'
+- ''
+- src/llama-io.cpp
+- ├── buffer 接口实现
+- │   ├── llama_io_write_buffer —— 写入 std::vector<uint8_t>
+- │   │   ├── write() —— 追加到缓冲区
+- │   │   └── tell() —— 当前写入位置
+- │   └── llama_io_read_buffer —— 从 std::vector<uint8_t> 读取
+- │       ├── read() —— 拷贝到目标
+- │       ├── tell() / size() —— 位置与容量
+- │       └── seek() —— 修改读取位置
+- ├── file 接口实现
+- │   ├── llama_io_write_file —— 写入本地文件
+- │   │   ├── write() —— fwrite 封装
+- │   │   ├── tell() —— ftell 获取偏移
+- │   │   └── 析构关闭文件句柄
+- │   └── llama_io_read_file —— 从本地文件读取
+- │       ├── read() —— fread 封装
+- │       ├── tell() / size() —— 文件位置与大小
+- │       └── seek() —— fseek 跳转
+- ├── dummy 接口实现
+- │   ├── llama_io_write_dummy —— 写入即丢弃（用于测试或性能分析）
+- │   └── llama_io_read_dummy —— 读取即返回零
+- └── 错误处理
+- '    ├── write_error 抛出逻辑'
+- '    └── read_error 抛出逻辑'
+- ''
+- src/models/models.h
+- ├── 模型图构建基类
+- │   ├── llm_build_mamba_base —— 状态空间模型基类
+- │   │   ├── build_mamba_layer() —— Mamba 层图构建
+- │   │   └── build_mamba2_layer() —— Mamba2 层图构建
+- │   ├── llm_build_delta_net_base —— 线性注意力基类
+- │   │   ├── build_delta_net_chunking() —— 分块模式
+- │   │   ├── build_delta_net_autoregressive() —— 自回归模式
+- │   │   ├── build_delta_net_fused() —— 融合算子模式
+- │   │   └── build_delta_net() —— 自动选择模式
+- │   ├── llm_build_rwkv6_base —— RWKV6 基类
+- │   │   ├── build_rwkv6_channel_mix() —— 通道混合
+- │   │   └── build_rwkv6_time_mix() —— 时间混合
+- │   ├── llm_build_rwkv7_base —— RWKV7 基类
+- │   │   ├── build_rwkv7_channel_mix() —— 通道混合
+- │   │   └── build_rwkv7_time_mix() —— 时间混合（含 first_layer_value）
+- │   ├── llm_build_kimi_linear —— Kimi 线性模型
+- │   │   ├── build_kda_autoregressive() —— KDA 自回归
+- │   │   └── build_kda_chunking() —— KDA 分块
+- │   ├── llm_build_qwen3next —— Qwen3Next 线性注意力
+- │   │   ├── build_qkvz() —— QKV 与 z 拆分
+- │   │   ├── build_norm_gated() —— 门控归一化
+- │   │   ├── build_layer_attn() —— 标准注意力层
+- │   │   ├── build_layer_attn_linear() —— 线性注意力层
+- │   │   └── build_layer_ffn() —— 前馈网络层
+- │   ├── llm_build_qwen35 —— Qwen3.5 线性注意力
+- │   │   ├── build_qkvz() / build_norm_gated() / build_layer_attn()
+- │   │   ├── build_layer_attn_linear() / build_layer_ffn()
+- │   │   └── （含 sections 参数支持多段注意力）
+- │   ├── llm_build_qwen35moe —— Qwen3.5-MoE
+- │   │   └── （同 Qwen3.5，增加 MoE FFN 支持）
+- │   ├── llm_build_gemma3n_iswa —— Gemma3n AltUp
+- │   │   ├── calc_magnitude() —— 幅度计算
+- │   │   ├── view_2d_slice() —— 2D 切片
+- │   │   ├── get_per_layer_inputs() —— 每层输入获取
+- │   │   ├── project_per_layer_inputs() —— 每层输入投影
+- │   │   ├── gaussian_topk() —— 高斯 TopK
+- │   │   ├── altup_compute_router_modalities() —— 路由模式计算
+- │   │   ├── altup_predict() —— AltUp 预测
+- │   │   ├── laurel() —— Laurel 残差
+- │   │   └── altup_correct() —— AltUp 修正
+- │   ├── llm_build_gemma4_iswa —— Gemma4 每层嵌入
+- │   │   ├── view_2d_slice() / get_per_layer_inputs() / project_per_layer_inputs()
+- │   │   └── n_embd_per_layer —— 每层嵌入维度
+- │   ├── llm_build_granite —— Granite 稠密模型
+- │   │   ├── build_attention_layer() —— 注意力层（含残差缩放）
+- │   │   └── build_layer_ffn() —— 前馈网络层
+- │   ├── llm_build_granite_hybrid —— Granite Hybrid
+- │   │   ├── build_attention_layer() —— 注意力层
+- │   │   └── build_layer_ffn() —— 前馈网络层（MoE 支持）
+- │   ├── llm_build_plamo2 —— Plamo2 混合架构
+- │   │   ├── build_plamo2_mamba_layer() —— Mamba 层
+- │   │   └── build_plamo2_attn_layer() —— 注意力层
+- │   └── llm_build_nemotron_h —— Nemotron-H 混合架构
+- │       ├── build_ffn_layer() —— 前馈网络层
+- │       └── build_attention_layer() —— 注意力层
+- └── 具体模型类（数十个，继承自上述基类）
+exercises:
+- contents:
+  - 打开 `src/llama-impl.h` 与 `src/llama-impl.cpp`，通读字符串处理与 time_meas 相关代码，回答以下问题：
+  - 1. `time_meas` 类的构造函数与析构函数分别做了什么？它是基于 RAII 的吗？
+  - 2. `time_meas::get()` 返回的时间单位是什么？`time_meas::to_string()` 返回什么格式？
+  - 3. `format()` 函数是如何保证线程安全的？与 `snprintf` 有何差异？
+  - 4. `replace_all()` 是原地修改还是返回新字符串？它在源码中被哪些地方调用？
+  - 5. `string_split()` 默认按什么分隔符拆分？它在模型加载流程中扮演什么角色？
+  - 6. 找出 `llama_format_tensor_shape` 的实现，思考它为什么需要同时输出形状与数据类型？
+  - 7. `fp16_to_fp32()` 与 `fp32_to_fp16()` 如何处理舍入误差？
+  - 8. `swap_bytes()` 在跨平台字节序转换中扮演什么角色？它主要用于哪些场景？
+  'no': 1
+  title: 阅读 llama-impl 的字符串与计时基础设施
+- contents:
+  - 结合 `src/llama-impl.cpp` 与 `src/llama-io.h/.cpp`，回答以下问题：
+  - 1. `gguf_data_to_str` 支持哪些 GGUF 值类型？每种类型的字符串格式是什么？
+  - 2. `gguf_kv_to_str` 与 `gguf_data_to_str` 有什么关系？前者如何调用后者？
+  - 3. `llama_io_write_i` 与 `llama_io_read_i` 接口分别包含哪些纯虚方法？
+  - 4. `llama_io_write_buffer` 与 `llama_io_write_file` 在写入失败时的错误处理有何不同？
+  - 5. `llama_io_read_buffer` 的 `seek()` 是如何实现的？为什么不需要昂贵的系统调用？
+  - 6. `llama_io_write_dummy` 有什么用途？它如何在测试与性能分析中发挥作用？
+  - 7. 设计一个新的 I/O 后端（如网络 socket），需要继承哪个接口？需要实现哪些方法？
+  - 8. `fmt_data_type` 与 `fmt_arr_data_type` 有什么区别？分别在什么场景被调用？
+  'no': 2
+  title: 剖析 GGUF 元数据字符串化与 I/O 抽象
+- contents:
+  - 基于 `src/llama-impl.h` 暴露的 API，完成以下小练习：
+  - 1. 封装一个简单的「作用域日志」RAII 辅助类，在进入作用域时打印「Begin stage X」，退出时自动打印耗时。
+  - 2. 用 `format()` 实现一个工具函数，把 std::vector<int> 拼接为 "[1, 2, 3, 4]" 形式。
+  - 3. 编写一段代码演示如何用 `time_meas` 测量一段循环的耗时，并比较 `get()` 与 `to_string()` 的差异。
+  - 4. 扩展 `replace_all`，让它支持按 lambda 谓词决定是否替换（类似 std::replace_if）。
+  - 5. 用 `llama_io_write_buffer` 实现一个内存中的 GGUF 构造器，演示如何把多个 KV 写入到 vector<uint8_t>。
+  - 6. 编写一段示例演示 `llama_io_write_dummy` 与 `llama_io_write_buffer` 的可替换性。
+  - 7. 思考：在多线程推理中，`time_meas` 是否会被并发调用？是否需要加锁？
+  - 8. 写一个 `gguf_kv_to_str` 的简化实现，演示如何把 KV 对格式化为 "key = value" 形式。
+  'no': 3
+  title: 动手编写自定义作用域计时器与字符串工具
+- contents:
+  - 结合第 13 章（GGUF 加载）与第 14 章（模型对象），理解基础设施模块如何支撑核心流程：
+  - 1. `llama_model_loader` 在加载 GGUF 时，是否使用了 `gguf_kv_to_str`？它用于打印哪些信息？
+  - 2. `llama_model_quantize_impl` 在写出量化后的 GGUF 时，使用了哪个 I/O 接口？是 `llama_io_write_buffer`
+    还是 `llama_io_write_file`？
+  - 3. `llama_state_save_file` 与 `llama_state_load_file` 是基于 `llama_io_*_file` 实现的吗？
+  - 4. 查找 `time_meas` 的所有调用点，哪些模块的耗时统计依赖于它？
+  - 5. 如果要新增一个 I/O 后端（如 std::ostream），最少需要修改哪些文件？
+  - 6. 尝试画出「基础设施模块 → 核心模块 → 上层工具」的依赖关系图，理解底层支撑如何层层传导。
+  - 7. 在多模型并行加载场景下，`llama_io_read_buffer` 与 `llama_io_read_file` 各有什么优劣？
+  - 8. 思考：如果把 `format()` 换成 `std::stringstream`，会在哪些地方出现性能问题？
+  'no': 4
+  title: 跨章节阅读：基础设施如何服务上层模块
+- contents:
+  - 打开 `src/models/models.h`，通读所有基类的方法声明，回答以下问题：
+  - 1. `llm_build_mamba_base` 的 `build_mamba_layer` 与 `build_mamba2_layer` 各自处理什么差异？它们被哪些具体模型类继承？
+  - 2. `llm_build_delta_net_base` 的三种模式（chunking / autoregressive / fused）分别适用于什么场景？`build_delta_net`
+    如何自动选择？
+  - 3. `llm_build_rwkv6_base` 与 `llm_build_rwkv7_base` 的 `time_mix` 方法有什么差异？RWKV7
+    的 `first_layer_value` 参数的作用是什么？
+  - 4. `llm_build_kimi_linear` 的 `build_kda_chunking` 比 `build_kda_autoregressive`
+    多了哪些参数（causal_mask / identity / diag_mask）？它们的作用是什么？
+  - 5. `llm_build_qwen3next` 的 `build_qkvz` 返回的 pair 中，第二个元素 `z` 在后续计算中扮演什么角色？
+  - 6. `llm_build_gemma3n_iswa` 的 AltUp 流程中，`altup_predict` → `gaussian_topk` → `altup_correct`
+    的调用顺序是怎样的？`laurel` 残差在哪一步注入？
+  - 7. `llm_build_granite` 与 `llm_build_granite_hybrid` 的 `build_attention_layer`
+    签名相同，但实现差异在哪里？
+  - 8. `llm_build_plamo2` 与 `llm_build_nemotron_h` 都继承自 `llm_build_mamba_base`，但它们的
+    `build_ffn_layer` / `build_layer_ffn` 方法的作用是什么？
+  'no': 5
+  title: 模型图构建基类的职责与复用模式
+- contents:
+  - 基于 `src/models/models.h` 暴露的基类，完成以下扩展练习：
+  - 1. 假设要支持一个新的 Mamba 变体（如 Mamba3），需要继承哪个基类？需要覆写哪些方法？写出类的声明骨架。
+  - 2. 为 `llm_build_delta_net_base` 新增一个 `build_delta_net_hybrid` 模式，支持在自回归模式下按需切换分块模式，写出方法签名与伪代码。
+  - 3. 参考 `llm_build_gemma4_iswa`，为一个假设的 Gemma5 模型实现 `get_per_layer_inputs` 与 `project_per_layer_inputs`，要求支持可配置的每层嵌入维度。
+  - 4. 为 `llm_build_qwen3next` 扩展 `build_norm_gated`，支持多段门控（multi-gate），写出方法签名与伪代码。
+  - 5. 思考：如果要为一个全新的线性注意力架构（如 Linear-Transformer）添加支持，应该继承 `llm_build_delta_net_base`
+    还是直接继承 `llm_graph_context`？为什么？
+  - 6. 阅读 `llm_build_gemma3n_iswa` 的 `calc_magnitude` 与 `gaussian_topk` 实现，解释为什么 AltUp
+    需要高斯分布的 TopK 稀疏化？
+  - 7. 在 `llm_build_plamo2` 中，`build_plamo2_mamba_layer` 与基类 `build_mamba_layer` 的关系是什么？是否可以直接复用基类方法？
+  - 8. 尝试画出 models.h 中所有基类的继承关系图，理解它们如何共同支撑数十种具体模型。
+  'no': 6
+  title: 动手扩展基类以支持新模型架构
+learning_targets:
+- 理解 llama.cpp 内部基础设施模块（llama-impl、llama-io）的职责边界
+- 掌握字符串格式化、张量形状描述、GGUF 元数据转字符串等辅助函数
+- 熟悉作用域计时器 time_meas 的使用模式与实现机制
+- 能够阅读并理解 I/O 抽象接口（llama_io_write_i / llama_io_read_i）的设计
+- 了解系统诊断信息的输出范围
+- 理解 models.h 中模型图构建基类（Mamba/DeltaNet/RWKV/AltUp 等）的设计意图与方法职责
+- 掌握线性注意力（DeltaNet/KDA）三种实现模式（chunking/autoregressive/fused）的适用场景
+- 能够阅读并修改基类方法以支持新模型架构
+life_analogy:
+- 想象 llama.cpp 的源码世界是一座庞大的推工厂，那么 `src/llama-impl.*` 与 `src/llama-io.*` 就是这座工厂的「后勤保障部门」：
+- '- **time_meas** = 工厂车间墙上的「计时秒表」，每道工序开始时按一下、结束时再按一下，自动算出耗时'
+- '- **format / replace_all** = 工厂的「万能文本胶带」，把零散的零件名、张量名拼接成统一格式'
+- '- **llama_format_tensor_shape** = 工厂的「零件铭牌打印机」，把 [1024, 4096] 这种干巴巴的数字变成「[1024,
+  4096] (f16)」这样人类可读的标签'
+- '- **gguf_data_to_str / gguf_kv_to_str** = 工厂的「说明书翻译官」，把二进制 GGUF 元数据翻译成人类可读的字符串'
+- '- **llama_io_write_i / llama_io_read_i** = 工厂的「集装箱装卸平台」，抽象出统一的读写接口，让内存、文件、虚拟缓冲区都能用同一种方式搬运'
+- 就像工厂可以没有后勤部门勉强开工，但有了它们才能高效协同、稳定运行；llama.cpp 缺了这些基础设施模块也能跑，但有了它们才能优雅地日志、可移植地序列化、准确地诊断性能。
+- ''
+- 而 `src/models/models.h` 中的基类则是工厂的「公共模具车间」：
+- '- **llm_build_mamba_base** = 状态空间模型的「标准冲压机」，把 Mamba/Mamba2 的卷积+扫描压成统一形状，供 Falcon-H1、Nemotron-H、Granite-Hybrid、Jamba、Plamo2
+  复用'
+- '- **llm_build_delta_net_base** = 线性注意力的「三档变速器」（chunking / autoregressive / fused），根据
+  token 数自动换挡，支撑 Qwen3Next、Qwen3.5、Kimi-Linear'
+- '- **llm_build_rwkv6_base / rwkv7_base** = RWKV 的「时间混合双引擎」（channel_mix + time_mix），RWKV7
+  额外增加 first_layer_value 参数处理首层值'
+- '- **build_qkvz** = Qwen3 系列的「张量分拣机」，把 QKV 与 z 拆成对，配合 build_norm_gated 实现门控归一化'
+- '- **llm_build_gemma3n_iswa** = AltUp 的「多通道调度台」，管理预测（altup_predict）、激活（gaussian_topk）、修正（altup_correct）三条流水线，外加
+  Laurel 残差与每层输入投影'
+- '- **llm_build_granite(_hybrid)** = Granite 系列的「残差缩放器」，在注意力与 FFN 中统一注入缩放因子'
+- '- **llm_build_plamo2** = Plamo2 的「混合架构演示器」，展示 Mamba+Attention 混合的另一种实现范式'
+- 就像工厂不会为每个产品重新设计螺丝刀，这些基类让数十种模型避免了「重复造轮子」——新模型只需继承基类、覆写特定方法，就能快速接入推理引擎。
+'no': 24
+summary:
+- concept: time_meas
+  desc: RAII 风格作用域计时器，进入作用域自动开始，析构或 get() 时返回毫秒耗时
+- concept: format()
+  desc: 线程安全的 printf 风格字符串格式化，替代 std::to_string 拼接
+- concept: replace_all()
+  desc: 字符串全量替换，常用于张量名与路径名的标准化
+- concept: llama_format_tensor_shape
+  desc: 把 ggml 张量形状 [ne, ne, ne, ne] 转为 [1024, 4096] (f16) 形式的可读字符串
+- concept: gguf_data_to_str
+  desc: 将 GGUF 二进制标量值（UINT8/FLOAT32/STRING/ARRAY 等）格式化为字符串
+- concept: gguf_kv_to_str
+  desc: 将 GGUF KV 元数据对格式化为可读字符串，常用于打印模型元信息
+- concept: llama_io_write_i
+  desc: 抽象写接口基类，屏蔽缓冲区、文件、虚拟目标之间的差异
+- concept: llama_io_read_i
+  desc: 抽象读接口基类，与 write_i 对称，统一数据源访问方式
+- concept: llama_io_write_buffer
+  desc: 写入 std::vector<uint8_t> 的具体实现，常用于内存中构建 GGUF 数据
+- concept: llama_io_write_file
+  desc: 写入本地文件的具体实现，封装 fwrite/ftell 与文件句柄生命周期
+- concept: llama_io_write_dummy
+  desc: 写入即丢弃的桩实现，用于测试、基准与不希望产生实际副作用的场景
+- concept: llm_build_mamba_base
+  desc: 状态空间模型图构建基类，build_mamba_layer/build_mamba2_layer 供 Falcon-H1/Nemotron-H/Granite-Hybrid/Jamba/Plamo2
+    复用
+- concept: llm_build_delta_net_base
+  desc: 线性注意力图构建基类，提供 chunking/autoregressive/fused 三种模式并由 build_delta_net 自动选择
+- concept: llm_build_rwkv6_base
+  desc: RWKV6 图构建基类，build_rwkv6_channel_mix 与 build_rwkv6_time_mix 构成 RWKV 核心算子
+- concept: llm_build_rwkv7_base
+  desc: RWKV7 图构建基类，在 RWKV6 基础上改进，build_rwkv7_time_mix 新增 first_layer_value 参数
+- concept: llm_build_kimi_linear
+  desc: Kimi 线性模型图构建类，build_kda_autoregressive 与 build_kda_chunking 实现 KDA 两种模式
+- concept: llm_build_qwen3next / qwen35 / qwen35moe
+  desc: Qwen3 系列线性注意力图构建类，build_qkvz/build_norm_gated/build_layer_attn/build_layer_attn_linear/build_layer_ffn
+    构成完整层流水线
+- concept: llm_build_gemma3n_iswa
+  desc: Gemma3n AltUp 多通道图构建类，calc_magnitude/gaussian_topk/altup_*/laurel 等方法实现 AltUp
+    投影与稀疏激活
+- concept: llm_build_gemma4_iswa
+  desc: Gemma4 每层嵌入图构建类，view_2d_slice/get_per_layer_inputs/project_per_layer_inputs
+    支持每层嵌入投影
+- concept: llm_build_granite / granite_hybrid
+  desc: Granite 系列图构建类，build_attention_layer/build_layer_ffn 封装残差缩放逻辑，hybrid 版额外支持
+    MoE FFN
+- concept: llm_build_plamo2
+  desc: Plamo2 混合架构图构建类，build_plamo2_mamba_layer 与 build_plamo2_attn_layer 展示 Mamba+Attention
+    混合实现
+- concept: llm_build_nemotron_h
+  desc: Nemotron-H 混合架构图构建类，build_ffn_layer 与 build_attention_layer 提供 H 系列特有的混合前馈网络
+units:
+- codes:
+  - file: src/llama-impl.h
+    line: 1-60
+    method_or_func: time_meas.*
+  - file: src/llama-impl.h
+    line: 1-60
+    method_or_func: format()
+  - file: src/llama-impl.h
+    line: 1-60
+    method_or_func: replace_all()
+  - file: src/llama-impl.h
+    line: 1-60
+    method_or_func: llama_format_tensor_shape()
+  - file: src/llama-impl.cpp
+    line: 1-60
+    method_or_func: format()
+  - file: src/llama-impl.cpp
+    line: 1-60
+    method_or_func: replace_all()
+  - file: src/llama-impl.cpp
+    line: 1-60
+    method_or_func: llama_format_tensor_shape()
+  - file: src/llama-impl.cpp
+    line: 1-200
+    method_or_func: gguf_data_to_str()
+  - file: src/llama-impl.cpp
+    line: 200-400
+    method_or_func: gguf_kv_to_str()
+  - file: src/llama-impl.cpp
+    line: 1-400
+    method_or_func: '*'
+  - file: src/llama-io.h
+    line: 1-60
+    method_or_func: llama_io_write_i.*
+  - file: src/llama-io.h
+    line: 1-60
+    method_or_func: llama_io_read_i.*
+  - file: src/llama-io.cpp
+    line: 1-100
+    method_or_func: llama_io_write_buffer.*
+  - file: src/llama-io.cpp
+    line: 100-200
+    method_or_func: llama_io_write_file.*
+  - file: src/llama-io.cpp
+    line: 200-300
+    method_or_func: llama_io_write_dummy.*
+  name: 基础设施全貌 —— 走进 llama.cpp 的「后勤保障部」
+  'no': 1
+  points:
+  - '**基础设施的定位**：src/llama-impl.* 与 src/llama-io.* 构成了 llama.cpp 的「无名英雄」模块——它们不直接参与推理计算，却为字符串处理、计时统计、I/O
+    序列化提供基础支撑。'
+  - '**作用域计时器 time_meas**：基于 RAII 的轻量计时类，进入作用域自动开始计时，析构时自动结束，get() 返回毫秒数，to_string()
+    返回人类可读的耗时字符串，是性能统计与基准测试的基石。'
+  - '**字符串处理工具集**：format() 是线程安全的 printf 风格格式化器，replace_all() 支持全局字符串替换，string_split()
+    按分隔符拆分，string_equals() / string_starts_with() 等字符串判断函数，让上层代码摆脱手写循环。'
+  - '**张量形状描述器 llama_format_tensor_shape**：把 ggml 张量的原始形状 [ne_x, ne_y, ne_z, ne_w]
+    转换为人类可读的 [1024, 4096] (f16) 形式，是 print_info 与日志输出的关键格式化工具。'
+  - '**GGUF 元数据字符串化**：gguf_data_to_str() 把二进制标量值转为字符串，gguf_kv_to_str() 把 KV 对格式化为可读输出，配合
+    fmt_data_type() / fmt_arr_data_type() 共同支撑 GGUF 文件的诊断与打印。'
+  - '**I/O 抽象是「集装箱装卸平台」**：llama_io_write_i 与 llama_io_read_i 定义统一的读写接口，llama_io_write_buffer
+    写入 std::vector<uint8_t>，llama_io_write_file 写入本地文件，llama_io_write_dummy 写入即丢弃，让序列化层与具体存储介质解耦。'
+  - '**数值与位操作辅助**：fp16_to_fp32() / fp32_to_fp16() 完成半精度与单精度的转换，swap_bytes() 处理字节序翻转，align_to()
+    进行字节对齐，是跨平台序列化的底层工具。'
+  - '**系统诊断基础**：LLAMA_MAX_N_THREADS、debug_prints、LLAMA_ASSERT 等宏与常量，提供了线程数探测、调试输出与断言的基础设施。'
+- codes:
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_mamba_base.build_mamba_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_mamba_base.build_mamba2_layer()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_delta_net_base.build_delta_net_chunking()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_delta_net_base.build_delta_net_autoregressive()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_delta_net_base.build_delta_net_fused()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_delta_net_base.build_delta_net()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_rwkv6_base.build_rwkv6_channel_mix()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_rwkv6_base.build_rwkv6_time_mix()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_rwkv7_base.build_rwkv7_channel_mix()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_rwkv7_base.build_rwkv7_time_mix()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_kimi_linear.build_kda_autoregressive()
+  - file: src/models/models.h
+    line: 1-30
+    method_or_func: llm_build_kimi_linear.build_kda_chunking()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen3next.build_qkvz()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen3next.build_norm_gated()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen3next.build_layer_attn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen3next.build_layer_attn_linear()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen3next.build_layer_ffn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35.build_qkvz()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35.build_norm_gated()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35.build_layer_attn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35.build_layer_attn_linear()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35.build_layer_ffn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35moe.build_qkvz()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35moe.build_norm_gated()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35moe.build_layer_attn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35moe.build_layer_attn_linear()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_qwen35moe.build_layer_ffn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.calc_magnitude()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.view_2d_slice()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.get_per_layer_inputs()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.project_per_layer_inputs()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.gaussian_topk()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.altup_compute_router_modalities()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.altup_predict()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.laurel()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma3n_iswa.altup_correct()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma4_iswa.view_2d_slice()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma4_iswa.get_per_layer_inputs()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_gemma4_iswa.project_per_layer_inputs()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_granite.build_attention_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_granite.build_layer_ffn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_granite_hybrid.build_attention_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_granite_hybrid.build_layer_ffn()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_plamo2.build_plamo2_mamba_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_plamo2.build_plamo2_attn_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_nemotron_h.build_ffn_layer()
+  - file: src/models/models.h
+    line: 1-20
+    method_or_func: llm_build_nemotron_h.build_attention_layer()
+  name: 模型图构建基类 —— 百模共用的「脚手架」
+  'no': 2
+  points:
+  - '**基类的定位**：`src/models/models.h` 定义了多个模型图构建基类（llm_build_mamba_base、llm_build_delta_net_base、llm_build_rwkv6_base、llm_build_rwkv7_base
+    等），它们为数十种具体模型提供可复用的图构建方法，是「一次实现、到处复用」的工程典范。'
+  - '**Mamba 基类**：`llm_build_mamba_base::build_mamba_layer` 与 `build_mamba2_layer`
+    封装了状态空间模型的卷积+扫描核心逻辑，被 Falcon-H1、Nemotron-H、Granite-Hybrid、Jamba、Plamo2 等混合架构复用。'
+  - '**DeltaNet 基类**：`llm_build_delta_net_base` 提供 `build_delta_net_chunking`（分块模式）、`build_delta_net_autoregressive`（自回归模式）与
+    `build_delta_net_fused`（融合算子）三种实现，并由 `build_delta_net` 根据 token 数自动选择，支撑 Qwen3Next、Qwen3.5、Qwen3.5-MoE、Kimi-Linear
+    等线性注意力模型。'
+  - '**RWKV6 基类**：`llm_build_rwkv6_base::build_rwkv6_channel_mix`（通道混合）与 `build_rwkv6_time_mix`（时间混合）构成
+    RWKV 系列的核心算子，被 RWKV6、RWKV6Qwen2 复用。'
+  - '**RWKV7 基类**：`llm_build_rwkv7_base` 在 RWKV6 基础上改进，`build_rwkv7_time_mix` 新增 `first_layer_value`
+    参数处理首层值，被 RWKV7、ARWKV7 继承。'
+  - '**Kimi-Linear 的 KDA 实现**：`llm_build_kimi_linear::build_kda_autoregressive` 与
+    `build_kda_chunking` 实现 Kimi 线性模型的自回归与分块 KDA（K Delta Attention）模式，配合 causal_mask、identity、diag_mask
+    等掩码张量。'
+  - '**Qwen3Next / Qwen3.5 的线性注意力**：`build_qkvz`（返回 qkv 与 z 对）、`build_norm_gated`（门控归一化）、`build_layer_attn`（标准注意力）、`build_layer_attn_linear`（线性注意力）、`build_layer_ffn`
+    构成完整层构建流水线，Qwen3.5 额外支持 `sections` 参数实现多段注意力。'
+  - '**Gemma3n 的 AltUp 多通道**：`calc_magnitude`、`gaussian_topk`、`altup_compute_router_modalities`、`altup_predict`、`altup_correct`、`laurel`、`view_2d_slice`、`get_per_layer_inputs`、`project_per_layer_inputs`
+    九个方法共同实现 Gemma3n 的 AltUp 投影、Laurel 残差与高斯 TopK 稀疏激活。'
+  - '**Gemma4 的每层嵌入**：`llm_build_gemma4_iswa` 的 `view_2d_slice`、`get_per_layer_inputs`、`project_per_layer_inputs`
+    支持每层嵌入投影，`n_embd_per_layer` 成员变量记录嵌入维度。'
+  - '**Granite 系列的残差缩放**：`llm_build_granite` 与 `llm_build_granite_hybrid` 的 `build_attention_layer`、`build_layer_ffn`
+    封装了残差缩放逻辑，hybrid 版额外支持 MoE FFN。'
+  - '**Plamo2 的混合架构**：`llm_build_plamo2` 的 `build_plamo2_mamba_layer` 与 `build_plamo2_attn_layer`
+    展示了 Mamba+Attention 混合的另一种实现范式。'
+  - '**Nemotron-H 的混合 FFN**：`llm_build_nemotron_h::build_ffn_layer` 与 `build_attention_layer`
+    提供 H 系列特有的混合前馈网络。'

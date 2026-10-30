@@ -1,0 +1,1110 @@
+classes:
+- desc: 管理 WebGPU 着色器管线的创建、缓存和获取的类，为各种操作（如 sum_rows、row_norm、argmax、set_rows、set 等）提供管线实例。
+  methods:
+  - code:
+    - ggml_webgpu_shader_lib(wgpu::Device device) { this->device = device; }
+    desc: 构造函数，初始化 WebGPU 设备对象。
+    line: 886-886
+    name: ggml_webgpu_shader_lib
+  - code:
+    - webgpu_pipeline get_sum_rows_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    auto it = sum_rows_pipelines.find(1);'
+    - '    if (it != sum_rows_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - '    std::vector<std::string> defines;'
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed        = preprocessor.preprocess(wgsl_sum_rows, defines);'
+    - '    sum_rows_pipelines[1] = ggml_webgpu_create_pipeline(device, processed,
+      "sum_rows");'
+    - '    return sum_rows_pipelines[1];'
+    - '}'
+    desc: 获取或创建用于 sum_rows 操作的着色器管线，根据上下文中的最大工作组大小进行预处理。
+    line: 887-899
+    name: get_sum_rows_pipeline
+  - code:
+    - webgpu_pipeline get_row_norm_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    ggml_webgpu_row_norm_pipeline_key key = {'
+    - '        .op      = context.dst->op,'
+    - '        .inplace = context.inplace,'
+    - '    };'
+    - ''
+    - '    auto it = row_norm_pipelines.find(key);'
+    - '    if (it != row_norm_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant;'
+    - ''
+    - '    switch (key.op) {'
+    - '        case GGML_OP_RMS_NORM:'
+    - '            defines.push_back("RMS_NORM");'
+    - '            variant = "rms_norm";'
+    - '            break;'
+    - '        case GGML_OP_L2_NORM:'
+    - '            defines.push_back("L2_NORM");'
+    - '            variant = "l2_norm";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported op for row_norm shader");'
+    - '    }'
+    - ''
+    - '    if (key.inplace) {'
+    - '        defines.push_back("INPLACE");'
+    - '        variant += "_inplace";'
+    - '    }'
+    - ''
+    - '    const uint32_t row_norm_wg_size = 128u;'
+    - '    uint32_t       wg_size          = std::min(context.max_wg_size, row_norm_wg_size);'
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));'
+    - '    auto processed          = preprocessor.preprocess(wgsl_row_norm, defines);'
+    - '    row_norm_pipelines[key] = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    return row_norm_pipelines[key];'
+    - '}'
+    desc: 获取或创建用于行归一化（RMS Norm 或 L2 Norm）操作的着色器管线，根据操作类型和是否原地操作进行预处理。
+    line: 900-931
+    name: get_row_norm_pipeline
+  - code:
+    - webgpu_pipeline get_argmax_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    bool vec4 = context.src0->ne[0] % 4 == 0;'
+    - ''
+    - '    auto it = argmax_pipelines.find(vec4);'
+    - '    if (it != argmax_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - '    std::string              variant = "argmax";'
+    - '    std::vector<std::string> defines;'
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - '    if (vec4) {'
+    - '        defines.push_back("VEC4");'
+    - '        variant += "_vec4";'
+    - '    }'
+    - ''
+    - '    auto processed         = preprocessor.preprocess(wgsl_argmax, defines);'
+    - '    argmax_pipelines[vec4] = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    return argmax_pipelines.at(vec4);'
+    - '}'
+    desc: 获取或创建用于 argmax 操作的着色器管线，根据输入是否可向量化（vec4）进行预处理。
+    line: 932-946
+    name: get_argmax_pipeline
+  - code:
+    - webgpu_pipeline get_set_rows_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    ggml_webgpu_set_rows_pipeline_key key = { .dst_type = context.dst->type,'
+    - '                                                  .vec4     = context.src0->ne[0]
+      % 4 == 0,'
+    - '                                                  .i64_idx  = context.src1->type
+      == GGML_TYPE_I64 };'
+    - ''
+    - '    auto it = set_rows_pipelines.find(key);'
+    - '    if (it != set_rows_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "set_rows";'
+    - ''
+    - '    switch (context.dst->type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("DST_F32");'
+    - '            variant += "_dstf32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("DST_F16");'
+    - '            variant += "_dstf16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported dst type for set_rows shader");'
+    - '    }'
+    - ''
+    - '    if (key.vec4) {'
+    - '        defines.push_back("VEC4");'
+    - '        variant += "_vec4";'
+    - '    }'
+    - '    if (key.i64_idx) {'
+    - '        defines.push_back("I64_IDX");'
+    - '        variant += "_i64idx";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed                  = preprocessor.preprocess(wgsl_set_rows,
+      defines);'
+    - '    auto decisions                  = std::make_shared<ggml_webgpu_set_rows_shader_decisions>();'
+    - '    decisions->vec4                 = key.vec4;'
+    - '    decisions->i64_idx              = key.i64_idx;'
+    - '    decisions->wg_size              = context.max_wg_size;'
+    - '    set_rows_pipelines[key]         = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    set_rows_pipelines[key].context = decisions;'
+    - '    return set_rows_pipelines[key];'
+    - '}'
+    desc: 获取或创建用于 set_rows 操作的着色器管线，根据目标类型、是否向量化和索引类型进行预处理。
+    line: 947-983
+    name: get_set_rows_pipeline
+  - code:
+    - webgpu_pipeline get_set_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_set_pipeline_key key = { .type = context.dst->type, .inplace
+      = context.inplace };'
+    - ''
+    - '    auto it = set_pipelines.find(key);'
+    - '    if (it != set_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "set";'
+    - ''
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_I32:'
+    - '            defines.push_back("TYPE_I32");'
+    - '            variant += "_i32";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for set shader");'
+    - '    }'
+    - ''
+    - '    if (key.inplace) {'
+    - '        defines.push_back("INPLACE");'
+    - '        variant += "_inplace";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_set, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_'
+    desc: 获取或创建用于 set 操作的着色器管线，根据目标类型和是否原地操作进行预处理。
+    line: 984-1016
+    name: get_set_pipeline
+  name: ggml_webgpu_shader_lib
+- desc: Class managing WebGPU shader pipeline creation and caching for various operations.
+  methods:
+  - code:
+    - webgpu_pipeline get_set_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    // ... existing method logic ...'
+    - '    return set_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for the 'set' operation.
+    line: 1000-1045
+    name: get_set_pipeline
+  - code:
+    - webgpu_pipeline get_cumsum_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    auto it = cumsum_pipelines.find(1);'
+    - '    if (it != cumsum_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - '    std::vector<std::string> defines;'
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - '    auto processed      = preprocessor.preprocess(wgsl_cumsum, defines);'
+    - '    cumsum_pipelines[1] = ggml_webgpu_create_pipeline(device, processed, "cumsum");'
+    - '    return cumsum_pipelines[1];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for the cumulative sum operation.
+    line: 1047-1058
+    name: get_cumsum_pipeline
+  - code:
+    - webgpu_pipeline get_argsort_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    // ... existing method logic ...'
+    - '    return argsort_pipelines[order];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for the arg sort operation.
+    line: 1060-1087
+    name: get_argsort_pipeline
+  - code:
+    - webgpu_pipeline get_argsort_merge_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    return argsort_merge_pipelines[order];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for merging arg sort results.
+    line: 1089-1113
+    name: get_argsort_merge_pipeline
+  - code:
+    - webgpu_pipeline get_get_rows_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    // ... existing method logic ...'
+    - '    return get_rows_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for row extraction operations.
+    line: 1115-1160
+    name: get_get_rows_pipeline
+  - code:
+    - webgpu_pipeline get_scale_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    // ... existing method logic ...'
+    - '    scale_pipelines[key]     = pipeline;'
+    - '    return scale_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for scaling operations.
+    line: 1162-1183
+    name: get_scale_pipeline
+  - code:
+    - webgpu_pipeline get_solve_tri_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    solve_tri_pipelines[key] = pipeline;'
+    - '    return solve_tri_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for solving triangular matrices.
+    line: 1185-1210
+    name: get_solve_tri_pipeline
+  - code:
+    - webgpu_pipeline get_ssm_conv_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    // ... existing method logic ...'
+    - '    ssm_conv_pipelines[key]  = pipeline;'
+    - '    return ssm_conv_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for state-space model convolution.
+    line: 1212-1237
+    name: get_ssm_conv_pipeline
+  - code:
+    - webgpu_pipeline get_gated_delta_net_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    gated_delta_net_pipelines[key] = pipeline;'
+    - '    return gated_delta_net_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for gated delta net operations.
+    line: 1239-1260
+    name: get_gated_delta_net_pipeline
+  - code:
+    - webgpu_pipeline get_pad_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    // ... existing method logic ...'
+    - '    pad_pipelines[key]       = pipeline;'
+    - '    return pad_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for padding operations.
+    line: 1262-1281
+    name: get_pad_pipeline
+  - code:
+    - webgpu_pipeline get_mul_mat_vec_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    mul_mat_vec_pipelines[key] = pipeline;'
+    - '    return mul_mat_vec_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for matrix-vector multiplication.
+    line: 1283-1342
+    name: get_mul_mat_vec_pipeline
+  - code:
+    - webgpu_pipeline get_mul_mat_fast_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    mul_mat_fast_pipelines[key] = pipeline;'
+    - '    return mul_mat_fast_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for accelerated matrix multiplication.
+    line: 1344-1399
+    name: get_mul_mat_fast_pipeline
+  - code:
+    - webgpu_pipeline get_mul_mat_legacy_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    mul_mat_legacy_pipelines[key] = pipeline;'
+    - '    return mul_mat_legacy_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for legacy matrix multiplication.
+    line: 1401-1441
+    name: get_mul_mat_legacy_pipeline
+  - code:
+    - webgpu_pipeline get_mul_mat_id_gather_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    mul_mat_id_gather_pipelines[1] = pipeline;'
+    - '    return pipeline;'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for matrix multiplication ID gather.
+    line: 1443-1455
+    name: get_mul_mat_id_gather_pipeline
+  - code:
+    - webgpu_pipeline get_mul_mat_id_pipeline(const ggml_webgpu_shader_lib_context
+      & context) {
+    - '    // ... existing method logic ...'
+    - '    mul_mat_id_pipelines[key] = pipeline;'
+    - '    return mul_mat_id_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for matrix multiplication with ID support.
+    line: 1457-1516
+    name: get_mul_mat_id_pipeline
+  - code:
+    - webgpu_pipeline get_unary_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    // ... existing method logic ...'
+    - '    return unary_pipelines[key];'
+    - '}'
+    desc: Creates and caches a WebGPU pipeline for unary operations.
+    line: 1518-1556
+    name: get_unary_pipeline
+  name: ggml_webgpu_shader_lib
+- desc: GGML WebGPU 后端中管理着色器管线生成与缓存的类，为各种 GGML 运算创建 WebGPU Compute Pipeline。
+  methods:
+  - code:
+    - webgpu_pipeline get_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    switch (context.dst->op) {'
+    - '        case GGML_OP_UNARY:'
+    - '            return get_unary_pipeline(context);'
+    - '        case GGML_OP_BINARY:'
+    - '            return get_binary_pipeline(context);'
+    - '        ...'
+    - '    }'
+    - '}'
+    desc: 该方法是管线入口总函数，根据操作类型分发到对应的专项管线生成函数；因代码截断省略具体实现。
+    line: 1-100
+    name: get_pipeline
+  - code:
+    - webgpu_pipeline get_unary_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_unary_pipeline_key key = {'
+    - '        .type      = context.dst->type,'
+    - '        .op        = context.dst->op,'
+    - '        .inplace   = context.inplace,'
+    - '        .src1_linear = context.src1_linear,'
+    - '        .tri_type  = context.dst->tri_type,'
+    - '        .has_tri   = (context.dst->is_triangular == 1)'
+    - '    };'
+    - '    ...'
+    - '    return get_unary_pipeline(context);'
+    - '}'
+    desc: 为 GGML 一元运算（如基本一元操作、三角变换）创建并缓存着色器管线。
+    line: from-100到-400
+    name: get_unary_pipeline
+  - code:
+    - webgpu_pipeline get_binary_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_binary_pipeline_key key = {'
+    - '        .type        = context.dst->type,'
+    - '        .op          = context.dst->op,'
+    - '        .inplace     = context.inplace,'
+    - '        .overlap     = context.overlap,'
+    - '        .src_overlap = context.src_overlap,'
+    - '    };'
+    - ''
+    - '    auto it = binary_pipelines.find(key);'
+    - '    if (it != binary_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              op_name = ggml_op_name((ggml_op) key.op);'
+    - '    std::string              variant = op_name;'
+    - ''
+    - '    defines.push_back(std::string("OP_") + op_name);'
+    - ''
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("TYPE_F16");'
+    - '            variant += "_f16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for binary shader");'
+    - '    }'
+    - ''
+    - '    if (key.inplace) {'
+    - '        defines.push_back("INPLACE");'
+    - '        variant += "_inplace";'
+    - '    } else if (key.overlap) {'
+    - '        defines.push_back("OVERLAP");'
+    - '        variant += "_overlap";'
+    - '    } else if (key.src_overlap) {'
+    - '        defines.push_back("SRC_OVERLAP");'
+    - '        variant += "_src_overlap";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_binary, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    binary_pipelines[key]    = pipeline;'
+    - '    return binary_pipelines[key];'
+    - '}'
+    desc: 为 GGML 二元运算创建并缓存着色器管线，支持 inplace、overlap 等变体。
+    line: 1803-1886
+    name: get_binary_pipeline
+  - code:
+    - webgpu_pipeline get_concat_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_concat_pipeline_key key = {'
+    - '        .type = context.dst->type,'
+    - '    };'
+    - ''
+    - '    auto it = concat_pipelines.find(key);'
+    - '    if (it != concat_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "concat";'
+    - ''
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_I32:'
+    - '            defines.push_back("TYPE_I32");'
+    - '            variant += "_i32";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for concat shader");'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_concat, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    concat_pipelines[key]    = pipeline;'
+    - '    return concat_pipelines[key];'
+    - '}'
+    desc: 为张量拼接（concat）操作创建并缓存着色器管线。
+    line: 1886-1956
+    name: get_concat_pipeline
+  - code:
+    - webgpu_pipeline get_repeat_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_repeat_pipeline_key key = {'
+    - '        .type = context.dst->type,'
+    - '    };'
+    - ''
+    - '    auto it = repeat_pipelines.find(key);'
+    - '    if (it != repeat_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "repeat";'
+    - ''
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_I32:'
+    - '            defines.push_back("TYPE_I32");'
+    - '            variant += "_i32";'
+    - '            break;'
+    - '        case GGML_TYPE_I16:'
+    - '            defines.push_back("TYPE_I16");'
+    - '            variant += "_i16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for repeat shader");'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_repeat, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    repeat_pipelines[key]    = pipeline;'
+    - '    return repeat_pipelines[key];'
+    - '}'
+    desc: 为张量复制（repeat）操作创建并缓存着色器管线，支持 F32、I32、I16 数据类型。
+    line: 1956-2035
+    name: get_repeat_pipeline
+  - code:
+    - webgpu_pipeline get_flash_attn_pipeline(const ggml_webgpu_flash_attn_shader_lib_context
+      & context) {
+    - '    auto it = flash_attn_pipelines.find(context.key);'
+    - '    if (it != flash_attn_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "flash_attn";'
+    - ''
+    - '    switch (context.key.kv_type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("KV_F32");'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("KV_F16");'
+    - '            break;'
+    - '        case GGML_TYPE_Q4_0:'
+    - '            defines.push_back("KV_Q4_0");'
+    - '            break;'
+    - '        case GGML_TYPE_Q8_0:'
+    - '            defines.push_back("KV_Q8_0");'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported KV type for flash attention shader");'
+    - '    }'
+    - '    variant += std::string("_") + ggml_type_name(context.key.kv_type);'
+    - ''
+    - '    if (context.key.has_mask) {'
+    - '        defines.push_back("MASK");'
+    - '        variant += "_mask";'
+    - '    }'
+    - '    if (context.key.has_sinks) {'
+    - '        defines.push_back("SINKS");'
+    - '        variant += "_sinks";'
+    - '    }'
+    - '    if (context.key.uses_logit_softcap) {'
+    - '        defines.push_back("LOGIT_SOFTCAP");'
+    - '        variant += "_lgsc";'
+    - '    }'
+    - '    if (context.key.kv_direct) {'
+    - '        defines.push_back("KV_DIRECT");'
+    - '        variant += "_kvdirect";'
+    - '    }'
+    - '    if (context.key.has_mask && context.key.use_vec) {'
+    - '        defines.push_back("BLK");'
+    - '        variant += "_blk";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("HEAD_DIM_QK=") + std::to_string(context.key.head_dim_qk));'
+    - '    variant += std::string("_hsqk") + std::to_string(context.key.head_dim_qk);'
+    - ''
+    - '    defines.push_back(std::string("HEAD_DIM_V=") + std::to_string(context.key.head_dim_v));'
+    - '    variant += std::string("_hsv") + std::to_string(context.key.head_dim_v);'
+    - ''
+    - '    defines.push_back(std::string("SG_MAT_M=") + std::to_string(context.sg_mat_m));'
+    - '    defines.push_back(std::string("SG_MAT_N=") + std::to_string(context.sg_mat_n));'
+    - '    defines.push_back(std::string("SG_MAT_K=") + std::to_string(context.sg_mat_k));'
+    - ''
+    - '    uint32_t q_tile  = context.sg_mat_m;'
+    - '    uint32_t kv_tile = std::min(ggml_webgpu_flash_attn_max_kv_tile(context),'
+    - '                                context.sg_mat_n * GGML_WEBGPU_FLASH_ATTN_PREFERRED_KV_SG_TILES);'
+    - '    if (context.key.use_vec) {'
+    - '        q_tile  = 1;'
+    - '        kv_tile = std::max(context.sg_mat_n, std::min(32u, ggml_webgpu_flash_attn_max_kv_tile(context)));'
+    - '        kv_tile = (kv_tile / context.sg_mat_n) * context.sg_mat_n;'
+    - '        const uint32_t vec_ne = ggml_webgpu_flash_attn_pick_vec_ne(context.key);'
+    - '        defines.push_back(std::string("VEC_NE=") + std::to_string(vec_ne) +
+      "u");'
+    - '    }'
+    - '    if (context.key.kv_direct) {'
+    - '        GGML_ASSERT(kv_tile <= GGML_WEBGPU_KV_SEQ_PAD);'
+    - '        while (GGML_WEBGPU_KV_SEQ_PAD % kv_tile != 0) {'
+    - '            kv_tile -= context.sg_mat_n;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("Q_TILE=") + std::to_string(q_tile));'
+    - '    defines.push_back(std::string("KV_TILE=") + std::to_string(kv_tile));'
+    - ''
+    - '    uint32_t wg_size = 0;'
+    - '    if (context.key.use_vec) {'
+    - '        wg_size = std::max(1u, std::min<uint32_t>(32u, context.max_subgroup_size));'
+    - '    } else {'
+    - '        wg_size = std::max(context.max_subgroup_size, GGML_WEBGPU_FLASH_ATTN_PREFERRED_WG_SIZE);'
+    - '    }'
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));'
+    - ''
+    - '    const char *    shader_src = context.key.use_vec ? wgsl_flash_attn_vec_split
+      : wgsl_flash_attn;'
+    - '    webgpu_pipeline pipeline ='
+    - '        ggml_webgpu_create_pipeline(device, preprocessor.preprocess(shader_src,
+      defines), variant);'
+    - '    auto decisions                    = std::make_shared<ggml_webgpu_flash_attn_shader_decisions>();'
+    - '    decisions->q_tile                 = q_tile;'
+    - '    decisions->kv_tile                = kv_tile;'
+    - '    decisions->wg_size                = wg_size;'
+    - '    pipeline.context                  = decisions;'
+    - '    flash_attn_pipelines[context.key] = pipeline;'
+    - '    return flash_attn_pipelines[context.key];'
+    - '}'
+    desc: 为 Flash Attention 运算创建并缓存着色器管线，支持多种 KV 类型、掩码、sinks、logit softcap 等特性。
+    line: 2035-2188
+    name: get_flash_attn_pipeline
+  - code:
+    - webgpu_pipeline get_flash_attn_blk_pipeline(const ggml_webgpu_flash_attn_blk_shader_lib_context
+      & context) {
+    - '    auto it = flash_attn_blk_pipelines.find(context.key);'
+    - '    if (it != flash_attn_blk_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    ggml_webgpu_processed_shader processed ='
+    - '        ggml_webgpu_preprocess_flash_attn_blk_shader(preprocessor, wgsl_flash_attn_vec_blk,
+      context);'
+    - '    webgpu_pipeline pipeline              = ggml_webgpu_create_pipeline(device,
+      processed.wgsl, processed.variant);'
+    - '    flash_attn_blk_pipelines[context.key] = pipeline;'
+    - '    return flash_attn_blk_pipelines[context.key];'
+    - '}'
+    desc: 为 Flash Attention 分块变体创建并缓存着色器管线，使用预处理的块级着色器。
+    line: 2188-2216
+    name: get_flash_attn_blk_pipeline
+  - code:
+    - webgpu_pipeline get_flash_attn_vec_reduce_pipeline(
+    - '    const ggml_webgpu_flash_attn_vec_reduce_shader_lib_context & context) {'
+    - '    auto it = flash_attn_vec_reduce_pipelines.find(context.key);'
+    - '    if (it != flash_attn_vec_reduce_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    ggml_webgpu_processed_shader processed ='
+    - '        ggml_webgpu_preprocess_flash_attn_vec_reduce_shader(preprocessor, wgsl_flash_attn_vec_reduce,
+      context);'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed.wgsl,
+      processed.variant);'
+    - '    flash_attn_vec_reduce_pipelines[context.key] = pipeline;'
+    - '    return flash_attn_vec_reduce_pipelines[context.key];'
+    - '}'
+    desc: 为 Flash Attention 向量归约变体创建并缓存着色器管线。
+    line: 2216-2243
+    name: get_flash_attn_vec_reduce_pipeline
+  - code:
+    - webgpu_pipeline get_cpy_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_cpy_pipeline_key key = {'
+    - '        .src_type = context.src0->type,'
+    - '        .dst_type = context.dst->type,'
+    - '    };'
+    - ''
+    - '    auto it = cpy_pipelines.find(key);'
+    - '    if (it != cpy_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "cpy";'
+    - ''
+    - '    switch (key.src_type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("SRC_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("SRC_F16");'
+    - '            variant += "_f16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported src type for cpy shader");'
+    - '    }'
+    - ''
+    - '    switch (key.dst_type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("DST_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("DST_F16");'
+    - '            variant += "_f16";'
+    - '            break;'
+    - '        case GGML_TYPE_I32:'
+    - '            defines.push_back("DST_I32");'
+    - '            variant += "_i32";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported dst type for cpy shader");'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_cpy, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    cpy_pipelines[key]       = pipeline;'
+    - '    return cpy_pipelines[key];'
+    - '}'
+    desc: 为张量复制（cpy）操作创建并缓存着色器管线，支持源和目标不同数据类型的组合。
+    line: 2243-2315
+    name: get_cpy_pipeline
+  - code:
+    - webgpu_pipeline get_glu_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_glu_pipeline_key key = {'
+    - '        .glu_op = ggml_get_glu_op(context.dst),'
+    - '        .type   = context.dst->type,'
+    - '        .split  = (context.src1 != nullptr),'
+    - '    };'
+    - ''
+    - '    auto it = glu_pipelines.find(key);'
+    - '    if (it != glu_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "glu";'
+    - ''
+    - '    switch (key.glu_op) {'
+    - '        case GGML_GLU_OP_REGLU:'
+    - '            defines.push_back("OP_REGLU");'
+    - '            variant += "_reglu";'
+    - '            break;'
+    - '        case GGML_GLU_OP_GEGLU:'
+    - '            defines.push_back("OP_GEGLU");'
+    - '            variant += "_geglu";'
+    - '            break;'
+    - '        case GGML_GLU_OP_SWIGLU:'
+    - '            defines.push_back("OP_SWIGLU");'
+    - '            variant += "_swiglu";'
+    - '            break;'
+    - '        case GGML_GLU_OP_SWIGLU_OAI:'
+    - '            defines.push_back("OP_SWIGLU_OAI");'
+    - '            variant += "_swiglu_oai";'
+    - '            break;'
+    - '        case GGML_GLU_OP_GEGLU_ERF:'
+    - '            defines.push_back("OP_GEGLU_ERF");'
+    - '            variant += "_geglu_erf";'
+    - '            break;'
+    - '        case GGML_GLU_OP_GEGLU_QUICK:'
+    - '            defines.push_back("OP_GEGLU_QUICK");'
+    - '            variant += "_geglu_quick";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported GLU op");'
+    - '    }'
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("TYPE_F16");'
+    - '            variant += "_f16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for GLU shader");'
+    - '    }'
+    - ''
+    - '    if (key.split) {'
+    - '        variant += "_split";'
+    - '    } else {'
+    - '        defines.push_back("NO_SPLIT");'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_glu, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    glu_pipelines[key]       = pipeline;'
+    - '    return glu_pipelines[key];'
+    - '}'
+    desc: 为 GLU 门控线性单元操作创建并缓存着色器管线，支持多种 GLU 变体和分裂模式。
+    line: 2315-2413
+    name: get_glu_pipeline
+  - code:
+    - webgpu_pipeline get_rope_pipeline(const ggml_webgpu_shader_lib_context & context)
+      {
+    - '    ggml_webgpu_rope_pipeline_key key = {'
+    - '        .type    = context.dst->type,'
+    - '        .inplace = context.inplace,'
+    - '        .has_ff  = (context.src2 != nullptr),'
+    - '    };'
+    - ''
+    - '    auto it = rope_pipelines.find(key);'
+    - '    if (it != rope_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "rope";'
+    - ''
+    - '    switch (key.type) {'
+    - '        case GGML_TYPE_F32:'
+    - '            defines.push_back("TYPE_F32");'
+    - '            variant += "_f32";'
+    - '            break;'
+    - '        case GGML_TYPE_F16:'
+    - '            defines.push_back("TYPE_F16");'
+    - '            variant += "_f16";'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("Unsupported type for ROPE shader");'
+    - '    }'
+    - ''
+    - '    if (key.inplace) {'
+    - '        defines.push_back("INPLACE");'
+    - '        variant += "_inplace";'
+    - '    }'
+    - ''
+    - '    if (key.has_ff) {'
+    - '        defines.push_back("FF_FUNC");'
+    - '        variant += "_ff";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_rope, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    rope_pipelines[key]      = pipeline;'
+    - '    return rope_pipelines[key];'
+    - '}'
+    desc: 为旋转位置嵌入（RoPE）操作创建并缓存着色器管线，支持原位操作和额外傅里叶功能。
+    line: 2413-2483
+    name: get_rope_pipeline
+  - code:
+    - webgpu_pipeline get_soft_max_pipeline(const ggml_webgpu_shader_lib_context &
+      context) {
+    - '    ggml_webgpu_soft_max_pipeline_key key = {'
+    - '        .mask_type = context.src1 ? context.src1->type : GGML_TYPE_F32,'
+    - '        .has_mask  = (context.src1 != nullptr),'
+    - '        .has_sink  = (context.src2 != nullptr),'
+    - '        .inplace   = context.inplace,'
+    - '    };'
+    - ''
+    - '    auto it = soft_max_pipelines.find(key);'
+    - '    if (it != soft_max_pipelines.end()) {'
+    - '        return it->second;'
+    - '    }'
+    - ''
+    - '    std::vector<std::string> defines;'
+    - '    std::string              variant = "soft_max";'
+    - ''
+    - '    if (key.has_mask) {'
+    - '        defines.push_back("HAS_MASK");'
+    - '        switch (key.mask_type) {'
+    - '            case GGML_TYPE_F32:'
+    - '                defines.push_back("MASK_F32");'
+    - '                variant += "_mask_f32";'
+    - '                break;'
+    - '            case GGML_TYPE_F16:'
+    - '                defines.push_back("MASK_F16");'
+    - '                variant += "_mask_f16";'
+    - '                break;'
+    - '            default:'
+    - '                GGML_ABORT("Unsupported type for SOFT_MAX shader");'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (key.has_sink) {'
+    - '        defines.push_back("HAS_SINK");'
+    - '        variant += "_sink";'
+    - '    }'
+    - ''
+    - '    if (key.inplace) {'
+    - '        defines.push_back("INPLACE");'
+    - '        variant += "_inplace";'
+    - '    }'
+    - ''
+    - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+    - ''
+    - '    auto processed           = preprocessor.preprocess(wgsl_soft_max, defines);'
+    - '    auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();'
+    - '    decisions->wg_size       = context.max_wg_size;'
+    - '    webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed,
+      variant);'
+    - '    pipeline.context         = decisions;'
+    - '    soft_max_pipelines[key]  = pipeline;'
+    - '    return soft_max_pipelines[key];'
+    - '}'
+    desc: 为 SoftMax 操作创建并缓存着色器管线，支持可选的掩码和 sinks。
+    line: 2483-2565
+    name: get_soft_max_pipeline
+  - code:
+    - static webgpu_pipeline ggml_webgpu_create_pipeline(wgpu::Device & device,
+    - '                                                   std::string    shader_code,'
+    - '                                                   std::string    label) {'
+    - '    wgpu::ShaderSourceWGSL shader_source;'
+    - '    shader_source.code = shader_code.c_str();'
+    - ''
+    - '    wgpu::ShaderModuleDescriptor shader_desc;'
+    - '    shader_desc.nextInChain = &shader_source;'
+    - ''
+    - '    wgpu::ShaderModule shader_module = device.CreateShaderModule(&shader_desc);'
+    - ''
+    - '    wgpu::ComputePipelineDescriptor pipeline_desc;'
+    - '    pipeline_desc.label              = label.c_str();'
+    - '    pipeline_desc.compute.module     = shader_module;'
+    - '    pipeline_desc.compute.entryPoint = "main";   // Entry point in the WGSL
+      code'
+    - '    pipeline_desc.layout             = nullptr;  // nullptr means auto layout'
+    - '    return { device.CreateComputePipeline(&pipeline_desc), label };'
+    - '}'
+    desc: 静态方法，根据给定的 WGSL 着色器代码和设备创建 WebGPU Compute Pipeline。
+    line: 2565-2600
+    name: ggml_webgpu_create_pipeline
+  - code:
+    - static uint32_t ggml_webgpu_flash_attn_max_kv_tile(const ggml_webgpu_flash_attn_shader_lib_context
+      & context) {
+    - '    const size_t limit_bytes = context.wg_mem_limit_bytes;'
+    - '    const size_t q_tile      = context.sg_mat_m;'
+    - '    const size_t base_q_bytes ='
+    - '        (context.key.head_dim_qk + context.key.head_dim_v) * q_tile * GGML_WEBGPU_F16_SIZE_BYTES
+      +'
+    - '        2 * q_tile * GGML_WEBGPU_F32_SIZE_BYTES;'
+    - '    size_t bytes_per_kv = 0;'
+    - '    if (!context.key.kv_direct) {'
+    - '        bytes_per_kv += std::max(context.key.head_dim_qk, context.key.head_dim_v);'
+    - '    }'
+    - '    if (context.key.has_mask) {'
+    - '        bytes_per_kv += q_tile;'
+    - '    }'
+    - '    bytes_per_kv += q_tile;'
+    - '    bytes_per_kv *= GGML_WEBGPU_F16_SIZE_BYTES;'
+    - '    const uint32_t max_kv_tile = (limit_bytes - base_q_bytes) / bytes_per_kv;'
+    - '    return (max_kv_tile / context.sg_mat_n) * context.sg_mat_n;'
+    - '}'
+    desc: 静态方法，计算 Flash Attention 中 KV tile 的最大尺寸，基于工作组的显存限制。
+    line: 2600-2630
+    name: ggml_webgpu_flash_attn_max_kv_tile
+  name: shader_lib
+desc: 该文件是 ggml WebGPU 后端的着色器库头文件，定义了着色器管线的各种键（key）、上下文（context）、决策（decisions）结构体，以及一个用于创建和管理各种着色器管线的类
+  ggml_webgpu_shader_lib。它涵盖了诸如矩阵乘法、Flash Attention、归一化、复制、拼接等多种操作的 WGSL 着色器管线管理逻辑。This
+  file defines the WebGPU shader library for ggml, providing methods to create and
+  cache WebGPU compute pipelines for various neural network operations such as matrix
+  multiplication, scaling, padding, and pooling. It includes a WebGPU shader library
+  class with methods to retrieve or create pipelines for operations like matrix multiplication,
+  scaling, padding, and pooling.该代码是 ggml 项目在 WebGPU 后端中实现着色器管线的缓存与生成核心逻辑。它定义了 shader_lib
+  类，负责根据操作类型、数据类型、张量属性等参数，为不同的 GGML 运算（如一元运算、二元运算、concat、repeat、flash attention、copy、GLU、rope、softmax）创建对应的
+  WebGPU 计算管线，并使用缓存机制存储这些管线，避免重复编译，提升运行效率。每个管线生成过程都会通过预处理阶段，基于运行时参数动态修改 WGSL 源代码并编译创建管线。
+file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+funcs:
+- code:
+  - template <typename T> inline void ggml_webgpu_hash_combine(size_t & seed, const
+    T & value) {
+  - '    seed ^= std::hash<T>{}(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);'
+  - '}'
+  desc: 将给定值与现有种子进行哈希组合，用于生成哈希键。
+  line: 42-44
+  name: ggml_webgpu_hash_combine
+- code:
+  - inline uint32_t ggml_webgpu_flash_attn_pick_vec_ne(const ggml_webgpu_flash_attn_pipeline_key
+    & key) {
+  - '    // Keep conservative defaults unless this is the f16 vec-split shape family.'
+  - '    if (key.kv_type != GGML_TYPE_F16 || key.head_dim_qk != key.head_dim_v) {'
+  - '        return 1u;'
+  - '    }'
+  - ''
+  - '    // Head-dim specializations used by the tuned vec f16 path.'
+  - '    switch (key.head_dim_qk) {'
+  - '        case 64:'
+  - '            return 2u;'
+  - '        case 96:'
+  - '            return 4u;'
+  - '        case 128:'
+  - '            return 1u;'
+  - '        case 192:'
+  - '            return 2u;'
+  - '        case 576:'
+  - '            return 2u;'
+  - '        default:'
+  - '            return 1u;'
+  - '    }'
+  - '}'
+  desc: 根据 Flash Attention 管线的键，选择合适的向量化因子（ne）。
+  line: 622-638
+  name: ggml_webgpu_flash_attn_pick_vec_ne
+- code:
+  - inline bool operator==(const ggml_webgpu_flash_attn_vec_reduce_pipeline_key &
+    lhs,
+  - '                       const ggml_webgpu_flash_attn_vec_reduce_pipeline_key &
+    rhs) {'
+  - '    return lhs.head_dim_v == rhs.head_dim_v && lhs.wg_size == rhs.wg_size;'
+  - '}'
+  desc: 比较两个 ggml_webgpu_flash_attn_vec_reduce_pipeline_key 对象是否相等。
+  line: 652-656
+  name: operator==
+- code:
+  - inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_vec_reduce_shader(
+  - '    pre_wgsl::Preprocessor &                                     preprocessor,'
+  - '    const char *                                                 shader_src,'
+  - '    const ggml_webgpu_flash_attn_vec_reduce_shader_lib_context & context) {'
+  - '    std::vector<std::string> defines;'
+  - '    std::string              variant = "flash_attn_vec_reduce";'
+  - ''
+  - '    defines.push_back(std::string("HEAD_DIM_V=") + std::to_string(context.key.head_dim_v));'
+  - '    variant += std::string("_hsv") + std::to_string(context.key.head_dim_v);'
+  - ''
+  - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));'
+  - '    variant += std::string("_wg") + std::to_string(context.max_wg_size);'
+  - ''
+  - '    ggml_webgpu_processed_shader result;'
+  - '    result.wgsl    = preprocessor.preprocess(shader_src, defines);'
+  - '    result.variant = variant;'
+  - '    return result;'
+  - '}'
+  desc: 预处理 Flash Attention 向量归约着色器，根据上下文中的键值设置预处理器定义和变体名。
+  line: 658-673
+  name: ggml_webgpu_preprocess_flash_attn_vec_reduce_shader
+- code:
+  - inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_blk_shader(
+  - '    pre_wgsl::Preprocessor &                              preprocessor,'
+  - '    const char *                                          shader_src,'
+  - '    const ggml_webgpu_flash_attn_blk_shader_lib_context & context) {'
+  - '    std::vector<std::string> defines;'
+  - '    std::string              variant = "flash_attn_vec_blk";'
+  - ''
+  - '    defines.push_back(std::string("Q_TILE=") + std::to_string(context.key.q_tile));'
+  - '    variant += std::string("_qt") + std::to_string(context.key.q_tile);'
+  - ''
+  - '    defines.push_back(std::string("KV_TILE=") + std::to_string(context.key.kv_tile));'
+  - '    variant += std::string("_kvt") + std::to_string(context.key.kv_tile);'
+  - ''
+  - '    uint32_t wg_size = 1;'
+  - '    while ((wg_size << 1) <= context.max_wg_size) {'
+  - '        wg_size <<= 1;'
+  - '    }'
+  - '    defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));'
+  - '    variant += std::string("_wg") + std::to_string(wg_size);'
+  - ''
+  - '    ggml_webgpu_processed_shader result;'
+  - '    result.wgsl    = preprocessor.preprocess(shader_src, defines);'
+  - '    result.variant = variant;'
+  - '    return result;'
+  - '}'
+  desc: 预处理 Flash Attention 块着色器，根据上下文中的键值设置预处理器定义，并自动计算最大的 2 的幂次方工作组大小。
+  line: 695-717
+  name: ggml_webgpu_preprocess_flash_attn_blk_shader
+- code:
+  - inline size_t ggml_webgpu_flash_attn_wg_mem_bytes(uint32_t q_tile,
+  - '                                                  uint32_t kv_tile,'
+  - '                                                  uint32_t head_dim_qk,'
+  - '                                                  uint32_t head_dim_v,'
+  - '                                                  bool     has_mask,'
+  - '                                                  bool     kv_direct) {'
+  - '    const uint32_t max_head_dim = std::max(head_dim_qk, head_dim_v);'
+  - '    size_t         f16_elems    = 0;'
+  - '    size_t         f32_elems    = 0;'
+  - '    f16_elems += q_tile * head_dim_qk;        // q_shmem'
+  - '    if (!kv_direct) {'
+  - '        f16_elems += kv_tile * max_head_dim;  // kv_shmem'
+  - '    }'
+  - '    f16_elems += q_tile * head_dim_v;         // o_shmem'
+  - '    if (has_mask) {'
+  - '        f16_elems += q_tile * kv_tile;        // mask_shmem'
+  - '    }'
+  - '    f16_elems += q_tile * kv_tile;            // inter_shmem'
+  - '    f32_elems += q_tile;                      // row_max_shmem'
+  - '    f32_elems += q_tile;                      // exp_sum_shmem'
+  - '    return f16_elems * GGML_WEBGPU_F16_SIZE_BYTES + f32_elems * GGML_WEBGPU_F32_SIZE_BYTES;'
+  - '}'
+  desc: 计算 Flash Attention 操作所需的工作组内存字节数，包括共享内存中存储的各种缓冲区大小。
+  line: 719-738
+  name: ggml_webgpu_flash_attn_wg_mem_bytes

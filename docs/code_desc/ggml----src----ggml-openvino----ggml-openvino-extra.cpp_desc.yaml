@@ -1,0 +1,389 @@
+classes:
+- desc: A singleton configuration class managing OpenVINO device selection, remote
+    context initialization, compile configuration, and OpenCL queue setup for GPU
+    operations.
+  methods:
+  - code:
+    - void ggml_openvino_device_config::init() {
+    - '    if (initialized) {'
+    - '        return;'
+    - '    }'
+    - '    device_name = getenv("GGML_OPENVINO_DEVICE") ? getenv("GGML_OPENVINO_DEVICE")
+      : "CPU";'
+    - '    auto available_devices = ov_singleton_core().get_available_devices();'
+    - '    if (std::find(available_devices.begin(), available_devices.end(), device_name)
+      == available_devices.end()) {'
+    - '        GGML_LOG_WARN("GGML OpenVINO Backend: device %s is not available, fallback
+      to CPU\n", device_name.c_str());'
+    - '        device_name = "CPU";'
+    - '    }'
+    - '    is_npu = (device_name == "NPU");'
+    - '    auto * cache_dir = getenv("GGML_OPENVINO_CACHE_DIR");'
+    - '    if (device_name == "NPU") {'
+    - '        compile_config = {'
+    - '            {"NPU_COMPILER_DYNAMIC_QUANTIZATION", "YES"   },'
+    - '            {"NPU_USE_NPUW",                      "YES"   },'
+    - '            {"NPUW_DEVICES",                      "NPU"   },'
+    - '            {"NPUW_FOLD",                         "YES"   },'
+    - '            {"NPUW_WEIGHTS_BANK",                 "shared"},'
+    - '            {"NPUW_FUNCALL_FOR_ALL",              "YES"   },'
+    - '            {"NPUW_FUNCALL_ASYNC",                "YES"   },'
+    - '            {"NPUW_DQ",                           "YES"   },'
+    - '            {"NPUW_DQ_FULL",                      "NO"    },'
+    - '        };'
+    - '        if (cache_dir) {'
+    - '            compile_config["NPUW_CACHE_DIR"] = cache_dir;'
+    - '        }'
+    - '    } else if (cache_dir) {'
+    - '        ov_singleton_core().set_property(ov::cache_dir(cache_dir));'
+    - '    }'
+    - '    if (device_name == "GPU") {'
+    - '        cl_int err;'
+    - '        cl_platform_id platform;'
+    - '        err = clGetPlatformIDs(1, &platform, nullptr);'
+    - '        if (err != CL_SUCCESS) {'
+    - '            GGML_LOG_ERROR("Failed to get OpenCL platform: %d\n", err);'
+    - '            return;'
+    - '        }'
+    - '        cl_device_id cl_device;'
+    - '        err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &cl_device, nullptr);'
+    - '        if (err != CL_SUCCESS) {'
+    - '            GGML_LOG_ERROR("Failed to get OpenCL device: %d\n", err);'
+    - '            return;'
+    - '        }'
+    - '        cl_context cl_ctx = clCreateContext(nullptr, 1, &cl_device, nullptr,
+      nullptr, &err);'
+    - '        if (err != CL_SUCCESS) {'
+    - '            GGML_LOG_ERROR("Failed to create OpenCL context: %d\n", err);'
+    - '            return;'
+    - '        }'
+    - '        cl_queue = clCreateCommandQueueWithProperties(cl_ctx, cl_device, nullptr,
+      &err);'
+    - '        if (err != CL_SUCCESS) {'
+    - '            GGML_LOG_ERROR("Failed to create OpenCL command queue: %d\n", err);'
+    - '            clReleaseContext(cl_ctx);'
+    - '            return;'
+    - '        }'
+    - '        remote_context = ov::intel_gpu::ocl::ClContext(ov_singleton_core(),
+      cl_queue);'
+    - '        clReleaseContext(cl_ctx);'
+    - '    } else if (device_name == "NPU") {'
+    - '        // remote tensor is not used for NPU yet'
+    - '        // remote_context = ov_singleton_core().get_default_context(device_name);'
+    - '    }'
+    - '    initialized = true;'
+    - '}'
+    desc: Initializes the device configuration by selecting the device based on environment
+      variables, setting up NPU-specific compile config, and creating an OpenCL remote
+      context for GPU, marked with initialized flag.
+    line: 17-94
+    name: init
+  - code:
+    - ggml_openvino_device_config::~ggml_openvino_device_config() {
+    - '    if (cl_queue != nullptr) {'
+    - '        clReleaseCommandQueue(cl_queue);'
+    - '        cl_queue = nullptr;'
+    - '    }'
+    - '}'
+    desc: Destructor that releases the OpenCL command queue if it was created, setting
+      it to nullptr.
+    line: 96-101
+    name: ~ggml_openvino_device_config
+  name: ggml_openvino_device_config
+desc: This file implements the device configuration and tensor layout extraction for
+  the GGML OpenVINO backend. It includes a singleton device config class that manages
+  device selection (CPU, GPU, NPU), remote context creation for GPU, compile configurations,
+  and a function to extract optimized weight layouts for quantized tensors, including
+  special NPU requantization handling.
+file: ggml/src/ggml-openvino/ggml-openvino-extra.cpp
+funcs:
+- code:
+  - ov::Core & ov_singleton_core() {
+  - '    static ov::Core core;'
+  - '    return core;'
+  - '}'
+  desc: Creates and returns a singleton instance of the OpenVINO Core object for managing
+    device operations.
+  line: 13-16
+  name: ov_singleton_core
+- code:
+  - ggml_openvino_device_config & ggml_openvino_get_device_config() {
+  - '    static ggml_openvino_device_config config;'
+  - '    return config;'
+  - '}'
+  desc: Returns a reference to the global singleton instance of the ggml_openvino_device_config
+    class.
+  line: 103-106
+  name: ggml_openvino_get_device_config
+- code:
+  - void ggml_openvino_init_device_config() {
+  - '    ggml_openvino_get_device_config().init();'
+  - '}'
+  desc: Initializes the global device configuration by calling the init method on
+    the singleton config object.
+  line: 109-111
+  name: ggml_openvino_init_device_config
+- code:
+  - const std::string & ggml_openvino_get_device_name() {
+  - '    return ggml_openvino_get_device_config().device_name;'
+  - '}'
+  desc: Returns the name of the currently selected OpenVINO device (e.g., 'CPU', 'GPU',
+    'NPU') from the device config.
+  line: 114-116
+  name: ggml_openvino_get_device_name
+- code:
+  - bool ggml_openvino_is_npu() {
+  - '    return ggml_openvino_get_device_config().is_npu;'
+  - '}'
+  desc: Checks whether the current device is an NPU by returning the is_npu flag from
+    the device config.
+  line: 119-121
+  name: ggml_openvino_is_npu
+- code:
+  - std::optional<ov::RemoteContext> ggml_openvino_get_remote_context() {
+  - '    return ggml_openvino_get_device_config().remote_context;'
+  - '}'
+  desc: Returns an optional remote context object for the current device, which is
+    empty when using CPU.
+  line: 124-126
+  name: ggml_openvino_get_remote_context
+- code:
+  - const ov::AnyMap & ggml_openvino_get_compile_config() {
+  - '    return ggml_openvino_get_device_config().compile_config;'
+  - '}'
+  desc: Returns a reference to the compile configuration map for the current device,
+    used for OpenVINO model compilation.
+  line: 129-131
+  name: ggml_openvino_get_compile_config
+- code:
+  - cl_command_queue ggml_openvino_get_cl_queue() {
+  - '    return ggml_openvino_get_device_config().cl_queue;'
+  - '}'
+  desc: Returns the OpenCL command queue handle for GPU operations, retrieved from
+    the device config.
+  line: 134-136
+  name: ggml_openvino_get_cl_queue
+- code:
+  - clEnqueueMemFillINTEL_fn ggml_openvino_get_clEnqueueMemFillINTEL() {
+  - '    static clEnqueueMemFillINTEL_fn fn = nullptr;'
+  - '    static bool loaded = false;'
+  - '    if (!loaded) {'
+  - '        loaded = true;'
+  - '        cl_platform_id platform;'
+  - '        if (clGetPlatformIDs(1, &platform, nullptr) == CL_SUCCESS) {'
+  - '            fn = (clEnqueueMemFillINTEL_fn) clGetExtensionFunctionAddressForPlatform(platform,
+    "clEnqueueMemFillINTEL");'
+  - '        }'
+  - '    }'
+  - '    return fn;'
+  - '}'
+  desc: Lazily loads and returns the function pointer for the Intel extension clEnqueueMemFillINTEL,
+    using the first available platform.
+  line: 139-149
+  name: ggml_openvino_get_clEnqueueMemFillINTEL
+- code:
+  - clEnqueueMemcpyINTEL_fn ggml_openvino_get_clEnqueueMemcpyINTEL() {
+  - '    static clEnqueueMemcpyINTEL_fn fn = nullptr;'
+  - '    static bool loaded = false;'
+  - '    if (!loaded) {'
+  - '        loaded = true;'
+  - '        cl_platform_id platform;'
+  - '        if (clGetPlatformIDs(1, &platform, nullptr) == CL_SUCCESS) {'
+  - '            fn = (clEnqueueMemcpyINTEL_fn) clGetExtensionFunctionAddressForPlatform(platform,
+    "clEnqueueMemcpyINTEL");'
+  - '        }'
+  - '    }'
+  - '    return fn;'
+  - '}'
+  desc: Lazily loads and returns the function pointer for the Intel extension clEnqueueMemcpyINTEL,
+    using the first available platform.
+  line: 152-162
+  name: ggml_openvino_get_clEnqueueMemcpyINTEL
+- code:
+  - std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor
+    * tensor, bool no_requant) {
+  - '    if (no_requant) {'
+  - '        return std::nullopt;'
+  - '    }'
+  - '    if (strncmp(tensor->name, "token_embd.weight", 17) == 0) {'
+  - '        return ((ggml_openvino_is_npu() && tensor->type == GGML_TYPE_Q6_K) ?
+    ExtraQuantType::F16 : ExtraQuantType::Q8_0_C);'
+  - '    }'
+  - '    if (strncmp(tensor->name, "output.weight", 13) == 0) {'
+  - '        return ExtraQuantType::Q8_0_C;'
+  - '    }'
+  - '    if (ggml_openvino_is_npu()) {'
+  - '        return ExtraQuantType::Q4_0_128;'
+  - '    }'
+  - '    switch (tensor->type) {'
+  - '    case GGML_TYPE_Q6_K:'
+  - '    case GGML_TYPE_Q5_K:'
+  - '        return ExtraQuantType::Q8_0_C;'
+  - '    default:'
+  - '        return std::nullopt;'
+  - '    }'
+  - '}'
+  desc: Determines the requantization type for a given tensor based on its name and
+    type, returning nullopt if no requant is needed.
+  line: 165-182
+  name: ggml_openvino_get_requant_type
+- code:
+  - ggml_openvino_extracted_layout ggml_openvino_get_extracted_layout(const ggml_tensor
+    * tensor, bool use_bias) {
+  - '    ggml_openvino_extracted_layout layout = {};'
+  - '    layout.is_symmetric = false;'
+  - '    if (!ggml_is_quantized(tensor->type)) {'
+  - '        return layout;'
+  - '    }'
+  - '    if (tensor->ne[2] != 1 || tensor->ne[3] != 1) {'
+  - '        return layout;'
+  - '    }'
+  - '    int64_t n_elements = ggml_nelements(tensor);'
+  - '    const size_t alignment = 64;  // Good for SIMD'
+  - '    auto requant_type = ggml_openvino_get_requant_type(tensor, use_bias);'
+  - '    if (requant_type.has_value()) {'
+  - '        layout.is_requant = true;'
+  - '        layout.requant_type = requant_type;'
+  - '        if (requant_type.value() == ExtraQuantType::F16) {'
+  - '            layout.weights_size = n_elements * sizeof(uint16_t);  // F16 = 2
+    bytes'
+  - '            layout.total_size = layout.weights_size;'
+  - '            layout.weights_offset = 0;'
+  - '            // No scales/zp for F16'
+  - '            return layout;'
+  - '        }'
+  - '        switch (requant_type.value()) {'
+  - '        case ExtraQuantType::Q4_0_128:'
+  - '            layout.is_u4 = true;'
+  - '            layout.weights_per_block = 128;'
+  - '            layout.is_symmetric = true;'
+  - '            break;'
+  - '        case ExtraQuantType::Q4_0_C:'
+  - '            layout.is_u4 = true;'
+  - '            layout.weights_per_block = tensor->ne[0];'
+  - '            layout.is_symmetric = true;'
+  - '            break;'
+  - '        case ExtraQuantType::Q8_0_32:'
+  - '            layout.is_u4 = false;'
+  - '            layout.weights_per_block = 32;'
+  - '            layout.is_symmetric = true;'
+  - '            break;'
+  - '        case ExtraQuantType::Q8_0_C:'
+  - '            layout.is_u4 = false;'
+  - '            layout.weights_per_block = tensor->ne[0];'
+  - '            layout.is_symmetric = true;'
+  - '            break;'
+  - '        case ExtraQuantType::Q8_1_C:'
+  - '            layout.is_u4 = false;'
+  - '            layout.weights_per_block = tensor->ne[0];'
+  - '            break;'
+  - '        default:'
+  - '            layout.weights_per_block = -1;'
+  - '            GGML_ABORT("Code of re-quantizing to channel-wise is not updated");'
+  - '            break;'
+  - '        }'
+  - '        if (layout.is_requant) {'
+  - '            layout.weights_size = layout.is_u4 ? (n_elements / 2) : n_elements;'
+  - '            int64_t n_blocks = n_elements / layout.weights_per_block;'
+  - '            layout.scales_size = n_blocks * sizeof(uint16_t);'
+  - '            size_t n_zp_elements = layout.is_symmetric ? 1 : n_blocks;'
+  - '            layout.zp_size = layout.is_u4 ? ((n_zp_elements + 1) / 2) : n_zp_elements;'
+  - '            layout.weights_offset = 0;'
+  - '            layout.scales_offset = ((layout.weights_size + alignment - 1) / alignment)
+    * alignment;'
+  - '            layout.zp_offset = layout.scales_offset + ((layout.scales_size +
+    alignment - 1) / alignment) * alignment;'
+  - '            layout.total_size = layout.zp_offset + layout.zp_size;'
+  - '            layout.total_size = std::max(layout.total_size, ggml_nbytes(tensor));'
+  - '            return layout;'
+  - '        }'
+  - '    }'
+  - '    layout.is_u4 = false;'
+  - '    layout.weights_per_block = 32;'
+  - '    layout.is_symmetric = false;'
+  - '    switch (tensor->type) {'
+  - '    case GGML_TYPE_Q4_0:'
+  - '        layout.is_u4 = true;'
+  - '        layout.is_symmetric = true;'
+  - '        break;'
+  - '    case GGML_TYPE_Q4_1:'
+  - '    case GGML_TYPE_Q4_K:'
+  - '        layout.is_u4 = true;'
+  - '        break;'
+  - '    case GGML_TYPE_Q8_0:'
+  - '        layout.is_symmetric = true;'
+  - '        break;'
+  - '    case GGML_TYPE_Q6_K:'
+  - '        layout.weights_per_block = 16;'
+  - '        layout.is_symmetric = true;'
+  - '        break;'
+  - '    case GGML_TYPE_Q5_K:'
+  - '        break;'
+  - '    default:'
+  - '        // Unsupported quantization type'
+  - '        return layout;'
+  - '    }'
+  - '    layout.weights_size = layout.is_u4 ? (n_elements / 2) : n_elements;'
+  - '    int64_t n_blocks = n_elements / layout.weights_per_block;'
+  - '    layout.scales_size = n_blocks * sizeof(uint16_t);  // F16 = 2 bytes'
+  - '    size_t n_zp_elements = layout.is_symmetric ? 1 : n_blocks;'
+  - '    layout.zp_size = layout.is_u4 ? ((n_zp_elements + 1) / 2) : n_zp_elements;'
+  - '    layout.weights_offset = 0;'
+  - '    layout.scales_offset = ((layout.weights_size + alignment - 1) / alignment)
+    * alignment;'
+  - '    layout.zp_offset = layout.scales_offset + ((layout.scales_size + alignment
+    - 1) / alignment) * alignment;'
+  - '    layout.total_size = layout.zp_offset + layout.zp_size;'
+  - '    layout.total_size = std::max(layout.total_size, ggml_nbytes(tensor));'
+  - '    return layout;'
+  - '}'
+  desc: Calculates and returns the optimized buffer layout for quantized weight tensors,
+    including weights, scales, and zero points, with special handling for NPU requantization.
+  line: 185-289
+  name: ggml_openvino_get_extracted_layout
+- code:
+  - ggml_openvino_tensor_extra * ggml_openvino_create_tensor_extra(const ggml_tensor
+    * tensor, bool is_remote) {
+  - '    ov::Shape shape;'
+  - '    for (int i = GGML_MAX_DIMS - 1; i >= 0; --i) {'
+  - '        shape.push_back(static_cast<size_t>(tensor->ne[i]));'
+  - '    }'
+  - '    ov::element::Type element_type;'
+  - '    switch (tensor->type) {'
+  - '    case GGML_TYPE_F32:'
+  - '        element_type = ov::element::f32;'
+  - '        break;'
+  - '    case GGML_TYPE_F16:'
+  - '        element_type = ov::element::f16;'
+  - '        break;'
+  - '    case GGML_TYPE_BF16:'
+  - '        element_type = ov::element::bf16;'
+  - '        break;'
+  - '    case GGML_TYPE_I32:'
+  - '        element_type = ov::element::i32;'
+  - '        break;'
+  - '    case GGML_TYPE_I64:'
+  - '        element_type = ov::element::i64;'
+  - '        break;'
+  - '    default:'
+  - '        // GGML_LOG_WARN("%s: unsupported tensor type for ov::Tensor: %s\n",
+    __func__, ggml_type_name(tensor->type));'
+  - '        return nullptr;'
+  - '    }'
+  - '    const auto & device_name = ggml_openvino_get_device_name();'
+  - '    auto remote_context = ggml_openvino_get_remote_context();'
+  - '    std::shared_ptr<ov::Tensor> ov_tensor;'
+  - '    if (is_remote) {'
+  - '        GGML_ASSERT(device_name == "GPU");'
+  - '        auto gpu_context = remote_context->as<ov::intel_gpu::ocl::ClContext>();'
+  - '        auto usm_tensor = gpu_context.create_tensor(element_type, shape, tensor->data);'
+  - '        ov_tensor = std::make_shared<ov::intel_gpu::ocl::USMTensor>(std::move(usm_tensor));'
+  - '    } else {'
+  - '        ov_tensor = std::make_shared<ov::Tensor>(element_type, shape, tensor->data);'
+  - '    }'
+  - '    return new ggml_openvino_tensor_extra(ov_tensor);'
+  - '}'
+  desc: Creates an OpenVINO tensor extra object wrapping an ov::Tensor, supporting
+    remote USM tensors for GPU and handling various GGML data types.
+  line: 292-326
+  name: ggml_openvino_create_tensor_extra

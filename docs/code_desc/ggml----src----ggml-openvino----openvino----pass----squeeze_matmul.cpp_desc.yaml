@@ -1,0 +1,58 @@
+classes:
+- desc: A graph transformation pass that matches a MatMul with 4D activation and 2D
+    weight, introduces a Squeeze and an Unsqueeze around it to reshape the activation
+    to 3D, and replaces the original node with this pattern.
+  methods:
+  - code:
+    - SqueezeMatmul::SqueezeMatmul() {
+    - '    auto m_act = opp::any_input();'
+    - '    auto m_wei = opp::any_input();'
+    - '    auto m_matmul = opp::wrap_type<ov::op::v0::MatMul>({m_act, m_wei});'
+    - ''
+    - '    const auto callback = [=](ov::pass::pattern::Matcher & m) {'
+    - '        const auto & pattern_map = m.get_pattern_value_map();'
+    - '        auto matmul_node ='
+    - '            std::dynamic_pointer_cast<ov::op::v0::MatMul>(pattern_map.at(m_matmul).get_node_shared_ptr());'
+    - '        auto act = pattern_map.at(m_act);'
+    - '        auto wei = pattern_map.at(m_wei);'
+    - '        auto act_shape = act.get_partial_shape();'
+    - '        auto wei_shape = wei.get_partial_shape();'
+    - '        if (act_shape.rank().is_dynamic() || wei_shape.rank().is_dynamic())
+      {'
+    - '            return false;'
+    - '        }'
+    - '        if (act_shape.rank().get_length() == 4 && wei_shape.rank().get_length()
+      == 2) {'
+    - '            auto axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1},
+      {0});'
+    - '            auto squeezed_act = std::make_shared<ov::op::v0::Squeeze>(act,
+      axis);'
+    - '            auto new_matmul = std::make_shared<ov::op::v0::MatMul>(squeezed_act,
+      wei, matmul_node->get_transpose_a(),'
+    - '                                                                   matmul_node->get_transpose_b());'
+    - '            auto unsqueezed_output = std::make_shared<ov::op::v0::Unsqueeze>(new_matmul,
+      axis);'
+    - '            unsqueezed_output->set_friendly_name(matmul_node->get_friendly_name());'
+    - '            ov::copy_runtime_info(matmul_node, {squeezed_act, new_matmul, unsqueezed_output});'
+    - '            ov::replace_node(matmul_node, unsqueezed_output);'
+    - '            return true;'
+    - '        }'
+    - '        return false;'
+    - '    };'
+    - ''
+    - '    register_matcher(std::make_shared<ov::pass::pattern::Matcher>(m_matmul,
+      "ov::frontend::ggml::pass::SqueezeMatmul"),'
+    - '                     callback);'
+    - '}'
+    desc: Constructor that builds the pattern matcher with an activation input, a
+      weight input, and a MatMul, and registers a callback to perform the squeeze-unsqueeze
+      transformation when the pattern is matched.
+    line: 18-44
+    name: SqueezeMatmul
+  name: SqueezeMatmul
+desc: This file defines the SqueezeMatmul pass, which optimizes quantized models by
+  squeezing the activation from 4D to 3D before a MatMul operation and then unsqueezing
+  the output back to 4D, to align with NPUW's expectations for DynamicQuantization
+  (e.g., DQMatMulGQ2i).
+file: ggml/src/ggml-openvino/openvino/pass/squeeze_matmul.cpp
+funcs: []

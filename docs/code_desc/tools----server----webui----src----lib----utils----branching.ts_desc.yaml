@@ -1,0 +1,277 @@
+classes: []
+desc: 该文件实现了消息分支工具函数集，用于处理对话树结构中的消息。它支持在对话分支中导航、查找消息关系（如父子关系、兄弟节点）、获取对话路径等功能，主要用于聊天应用中的消息分支管理，允许用户编辑消息并创建替代路径，同时保留原始对话流程。
+file: tools/server/webui/src/lib/utils/branching.ts
+funcs:
+- code:
+  - /**
+  - ' * Message branching utilities for conversation tree navigation.'
+  - ' *'
+  - ' * Conversation branching allows users to edit messages and create alternate
+    paths'
+  - ' * while preserving the original conversation flow. Each message has parent/children'
+  - ' * relationships forming a tree structure.'
+  - ' *'
+  - ' * Example tree:'
+  - ' * root'
+  - ' *  ├── message 1 (user)'
+  - ' *  │      └── message 2 (assistant)'
+  - ' *  │             ├── message 3 (user)'
+  - ' *  │             └── message 6 (user) ← new branch'
+  - ' *  └── message 4 (user)'
+  - ' *        └── message 5 (assistant)'
+  - ' */'
+  - ''
+  - import { MessageRole } from '$lib/enums';
+  desc: 文件级别的常量定义和导入，包括MessageRole枚举的导入和文件说明注释
+  line: 1-18
+  name: __main__
+- code:
+  - export function findMessageById(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tid: string | null | undefined"
+  - '): DatabaseMessage | undefined {'
+  - "\tif (!id) return undefined;"
+  - "\treturn messages.find((m) => m.id === id);"
+  - '}'
+  desc: 通过ID在消息数组中查找特定消息
+  line: 23-29
+  name: findMessageById
+- code:
+  - export function filterByLeafNodeId(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tleafNodeId: string,"
+  - "\tincludeRoot: boolean = false"
+  - '): readonly DatabaseMessage[] {'
+  - "\tconst result: DatabaseMessage[] = [];"
+  - "\tconst nodeMap = new Map<string, DatabaseMessage>();"
+  - ''
+  - "\t// Build node map for quick lookups"
+  - "\tfor (const msg of messages) {"
+  - "\t\tnodeMap.set(msg.id, msg);"
+  - "\t}"
+  - ''
+  - "\t// Find the starting node (leaf node or latest if not found)"
+  - "\tlet startNode: DatabaseMessage | undefined = nodeMap.get(leafNodeId);"
+  - "\tif (!startNode) {"
+  - "\t\t// If leaf node not found, use the message with latest timestamp"
+  - "\t\tlet latestTime = -1;"
+  - "\t\tfor (const msg of messages) {"
+  - "\t\t\tif (msg.timestamp > latestTime) {"
+  - "\t\t\t\tstartNode = msg;"
+  - "\t\t\t\tlatestTime = msg.timestamp;"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\t// Traverse from leaf to root, collecting messages"
+  - "\tlet currentNode: DatabaseMessage | undefined = startNode;"
+  - "\twhile (currentNode) {"
+  - "\t\t// Include message if it's not root, or if we want to include root"
+  - "\t\tif (currentNode.type !== 'root' || includeRoot) {"
+  - "\t\t\tresult.push(currentNode);"
+  - "\t\t}"
+  - ''
+  - "\t\t// Stop traversal if parent is null (reached root)"
+  - "\t\tif (currentNode.parent === null) {"
+  - "\t\t\tbreak;"
+  - "\t\t}"
+  - "\t\tcurrentNode = nodeMap.get(currentNode.parent);"
+  - "\t}"
+  - ''
+  - "\t// Sort: system messages first, then by timestamp"
+  - "\tresult.sort((a, b) => {"
+  - "\t\tif (a.role === MessageRole.SYSTEM && b.role !== MessageRole.SYSTEM) return\
+    \ -1;"
+  - "\t\tif (a.role !== MessageRole.SYSTEM && b.role === MessageRole.SYSTEM) return\
+    \ 1;"
+  - ''
+  - "\t\treturn a.timestamp - b.timestamp;"
+  - "\t});"
+  - "\treturn result;"
+  - '}'
+  desc: 过滤消息以获取从根节点到特定叶子节点的对话路径，如果叶子节点不存在，则返回具有最新时间戳的路径
+  line: 40-86
+  name: filterByLeafNodeId
+- code:
+  - 'export function findLeafNode(messages: readonly DatabaseMessage[], messageId:
+    string): string {'
+  - "\tconst nodeMap = new Map<string, DatabaseMessage>();"
+  - ''
+  - "\t// Build node map for quick lookups"
+  - "\tfor (const msg of messages) {"
+  - "\t\tnodeMap.set(msg.id, msg);"
+  - "\t}"
+  - ''
+  - "\tlet currentNode: DatabaseMessage | undefined = nodeMap.get(messageId);"
+  - "\twhile (currentNode && currentNode.children.length > 0) {"
+  - "\t\t// Follow the last child (most recent branch)"
+  - "\t\tconst lastChildId = currentNode.children[currentNode.children.length - 1];"
+  - "\t\tcurrentNode = nodeMap.get(lastChildId);"
+  - "\t}"
+  - ''
+  - "\treturn currentNode?.id ?? messageId;"
+  - '}'
+  desc: 查找给定消息分支的叶子节点（没有子节点的消息），沿着最后一个子节点一直向下遍历直到达到叶子节点
+  line: 96-112
+  name: findLeafNode
+- code:
+  - export function findDescendantMessages(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tmessageId: string"
+  - '): string[] {'
+  - "\tconst nodeMap = new Map<string, DatabaseMessage>();"
+  - ''
+  - "\t// Build node map for quick lookups"
+  - "\tfor (const msg of messages) {"
+  - "\t\tnodeMap.set(msg.id, msg);"
+  - "\t}"
+  - ''
+  - "\tconst descendants: string[] = [];"
+  - "\tconst queue: string[] = [messageId];"
+  - ''
+  - "\twhile (queue.length > 0) {"
+  - "\t\tconst currentId = queue.shift()!;"
+  - "\t\tconst currentNode = nodeMap.get(currentId);"
+  - ''
+  - "\t\tif (currentNode) {"
+  - "\t\t\t// Add all children to the queue and descendants list"
+  - "\t\t\tfor (const childId of currentNode.children) {"
+  - "\t\t\t\tdescendants.push(childId);"
+  - "\t\t\t\tqueue.push(childId);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn descendants;"
+  - '}'
+  desc: 查找给定消息的所有后代消息（子节点、孙节点等），用于级联删除以移除分支中的所有消息
+  line: 122-149
+  name: findDescendantMessages
+- code:
+  - export function getMessageSiblings(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tmessageId: string"
+  - '): ChatMessageSiblingInfo | null {'
+  - "\tconst nodeMap = new Map<string, DatabaseMessage>();"
+  - ''
+  - "\t// Build node map for quick lookups"
+  - "\tfor (const msg of messages) {"
+  - "\t\tnodeMap.set(msg.id, msg);"
+  - "\t}"
+  - ''
+  - "\tconst message = nodeMap.get(messageId);"
+  - "\tif (!message) {"
+  - "\t\treturn null;"
+  - "\t}"
+  - ''
+  - "\t// Handle null parent (root message) case"
+  - "\tif (message.parent === null) {"
+  - "\t\t// No parent means this is likely a root node with no siblings"
+  - "\t\treturn {"
+  - "\t\t\tmessage,"
+  - "\t\t\tsiblingIds: [messageId],"
+  - "\t\t\tcurrentIndex: 0,"
+  - "\t\t\ttotalSiblings: 1"
+  - "\t\t};"
+  - "\t}"
+  - ''
+  - "\tconst parentNode = nodeMap.get(message.parent);"
+  - "\tif (!parentNode) {"
+  - "\t\t// Parent not found - treat as single message"
+  - "\t\treturn {"
+  - "\t\t\tmessage,"
+  - "\t\t\tsiblingIds: [messageId],"
+  - "\t\t\tcurrentIndex: 0,"
+  - "\t\t\ttotalSiblings: 1"
+  - "\t\t};"
+  - "\t}"
+  - ''
+  - "\t// Get all sibling IDs (including self)"
+  - "\tconst siblingIds = parentNode.children;"
+  - ''
+  - "\t// Convert sibling message IDs to their corresponding leaf node IDs"
+  - "\t// This allows navigation between different conversation branches"
+  - "\tconst siblingLeafIds = siblingIds.map((siblingId: string) => findLeafNode(messages,\
+    \ siblingId));"
+  - ''
+  - "\t// Find current message's position among siblings"
+  - "\tconst currentIndex = siblingIds.indexOf(messageId);"
+  - ''
+  - "\treturn {"
+  - "\t\tmessage,"
+  - "\t\tsiblingIds: siblingLeafIds,"
+  - "\t\tcurrentIndex,"
+  - "\t\ttotalSiblings: siblingIds.length"
+  - "\t};"
+  - '}'
+  desc: 获取消息的兄弟节点信息，包括所有兄弟节点ID和当前位置。兄弟节点是共享同一父节点的消息
+  line: 159-210
+  name: getMessageSiblings
+- code:
+  - export function getMessageDisplayList(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tleafNodeId: string"
+  - '): ChatMessageSiblingInfo[] {'
+  - "\t// Get the current conversation path"
+  - "\tconst currentPath = filterByLeafNodeId(messages, leafNodeId, true);"
+  - "\tconst result: ChatMessageSiblingInfo[] = [];"
+  - ''
+  - "\t// Add sibling info for each message in the current path"
+  - "\tfor (const message of currentPath) {"
+  - "\t\tif (message.type === 'root') {"
+  - "\t\t\tcontinue; // Skip root messages in display"
+  - "\t\t}"
+  - ''
+  - "\t\tconst siblingInfo = getMessageSiblings(messages, message.id);"
+  - "\t\tif (siblingInfo) {"
+  - "\t\t\tresult.push(siblingInfo);"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn result;"
+  - '}'
+  desc: 创建带有兄弟节点信息的可显示消息列表，用于UI渲染。这是聊天组件用于渲染对话分支的主要函数
+  line: 220-240
+  name: getMessageDisplayList
+- code:
+  - export function hasMessageSiblings(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tmessageId: string"
+  - '): boolean {'
+  - "\tconst siblingInfo = getMessageSiblings(messages, messageId);"
+  - "\treturn siblingInfo ? siblingInfo.totalSiblings > 1 : false;"
+  - '}'
+  desc: 检查消息是否有多个兄弟节点（表示在该点存在分支）
+  line: 249-255
+  name: hasMessageSiblings
+- code:
+  - export function getNextSibling(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tmessageId: string"
+  - '): string | null {'
+  - "\tconst siblingInfo = getMessageSiblings(messages, messageId);"
+  - "\tif (!siblingInfo || siblingInfo.currentIndex >= siblingInfo.totalSiblings -\
+    \ 1) {"
+  - "\t\treturn null;"
+  - "\t}"
+  - ''
+  - "\treturn siblingInfo.siblingIds[siblingInfo.currentIndex + 1];"
+  - '}'
+  desc: 获取下一个兄弟节点消息的ID，用于导航
+  line: 264-274
+  name: getNextSibling
+- code:
+  - export function getPreviousSibling(
+  - "\tmessages: readonly DatabaseMessage[],"
+  - "\tmessageId: string"
+  - '): string | null {'
+  - "\tconst siblingInfo = getMessageSiblings(messages, messageId);"
+  - "\tif (!siblingInfo || siblingInfo.currentIndex <= 0) {"
+  - "\t\treturn null;"
+  - "\t}"
+  - ''
+  - "\treturn siblingInfo.siblingIds[siblingInfo.currentIndex - 1];"
+  - '}'
+  desc: 获取上一个兄弟节点消息的ID，用于导航
+  line: 283-293
+  name: getPreviousSibling

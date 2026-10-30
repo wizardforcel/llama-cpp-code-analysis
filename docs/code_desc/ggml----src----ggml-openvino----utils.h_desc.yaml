@@ -1,0 +1,190 @@
+classes: []
+desc: 该头文件（utils.h）是OpenVINO后端提供给ggml框架使用的核心工具集。它定义了用于在OpenVINO运行时上下文中管理、缓存和执行计算图的关键数据结构（如graph_key、ov_runtime_context）以及一系列用于张量处理、计算图分析和推理请求操作的辅助函数。该文件作为ggml与OpenVINO运行时之间的桥梁，支持静态与动态图计算，并包含预填充（prefill）和解码（decode）阶段的优化逻辑，旨在提升推理性能并简化后端集成。
+file: ggml/src/ggml-openvino/utils.h
+funcs:
+- code:
+  - struct graph_key {
+  - '    int n_nodes;'
+  - '    std::string first_node_name;'
+  - '    std::string last_node_name;'
+  - ''
+  - '    graph_key(const ggml_cgraph * cgraph) : n_nodes(cgraph->n_nodes) {'
+  - '        if (n_nodes > 0) {'
+  - '            first_node_name = cgraph->nodes[0]->name;'
+  - '            last_node_name = cgraph->nodes[n_nodes - 1]->name;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    bool operator==(const graph_key & other) const {'
+  - '        return n_nodes == other.n_nodes && first_node_name == other.first_node_name
+    &&'
+  - '               last_node_name == other.last_node_name;'
+  - '    }'
+  - '};'
+  desc: 用于唯一标识一个ggml计算图的键，基于图中节点数量以及首尾节点的名字进行哈希，以便在缓存中查找和重用对应的解码器或推理请求。
+  line: 17-37
+  name: graph_key
+- code:
+  - struct graph_key_hash {
+  - '    size_t operator()(const graph_key & key) const {'
+  - '        size_t h = std::hash<int>{}(key.n_nodes);'
+  - '        if (key.n_nodes > 0) {'
+  - '            h ^= std::hash<std::string>{}(key.first_node_name) + 0x9e3779b9 +
+    (h << 6) + (h >> 2);'
+  - '            h ^= std::hash<std::string>{}(key.last_node_name) + 0x9e3779b9 +
+    (h << 6) + (h >> 2);'
+  - '        }'
+  - '        return h;'
+  - '    }'
+  - '};'
+  desc: 为graph_key提供哈希函数的仿函数，用于支持在无序容器（如std::unordered_map）中作为键使用。
+  line: 39-48
+  name: graph_key_hash
+- code:
+  - struct ov_runtime_context {
+  - '    std::mutex ov_compute_mutex;'
+  - '    std::string device;'
+  - '    bool stateful;'
+  - '    std::unordered_map<graph_key, std::shared_ptr<GgmlOvDecoder>, graph_key_hash>
+    decoder_cache;'
+  - '    std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash>
+    infer_request_cache;'
+  - '    std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash>
+    infer_request_cache_prefill;'
+  - '    std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_input_names_cache;'
+  - '    std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_output_names_cache;'
+  - '    //TODO: Stateful is only supported for single request at a time.'
+  - '    //      Simultanous stateful inference request support to be added.'
+  - '    size_t stateful_kv_size;'
+  - '    std::map<std::string, std::string> kv_state_input_name_map;'
+  - ''
+  - '    ov_runtime_context() :'
+  - '        device("CPU"),'
+  - '        stateful(false),'
+  - '        stateful_kv_size(0) {}'
+  - '};'
+  desc: OpenVINO运行时的上下文结构体，封装了设备信息、状态标志、以及用于存储解码器、推理请求和输入输出名称的缓存，并管理KV缓存的状态映射。
+  line: 50-68
+  name: ov_runtime_context
+- code:
+  - enum ggml_status ov_graph_compute(struct ggml_cgraph * cgraph, ggml_backend_t
+    backend);
+  desc: 声明一个全局函数，负责在给定的后端上执行一个ggml计算图，通常用于静态图或动态图的统一入口，返回执行状态。
+  line: 70-70
+  name: ov_graph_compute
+- code:
+  - enum ggml_status ov_graph_compute_dynamic(struct ggml_cgraph * cgraph, std::shared_ptr<ov_runtime_context>
+    r_ctx);
+  desc: 执行动态形状的ggml计算图，接收一个OpenVINO运行时上下文，并根据图中的动态张量进行推理计算。
+  line: 72-72
+  name: ov_graph_compute_dynamic
+- code:
+  - enum ggml_status ov_graph_compute_static(struct ggml_cgraph * cgraph, std::shared_ptr<ov_runtime_context>
+    r_ctx);
+  desc: 执行静态形状的ggml计算图，利用预构建的推理请求缓存来加速静态图的计算过程。
+  line: 73-73
+  name: ov_graph_compute_static
+- code:
+  - size_t checksum(const void * data, size_t size);
+  desc: 计算一段连续内存数据的校验和，用于检测数据是否被修改或用于缓存去重。
+  line: 75-75
+  name: checksum
+- code:
+  - void print_input_tensor_info(const std::string & name, const ov::Tensor & tensor);
+  desc: 打印单个输入张量的相关信息（如名称和形状），用于调试和日志记录。
+  line: 77-77
+  name: print_input_tensor_info
+- code:
+  - void print_output_tensor_info(const std::string & name, const ov::Tensor & tensor,
+    const void * output_dst);
+  desc: 打印单个输出张量的相关信息，并关联到目的内存地址，用于调试输出数据的流向。
+  line: 79-79
+  name: print_output_tensor_info
+- code:
+  - template <typename T>
+  - std::vector<T> pad_input(const T * data,
+  - '                         size_t rows,'
+  - '                         size_t cols,'
+  - '                         size_t padded_rows,'
+  - '                         size_t padded_cols,'
+  - '                         T pad_value) {'
+  - '    std::vector<T> padded(padded_rows * padded_cols, pad_value);'
+  - ''
+  - '    for (size_t i = 0; i < std::min(rows, padded_rows); ++i) {'
+  - '        for (size_t j = 0; j < std::min(cols, padded_cols); ++j) {'
+  - '            padded[i * padded_cols + j] = data[i * cols + j];'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return padded;'
+  - '}'
+  desc: 模板函数，将原始数据填充到指定的大小，用于在形状不匹配时将数据拷贝到更大的矩阵中，超出部分用给定值填充。
+  line: 81-96
+  name: pad_input
+- code:
+  - template <typename T>
+  - std::vector<T> pad_input(const ggml_tensor * tensor, size_t padded_rows, size_t
+    padded_cols, T pad_value) {
+  - '    return pad_input<T>(reinterpret_cast<const T *>(tensor->data),'
+  - '                        static_cast<size_t>(tensor->ne[1]),  // rows'
+  - '                        static_cast<size_t>(tensor->ne[0]),  // cols'
+  - '                        padded_rows, padded_cols, pad_value);'
+  - '}'
+  desc: 模板函数重载，直接接受ggml张量作为输入，自动提取其数据指针和维度，并调用基础版本完成填充操作。
+  line: 98-104
+  name: pad_input
+- code:
+  - void set_zero_diagonal(std::vector<float> & matrix, size_t rows, size_t cols);
+  desc: 将给定矩阵的对角线元素设置为零，常用于注意力掩码操作。
+  line: 106-106
+  name: set_zero_diagonal
+- code:
+  - const ggml_tensor * get_inp_pos_tensor(struct ggml_cgraph * cgraph);
+  desc: 从计算图中提取名为'inp_pos'的输入张量，用于获取位置信息。
+  line: 108-108
+  name: get_inp_pos_tensor
+- code:
+  - bool get_is_prefill(const ggml_tensor * inp_pos);
+  desc: 通过检查位置张量的值，判断当前阶段是预填充（prefill）还是解码（decode）阶段。
+  line: 110-110
+  name: get_is_prefill
+- code:
+  - ov::Tensor get_ov_input_tensor(std::shared_ptr<GgmlOvDecoder> ggml_decoder, const
+    std::string & param_name);
+  desc: 从给定的解码器中获取参数对应的输入张量，用于动态形状推理。
+  line: 112-112
+  name: get_ov_input_tensor
+- code:
+  - ov::Tensor get_ov_input_tensor_static_decode(std::shared_ptr<GgmlOvDecoder> ggml_decoder,
+  - '                                             const std::string & param_name);'
+  desc: 在静态解码阶段获取输入张量，使用特定的预处理逻辑。
+  line: 113-114
+  name: get_ov_input_tensor_static_decode
+- code:
+  - ov::Tensor get_ov_input_tensor_static_prefill(std::shared_ptr<GgmlOvDecoder> ggml_decoder,
+  - '                                              const std::string & param_name,'
+  - '                                              int chunk_index);'
+  desc: 在静态预填充阶段，针对特定的块索引获取输入张量，用于分块处理。
+  line: 115-117
+  name: get_ov_input_tensor_static_prefill
+- code:
+  - ov::Tensor create_ov_output_tensor(std::shared_ptr<GgmlOvDecoder> ggml_decoder,
+  - '                                   std::shared_ptr<ov::InferRequest> infer_request,'
+  - '                                   int output_index,'
+  - '                                   const ggml_tensor * ggml_tensor);'
+  desc: 根据推理请求的输出结果创建一个OpenVINO输出张量，并将其映射到ggml张量的内存区域。
+  line: 119-123
+  name: create_ov_output_tensor
+- code:
+  - bool is_naive(struct ggml_cgraph * cgraph);
+  desc: 判断给定的计算图是否采用朴素（naive）方式执行，即不经过复杂的优化路径。
+  line: 125-125
+  name: is_naive
+- code:
+  - enum ggml_status naive_compute(struct ggml_cgraph * cgraph,
+  - '                               ov::Core & core,'
+  - '                               const std::string & device,'
+  - '                               const ov::AnyMap & config);'
+  desc: 朴素计算入口，直接使用给定的OpenVINO核心和设备配置来执行计算图，用于简单或兜底场景。
+  line: 127-130
+  name: naive_compute

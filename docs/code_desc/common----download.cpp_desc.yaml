@@ -1,0 +1,497 @@
+classes:
+- desc: 用于在终端中显示并发文件下载进度的进度条类。
+  methods:
+  - code:
+    - 'ProgressBar(const std::string & url = "") : filename(url) {'
+    - '    if (auto pos = filename.rfind(''/''); pos != std::string::npos) {'
+    - '        filename = filename.substr(pos + 1);'
+    - '    }'
+    - '    if (auto pos = filename.find(''?''); pos != std::string::npos) {'
+    - '        filename = filename.substr(0, pos);'
+    - '    }'
+    - '    for (size_t i = 0; i < filename.size(); ++i) {'
+    - '        if ((filename[i] & 0xC0) != 0x80) {'
+    - '            if (len++ == 39) {'
+    - '                filename.resize(i);'
+    - '                filename += "…";'
+    - '                break;'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 初始化进度条并根据 URL 提取、截断待显示的文件名。
+    line: 74-92
+    name: ProgressBar
+  - code:
+    - ~ProgressBar() {
+    - '    std::lock_guard<std::mutex> lock(mutex);'
+    - '    cleanup(this);'
+    - '}'
+    desc: 销毁进度条并从共享进度条状态中移除当前实例。
+    line: 94-97
+    name: ~ProgressBar
+  - code:
+    - void update(size_t current, size_t total) {
+    - '    if (!total || !is_output_a_tty()) {'
+    - '        return;'
+    - '    }'
+    - '    std::lock_guard<std::mutex> lock(mutex);'
+    - '    if (lines.find(this) == lines.end()) {'
+    - '        lines[this] = max_line++;'
+    - '        std::cout << "\n";'
+    - '    }'
+    - '    int lines_up = max_line - lines[this];'
+    - '    size_t bar = 55 - len;'
+    - '    size_t pct = (100 * current) / total;'
+    - '    size_t pos = (bar * current) / total;'
+    - '    if (lines_up > 0) {'
+    - '        std::cout << "\033[" << lines_up << "A";'
+    - '    }'
+    - '    std::cout << ''\r'' << "Downloading " << filename << " ";'
+    - '    for (size_t i = 0; i < bar; ++i) {'
+    - '        std::cout << (i < pos ? "—" : " ");'
+    - '    }'
+    - '    std::cout << std::setw(4) << pct << "%\033[K";'
+    - '    if (lines_up > 0) {'
+    - '        std::cout << "\033[" << lines_up << "B";'
+    - '    }'
+    - '    std::cout << ''\r'' << std::flush;'
+    - '    if (current == total) {'
+    - '        cleanup(this);'
+    - '    }'
+    - '}'
+    desc: 根据当前下载量和总大小刷新终端中的下载进度条。
+    line: 99-132
+    name: update
+  - code:
+    - ProgressBar(const ProgressBar &) = delete;
+    desc: 禁用进度条对象的拷贝构造，避免共享状态被错误复制。
+    line: 134-134
+    name: ProgressBar
+  - code:
+    - ProgressBar & operator=(const ProgressBar &) = delete;
+    desc: 禁用进度条对象的拷贝赋值操作。
+    line: 135-135
+    name: operator=
+  name: ProgressBar
+desc: 该文件实现模型文件下载与缓存管理功能，支持普通 HTTP/HTTPS 文件下载、断点续传、ETag 校验、离线缓存、进度显示、Hugging Face
+  仓库模型及分片文件解析、mmproj 文件匹配、Docker Registry 模型解析与下载，并提供缓存模型列表查询能力。
+file: common/download.cpp
+funcs:
+- code:
+  - static void write_file(const std::string & fname, const std::string & content)
+    {
+  - '    const std::string fname_tmp = fname + ".tmp";'
+  - '    std::ofstream file(fname_tmp);'
+  - '    if (!file) {'
+  - '        throw std::runtime_error(...);'
+  - '    }'
+  - '    try {'
+  - '        file << content;'
+  - '        file.close();'
+  - '        if (rename(fname_tmp.c_str(), fname.c_str()) != 0) {'
+  - '            ...'
+  - '        }'
+  - '    } catch (...) {'
+  - '        ...'
+  - '        throw std::runtime_error(...);'
+  - '    }'
+  - '}'
+  desc: 将字符串内容写入临时文件并通过重命名实现原子替换。
+  line: 39-66
+  name: write_file
+- code:
+  - static void write_etag(const std::string & path, const std::string & etag) {
+  - '    const std::string etag_path = path + ".etag";'
+  - '    write_file(etag_path, etag);'
+  - '    LOG_DBG(...);'
+  - '}'
+  desc: 将远程文件的 ETag 写入对应的 .etag 文件。
+  line: 68-73
+  name: write_etag
+- code:
+  - static std::string read_etag(const std::string & path) {
+  - '    const std::string etag_path = path + ".etag";'
+  - '    if (!std::filesystem::exists(etag_path)) {'
+  - '        return {};'
+  - '    }'
+  - '    std::ifstream etag_in(etag_path);'
+  - '    if (!etag_in) {'
+  - '        return {};'
+  - '    }'
+  - '    std::string etag;'
+  - '    std::getline(etag_in, etag);'
+  - '    return etag;'
+  - '}'
+  desc: 读取本地文件对应的 .etag 文件内容。
+  line: 75-88
+  name: read_etag
+- code:
+  - static bool is_http_status_ok(int status) {
+  - '    return status >= 200 && status < 400;'
+  - '}'
+  desc: 判断 HTTP 状态码是否属于成功或重定向范围。
+  line: 90-92
+  name: is_http_status_ok
+- code:
+  - std::pair<std::string, std::string> common_download_split_repo_tag(const std::string
+    & hf_repo_with_tag) {
+  - '    auto parts = string_split<std::string>(hf_repo_with_tag, '':'');'
+  - '    std::string tag = parts.size() > 1 ? parts.back() : "";'
+  - '    std::string hf_repo = parts[0];'
+  - '    if (string_split<std::string>(hf_repo, ''/'').size() != 2) {'
+  - '        throw std::invalid_argument(...);'
+  - '    }'
+  - '    return {hf_repo, tag};'
+  - '}'
+  desc: 解析 Hugging Face 的 user/repo[:tag] 字符串并校验仓库格式。
+  line: 94-103
+  name: common_download_split_repo_tag
+- code:
+  - static bool common_pull_file(httplib::Client & cli,
+  - '                             const std::string & resolve_path,'
+  - '                             const std::string & path_tmp,'
+  - '                             bool supports_ranges,'
+  - '                             size_t existing_size,'
+  - '                             size_t & total_size) {'
+  - '    std::ofstream ofs(path_tmp, std::ios::binary | std::ios::app);'
+  - '    ...'
+  - '    if (supports_ranges && existing_size > 0) {'
+  - '        headers.emplace("Range", "bytes=" + std::to_string(existing_size) + "-");'
+  - '    }'
+  - '    auto res = cli.Get(...);'
+  - '    ...'
+  - '    return true;'
+  - '}'
+  desc: 通过 HTTP 流式下载文件，支持断点续传、响应校验和进度更新。
+  line: 137-207
+  name: common_pull_file
+- code:
+  - static int common_download_file_single_online(const std::string & url,
+  - '                                              const std::string & path,'
+  - '                                              const std::string & bearer_token,'
+  - '                                              const common_header_list & custom_headers,'
+  - '                                              bool skip_etag = false) {'
+  - '    ...'
+  - '    auto head = cli.Head(parts.path);'
+  - '    ...'
+  - '    if (file_exists && etag matches last_etag) {'
+  - '        return 304;'
+  - '    }'
+  - '    ...'
+  - '    for (int i = 0; i < max_attempts; ++i) {'
+  - '        ...'
+  - '        if (common_pull_file(...)) {'
+  - '            std::rename(path_temporary.c_str(), path.c_str());'
+  - '            ...'
+  - '            return head->status;'
+  - '        }'
+  - '    }'
+  - '    return -1;'
+  - '}'
+  desc: 在线下载单个文件，执行 HEAD 元数据检查、ETag 缓存判断、断点续传和失败重试。
+  line: 209-348
+  name: common_download_file_single_online
+- code:
+  - std::pair<long, std::vector<char>> common_remote_get_content(const std::string
+    & url,
+  - '                                                             const common_remote_params
+    & params) {'
+  - '    auto [cli, parts] = common_http_client(url);'
+  - '    ...'
+  - '    auto res = cli.Get(parts.path, headers,'
+  - '        [&](const char *data, size_t len) {'
+  - '            buf.insert(buf.end(), data, data + len);'
+  - '            return params.max_size == 0 || buf.size() <= ...;'
+  - '        },'
+  - '        nullptr'
+  - '    );'
+  - '    if (!res) {'
+  - '        throw std::runtime_error(...);'
+  - '    }'
+  - '    return { res->status, std::move(buf) };'
+  - '}'
+  desc: 发送 HTTP GET 请求并将响应体收集到字符数组中，同时支持请求头、超时和大小限制。
+  line: 350-384
+  name: common_remote_get_content
+- code:
+  - int common_download_file_single(const std::string & url,
+  - '                                const std::string & path,'
+  - '                                const std::string & bearer_token,'
+  - '                                bool offline,'
+  - '                                const common_header_list & headers,'
+  - '                                bool skip_etag) {'
+  - '    if (!offline) {'
+  - '        return common_download_file_single_online(url, path, bearer_token, headers,
+    skip_etag);'
+  - '    }'
+  - '    if (!std::filesystem::exists(path)) {'
+  - '        return -1;'
+  - '    }'
+  - '    return 304;'
+  - '}'
+  desc: 根据离线模式选择在线下载或验证并使用本地缓存文件。
+  line: 386-404
+  name: common_download_file_single
+- code:
+  - static gguf_split_info get_gguf_split_info(const std::string & path) {
+  - '    ...'
+  - '    if (!string_remove_suffix(prefix, ".gguf")) {'
+  - '        return {};'
+  - '    }'
+  - '    ...'
+  - '    if (std::regex_match(prefix, m, re_split)) {'
+  - '        index = std::stoi(m[2].str());'
+  - '        count = std::stoi(m[3].str());'
+  - '        prefix = m[1].str();'
+  - '    }'
+  - '    ...'
+  - '    return {std::move(prefix), std::move(tag), index, count};'
+  - '}'
+  desc: 解析 GGUF 文件名中的分片编号、分片总数、前缀和量化标签。
+  line: 412-443
+  name: get_gguf_split_info
+- code:
+  - static int extract_quant_bits(const std::string & filename) {
+  - '    auto split = get_gguf_split_info(filename);'
+  - '    auto pos = split.tag.find_first_of("0123456789");'
+  - '    if (pos == std::string::npos) {'
+  - '        return 0;'
+  - '    }'
+  - '    return std::stoi(split.tag.substr(pos));'
+  - '}'
+  desc: 从 GGUF 文件名的量化标签中提取量化位数。
+  line: 445-455
+  name: extract_quant_bits
+- code:
+  - static hf_cache::hf_files get_split_files(const hf_cache::hf_files & files,
+  - '                                          const hf_cache::hf_file & file) {'
+  - '    auto split = get_gguf_split_info(file.path);'
+  - '    if (split.count <= 1) {'
+  - '        return {file};'
+  - '    }'
+  - '    hf_cache::hf_files result;'
+  - '    for (const auto & f : files) {'
+  - '        auto split_f = get_gguf_split_info(f.path);'
+  - '        if (split_f.count == split.count && split_f.prefix == split.prefix) {'
+  - '            result.push_back(f);'
+  - '        }'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 根据指定 GGUF 文件查找同一模型的全部分片文件。
+  line: 457-474
+  name: get_split_files
+- code:
+  - static hf_cache::hf_file find_best_mmproj(const hf_cache::hf_files & files,
+  - '                                          const std::string & model) {'
+  - '    ...'
+  - '    for (const auto & f : files) {'
+  - '        if (!string_ends_with(f.path, ".gguf") ||'
+  - '            f.path.find("mmproj") == std::string::npos) {'
+  - '            continue;'
+  - '        }'
+  - '        ...'
+  - '        if (!found || depth > best_depth || (depth == best_depth && diff < best_diff))
+    {'
+  - '            best = f;'
+  - '            ...'
+  - '        }'
+  - '    }'
+  - '    return best;'
+  - '}'
+  desc: 根据模型目录层级和量化位数，为模型选择最匹配的 mmproj 文件。
+  line: 476-509
+  name: find_best_mmproj
+- code:
+  - static bool gguf_filename_is_model(const std::string & filepath) {
+  - '    if (!string_ends_with(filepath, ".gguf")) {'
+  - '        return false;'
+  - '    }'
+  - '    ...'
+  - '    return filename.find("mmproj") == std::string::npos &&'
+  - '           filename.find("imatrix") == std::string::npos;'
+  - '}'
+  desc: 判断指定路径是否为普通模型 GGUF 文件，而不是 mmproj 或 imatrix 文件。
+  line: 511-523
+  name: gguf_filename_is_model
+- code:
+  - static hf_cache::hf_file find_best_model(const hf_cache::hf_files & files,
+  - '                                         const std::string & tag) {'
+  - '    std::vector<std::string> tags;'
+  - '    if (!tag.empty()) {'
+  - '        tags.push_back(tag);'
+  - '    } else {'
+  - '        tags = {"Q4_K_M", "Q4_0"};'
+  - '    }'
+  - '    for (const auto & t : tags) {'
+  - '        std::regex pattern(t + "[.-]", std::regex::icase);'
+  - '        for (const auto & f : files) {'
+  - '            if (gguf_filename_is_model(f.path) && std::regex_search(f.path, pattern))
+    {'
+  - '                return f;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    ...'
+  - '    return {};'
+  - '}'
+  desc: 按照指定量化标签或默认优先级，从仓库文件中选择最佳模型文件。
+  line: 525-552
+  name: find_best_model
+- code:
+  - static void list_available_gguf_files(const hf_cache::hf_files & files) {
+  - '    LOG_INF("Available GGUF files:\n");'
+  - '    for (const auto & f : files) {'
+  - '        if (string_ends_with(f.path, ".gguf")) {'
+  - '            LOG_INF(" - %s\n", f.path.c_str());'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将仓库中可用的 GGUF 文件列表输出到日志。
+  line: 554-561
+  name: list_available_gguf_files
+- code:
+  - static hf_plan get_hf_plan(const common_params_model & model,
+  - '                           const std::string & token,'
+  - '                           const common_download_model_opts & opts) {'
+  - '    ...'
+  - '    auto [repo, tag] = common_download_split_repo_tag(model.hf_repo);'
+  - '    if (!opts.offline) {'
+  - '        all = hf_cache::get_repo_files(repo, token);'
+  - '    }'
+  - '    if (all.empty()) {'
+  - '        all = hf_cache::get_cached_files(repo);'
+  - '    }'
+  - '    ...'
+  - '    plan.model_files = get_split_files(all, primary);'
+  - '    if (opts.download_mmproj) {'
+  - '        plan.mmproj = find_best_mmproj(all, primary.path);'
+  - '    }'
+  - '    return plan;'
+  - '}'
+  desc: 为 Hugging Face 模型构建待下载计划，包括主模型分片和可选 mmproj 文件。
+  line: 563-613
+  name: get_hf_plan
+- code:
+  - static std::vector<download_task> get_url_tasks(const common_params_model & model)
+    {
+  - '    auto split = get_gguf_split_info(model.url);'
+  - '    if (split.count <= 1) {'
+  - '        return {{model.url, model.path}};'
+  - '    }'
+  - '    ...'
+  - '    for (int i = 1; i <= split.count; i++) {'
+  - '        auto suffix = string_format("-%05d-of-%05d.gguf", i, split.count);'
+  - '        tasks.push_back({split.prefix + suffix, prefix_path + suffix});'
+  - '    }'
+  - '    return tasks;'
+  - '}'
+  desc: 根据远程 GGUF URL 生成单文件或多分片文件的下载任务列表。
+  line: 619-641
+  name: get_url_tasks
+- code:
+  - common_download_model_result common_download_model(const common_params_model &
+    model,
+  - '                                                   const std::string & bearer_token,'
+  - '                                                   const common_download_model_opts
+    & opts,'
+  - '                                                   const common_header_list &
+    headers) {'
+  - '    ...'
+  - '    bool is_hf = !model.hf_repo.empty();'
+  - '    if (is_hf) {'
+  - '        hf = get_hf_plan(model, bearer_token, opts);'
+  - '        ...'
+  - '    } else if (!model.url.empty()) {'
+  - '        tasks = get_url_tasks(model);'
+  - '    } else {'
+  - '        result.model_path = model.path;'
+  - '        return result;'
+  - '    }'
+  - '    ...'
+  - '    for (const auto & task : tasks) {'
+  - '        futures.push_back(std::async(std::launch::async, ...));'
+  - '    }'
+  - '    ...'
+  - '    return result;'
+  - '}'
+  desc: 根据模型来源构建并发下载任务，下载模型及其附属文件，并返回最终本地路径。
+  line: 643-704
+  name: common_download_model
+- code:
+  - static std::string common_docker_get_token(const std::string & repo) {
+  - '    std::string url = "https://auth.docker.io/token?...";'
+  - '    common_remote_params params;'
+  - '    auto res = common_remote_get_content(url, params);'
+  - '    if (res.first != 200) {'
+  - '        throw std::runtime_error(...);'
+  - '    }'
+  - '    nlohmann::ordered_json response = nlohmann::ordered_json::parse(response_str);'
+  - '    if (!response.contains("token")) {'
+  - '        throw std::runtime_error(...);'
+  - '    }'
+  - '    return response["token"].get<std::string>();'
+  - '}'
+  desc: 向 Docker Registry 认证服务请求指定仓库的拉取令牌。
+  line: 710-727
+  name: common_docker_get_token
+- code:
+  - std::string common_docker_resolve_model(const std::string & docker) {
+  - '    size_t colon_pos = docker.find('':'');'
+  - '    ...'
+  - '    if (slash_pos == std::string::npos) {'
+  - '        repo.insert(0, "ai/");'
+  - '    }'
+  - '    try {'
+  - '        auto validate_oci_digest = [](const std::string & digest) -> std::string
+    {'
+  - '            ...'
+  - '        };'
+  - '        std::string token = common_docker_get_token(repo);'
+  - '        ...'
+  - '        auto manifest_res = common_remote_get_content(manifest_url, manifest_params);'
+  - '        ...'
+  - '        if (manifest.contains("layers")) {'
+  - '            for (const auto & layer : manifest["layers"]) {'
+  - '                ...'
+  - '                if (media_type == "application/vnd.docker.ai.gguf.v3" ||'
+  - '                    media_type.find("gguf") != std::string::npos) {'
+  - '                    gguf_digest = layer["digest"].get<std::string>();'
+  - '                    break;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        ...'
+  - '        auto http_status = common_download_file_single(blob_url, local_path,
+    token, false, {});'
+  - '        ...'
+  - '        return local_path;'
+  - '    } catch (const std::exception & e) {'
+  - '        ...'
+  - '        throw;'
+  - '    }'
+  - '}'
+  desc: 解析 Docker 模型引用，获取 OCI manifest 中的 GGUF 层，校验 digest 并下载模型到本地缓存。
+  line: 729-820
+  name: common_docker_resolve_model
+- code:
+  - std::vector<common_cached_model_info> common_list_cached_models() {
+  - '    std::unordered_set<std::string> seen;'
+  - '    std::vector<common_cached_model_info> result;'
+  - '    auto files = hf_cache::get_cached_files();'
+  - '    for (const auto & f : files) {'
+  - '        auto split = get_gguf_split_info(f.path);'
+  - '        if (split.index != 1 || split.tag.empty() ||'
+  - '            split.prefix.find("mmproj") != std::string::npos) {'
+  - '            continue;'
+  - '        }'
+  - '        if (seen.insert(f.repo_id + ":" + split.tag).second) {'
+  - '            result.push_back({f.repo_id, split.tag});'
+  - '        }'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 扫描 Hugging Face 缓存文件并按仓库和量化标签汇总可用模型列表。
+  line: 822-839
+  name: common_list_cached_models

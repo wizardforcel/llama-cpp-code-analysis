@@ -1,0 +1,991 @@
+classes:
+- desc: 用于测量代码执行耗时并将结果累加到指定计时变量的计时辅助类。
+  methods:
+  - code:
+    - 'common_time_meas::common_time_meas(int64_t & t_acc, bool disable) : t_start_us(disable
+      ? -1 : ggml_time_us()), t_acc(t_acc) {}'
+    desc: 构造计时器并记录开始时间，或根据禁用标志跳过计时。
+    line: 47-47
+    name: common_time_meas
+  - code:
+    - common_time_meas::~common_time_meas() {
+    - '    if (t_start_us >= 0) {'
+    - '        t_acc += ggml_time_us() - t_start_us;'
+    - '    }'
+    - '}'
+    desc: 析构时将本次计时结果累加到目标变量。
+    line: 49-54
+    name: ~common_time_meas
+  name: common_time_meas
+- desc: common_init_result的Pimpl实现类，持有模型、上下文、LoRA适配器和采样器的资源句柄，并确保按正确的顺序销毁。
+  methods:
+  - code:
+    - impl() = default;
+    desc: 默认构造函数，使用默认成员初始化。
+    line: 1117-1117
+    name: impl
+  - code:
+    - ~impl() = default;
+    desc: 默认析构函数，按成员声明逆序释放资源。
+    line: 1118-1118
+    name: ~impl
+  name: common_init_result::impl
+- desc: 管理llama模型和上下文的初始化结果，包括资源申请、采样器初始化、LoRA适配器加载以及各种查询和重置接口。
+  methods:
+  - code:
+    - 'common_init_result::common_init_result(common_params & params) :'
+    - '    pimpl(new impl{}) {'
+    - '    auto mparams = common_model_params_to_llama(params);'
+    - '    auto cparams = common_context_params_to_llama(params);'
+    - '    ...'
+    - '    pimpl->model.reset(model);'
+    - '    ...'
+    - '    llama_context * lctx = llama_init_from_model(model, cparams);'
+    - '    ...'
+    - '    pimpl->context.reset(lctx);'
+    - '}'
+    desc: 构造函数：根据提供的参数加载模型、创建上下文、初始化采样器，并处理LoRA适配器和采样参数的设置。
+    line: 1150-1227
+    name: common_init_result
+  - code:
+    - llama_model * common_init_result::model() {
+    - '    return pimpl->model.get();'
+    - '}'
+    desc: 返回持有的llama模型指针。
+    line: 1229-1231
+    name: model
+  - code:
+    - llama_context * common_init_result::context() {
+    - '    return pimpl->context.get();'
+    - '}'
+    desc: 返回持有的llama上下文指针。
+    line: 1233-1235
+    name: context
+  - code:
+    - common_sampler * common_init_result::sampler(llama_seq_id seq_id) {
+    - '    if (seq_id < 0 || seq_id >= (int) pimpl->samplers.size()) {'
+    - '        return nullptr;'
+    - '    }'
+    - '    return pimpl->samplers[seq_id].get();'
+    - '}'
+    desc: 根据序列ID获取对应的采样器指针，如果ID无效则返回nullptr。
+    line: 1237-1242
+    name: sampler
+  - code:
+    - void common_init_result::reset_samplers() {
+    - '    for (int i = 0; i < (int) pimpl->samplers.size(); ++i) {'
+    - '        llama_sampler_reset(common_sampler_get(pimpl->samplers[i].get()));'
+    - '    }'
+    - '}'
+    desc: 重置所有已初始化的采样器，以恢复其初始状态（如RNG状态）。
+    line: 1244-1248
+    name: reset_samplers
+  - code:
+    - std::vector<llama_adapter_lora_ptr> & common_init_result::lora() {
+    - '    return pimpl->lora;'
+    - '}'
+    desc: 返回加载的LoRA适配器指针列表的引用。
+    line: 1250-1252
+    name: lora
+  - code:
+    - common_init_result::~common_init_result() = default;
+    desc: 默认析构函数。
+    line: 1298-1298
+    name: ~common_init_result
+  name: common_init_result
+- desc: 学习率优化器，根据初始学习率、最小学习率、周期数等参数，计算随时间变化的学习率。
+  methods:
+  - code:
+    - void lr_opt::init() {
+    - '    if (lr_min > 0 && lr_min < lr0) {'
+    - '        float nhalf = std::log(lr0 / lr_min) / k_log_2;'
+    - '        float e     = epochs;'
+    - '        if (decay_epochs > 0 && decay_epochs < e) {'
+    - '            e = decay_epochs;'
+    - '        } else {'
+    - '            decay_epochs = e;'
+    - '        }'
+    - '        scale_epoch = nhalf / e;'
+    - '    }'
+    - '}'
+    desc: 初始化优化器的内部参数，如计算衰减的比例因子。
+    line: 1398-1409
+    name: init
+  - code:
+    - float lr_opt::get_lr(float epoch) const {
+    - '    float r = lr_min <= 0 ? lr0 :'
+    - '        epoch >= decay_epochs ? lr_min :'
+    - '        lr0 * std::pow(0.5f, epoch * scale_epoch);'
+    - '    LOG_INF("epoch %.2g lr=%.2g\n", epoch, r);'
+    - '    return r;'
+    - '}'
+    desc: 根据给定的epoch计算并返回当前学习率。
+    line: 1411-1417
+    name: get_lr
+  name: lr_opt
+desc: 该文件是 llama.cpp 公共工具实现模块，提供 CPU 核心与数学线程数检测、进程优先级设置、CPU 参数与掩码解析、初始化与系统信息查询、字符串处理、通配符匹配、文件名校验、目录与缓存管理、文件系统遍历、TTY
+  颜色检测以及从模型元数据初始化采样参数等基础能力，并针对 Linux、macOS、Windows 等平台提供条件编译实现。这个C++文件提供了llama.cpp推理引擎的通用初始化、配置、批处理、分词、嵌入、控制向量以及学习率优化等高级功能，是构建llama模型应用的重要基础设施。
+file: common/common.cpp
+funcs:
+- code:
+  - int32_t cpu_get_num_physical_cores() {
+  - '    // 根据 Linux、macOS 或 Windows 平台分别检测物理核心数'
+  - '    // 无法直接检测时使用硬件并发数估算'
+  - '}'
+  desc: 检测系统物理 CPU 核心数量，并在无法获取时根据硬件并发数估算。
+  line: 60-111
+  name: cpu_get_num_physical_cores
+- code:
+  - static void cpuid(unsigned leaf, unsigned subleaf,
+  - '                  unsigned *eax, unsigned *ebx, unsigned *ecx, unsigned *edx)
+    {'
+  - '    __asm__("movq\t%%rbx,%%rsi\n\t"'
+  - '            "cpuid\n\t"'
+  - '            "xchgq\t%%rbx,%%rsi"'
+  - '            : "=a"(*eax), "=S"(*ebx), "=c"(*ecx), "=d"(*edx)'
+  - '            : "0"(leaf), "2"(subleaf));'
+  - '}'
+  desc: 在 x86 Linux 平台执行 CPUID 指令并返回寄存器结果。
+  line: 116-125
+  name: cpuid
+- code:
+  - static int pin_cpu(int cpu) {
+  - '    cpu_set_t mask;'
+  - '    CPU_ZERO(&mask);'
+  - '    CPU_SET(cpu, &mask);'
+  - '    return pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);'
+  - '}'
+  desc: 将当前线程绑定到指定 CPU。
+  line: 127-133
+  name: pin_cpu
+- code:
+  - static bool is_hybrid_cpu(void) {
+  - '    unsigned eax, ebx, ecx, edx;'
+  - '    cpuid(7, 0, &eax, &ebx, &ecx, &edx);'
+  - '    return !!(edx & (1u << 15));'
+  - '}'
+  desc: 检测当前 x86 CPU 是否为混合架构 CPU。
+  line: 135-140
+  name: is_hybrid_cpu
+- code:
+  - static bool is_running_on_efficiency_core(void) {
+  - '    unsigned eax, ebx, ecx, edx;'
+  - '    cpuid(0x1a, 0, &eax, &ebx, &ecx, &edx);'
+  - '    int intel_atom = 0x20;'
+  - '    int core_type = (eax & 0xff000000u) >> 24;'
+  - '    return core_type == intel_atom;'
+  - '}'
+  desc: 检测当前线程是否运行在 Intel 能效核心上。
+  line: 142-149
+  name: is_running_on_efficiency_core
+- code:
+  - static int cpu_count_math_cpus(int n_cpu) {
+  - '    int result = 0;'
+  - '    for (int cpu = 0; cpu < n_cpu; ++cpu) {'
+  - '        if (pin_cpu(cpu)) {'
+  - '            return -1;'
+  - '        }'
+  - '        if (is_running_on_efficiency_core()) {'
+  - '            continue;'
+  - '        }'
+  - '        ++cpu;'
+  - '        ++result;'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 统计适合数学计算的 CPU 数量，避开能效核心并减少超线程影响。
+  line: 151-165
+  name: cpu_count_math_cpus
+- code:
+  - int32_t cpu_get_num_math() {
+  - '    // 在混合 CPU 上检测并过滤能效核心和超线程'
+  - '    // 其他平台回退到物理核心数量'
+  - '}'
+  desc: 获取适合数学运算和线性代数计算的 CPU 数量。
+  line: 172-193
+  name: cpu_get_num_math
+- code:
+  - bool set_process_priority(enum ggml_sched_priority prio) {
+  - '    if (prio == GGML_SCHED_PRIO_NORMAL) {'
+  - '        return true;'
+  - '    }'
+  - '    // Windows 使用 SetPriorityClass，POSIX 使用 setpriority'
+  - '    // 设置失败时记录日志并返回 false'
+  - '}'
+  desc: 根据平台和优先级枚举设置当前进程优先级。
+  line: 201-229
+  name: set_process_priority
+- code:
+  - void postprocess_cpu_params(cpu_params& cpuparams, const cpu_params* role_model)
+    {
+  - '    int32_t n_set = 0;'
+  - '    if (cpuparams.n_threads < 0) {'
+  - '        if (role_model != nullptr) {'
+  - '            cpuparams = *role_model;'
+  - '        } else {'
+  - '            cpuparams.n_threads = cpu_get_num_math();'
+  - '        }'
+  - '    }'
+  - '    for (int32_t i = 0; i < GGML_MAX_N_THREADS; i++) {'
+  - '        if (cpuparams.cpumask[i]) {'
+  - '            n_set++;'
+  - '        }'
+  - '    }'
+  - '    if (n_set && n_set < cpuparams.n_threads) {'
+  - '        LOG_WRN("Not enough set bits in CPU mask...\n");'
+  - '    }'
+  - '}'
+  desc: 补全 CPU 参数默认值并检查 CPU 掩码与线程数是否匹配。
+  line: 237-258
+  name: postprocess_cpu_params
+- code:
+  - bool parse_cpu_range(const std::string & range, bool (&boolmask)[GGML_MAX_N_THREADS])
+    {
+  - '    // 解析起始和结束索引，校验边界后设置范围内的掩码位'
+  - '    // 格式或索引非法时返回 false'
+  - '}'
+  desc: 将形如 start-end 的 CPU 范围解析并写入布尔 CPU 掩码。
+  line: 260-297
+  name: parse_cpu_range
+- code:
+  - bool parse_cpu_mask(const std::string & mask, bool (&boolmask)[GGML_MAX_N_THREADS])
+    {
+  - '    // 移除可选的 0x 前缀'
+  - '    // 将每个十六进制字符转换为四个 CPU 掩码位'
+  - '    // 遇到非法字符时返回 false'
+  - '}'
+  desc: 解析十六进制 CPU 掩码字符串并转换为布尔数组。
+  line: 299-338
+  name: parse_cpu_mask
+- code:
+  - void common_init() {
+  - '#if defined(_WIN32)'
+  - '    SetConsoleOutputCP(CP_UTF8);'
+  - '    SetConsoleCP(CP_UTF8);'
+  - '#endif'
+  - '    llama_log_set(common_log_default_callback, NULL);'
+  - '    LOG_DBG("build: ...\n", ...);'
+  - '}'
+  desc: 初始化公共运行环境、日志回调和平台控制台编码，并输出构建信息。
+  line: 340-357
+  name: common_init
+- code:
+  - std::string common_params_get_system_info(const common_params & params) {
+  - '    std::ostringstream os;'
+  - '    os << "system_info: n_threads = " << params.cpuparams.n_threads;'
+  - '    // 添加批处理线程数、逻辑处理器数量和 llama 系统信息'
+  - '    return os.str();'
+  - '}'
+  desc: 根据公共参数生成包含线程数、硬件并发数和 llama 系统信息的描述字符串。
+  line: 359-376
+  name: common_params_get_system_info
+- code:
+  - std::string string_format(const char * fmt, ...) {
+  - '    va_list ap;'
+  - '    va_list ap2;'
+  - '    va_start(ap, fmt);'
+  - '    va_copy(ap2, ap);'
+  - '    int size = vsnprintf(NULL, 0, fmt, ap);'
+  - '    std::vector<char> buf(size + 1);'
+  - '    vsnprintf(buf.data(), size + 1, fmt, ap2);'
+  - '    va_end(ap2);'
+  - '    va_end(ap);'
+  - '    return std::string(buf.data(), size);'
+  - '}'
+  desc: 使用 printf 风格格式字符串生成 std::string。
+  line: 382-395
+  name: string_format
+- code:
+  - std::string string_strip(const std::string & str) {
+  - '    size_t start = 0;'
+  - '    size_t end = str.size();'
+  - '    while (start < end && std::isspace(str[start])) start++;'
+  - '    while (end > start && std::isspace(str[end - 1])) end--;'
+  - '    return str.substr(start, end - start);'
+  - '}'
+  desc: 去除字符串首尾的空白字符。
+  line: 397-407
+  name: string_strip
+- code:
+  - std::string string_get_sortable_timestamp() {
+  - '    // 获取当前系统时间'
+  - '    // 按 YYYY_MM_DD-HH_MM_SS.NNNNNNNNN 格式拼接时间戳'
+  - '    return std::string(timestamp_no_ns) + "." + std::string(timestamp_ns);'
+  - '}'
+  desc: 生成包含日期、时间和纳秒部分的可排序时间戳字符串。
+  line: 409-426
+  name: string_get_sortable_timestamp
+- code:
+  - void string_replace_all(std::string & s, const std::string & search, const std::string
+    & replace) {
+  - '    if (search.empty()) return;'
+  - '    std::string builder;'
+  - '    builder.reserve(s.length());'
+  - '    // 遍历所有匹配位置并构造替换后的字符串'
+  - '    s = std::move(builder);'
+  - '}'
+  desc: 将字符串中所有指定子串替换为目标字符串。
+  line: 428-445
+  name: string_replace_all
+- code:
+  - std::string regex_escape(const std::string & s) {
+  - '    static const std::regex special_chars("[.^$|()*+?\\[\\]{}\\\\]");'
+  - '    return std::regex_replace(s, special_chars, "\\$&");'
+  - '}'
+  desc: 转义正则表达式中的特殊字符。
+  line: 447-450
+  name: regex_escape
+- code:
+  - std::string string_join(const std::vector<std::string> & values, const std::string
+    & separator) {
+  - '    std::ostringstream result;'
+  - '    for (size_t i = 0; i < values.size(); ++i) {'
+  - '        if (i > 0) result << separator;'
+  - '        result << values[i];'
+  - '    }'
+  - '    return result.str();'
+  - '}'
+  desc: 使用指定分隔符连接字符串数组。
+  line: 452-461
+  name: string_join
+- code:
+  - std::vector<std::string> string_split(const std::string & str, const std::string
+    & delimiter) {
+  - '    std::vector<std::string> parts;'
+  - '    // 循环查找分隔符并提取各个片段'
+  - '    parts.push_back(str.substr(start));'
+  - '    return parts;'
+  - '}'
+  desc: 按照指定分隔符拆分字符串并返回子字符串数组。
+  line: 463-478
+  name: string_split
+- code:
+  - std::string string_repeat(const std::string & str, size_t n) {
+  - '    if (n == 0) return "";'
+  - '    std::string result;'
+  - '    result.reserve(str.length() * n);'
+  - '    for (size_t i = 0; i < n; ++i) result += str;'
+  - '    return result;'
+  - '}'
+  desc: 将指定字符串重复拼接指定次数。
+  line: 480-491
+  name: string_repeat
+- code:
+  - std::string string_from(bool value) {
+  - '    return value ? "true" : "false";'
+  - '}'
+  desc: 将布尔值转换为 true 或 false 字符串。
+  line: 493-495
+  name: string_from
+- code:
+  - std::string string_from(const std::vector<int> & values) {
+  - '    std::stringstream buf;'
+  - '    buf << "[ ";'
+  - '    // 输出所有整数并使用逗号分隔'
+  - '    buf << " ]";'
+  - '    return buf.str();'
+  - '}'
+  desc: 将整数向量格式化为带方括号的逗号分隔字符串。
+  line: 497-514
+  name: string_from
+- code:
+  - std::string string_from(const struct llama_context * ctx, const std::vector<llama_token>
+    & tokens) {
+  - '    std::stringstream buf;'
+  - '    // 对 token 逐个反解码并输出文本与 ID'
+  - '    return buf.str();'
+  - '}'
+  desc: 将 token 向量转换为同时包含文本片段和 token ID 的可读字符串。
+  line: 516-538
+  name: string_from
+- code:
+  - std::string string_from(const struct llama_context * ctx, const struct llama_batch
+    & batch) {
+  - '    std::stringstream buf;'
+  - '    // 遍历 batch 中的 token 并输出详细元数据'
+  - '    return buf.str();'
+  - '}'
+  desc: 将 llama batch 内容格式化为包含位置、序列和 logits 信息的字符串。
+  line: 540-567
+  name: string_from
+- code:
+  - void string_process_escapes(std::string & input) {
+  - '    // 将 \n、\r、\t、引号、反斜杠和 \xNN 转换为实际字符'
+  - '    // 未知转义保留反斜杠'
+  - '    input.resize(output_idx);'
+  - '}'
+  desc: 处理字符串中的常见反斜杠转义和十六进制转义。
+  line: 569-607
+  name: string_process_escapes
+- code:
+  - bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_override>
+    & overrides) {
+  - '    // 分离键和值'
+  - '    // 支持 int、float、bool 和 str 类型'
+  - '    // 校验格式后加入 overrides'
+  - '    return true;'
+  - '}'
+  desc: 解析 key=type:value 格式的模型元数据覆盖项并追加到覆盖列表。
+  line: 609-655
+  name: string_parse_kv_override
+- code:
+  - static inline bool glob_class_match(const char c, const char * pattern, const
+    char * class_end) {
+  - '    // 解析字符类是否取反'
+  - '    // 匹配字面字符或字符范围'
+  - '    return negated ? !matched : matched;'
+  - '}'
+  desc: 匹配 glob 字符类，包括取反、单字符和字符范围。
+  line: 657-696
+  name: glob_class_match
+- code:
+  - static inline bool glob_match(const char * pattern, const char * str) {
+  - '    // ** 可匹配任意字符，* 和 ? 不跨目录分隔符'
+  - '    // [] 支持字符类匹配'
+  - '    return false;'
+  - '}'
+  desc: 递归匹配支持 *、**、? 和 [] 的简单 glob 模式。
+  line: 699-745
+  name: glob_match
+- code:
+  - bool glob_match(const std::string & pattern, const std::string & str) {
+  - '    return glob_match(pattern.c_str(), str.c_str());'
+  - '}'
+  desc: 匹配 std::string 形式的 glob 模式和目标字符串。
+  line: 747-749
+  name: glob_match
+- code:
+  - bool fs_validate_filename(const std::string & filename, bool allow_subdirs) {
+  - '    // 检查空值、长度、UTF-8 编码和非法 Unicode 字符'
+  - '    // 检查路径分隔符、首尾空格、点号和目录遍历片段'
+  - '    return true;'
+  - '}'
+  desc: 验证文件名或路径片段是否符合安全的 Unicode、长度和非法字符规则。
+  line: 756-824
+  name: fs_validate_filename
+- code:
+  - static std::wstring utf8_to_wstring(const std::string & str) {
+  - '    if (str.empty()) return std::wstring();'
+  - '    int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(),
+    NULL, 0);'
+  - '    if (size <= 0) return std::wstring();'
+  - '    std::wstring wstr(size, 0);'
+  - '    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size);'
+  - '    return wstr;'
+  - '}'
+  desc: 在 Windows 平台将 UTF-8 字符串转换为宽字符串。
+  line: 830-846
+  name: utf8_to_wstring
+- code:
+  - bool fs_create_directory_with_parents(const std::string & path) {
+  - '    // Windows 使用 CreateDirectoryW'
+  - '    // POSIX 使用 stat 和 mkdir'
+  - '    // 已存在但不是目录时返回 false'
+  - '}'
+  desc: 递归创建目录路径中的父目录，并确认已存在路径均为目录。
+  line: 850-918
+  name: fs_create_directory_with_parents
+- code:
+  - bool fs_is_directory(const std::string & path) {
+  - '    std::filesystem::path dir(path);'
+  - '    return std::filesystem::exists(dir) && std::filesystem::is_directory(dir);'
+  - '}'
+  desc: 判断指定路径是否存在且为目录。
+  line: 920-923
+  name: fs_is_directory
+- code:
+  - std::string fs_get_cache_directory() {
+  - '    // 优先使用 LLAMA_CACHE'
+  - '    // 其次根据 XDG_CACHE_HOME、HOME、LOCALAPPDATA 等平台变量确定目录'
+  - '    // 追加 llama.cpp 子目录并保证尾部分隔符'
+  - '}'
+  desc: 根据环境变量和平台约定获取 llama.cpp 缓存目录，并确保末尾带路径分隔符。
+  line: 925-967
+  name: fs_get_cache_directory
+- code:
+  - std::string fs_get_cache_file(const std::string & filename) {
+  - '    GGML_ASSERT(filename.find(DIRECTORY_SEPARATOR) == std::string::npos);'
+  - '    std::string cache_directory = fs_get_cache_directory();'
+  - '    const bool success = fs_create_directory_with_parents(cache_directory);'
+  - '    if (!success) {'
+  - '        throw std::runtime_error("failed to create cache directory: " + cache_directory);'
+  - '    }'
+  - '    return cache_directory + filename;'
+  - '}'
+  desc: 创建缓存目录并返回指定缓存文件的完整路径。
+  line: 969-978
+  name: fs_get_cache_file
+- code:
+  - std::vector<common_file_info> fs_list(const std::string & path, bool include_directories)
+    {
+  - '    std::vector<common_file_info> files;'
+  - '    // 检查目录有效性'
+  - '    // 遍历目录项并收集文件或目录信息'
+  - '    return files;'
+  - '}'
+  desc: 遍历目录并返回普通文件及可选目录的名称、路径、大小和类型信息。
+  line: 980-1018
+  name: fs_list
+- code:
+  - bool tty_can_use_colors() {
+  - '    // 尊重 NO_COLOR 和 TERM=dumb 设置'
+  - '    // 检查标准输出和标准错误是否连接到终端'
+  - '    return stdout_is_tty || stderr_is_tty;'
+  - '}'
+  desc: 判断当前终端是否适合输出彩色文本。
+  line: 1024-1042
+  name: tty_can_use_colors
+- code:
+  - static void common_init_sampler_from_model(
+  - '    const llama_model * model,'
+  - '    common_params_sampling & sparams) {'
+  - '    // 根据用户配置位决定是否读取模型中的默认值'
+  - '    // 读取采样器序列、top_k、top_p、min_p 等参数'
+  - '}'
+  desc: 从模型元数据中读取采样器序列及采样参数，并仅填充用户未显式指定的配置。
+  line: 1048-1083
+  name: common_init_sampler_from_model
+- code:
+  - void common_init_sampler_from_model(struct llama_model * model, common_sampler_params
+    & sparams) {
+  - '    const auto get_float = [&](const char * key, float & value, int config) {'
+  - '        ...'
+  - '    };'
+  - '    const auto get_int32 = [&](const char * key, int32_t & value, int config)
+    {'
+  - '        ...'
+  - '    };'
+  - '    get_int32(...);'
+  - '    get_float(...);'
+  - '    ...'
+  - '}'
+  desc: 从模型元数据中读取采样参数并应用到采样参数结构体。
+  line: 1116-1154
+  name: common_init_sampler_from_model
+- code:
+  - common_init_result_ptr common_init_from_params(common_params & params) {
+  - '    common_init_result_ptr res(new common_init_result(params));'
+  - '    ...'
+  - '    if (!params.control_vectors.empty()) {'
+  - '        ...'
+  - '    }'
+  - '    if (llama_pooling_type(lctx) == LLAMA_POOLING_TYPE_RANK) {'
+  - '        ...'
+  - '    }'
+  - '    if (!params.lora_init_without_apply) {'
+  - '        common_set_adapter_lora(lctx, params.lora_adapters);'
+  - '    }'
+  - '    if (params.warmup) {'
+  - '        ...'
+  - '    }'
+  - '    return res;'
+  - '}'
+  desc: 根据用户参数完成初始化后的收尾工作，如检查KV缓存位移能力、加载控制向量、检查rerank配置、执行warmup等。
+  line: 1254-1297
+  name: common_init_from_params
+- code:
+  - std::string get_model_endpoint() {
+  - '    const char * model_endpoint_env = getenv("MODEL_ENDPOINT");'
+  - '    const char * hf_endpoint_env = getenv("HF_ENDPOINT");'
+  - '    const char * endpoint_env = model_endpoint_env ? model_endpoint_env : hf_endpoint_env;'
+  - '    std::string model_endpoint = "https://huggingface.co/";'
+  - '    if (endpoint_env) {'
+  - '        model_endpoint = endpoint_env;'
+  - '        if (model_endpoint.back() != ''/'') {'
+  - '            model_endpoint += ''/'';'
+  - '        }'
+  - '    }'
+  - '    return model_endpoint;'
+  - '}'
+  desc: 获取模型下载的端点URL，优先使用环境变量MODEL_ENDPOINT，其次为HF_ENDPOINT。
+  line: 1300-1312
+  name: get_model_endpoint
+- code:
+  - void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info>
+    & lora) {
+  - '    std::vector<llama_adapter_lora *> loras;'
+  - '    std::vector<float> scales;'
+  - '    for (auto & la: lora) {'
+  - '        loras.push_back(la.ptr);'
+  - '        scales.push_back(la.scale);'
+  - '    }'
+  - '    llama_set_adapters_lora(ctx, loras.data(), loras.size(), scales.data());'
+  - '}'
+  desc: 将LoRA适配器列表及其缩放系数应用到指定的llama上下文。
+  line: 1314-1323
+  name: common_set_adapter_lora
+- code:
+  - struct llama_model_params common_model_params_to_llama(common_params & params)
+    {
+  - '    auto mparams = llama_model_default_params();'
+  - '    if (!params.devices.empty()) {'
+  - '        mparams.devices = params.devices.data();'
+  - '    }'
+  - '    mparams.n_gpu_layers    = params.n_gpu_layers;'
+  - '    mparams.main_gpu        = params.main_gpu;'
+  - '    ...'
+  - '    mparams.progress_callback           = params.load_progress_callback;'
+  - '    mparams.progress_callback_user_data = params.load_progress_callback_user_data;'
+  - '    mparams.no_alloc                    = params.no_alloc;'
+  - '    return mparams;'
+  - '}'
+  desc: 将通用的模型参数结构体转换为llama库的模型参数结构体。
+  line: 1325-1352
+  name: common_model_params_to_llama
+- code:
+  - struct llama_context_params common_context_params_to_llama(const common_params
+    & params) {
+  - '    auto cparams = llama_context_default_params();'
+  - '    cparams.n_ctx             = params.n_ctx;'
+  - '    cparams.n_seq_max         = params.n_parallel;'
+  - '    cparams.n_batch           = params.n_batch;'
+  - '    ...'
+  - '    cparams.type_k = params.cache_type_k;'
+  - '    cparams.type_v = params.cache_type_v;'
+  - '    return cparams;'
+  - '}'
+  desc: 将通用的上下文参数结构体转换为llama库的上下文参数结构体。
+  line: 1354-1383
+  name: common_context_params_to_llama
+- code:
+  - struct ggml_threadpool_params ggml_threadpool_params_from_cpu_params(const cpu_params
+    & params) {
+  - '    struct ggml_threadpool_params tpp;'
+  - '    ggml_threadpool_params_init(&tpp, params.n_threads);'
+  - '    if (params.mask_valid) {'
+  - '        std::memcpy(&tpp.cpumask, &params.cpumask, GGML_MAX_N_THREADS);'
+  - '    }'
+  - '    tpp.prio       = params.priority;'
+  - '    tpp.poll       = params.poll;'
+  - '    tpp.strict_cpu = params.strict_cpu;'
+  - '    return tpp;'
+  - '}'
+  desc: 从CPU参数创建ggml线程池参数。
+  line: 1385-1395
+  name: ggml_threadpool_params_from_cpu_params
+- code:
+  - void common_batch_clear(struct llama_batch & batch) {
+  - '    batch.n_tokens = 0;'
+  - '}'
+  desc: 清空llama批处理中的token数量。
+  line: 1407-1409
+  name: common_batch_clear
+- code:
+  - void common_batch_add(
+  - '                 struct llama_batch & batch,'
+  - '                        llama_token   id,'
+  - '                          llama_pos   pos,'
+  - '    const std::vector<llama_seq_id> & seq_ids,'
+  - '                               bool   logits) {'
+  - '    GGML_ASSERT(batch.seq_id[batch.n_tokens] && "llama_batch size exceeded");'
+  - '    batch.token   [batch.n_tokens] = id;'
+  - '    batch.pos     [batch.n_tokens] = pos;'
+  - '    batch.n_seq_id[batch.n_tokens] = seq_ids.size();'
+  - '    for (size_t i = 0; i < seq_ids.size(); ++i) {'
+  - '        batch.seq_id[batch.n_tokens][i] = seq_ids[i];'
+  - '    }'
+  - '    batch.logits  [batch.n_tokens] = logits;'
+  - '    batch.n_tokens++;'
+  - '}'
+  desc: 向llama批处理中添加一个token及其相关位置、序列ID和logits标志。
+  line: 1411-1426
+  name: common_batch_add
+- code:
+  - std::vector<llama_token> common_tokenize(
+  - '  const struct llama_context * ctx,'
+  - '           const std::string & text,'
+  - '                        bool   add_special,'
+  - '                        bool   parse_special) {'
+  - '    const llama_model * model = llama_get_model(ctx);'
+  - '    const llama_vocab * vocab = llama_model_get_vocab(model);'
+  - '    return common_tokenize(vocab, text, add_special, parse_special);'
+  - '}'
+  desc: 使用llama上下文对文本进行分词，返回token向量。
+  line: 1430-1437
+  name: common_tokenize
+- code:
+  - std::vector<llama_token> common_tokenize(
+  - '    const struct llama_vocab * vocab,'
+  - '           const std::string & text,'
+  - '                        bool   add_special,'
+  - '                        bool   parse_special) {'
+  - '    int n_tokens = text.length() + 2 * add_special;'
+  - '    std::vector<llama_token> result(n_tokens);'
+  - '    n_tokens = llama_tokenize(vocab, text.data(), text.length(), result.data(),
+    result.size(), add_special, parse_special);'
+  - '    if (n_tokens == std::numeric_limits<int32_t>::min()) {'
+  - '        throw std::runtime_error("Tokenization failed: input text too large,
+    tokenization result exceeds int32_t limit");'
+  - '    }'
+  - '    if (n_tokens < 0) {'
+  - '        result.resize(-n_tokens);'
+  - '        int check = llama_tokenize(vocab, text.data(), text.length(), result.data(),
+    result.size(), add_special, parse_special);'
+  - '        GGML_ASSERT(check == -n_tokens);'
+  - '    } else {'
+  - '        result.resize(n_tokens);'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 使用提供的词汇表对文本进行分词，返回token向量。
+  line: 1439-1461
+  name: common_tokenize
+- code:
+  - std::string common_token_to_piece(const struct llama_context * ctx, llama_token
+    token, bool special) {
+  - '    const llama_model * model = llama_get_model(ctx);'
+  - '    const llama_vocab * vocab = llama_model_get_vocab(model);'
+  - '    return common_token_to_piece(vocab, token, special);'
+  - '}'
+  desc: 使用llama上下文将token转换为字符串片段。
+  line: 1463-1467
+  name: common_token_to_piece
+- code:
+  - std::string common_token_to_piece(const struct llama_vocab * vocab, llama_token
+    token, bool special) {
+  - '    std::string piece;'
+  - '    piece.resize(piece.capacity());'
+  - '    const int n_chars = llama_token_to_piece(vocab, token, &piece[0], piece.size(),
+    0, special);'
+  - '    if (n_chars < 0) {'
+  - '        piece.resize(-n_chars);'
+  - '        int check = llama_token_to_piece(vocab, token, &piece[0], piece.size(),
+    0, special);'
+  - '        GGML_ASSERT(check == -n_chars);'
+  - '    }'
+  - '    else {'
+  - '        piece.resize(n_chars);'
+  - '    }'
+  - '    return piece;'
+  - '}'
+  desc: 使用提供的词汇表将token转换为字符串片段。
+  line: 1469-1483
+  name: common_token_to_piece
+- code:
+  - std::string common_detokenize(const struct llama_context * ctx, const std::vector<llama_token>
+    & tokens, bool special) {
+  - '    const llama_model * model = llama_get_model(ctx);'
+  - '    const llama_vocab * vocab = llama_model_get_vocab(model);'
+  - '    return common_detokenize(vocab, tokens, special);'
+  - '}'
+  desc: 使用llama上下文将token序列转换为字符串。
+  line: 1485-1489
+  name: common_detokenize
+- code:
+  - std::string common_detokenize(const struct llama_vocab * vocab, const std::vector<llama_token>
+    & tokens, bool special) {
+  - '    std::string text;'
+  - '    text.resize(std::max(text.capacity(), tokens.size()));'
+  - '    int32_t n_chars = llama_detokenize(vocab, tokens.data(), (int32_t)tokens.size(),
+    &text[0], (int32_t)text.size(), false, special);'
+  - '    if (n_chars < 0) {'
+  - '        text.resize(-n_chars);'
+  - '        n_chars = llama_detokenize(vocab, tokens.data(), (int32_t)tokens.size(),
+    &text[0], (int32_t)text.size(), false, special);'
+  - '        GGML_ASSERT(n_chars <= (int32_t)text.size());'
+  - '    }'
+  - '    text.resize(n_chars);'
+  - '    return text;'
+  - '}'
+  desc: 使用提供的词汇表将token序列转换为字符串。
+  line: 1491-1503
+  name: common_detokenize
+- code:
+  - void common_embd_normalize(const float * inp, float * out, int n, int embd_norm)
+    {
+  - '    double sum = 0.0;'
+  - '    switch (embd_norm) {'
+  - '        case -1:'
+  - '            sum = 1.0;'
+  - '            break;'
+  - '        case 0:'
+  - '            ...'
+  - '            break;'
+  - '        case 2:'
+  - '            ...'
+  - '            break;'
+  - '        default:'
+  - '            ...'
+  - '            break;'
+  - '    }'
+  - '    const float norm = sum > 0.0 ? 1.0 / sum : 0.0f;'
+  - '    for (int i = 0; i < n; i++) {'
+  - '        out[i] = inp[i] * norm;'
+  - '    }'
+  - '}'
+  desc: 对嵌入向量进行归一化处理，支持多种归一化方式（不归一化、最大绝对值、欧几里得、p范数）。
+  line: 1507-1539
+  name: common_embd_normalize
+- code:
+  - float common_embd_similarity_cos(const float * embd1, const float * embd2, int
+    n){
+  - '    double sum  = 0.0;'
+  - '    double sum1 = 0.0;'
+  - '    double sum2 = 0.0;'
+  - '    for (int i = 0; i < n; i++) {'
+  - '        sum  += embd1[i] * embd2[i];'
+  - '        sum1 += embd1[i] * embd1[i];'
+  - '        sum2 += embd2[i] * embd2[i];'
+  - '    }'
+  - '    if (sum1 == 0.0 || sum2 == 0.0) {'
+  - '        if (sum1 == 0.0 && sum2 == 0.0) {'
+  - '            return 1.0f;'
+  - '        }'
+  - '        return 0.0f;'
+  - '    }'
+  - '    return sum / (sqrt(sum1) * sqrt(sum2));'
+  - '}'
+  desc: 计算两个嵌入向量的余弦相似度。
+  line: 1541-1558
+  name: common_embd_similarity_cos
+- code:
+  - static common_control_vector_data common_control_vector_load_one(const common_control_vector_load_info
+    & load_info) {
+  - '    common_control_vector_data result = { -1, {} };'
+  - '    ...'
+  - '    struct gguf_context * ctx_gguf = gguf_init_from_file(load_info.fname.c_str(),
+    meta_gguf_params);'
+  - '    if (!ctx_gguf) {'
+  - '        LOG_ERR("%s: failed to load control vector file from %s\n", __func__,
+    load_info.fname.c_str());'
+  - '        return result;'
+  - '    }'
+  - '    ...'
+  - '    for (int i = 0; i < n_tensors; i++) {'
+  - '        ...'
+  - '    }'
+  - '    ...'
+  - '    gguf_free(ctx_gguf);'
+  - '    ggml_free(ctx);'
+  - '    return result;'
+  - '}'
+  desc: 从单个GGUF文件加载控制向量数据。
+  line: 1562-1635
+  name: common_control_vector_load_one
+- code:
+  - common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info>
+    & load_infos) {
+  - '    common_control_vector_data result = { -1, {} };'
+  - '    for (const auto & info : load_infos) {'
+  - '        auto cur = common_control_vector_load_one(info);'
+  - '        if (cur.n_embd == -1) {'
+  - '            result.n_embd = -1;'
+  - '            break;'
+  - '        }'
+  - '        ...'
+  - '        if (result.n_embd == -1) {'
+  - '            result = std::move(cur);'
+  - '        } else {'
+  - '            result.data.resize(std::max(result.data.size(), cur.data.size()),
+    0.0f);'
+  - '            for (size_t i = 0; i < cur.data.size(); i++) {'
+  - '                result.data[i] += cur.data[i];'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    ...'
+  - '    return result;'
+  - '}'
+  desc: 从多个GGUF文件加载并合并控制向量数据。
+  line: 1637-1667
+  name: common_control_vector_load
+- code:
+  - ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token>
+    & tokens, int64_t stride) {
+  - '    const int64_t ne_datapoint = llama_n_ctx(ctx);'
+  - '    const int64_t ndata        = (tokens.size() - ne_datapoint - 1) / stride;'
+  - '    ggml_opt_dataset_t result = ggml_opt_dataset_init('
+  - '        GGML_TYPE_I32, GGML_TYPE_I32, ne_datapoint, ne_datapoint, ndata, /*ndata_shard
+    =*/ 1);'
+  - '    llama_token * data   = (llama_token *) ggml_opt_dataset_data(result)->data;'
+  - '    llama_token * labels = (llama_token *) ggml_opt_dataset_labels(result)->data;'
+  - '    for (int64_t idata = 0; idata < ndata; ++idata) {'
+  - '        memcpy(data   + idata*ne_datapoint, tokens.data() + idata*stride + 0,
+    ne_datapoint*sizeof(llama_token));'
+  - '        memcpy(labels + idata*ne_datapoint, tokens.data() + idata*stride + 1,
+    ne_datapoint*sizeof(llama_token));'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 从给定的token序列创建一个训练数据集，供优化器使用。
+  line: 1669-1681
+  name: common_opt_dataset_init
+- code:
+  - ggml_opt_optimizer_params common_opt_lr_pars(void * userdata) {
+  - '    ggml_opt_optimizer_params result = ggml_opt_get_default_optimizer_params(nullptr);'
+  - '    const lr_opt &            d      = *(lr_opt *) userdata;'
+  - '    result.adamw.alpha = result.sgd.alpha = d.get_lr(d.epoch);'
+  - '    result.sgd.wd = result.adamw.wd = d.wd;'
+  - '    return result;'
+  - '}'
+  desc: 自定义学习率调度器的回调函数，根据当前epoch返回优化器参数。
+  line: 1683-1689
+  name: common_opt_lr_pars
+- code:
+  - static inline bool eq_case_insensitive(char const* a, char const* b) {
+  - '    return !'
+  - '#if defined(_MSC_VER)'
+  - '        _stricmp'
+  - '#else'
+  - '        strcasecmp'
+  - '#endif'
+  - '        (a, b);'
+  - '}'
+  desc: 不区分大小写地比较两个字符串是否相等。
+  line: 1693-1701
+  name: eq_case_insensitive
+- code:
+  - enum ggml_opt_optimizer_type common_opt_get_optimizer(const char * n) {
+  - '    if (eq_case_insensitive("adamw", n)) {'
+  - '        return GGML_OPT_OPTIMIZER_TYPE_ADAMW;'
+  - '    }'
+  - '    if (eq_case_insensitive("sgd", n)) {'
+  - '        return GGML_OPT_OPTIMIZER_TYPE_SGD;'
+  - '    }'
+  - '    return GGML_OPT_OPTIMIZER_TYPE_COUNT;'
+  - '}'
+  desc: 根据字符串名称返回对应的优化器类型枚举值。
+  line: 1703-1711
+  name: common_opt_get_optimizer
+- code:
+  - bool common_replay_last_token(struct llama_context * ctx, llama_token last_token,
+    int32_t pos) {
+  - '    llama_batch batch = llama_batch_get_one(&last_token, 1);'
+  - '    batch.pos = &pos;'
+  - '    if (llama_decode(ctx, batch)) {'
+  - '        LOG_ERR("%s: failed to replay last token\n", __func__);'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 重新解码最后一个token，用于恢复会话状态后的推理。
+  line: 1719-1727
+  name: common_replay_last_token
+- code:
+  - bool common_prompt_batch_decode(
+  - '              struct llama_context * ctx,'
+  - '    const std::vector<llama_token> & tokens,'
+  - '                               int & n_past,'
+  - '                               int   n_batch,'
+  - '                  std::string_view   state_path,'
+  - '                              bool   save_state) {'
+  - '    const int n_eval = tokens.size();'
+  - '    if (n_eval == 0) {'
+  - '        return true;'
+  - '    }'
+  - '    if (save_state && n_eval > 1) {'
+  - '        ...'
+  - '    } else {'
+  - '        ...'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 对提示词token序列进行批量解码，支持在解码最后一个token前保存状态。
+  line: 1729-1773
+  name: common_prompt_batch_decode
+- code:
+  - // The file starts with included headers, using namespace declarations, and global
+    constant definitions.
+  desc: 文件中所有全局代码，包括常量定义和包含的头文件等。
+  line: 1-1115
+  name: __main__

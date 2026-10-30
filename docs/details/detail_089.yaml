@@ -1,0 +1,1277 @@
+code_map:
+- tools/server/tests/
+- ├── 测试基础设施
+- │   ├── conftest.py
+- '│   │   ├── stop_server_after_each_test()     # 每个测试后自动清理服务器进程'
+- '│   │   └── do_something()                    # 测试会话开始时预加载所有预设'
+- │   └── utils.py
+- '│       ├── class ServerProcess               # 服务器进程管理类'
+- '│       │   ├── __init__()                    # 从环境变量读取配置(GPU/端口/调试)'
+- '│       │   ├── start()                       # 构建命令行参数、启动子进程、健康检查轮询'
+- '│       │   ├── stop()                        # 终止进程、清理资源'
+- '│       │   ├── make_request()                # 同步HTTP请求(GET/POST/OPTIONS)'
+- '│       │   ├── make_stream_request()         # SSE流式请求生成器'
+- '│       │   └── make_any_request()            # 通用请求封装(自动聚合流式tool_calls)'
+- '│       ├── class ServerPreset                # 预设配置工厂'
+- '│       │   ├── load_all()                    # 预加载所有预设确保模型缓存'
+- '│       │   ├── tinyllama2()                  # 基础文本模型(stories260K)'
+- '│       │   ├── bert_bge_small()              # Embedding模型'
+- '│       │   ├── bert_bge_small_with_fa()      # 带Flash Attention的Embedding'
+- '│       │   ├── tinyllama_infill()            # 代码填充模型'
+- '│       │   ├── stories15m_moe()              # MoE模型(用于LoRA/推测解码)'
+- '│       │   ├── jina_reranker_tiny()          # 重排序模型'
+- '│       │   ├── tinygemma3()                  # 多模态视觉模型'
+- '│       │   └── router()                      # 无模型路由模式'
+- '│       ├── class ServerError                 # 服务器错误异常类'
+- '│       │   └── __init__()                    # 初始化错误状态码和响应体'
+- '│       ├── parallel_function_calls()         # 多线程并行执行器'
+- '│       ├── match_regex()                     # 正则匹配工具'
+- '│       ├── download_file()                   # 模型/LoRA文件下载缓存'
+- '│       └── is_slow_test_allowed()            # 慢速测试环境变量检查'
+- ├── 基础功能测试
+- │   └── test_basic.py
+- '│       ├── __main__                          # 全局server初始化与fixture'
+- '│       ├── test_server_start_simple()        # /health 健康检查'
+- '│       ├── test_server_props()               # /props 元数据与默认参数验证'
+- '│       ├── test_server_models()              # /models 模型列表与别名'
+- '│       ├── test_server_slots()               # /slots 槽位监控开关测试'
+- '│       ├── test_load_split_model()           # 分片模型加载测试'
+- '│       ├── test_no_webui()                   # --no-webui 404验证'
+- '│       └── test_server_model_aliases_and_tags()  # 模型多别名和标签功能'
+- ├── Chat Completion 测试
+- │   └── test_chat_completion.py
+- '│       ├── test_chat_completion()            # 基础对话、token计数、finish_reason'
+- '│       ├── test_chat_completion_stream()     # SSE流式增量、ID一致性、usage统计'
+- '│       ├── test_chat_completion_cached_tokens()  # KV缓存命中计数验证'
+- '│       ├── test_return_progress()            # 流式进度报告与缓存复用'
+- '│       ├── test_logprobs() / test_logprobs_stream()  # token概率与top_logprobs'
+- '│       ├── test_context_size_exceeded()      # 超长prompt 400错误处理'
+- '│       ├── test_context_size_exceeded_stream()  # 流式上下文超限'
+- '│       ├── test_logit_bias()                 # 禁止特定词汇生成'
+- '│       ├── test_chat_template()              # 聊天模板验证'
+- '│       ├── test_chat_template_assistant_prefill()  # Assistant预填充测试'
+- '│       ├── test_apply_chat_template()        # /apply-template端点验证'
+- '│       ├── test_completion_with_response_format()  # response_format参数测试'
+- '│       ├── test_completion_with_json_schema() / test_completion_with_grammar()  #
+  结构化输出'
+- '│       ├── test_invalid_chat_completion_req() # 无效请求参数验证(400/500)'
+- '│       ├── test_chat_completion_with_timings_per_token()  # 流式时序统计'
+- '│       └── test_chat_completions_multiple_choices()   # 多选择测试'
+- ├── Legacy Completion 测试
+- │   └── test_completion.py
+- '│       ├── test_completion()                 # 基础补全、timings、truncated标志'
+- '│       ├── test_completion_stream()          # 流式stop标志、generation_settings'
+- '│       ├── test_completion_stream_vs_non_stream()  # 流式vs非流式一致性'
+- '│       ├── test_completion_with_openai_library()  # OpenAI SDK兼容'
+- '│       ├── test_completion_stream_with_openai_library()  # 流式SDK兼容'
+- '│       ├── test_consistent_result_same_seed()      # 确定性验证'
+- '│       ├── test_different_result_different_seed()  # 不同种子不同结果'
+- '│       ├── test_consistent_result_different_batch_size()  # 批处理大小无关性'
+- '│       ├── test_cache_vs_nocache_prompt()    # 缓存开关对比(跳过)'
+- '│       ├── test_nocache_long_input_prompt()  # 长输入无缓存400错误'
+- '│       ├── test_json_prompt_no_mtmd()        # JSON格式无多模态'
+- '│       ├── test_json_prompt_mtm_error_when_not_supported()  # 多模态不支持错误'
+- '│       ├── test_completion_parallel_slots()        # 多槽位并发与状态检查'
+- '│       ├── test_completion_unified()         # 统一KV缓存模式'
+- '│       ├── test_completion_prompt_cache()    # 提示词缓存命中/未命中统计'
+- '│       ├── test_completion_with_tokens_input()     # token数组/混合输入'
+- '│       ├── test_completion_response_fields() # 响应字段过滤'
+- '│       ├── test_n_probs() / test_n_probs_stream() / test_n_probs_post_sampling()  #
+  token概率输出'
+- '│       ├── test_logit_bias()                 # logit_bias参数测试(token vs 字符串)'
+- '│       └── test_cancel_request()             # 请求取消与槽位释放'
+- ├── 协议兼容性测试
+- │   ├── test_compat_anthropic.py
+- '│   │   ├── get_test_image_base64()           # 测试图像Base64获取'
+- '│   │   ├── test_anthropic_messages_basic()   # Messages基础格式验证'
+- '│   │   ├── test_anthropic_messages_with_system()      # 系统提示词测试'
+- '│   │   ├── test_anthropic_messages_multipart_content() # 多部分内容块'
+- '│   │   ├── test_anthropic_messages_conversation()    # 多轮对话'
+- '│   │   ├── test_anthropic_messages_streaming()       # 流式事件序列验证'
+- '│   │   ├── test_anthropic_count_tokens()             # token计数端点'
+- '│   │   ├── test_anthropic_count_tokens_with_system() # 带系统提示计数'
+- '│   │   ├── test_anthropic_count_tokens_no_max_tokens()  # 无max_tokens计数'
+- '│   │   ├── test_anthropic_tool_use_basic()           # 工具调用块生成'
+- '│   │   ├── test_anthropic_tool_result()              # 工具结果处理'
+- '│   │   ├── test_anthropic_tool_result_with_text()    # 文本+工具结果混合'
+- '│   │   ├── test_anthropic_tool_result_error()        # 工具错误处理'
+- '│   │   ├── test_anthropic_tool_streaming()           # 流式工具调用'
+- '│   │   ├── test_anthropic_vision_format_accepted()   # 视觉格式验证'
+- '│   │   ├── test_anthropic_vision_base64_with_multimodal_model()  # 视觉输入'
+- '│   │   ├── test_anthropic_stop_sequences()           # 停止序列参数'
+- '│   │   ├── test_anthropic_temperature() / test_anthropic_top_p() / test_anthropic_top_k()  #
+  采样参数'
+- '│   │   ├── test_anthropic_missing_messages()         # 缺少messages错误'
+- '│   │   ├── test_anthropic_empty_messages()           # 空messages容错'
+- '│   │   ├── test_anthropic_streaming_content_block_indices()  # 内容块索引'
+- '│   │   ├── test_anthropic_thinking()                 # 思考参数'
+- '│   │   ├── test_anthropic_metadata()                 # 元数据参数'
+- '│   │   ├── test_anthropic_vs_openai_different_response_format()  # 协议格式对比'
+- '│   │   ├── test_anthropic_thinking_history_in_count_tokens()   # 历史思考计数'
+- '│   │   ├── test_anthropic_thinking_history_in_template()       # 历史思考模板'
+- '│   │   └── test_anthropic_thinking_with_reasoning_model()        # 思考块签名'
+- │   ├── test_compat_oai_responses.py
+- '│   │   ├── __main__                          # 全局server初始化与fixture'
+- '│   │   ├── test_responses_with_openai_library()    # Responses API同步测试'
+- '│   │   └── test_responses_stream_with_openai_library()  # 流式事件ID一致性'
+- │   └── test_tool_call.py
+- '│       ├── CompletionMode / ToolParameters / ToolFunction / ToolDefinition  #
+  类型定义'
+- '│       ├── do_test_completion_with_required_tool_tiny()   # 强制工具调用验证'
+- '│       ├── test_completion_with_required_tool_tiny_fast() # 快速工具调用'
+- '│       ├── test_completion_with_required_tool_tiny_slow() # 慢速工具调用'
+- '│       ├── test_completion_with_required_tool_real_model()  # 真实模型工具调用'
+- '│       ├── do_test_completion_without_tool_call()    # 非工具调用验证'
+- │       ├── test_completion_without_tool_call_fast() / test_completion_without_tool_call_slow()
+- '│       ├── test_weather() / do_test_weather()        # 天气函数调用闭环'
+- '│       ├── test_calc_result() / do_test_calc_result() # 工具结果整合测试'
+- '│       ├── test_thoughts()                           # 推理内容测试'
+- '│       └── test_hello_world() / do_test_hello_world() # Python代码生成工具'
+- ├── 高级特性测试
+- │   ├── test_speculative.py
+- '│   │   ├── create_server() / fixture_create_server() # 带草稿模型配置'
+- '│   │   ├── test_with_and_without_draft()           # 推测解码输出一致性'
+- '│   │   ├── test_different_draft_min_draft_max()    # 草稿长度参数矩阵'
+- '│   │   ├── test_slot_ctx_not_exceeded()            # 上下文不超槽位'
+- '│   │   ├── test_with_ctx_shift()                   # 上下文偏移结合测试'
+- '│   │   └── test_multi_requests_parallel()          # 多请求并行测试'
+- │   ├── test_lora.py
+- '│   │   ├── test_lora()                             # LoRA scale 0.0/1.0 风格切换'
+- '│   │   ├── test_lora_per_request()                 # 多槽位独立LoRA配置'
+- '│   │   └── test_with_big_model()                   # 大模型LoRA测试'
+- │   ├── test_ctx_shift.py
+- '│   │   ├── test_ctx_shift_enabled()                # 启用后长上下文截断'
+- '│   │   ├── test_ctx_shift_disabled_short_prompt()  # 禁用短prompt正常'
+- '│   │   ├── test_ctx_shift_disabled_long_prompt()   # 禁用长prompt报错'
+- '│   │   └── test_ctx_shift_disabled_stream()        # 禁用流式截断'
+- │   ├── test_slot_save.py
+- '│   │   ├── test_slot_save_restore()                # KV缓存保存/跨槽位恢复'
+- '│   │   └── test_slot_erase()                       # 槽位擦除后全量重算'
+- │   └── test_kv_keep_only_active.py
+- '│       ├── LogReader.__init__() / drain()          # 日志读取辅助类'
+- '│       ├── test_clear_and_restore()                # 空闲槽位清理与cache-ram恢复'
+- '│       └── test_disabled_with_flag()               # --no-clear-idle 验证'
+- ├── 多模态与辅助任务测试
+- │   ├── test_vision_api.py
+- '│   │   ├── get_img_url()                           # 图像URL/Base64获取'
+- '│   │   ├── test_models_supports_multimodal_capability()  # 能力标记验证'
+- '│   │   ├── test_v1_models_supports_multimodal_capability()  # /v1/models能力标记'
+- '│   │   ├── test_vision_chat_completion()           # 图像URL/base64多格式输入'
+- '│   │   ├── test_vision_completion()                # 多模态补全测试'
+- '│   │   └── test_vision_embeddings()                # 图文嵌入确定性验证'
+- │   ├── test_embedding.py
+- '│   │   ├── test_embedding_single()                 # 向量归一化验证'
+- '│   │   ├── test_embedding_multiple()               # 多输入嵌入'
+- '│   │   ├── test_embedding_multiple_with_fa()       # Flash Attention嵌入'
+- '│   │   ├── test_embedding_mixed_input()            # 混合输入测试(str/token/list)'
+- '│   │   ├── test_embedding_pooling_mean() / test_embedding_pooling_mean_multiple()  #
+  mean池化'
+- '│   │   ├── test_embedding_pooling_none()           # none池化(特殊token维度)'
+- '│   │   ├── test_embedding_pooling_none_oai()       # OAI格式不支持none错误'
+- '│   │   ├── test_embedding_openai_library_single() / test_embedding_openai_library_multiple()  #
+  SDK兼容'
+- '│   │   ├── test_embedding_error_prompt_too_long()  # 超长prompt错误'
+- '│   │   ├── test_same_prompt_give_same_result()     # 确定性验证'
+- '│   │   ├── test_embedding_usage_single() / test_embedding_usage_multiple()  #
+  token统计'
+- '│   │   └── test_embedding_openai_library_base64()  # base64编码解码一致性'
+- │   ├── test_rerank.py
+- '│   │   ├── test_rerank()                           # 相关性排序(index 2最相关)'
+- '│   │   ├── test_rerank_tei_format()                # TEI格式兼容'
+- '│   │   ├── test_invalid_rerank_req()               # 无效输入400验证'
+- '│   │   ├── test_rerank_usage()                     # token计数准确性'
+- '│   │   ├── test_rerank_top_n() / test_rerank_tei_top_n()  # top_n参数'
+- │   ├── test_tokenize.py
+- '│   │   ├── test_tokenize_detokenize()              # 文本↔token往返'
+- '│   │   ├── test_tokenize_with_bos()                # BOS插入验证'
+- '│   │   └── test_tokenize_with_pieces()             # token片段信息测试'
+- │   ├── test_template.py
+- '│   │   ├── test_reasoning()                        # 推理模式模板验证'
+- '│   │   ├── test_date_inside_prompt()               # 日期注入验证'
+- '│   │   └── test_add_generation_prompt()            # 生成提示符控制'
+- │   └── test_infill.py
+- '│       ├── test_infill_without_input_extra()       # FIM代码填充'
+- '│       ├── test_infill_with_input_extra()          # 带额外输入的代码填充'
+- '│       ├── test_invalid_input_extra_req()          # 无效输入测试'
+- '│       └── test_with_qwen_model()                  # Qwen模型填充验证'
+- └── 服务治理测试
+- '    ├── test_router.py'
+- '    │   ├── __main__                              # 全局fixture、工具函数与LRU/认证测试'
+- '    ├── test_proxy.py'
+- '    │   └── __main__                              # 全局fixture与代理测试(启用/禁用/自定义端口)'
+- '    ├── test_security.py'
+- '    │   ├── test_access_static_assets_without_api_key()  # WebUI公开访问'
+- '    │   ├── test_access_public_endpoint()           # 公开端点(health/models)'
+- '    │   ├── test_incorrect_api_key()                # 认证失败401'
+- '    │   ├── test_correct_api_key()                  # 正确密钥访问'
+- '    │   ├── test_correct_api_key_anthropic_header() # Anthropic风格Header认证'
+- '    │   ├── test_openai_library_correct_api_key()   # OpenAI SDK密钥验证'
+- '    │   ├── test_cors_options()                     # CORS预检请求'
+- '    │   └── test_local_media_file()                 # 媒体文件路径验证'
+- '    └── test_sleep.py'
+- '        └── test_server_sleep()                   # 空闲睡眠与唤醒检测'
+exercises:
+- contents:
+  - 阅读 `tools/server/tests/utils.py` 第 117-224 行的 `ServerProcess.start()` 方法
+  - 深入理解以下实现细节：
+  - 1. 命令行参数是如何根据 `server_args` 列表动态构建的？如何支持数十个可选参数（如 `--n-gpu-layers`, `--ctx-size`,
+    `--api-key` 等）？
+  - 2. 健康检查循环的实现逻辑：为什么使用 `while time.time() - start_time < timeout_seconds` 而不是简单的
+    sleep？
+  - 3. `server_instances.add(self)` 和 `server_instances.remove(self)` 在测试隔离中扮演什么角色？
+  - 4. 如果服务器进程在超时前崩溃，代码如何检测并抛出 `RuntimeError`？
+  - 回答问题：
+  - '- 如果需要支持通过 Unix Socket 而非 TCP 端口连接服务器，需要修改 `start()` 方法中的哪些部分？'
+  - '- `LLAMA_SERVER_BIN_PATH` 环境变量在什么场景下会被使用？'
+  'no': 1
+  title: 分析 ServerProcess 的启动与就绪检测机制
+- contents:
+  - 阅读 `tools/server/tests/unit/test_chat_completion.py` 第 42-59 行的 `test_chat_completion_cached_tokens()`
+  - 以及 `tools/server/tests/unit/test_slot_save.py` 第 15-64 行的 `test_slot_save_restore()`
+  - 完成以下任务：
+  - 1. 分析 `prompt_tokens_details.cached_tokens` 字段的断言逻辑，理解 n_cache 数值（0, 76, 51, 47）是如何精确预测的
+  - 2. 设计一个新的测试用例 `test_kv_cache_partial_hit_alignment`：构造两个 prompt，确保它们的相同前缀长度不是
+    4 的倍数（例如 15 个 token），验证缓存对齐策略
+  - 3. 扩展 `test_slot_save_restore`：在恢复槽位后，尝试发送一个与原 prompt 有 50% 重叠的新 prompt，断言 `prompt_n`
+    是否符合预期
+  - 思考问题：
+  - '- 为什么在 `test_slot_save_restore` 中，第一次请求处理 21 个 token，而恢复后只需处理 6 个？'
+  - '- `cache_prompt: True` 参数在服务端内部触发了什么机制？'
+  'no': 2
+  title: 实现 KV 缓存命中率的自动化验证
+- contents:
+  - 阅读 `tools/server/tests/unit/test_speculative.py` 和 `tools/server/tests/unit/test_lora.py`
+  - 完成以下实践：
+  - 1. 创建一个新的测试函数 `test_speculative_with_lora`，同时启用草稿模型（`model_draft`）和 LoRA 适配器（`lora_files`）
+  - 2. 验证在推测解码模式下，LoRA scale 的变化（0.0 vs 1.0）是否仍然能改变输出风格，且输出内容与仅启用主模型时一致
+  - 3. 使用 `parallel_function_calls` 发送 4 个并发请求，其中 2 个使用 LoRA scale=0.0，2 个使用 scale=1.0，验证多槽位下推测解码与
+    LoRA 的兼容性
+  - 思考问题：
+  - '- 推测解码的 `draft_min`/`draft_max` 参数与 LoRA 的缩放因子在模型层面是如何交互的？'
+  - '- 为什么需要 `test_with_and_without_draft` 来验证推测解码不改变输出？这在数学上如何保证？'
+  'no': 3
+  title: 构建推测解码与 LoRA 的组合测试
+- contents:
+  - 阅读 `tools/server/tests/unit/test_compat_anthropic.py` 第 131-190 行（流式事件）和第 290-331
+    行（工具结果）
+  - 完成以下扩展：
+  - 1. 实现 `test_anthropic_tool_streaming_full_cycle`：先发送一个触发工具调用的请求（流式），捕获 `content_block_start`（type=tool_use）事件，然后手动构造
+    `tool_result` 发送回服务器，验证最终生成的回答是否引用了工具结果
+  - '2. 测试异常分支：如果 `tool_result` 中包含 `is_error: true`，验证服务器是否返回 200 且内容中包含错误提示（参考 `test_anthropic_tool_result_error`）'
+  - '3. 验证流式响应中的 `message_delta` 事件是否包含 `stop_reason: tool_use`（参考第 161-163 行）'
+  - 思考问题：
+  - '- Anthropic API 要求的 `signature_delta` 事件在 llama-server 中是如何生成的？（提示：查看第 881-962
+    行的 reasoning model 测试）'
+  - '- 为什么 `content_block_delta` 需要区分 `text_delta` 和 `input_json_delta`？'
+  'no': 4
+  title: 设计 Anthropic 流式工具调用的边界测试
+- contents:
+  - 阅读 `tools/server/tests/unit/test_completion.py` 第 321-366 行的 `test_completion_parallel_slots`
+  - 以及 `tools/server/tests/unit/test_sleep.py` 第 11-31 行的 `test_server_sleep`
+  - 设计并实现以下场景：
+  - 1. 创建 `test_slot_exhaustion_and_wake`：设置 `n_slots=2`，发送 3 个长耗时请求（`n_predict=256`），验证第
+    3 个请求是否排队或返回 503；然后在请求完成后，等待服务器进入睡眠状态，再发送新请求验证唤醒机制
+  - 2. 结合 `test_completion_unified` 的设计思路，测试在 `kv_unified=True` 模式下，不同 `n_predict`
+    值（64, 128, 256）的并发请求对槽位占用的影响
+  - 思考问题：
+  - '- `check_slots_status` 函数中的 `time.sleep(0.1)` 可能引入什么竞态条件？如何改进？'
+  - '- 当服务器睡眠时，正在排队的请求会被丢弃还是保留？如何通过测试验证？'
+  'no': 5
+  title: 模拟高并发下的槽位耗尽与恢复
+- contents:
+  - 阅读 `tools/server/tests/unit/test_router.py` 第 98-128 行的 `test_router_models_max_evicts_lru`（位于
+    `__main__` 测试块中）
+  - 完成以下混沌工程实践：
+  - 1. 实现 `test_router_lru_chaos`：在 `models_max=2` 的限制下，快速交替加载 3 个不同的模型（A, B, A, B,
+    C），验证淘汰顺序是否符合严格的 LRU 策略
+  - 2. 在加载过程中随机中断某个模型的加载（模拟网络失败），验证 Router 是否能正确回滚状态并标记为错误
+  - '3. 测试 `X-Api-Key` 头部与 `Authorization: Bearer` 头部的优先级冲突（参考 `test_security.py`
+    第 54-63 行）'
+  - 思考问题：
+  - '- 为什么 Router 需要 `_wait_for_model_status` 轮询而不是阻塞等待？这在大模型加载场景下有什么优势？'
+  - '- 如果两个请求同时触发同一个未加载模型的自动加载，会发生什么？如何防止重复加载？'
+  'no': 6
+  title: 构建 Router LRU 淘汰的混沌测试
+- contents:
+  - 阅读 `tools/server/tests/unit/test_compat_anthropic.py` 第 760-821 行的 `test_anthropic_thinking_history_in_count_tokens()`
+    和第 824-878 行的 `test_anthropic_thinking_history_in_template()`
+  - 完成以下任务：
+  - 1. 构建一个包含三轮对话的测试用例，其中助手消息包含 thinking 块、tool_use 块和普通文本三种内容类型
+  - 2. 验证 `/v1/messages/count_tokens` 端点能否正确计算包含思考过程的完整对话的 token 数量
+  - 3. 使用 `/apply-template` 端点检查包含思考链的历史消息是否被正确渲染为 Jinja 模板
+  - 4. 设计边界情况：当思考块为空字符串或仅包含空白字符时，验证服务器的行为是否符合预期
+  - 思考问题：
+  - '- 为什么 Anthropic API 要求 `thinking` 块必须包含 `signature` 字段？这个签名在服务端是如何生成的？'
+  - '- 在多轮对话中，历史消息中的 thinking 内容应该影响当前响应的生成吗？如何通过测试验证？'
+  'no': 7
+  title: 设计 Anthropic 协议的多轮对话与思考链测试
+- contents:
+  - 阅读 `tools/server/tests/unit/test_vision_api.py` 中的 `test_vision_chat_completion()`
+    和 `test_vision_embeddings()`
+  - 以及 `tools/server/tests/unit/test_compat_anthropic.py` 中的 `test_anthropic_vision_base64_with_multimodal_model()`
+  - 完成以下综合测试：
+  - 1. 创建一个测试用例 `test_vision_full_pipeline`：先通过 `/v1/chat/completions`（OpenAI格式）验证图像理解能力，再通过
+    `/v1/messages`（Anthropic格式）验证相同图像的理解一致性
+  - 2. 实现 `test_vision_batch_embeddings`：发送包含多个图像的批量请求，验证嵌入向量的确定性和唯一性
+  - 3. 测试错误处理边界：发送损坏的 base64 数据、不支持的图像格式、超大图像文件，验证服务器返回适当的错误码和错误信息
+  - 4. 结合 `test_kv_keep_only_active.py` 的设计思路，验证多模态请求的 KV 缓存清理行为是否与纯文本请求一致
+  - 思考问题：
+  - '- 图像 URL 和 base64 内联数据在服务器内部的处理流程有何不同？如何通过测试验证这两种方式产生相同的嵌入结果？'
+  - '- 为什么 `test_vision_embeddings` 中要求 `content[0][''embedding''] == content[1][''embedding'']`？这在验证什么系统属性？'
+  'no': 8
+  title: 构建多模态视觉模型的端到端验证
+learning_targets:
+- 掌握基于 pytest 的服务器进程生命周期管理（ServerProcess 启停与健康检查轮询）
+- 理解 ServerPreset 工厂模式提供的多模型测试预设（tinyllama2、bert_bge_small、tinygemma3 等）
+- 精通 HTTP 请求封装策略：同步 make_request、流式 make_stream_request 及自动聚合流式响应的 make_any_request
+- 验证基础服务端点：health 健康检查、props 元数据、models 列表、slots 槽位监控及 WebUI 开关
+- 掌握 Chat Completion 与 Legacy Completion 的全场景测试，包括流式增量、缓存命中、logprobs、上下文超限及多模态输入
+- 精通 Anthropic Messages API 与 OpenAI Responses API 的协议兼容性验证，涵盖工具调用、视觉输入与思考块（Thinking）
+- 验证高级特性：推测解码一致性、LoRA 动态缩放、KV 缓存保存/恢复、上下文位移及睡眠唤醒机制
+- 构建服务治理测试体系：Router LRU 淘汰、CORS 代理、API 密钥认证与静态资源访问控制
+life_analogy:
+- 想象 llama-server 的测试体系是一座大型机场的塔台调度中心：
+- '- **ServerProcess** 是塔台塔班，负责指挥飞机（服务器进程）起飞（start）、降落（stop）和地面联络（make_request）'
+- '- **ServerPreset** 是航班时刻表模板，预定义了不同机型（tinyllama2、bert_bge_small）的停靠 gate（端口）和载客量（n_slots）'
+- '- **conftest.py 的 fixture** 是地勤保障组，确保每班航班起降后跑道清理干净（stop_server_after_each_test），且每日首班前完成所有机型预热（do_something）'
+- '- **KV 缓存与槽位测试**是登机口分配策略，验证同一登机口能否快速衔接下一航班（save/restore），以及长时间空闲的登机口是否被释放（kv keep
+  only active）'
+- '- **推测解码与 LoRA 测试**是验证双机长协作（草稿模型+主模型）和个性化涂装服务（LoRA 风格切换）是否能并行运行且不干扰其他航班'
+- '- **协议兼容性测试**是多语言翻译官考核，确保塔台能同时听懂英语（OpenAI）、法语（Anthropic）等多种航空术语，并正确转换飞行指令（流式事件序列）'
+- 就像塔台需要确保每架飞机安全、准时、高效地起降，这套测试体系确保 llama-server 在各种复杂场景下都能稳定、准确地提供服务。
+'no': 88
+summary:
+- concept: ServerProcess
+  desc: 服务器进程生命周期管理器，封装从启动命令构建、健康检查轮询到进程终止的完整流程
+- concept: ServerPreset
+  desc: 静态工厂方法集，提供tinyllama2、bert_bge_small等预配置模型测试环境
+- concept: make_request / make_stream_request / make_any_request
+  desc: HTTP客户端封装，支持同步JSON响应、SSE流式数据解析，以及自动聚合流式tool_calls的通用请求
+- concept: conftest.py
+  desc: pytest配置层，通过autouse fixture实现测试隔离与预设预加载
+- concept: test_basic.py
+  desc: 基础端点验证：/health健康检查、/props元数据、/models列表、/slots监控
+- concept: test_chat_completion.py
+  desc: Chat API全场景覆盖：流式增量、token计数、缓存命中、logprobs、上下文超限、response_format
+- concept: test_completion.py
+  desc: Legacy补全接口深度测试：种子确定性、并行槽位、提示词缓存、多格式输入、OpenAI SDK兼容
+- concept: test_compat_anthropic.py
+  desc: Anthropic Messages API兼容性：工具调用、视觉输入、思考块、流式事件序列、采样参数
+- concept: test_compat_oai_responses.py
+  desc: OpenAI Responses API验证：响应ID格式、流式事件顺序、输出文本一致性
+- concept: test_tool_call.py
+  desc: 工具调用闭环测试：强制工具选择、天气函数参数验证、计算结果整合、真实模型验证
+- concept: test_speculative.py
+  desc: 推测解码验证：草稿模型输出一致性、draft_min/max参数矩阵、上下文限制
+- concept: test_lora.py
+  desc: LoRA适配器动态控制：scale 0.0/1.0风格切换、多请求独立LoRA配置
+- concept: test_ctx_shift.py
+  desc: 上下文位移：长对话截断继续生成 vs 禁用时报错处理、短/长prompt差异
+- concept: test_slot_save.py
+  desc: KV缓存持久化：槽位状态保存/跨槽位恢复、缓存命中token数验证
+- concept: test_kv_keep_only_active.py
+  desc: 空闲槽位清理：新槽位启动时清理旧KV、cache-ram恢复机制、日志标记验证
+- concept: test_vision_api.py
+  desc: 多模态视觉验证：图像URL/base64输入、多模态嵌入确定性、能力标记
+- concept: test_embedding.py
+  desc: 嵌入服务测试：向量归一化、base64编码解码、多输入批量处理、池化策略、错误处理
+- concept: test_rerank.py
+  desc: Rerank排序验证：相关性得分排序、token计数、top_n参数、无效输入处理
+- concept: test_tokenize.py
+  desc: 分词测试：文本↔token往返、BOS特殊token、片段信息
+- concept: test_template.py
+  desc: 聊天模板测试：推理模式、日期注入、生成提示符控制
+- concept: test_infill.py
+  desc: 代码填充测试：FIM模式、额外输入验证、错误处理、多模型兼容
+- concept: test_router.py
+  desc: 模型路由治理：LRU淘汰策略、手动加载/卸载、API密钥认证（内聚于__main__测试块）
+- concept: test_proxy.py
+  desc: CORS代理：外部请求转发、内部API代理、启用/禁用切换
+- concept: test_security.py
+  desc: 服务安全：静态资源公开访问、错误/正确API密钥处理、CORS配置、Anthropic Header认证
+- concept: test_sleep.py
+  desc: 服务器睡眠唤醒：空闲超时检测、is_sleeping状态验证
+- concept: LogReader
+  desc: 测试辅助类，用于增量读取日志文件内容，验证服务器内部状态标记
+- concept: is_slow_test_allowed
+  desc: 环境变量检查函数，控制慢速测试的执行
+- concept: ServerError
+  desc: 自定义异常类，封装服务器返回的非200状态码错误，包含code和body属性
+units:
+- codes:
+  - file: tools/server/tests/utils.py
+    line: 108-115
+    method_or_func: ServerProcess.__init__()
+  - file: tools/server/tests/utils.py
+    line: 117-224
+    method_or_func: ServerProcess.start()
+  - file: tools/server/tests/utils.py
+    line: 226-242
+    method_or_func: ServerProcess.stop()
+  - file: tools/server/tests/utils.py
+    line: 244-276
+    method_or_func: ServerProcess.make_request()
+  - file: tools/server/tests/utils.py
+    line: 278-295
+    method_or_func: ServerProcess.make_stream_request()
+  - file: tools/server/tests/utils.py
+    line: 297-376
+    method_or_func: ServerProcess.make_any_request()
+  - file: tools/server/tests/utils.py
+    line: 381-390
+    method_or_func: ServerPreset.load_all()
+  - file: tools/server/tests/utils.py
+    line: 392-401
+    method_or_func: ServerPreset.tinyllama2()
+  - file: tools/server/tests/utils.py
+    line: 403-415
+    method_or_func: ServerPreset.bert_bge_small()
+  - file: tools/server/tests/utils.py
+    line: 417-430
+    method_or_func: ServerPreset.bert_bge_small_with_fa()
+  - file: tools/server/tests/utils.py
+    line: 432-443
+    method_or_func: ServerPreset.tinyllama_infill()
+  - file: tools/server/tests/utils.py
+    line: 445-456
+    method_or_func: ServerPreset.stories15m_moe()
+  - file: tools/server/tests/utils.py
+    line: 458-469
+    method_or_func: ServerPreset.jina_reranker_tiny()
+  - file: tools/server/tests/utils.py
+    line: 471-481
+    method_or_func: ServerPreset.tinygemma3()
+  - file: tools/server/tests/utils.py
+    line: 483-494
+    method_or_func: ServerPreset.router()
+  - file: tools/server/tests/utils.py
+    line: 32-36
+    method_or_func: ServerError.__init__()
+  - file: tools/server/tests/utils.py
+    line: 500-529
+    method_or_func: parallel_function_calls()
+  - file: tools/server/tests/utils.py
+    line: 531-537
+    method_or_func: match_regex()
+  - file: tools/server/tests/utils.py
+    line: 539-552
+    method_or_func: download_file()
+  - file: tools/server/tests/utils.py
+    line: 554-555
+    method_or_func: is_slow_test_allowed()
+  - file: tools/server/tests/conftest.py
+    line: 1-12
+    method_or_func: stop_server_after_each_test()
+  - file: tools/server/tests/conftest.py
+    line: 14-18
+    method_or_func: do_something()
+  name: 测试基座：ServerProcess 与 ServerPreset —— 服务器测试的『产房与托儿所』
+  'no': 1
+  points:
+  - '**为什么需要 ServerProcess 类？**'
+  - '- 每个测试都需要一个真实的 llama-server 进程实例，管理其生命周期（启动、就绪检测、终止）'
+  - '- 封装了从环境变量读取配置（GPU 层数、端口、调试模式）的通用逻辑'
+  - '- 提供 `make_request` / `make_stream_request` / `make_any_request` 等 HTTP 客户端封装，让测试专注于断言而非网络细节'
+  - ''
+  - '**ServerPreset 工厂模式的精妙之处**'
+  - '- 通过 `@staticmethod` 定义 tinyllama2、bert_bge_small、stories15m_moe 等预设配置'
+  - '- 每个预设配置了特定的模型仓库、上下文大小、槽位数等参数，实现『一键换模型』'
+  - '- `load_all()` 方法会预启动所有预设服务器，提前下载模型到缓存，避免测试时网络等待'
+  - ''
+  - '**测试隔离的自动机制**'
+  - '- `conftest.py` 中的 `stop_server_after_each_test` fixture 确保每个测试后自动清理服务器进程'
+  - '- `do_something` fixture 在测试会话开始时预加载所有预设，确保模型文件已缓存'
+  - ''
+  - '**高级测试控制机制**'
+  - '- `is_slow_test_allowed()` 函数通过环境变量控制慢速测试的执行，避免CI/CD超时'
+  - '- `ServerError` 异常类封装服务器错误，提供结构化的错误信息处理（`__init__` 方法存储 code 和 body）'
+  - '- `match_regex()` 工具函数支持灵活的正则表达式断言'
+- codes:
+  - file: tools/server/tests/unit/test_basic.py
+    line: 1-14
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_basic.py
+    line: 16-20
+    method_or_func: test_server_start_simple()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 22-33
+    method_or_func: test_server_props()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 35-42
+    method_or_func: test_server_models()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 44-63
+    method_or_func: test_server_slots()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 81-96
+    method_or_func: test_no_webui()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 65-79
+    method_or_func: test_load_split_model()
+  - file: tools/server/tests/unit/test_basic.py
+    line: 98-112
+    method_or_func: test_server_model_aliases_and_tags()
+  name: 基础服务探测 —— 健康检查与属性接口的『体检报告』
+  'no': 2
+  points:
+  - '**服务器启动与健康检查**'
+  - '- `test_server_start_simple` 验证 `/health` 端点返回 200，确保服务器进程成功启动'
+  - '- 这是所有测试的前置条件，若失败则后续测试无需执行'
+  - ''
+  - '**服务器属性与元数据验证**'
+  - '- `test_server_props` 检查 `/props` 端点返回的模型路径、槽位数、默认生成参数（n_ctx、seed）'
+  - '- `test_server_models` 验证 `/models` 端点正确列出加载的模型及其别名'
+  - '- `test_server_slots` 测试槽位监控开关开启/关闭时的行为差异（501 vs 200）'
+  - ''
+  - '**边界条件测试**'
+  - '- `test_no_webui` 验证 `--no-webui` 参数能正确禁用 WebUI（404 响应）'
+  - '- `test_server_model_aliases_and_tags` 测试模型多别名和标签功能'
+  - '- `test_load_split_model` 验证分片模型加载功能'
+  - ''
+  - '**模块级初始化**'
+  - '- `__main__` 部分定义了全局 `server` 变量和 `create_server` fixture，确保每个测试都有干净的服务器实例'
+- codes:
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 8-10
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 12-40
+    method_or_func: test_chat_completion()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 61-95
+    method_or_func: test_chat_completion_stream()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 42-59
+    method_or_func: test_chat_completion_cached_tokens()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 387-434
+    method_or_func: test_return_progress()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 255-281
+    method_or_func: test_logprobs()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 283-318
+    method_or_func: test_logprobs_stream()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 347-362
+    method_or_func: test_context_size_exceeded()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 364-385
+    method_or_func: test_context_size_exceeded_stream()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 320-345
+    method_or_func: test_logit_bias()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 117-130
+    method_or_func: test_chat_template()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 132-148
+    method_or_func: test_chat_template_assistant_prefill()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 150-162
+    method_or_func: test_apply_chat_template()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 183-199
+    method_or_func: test_completion_with_json_schema()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 201-217
+    method_or_func: test_completion_with_grammar()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 164-181
+    method_or_func: test_completion_with_response_format()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 219-226
+    method_or_func: test_invalid_chat_completion_req()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 228-253
+    method_or_func: test_chat_completion_with_timings_per_token()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 97-115
+    method_or_func: test_chat_completion_with_openai_library()
+  - file: tools/server/tests/unit/test_chat_completion.py
+    line: 436-455
+    method_or_func: test_chat_completions_multiple_choices()
+  name: Chat Completion 全场景覆盖 —— 对话补全的『压力测试场』
+  'no': 3
+  points:
+  - '**参数化测试的威力**'
+  - '- 使用 `@pytest.mark.parametrize` 覆盖多种模型、模板、流式/非流式组合'
+  - '- `test_chat_completion` 验证基础响应结构（system_fingerprint、usage、finish_reason）'
+  - '- `test_chat_completion_stream` 检查 SSE 流式响应的增量内容、ID 一致性、usage 统计'
+  - ''
+  - '**缓存与性能优化验证**'
+  - '- `test_chat_completion_cached_tokens` 精确测试 KV 缓存命中后的 `cached_tokens` 计数'
+  - '- `test_return_progress` 验证流式响应中的进度报告（processed/total）及缓存复用逻辑'
+  - ''
+  - '**高级特性测试**'
+  - '- `test_logprobs` 与 `test_logprobs_stream` 验证 token 级概率和 top_logprobs 的返回'
+  - '- `test_logit_bias` 测试禁止特定词汇生成的偏置功能'
+  - '- `test_context_size_exceeded` 与 `test_context_size_exceeded_stream` 验证超长 prompt
+    的错误处理（400 + exceed_context_size_error）'
+  - '- `test_chat_completion_with_timings_per_token` 验证流式响应中的时序统计'
+  - ''
+  - '**模板与格式化**'
+  - '- `test_chat_template` 与 `test_chat_template_assistant_prefill` 验证特定 Jinja 模板（llama3）的正确应用'
+  - '- `test_apply_chat_template` 验证 `/apply-template` 端点的模板渲染功能'
+  - '- `test_completion_with_json_schema` / `test_completion_with_grammar` / `test_completion_with_response_format`
+    测试结构化输出约束'
+  - '- `test_invalid_chat_completion_req` 验证无效消息参数的 400/500 错误处理'
+  - ''
+  - '**OpenAI SDK 兼容性与多选择测试**'
+  - '- `test_chat_completion_with_openai_library` 验证 OpenAI 官方 SDK 的兼容性'
+  - '- `test_chat_completions_multiple_choices` 验证多选择响应的缓存复用机制'
+- codes:
+  - file: tools/server/tests/unit/test_completion.py
+    line: 16-20
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 22-47
+    method_or_func: test_completion()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 49-77
+    method_or_func: test_completion_stream()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 161-175
+    method_or_func: test_consistent_result_same_seed()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 193-208
+    method_or_func: test_consistent_result_different_batch_size()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 177-191
+    method_or_func: test_different_result_different_seed()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 210-224
+    method_or_func: test_cache_vs_nocache_prompt()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 226-235
+    method_or_func: test_nocache_long_input_prompt()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 321-366
+    method_or_func: test_completion_parallel_slots()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 567-603
+    method_or_func: test_completion_prompt_cache()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 264-319
+    method_or_func: test_completion_with_tokens_input()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 549-565
+    method_or_func: test_cancel_request()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 432-458
+    method_or_func: test_n_probs()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 460-484
+    method_or_func: test_n_probs_stream()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 486-514
+    method_or_func: test_n_probs_post_sampling()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 398-430
+    method_or_func: test_completion_response_fields()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 368-396
+    method_or_func: test_completion_unified()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 79-95
+    method_or_func: test_completion_stream_vs_non_stream()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 97-114
+    method_or_func: test_completion_with_openai_library()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 116-135
+    method_or_func: test_completion_stream_with_openai_library()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 138-159
+    method_or_func: test_completion_stream_with_openai_library_stops()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 237-247
+    method_or_func: test_json_prompt_no_mtmd()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 249-262
+    method_or_func: test_json_prompt_mtm_error_when_not_supported()
+  - file: tools/server/tests/unit/test_completion.py
+    line: 516-547
+    method_or_func: test_logit_bias()
+  name: Legacy Completion 深度测试 —— 传统补全接口的『全方位体检』
+  'no': 4
+  points:
+  - '**基础与流式补全**'
+  - '- `test_completion` 验证 `/completion` 端点的基本功能（timings、truncated、tokens 返回）'
+  - '- `test_completion_stream` 检查 SSE 流式传输的 stop 标志、stop_type、generation_settings'
+  - '- `test_completion_stream_vs_non_stream` 确保流式与非流式结果内容一致'
+  - ''
+  - '**确定性与随机性控制**'
+  - '- `test_consistent_result_same_seed` 验证相同 seed 产生相同输出（可复现性）'
+  - '- `test_different_result_different_seed` 验证不同 seed 产生不同输出'
+  - '- `test_consistent_result_different_batch_size` 确保批处理大小不影响生成结果'
+  - '- `test_cache_vs_nocache_prompt` 对比启用与禁用缓存的结果（标记为跳过）'
+  - '- `test_nocache_long_input_prompt` 验证无缓存时超长输入的 400 错误'
+  - ''
+  - '**并行与缓存策略**'
+  - '- `test_completion_parallel_slots` 测试多槽位并发处理，使用 `parallel_function_calls` 模拟并发请求'
+  - '- `test_completion_unified` 验证统一 KV 缓存模式下的槽位共享'
+  - '- `test_completion_prompt_cache` 测试主机内存缓存的命中与未命中统计'
+  - ''
+  - '**OpenAI SDK 兼容**'
+  - '- `test_completion_with_openai_library` 与 `test_completion_stream_with_openai_library`
+    验证 SDK 兼容性'
+  - '- `test_completion_stream_with_openai_library_stops` 验证停止词处理（慢速测试）'
+  - ''
+  - '**输入格式灵活性**'
+  - '- `test_completion_with_tokens_input` 支持 token 数组、字符串、混合类型的 prompt 输入'
+  - '- `test_json_prompt_no_mtmd` / `test_json_prompt_mtm_error_when_not_supported`
+    验证多模态 JSON prompt 的边界'
+  - ''
+  - '**高级功能测试**'
+  - '- `test_n_probs` / `test_n_probs_stream` / `test_n_probs_post_sampling` 验证 token
+    概率输出功能'
+  - '- `test_completion_response_fields` 验证响应字段过滤功能'
+  - '- `test_cancel_request` 验证请求取消机制与槽位释放'
+  - '- `test_logit_bias` 验证 logit_bias 参数（token ID vs 字符串形式）'
+- codes:
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 18-25
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 28-37
+    method_or_func: vision_server()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 10-16
+    method_or_func: get_test_image_base64()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 40-71
+    method_or_func: test_anthropic_messages_basic()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 74-89
+    method_or_func: test_anthropic_messages_with_system()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 92-111
+    method_or_func: test_anthropic_messages_multipart_content()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 114-128
+    method_or_func: test_anthropic_messages_conversation()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 131-190
+    method_or_func: test_anthropic_messages_streaming()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 193-208
+    method_or_func: test_anthropic_count_tokens()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 211-225
+    method_or_func: test_anthropic_count_tokens_with_system()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 228-240
+    method_or_func: test_anthropic_count_tokens_no_max_tokens()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 243-287
+    method_or_func: test_anthropic_tool_use_basic()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 290-331
+    method_or_func: test_anthropic_tool_result()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 334-375
+    method_or_func: test_anthropic_tool_result_with_text()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 378-410
+    method_or_func: test_anthropic_tool_result_error()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 413-460
+    method_or_func: test_anthropic_tool_streaming()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 463-496
+    method_or_func: test_anthropic_vision_format_accepted()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 499-532
+    method_or_func: test_anthropic_vision_base64_with_multimodal_model()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 535-548
+    method_or_func: test_anthropic_stop_sequences()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 551-564
+    method_or_func: test_anthropic_temperature()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 567-580
+    method_or_func: test_anthropic_top_p()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 583-596
+    method_or_func: test_anthropic_top_k()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 599-610
+    method_or_func: test_anthropic_missing_messages()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 613-626
+    method_or_func: test_anthropic_empty_messages()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 629-674
+    method_or_func: test_anthropic_streaming_content_block_indices()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 677-694
+    method_or_func: test_anthropic_thinking()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 697-713
+    method_or_func: test_anthropic_metadata()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 716-757
+    method_or_func: test_anthropic_vs_openai_different_response_format()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 760-821
+    method_or_func: test_anthropic_thinking_history_in_count_tokens()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 824-878
+    method_or_func: test_anthropic_thinking_history_in_template()
+  - file: tools/server/tests/unit/test_compat_anthropic.py
+    line: 881-962
+    method_or_func: test_anthropic_thinking_with_reasoning_model()
+  - file: tools/server/tests/unit/test_compat_oai_responses.py
+    line: 1-11
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_compat_oai_responses.py
+    line: 13-29
+    method_or_func: test_responses_with_openai_library()
+  - file: tools/server/tests/unit/test_compat_oai_responses.py
+    line: 31-66
+    method_or_func: test_responses_stream_with_openai_library()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 1-122
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 129-158
+    method_or_func: do_test_completion_with_required_tool_tiny()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 166-175
+    method_or_func: test_completion_with_required_tool_tiny_fast()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 193-202
+    method_or_func: test_completion_with_required_tool_tiny_slow()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 260-300
+    method_or_func: test_completion_with_required_tool_real_model()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 306-320
+    method_or_func: do_test_completion_without_tool_call()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 327-335
+    method_or_func: test_completion_without_tool_call_fast()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 350-358
+    method_or_func: test_completion_without_tool_call_slow()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 394-414
+    method_or_func: test_weather()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 416-435
+    method_or_func: do_test_weather()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 452-466
+    method_or_func: test_calc_result()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 468-536
+    method_or_func: do_test_calc_result()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 555-598
+    method_or_func: test_thoughts()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 626-641
+    method_or_func: test_hello_world()
+  - file: tools/server/tests/unit/test_tool_call.py
+    line: 643-664
+    method_or_func: do_test_hello_world()
+  name: 协议兼容性：Anthropic 与 OpenAI Responses —— 跨厂商的『翻译官测试』
+  'no': 5
+  points:
+  - '**Anthropic Messages 格式验证**'
+  - '- `test_anthropic_messages_basic` 检查基础响应结构（type: message, content 数组, usage 字段）'
+  - '- `test_anthropic_messages_streaming` 验证流式事件序列（message_start → content_block_delta
+    → message_stop）'
+  - '- `test_anthropic_messages_with_system` / `test_anthropic_messages_multipart_content`
+    / `test_anthropic_messages_conversation` 验证系统提示、多部分内容、多轮对话'
+  - '- `test_anthropic_count_tokens` 系列测试 token 计数端点的各种场景（基础、带 system、无 max_tokens）'
+  - ''
+  - '**工具调用与视觉支持**'
+  - '- `test_anthropic_tool_use_basic` 验证工具调用请求的接受与 tool_use 内容块生成'
+  - '- `test_anthropic_tool_result` / `test_anthropic_tool_result_with_text` / `test_anthropic_tool_result_error`
+    测试工具结果回传的各种形式'
+  - '- `test_anthropic_tool_streaming` 验证流式工具调用的事件序列'
+  - '- `test_anthropic_vision_base64_with_multimodal_model` 使用 vision fixture 测试图像输入的
+    base64 格式'
+  - '- `test_anthropic_vision_format_accepted` 验证非多模态模型对视觉格式的错误处理'
+  - ''
+  - '**采样参数与错误处理**'
+  - '- `test_anthropic_stop_sequences` / `test_anthropic_temperature` / `test_anthropic_top_p`
+    / `test_anthropic_top_k` 验证采样参数'
+  - '- `test_anthropic_missing_messages` / `test_anthropic_empty_messages` 验证边界输入处理'
+  - '- `test_anthropic_metadata` 验证元数据参数透传'
+  - ''
+  - '**思考过程（Thinking）与协议差异**'
+  - '- `test_anthropic_thinking` 验证思考参数接受'
+  - '- `test_anthropic_thinking_with_reasoning_model` 验证 reasoning 模型的思考块和 signature_delta
+    事件'
+  - '- `test_anthropic_thinking_history_in_count_tokens` 与 `test_anthropic_thinking_history_in_template`
+    验证历史消息中的思考内容处理'
+  - '- `test_anthropic_vs_openai_different_response_format` 验证 Anthropic 与 OpenAI
+    响应结构的差异'
+  - ''
+  - '**OpenAI Responses API 验证**'
+  - '- `test_responses_with_openai_library` 验证 Responses API 基础功能'
+  - '- `test_responses_stream_with_openai_library` 验证流式事件序列和 ID 一致性'
+  - '- `__main__` 部分定义了全局 `server` 变量和 `create_server` fixture，确保响应测试有独立的服务器实例'
+- codes:
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 10-16
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 18-20
+    method_or_func: fixture_create_server()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 22-47
+    method_or_func: test_with_and_without_draft()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 49-72
+    method_or_func: test_different_draft_min_draft_max()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 74-84
+    method_or_func: test_slot_ctx_not_exceeded()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 86-101
+    method_or_func: test_with_ctx_shift()
+  - file: tools/server/tests/unit/test_speculative.py
+    line: 103-118
+    method_or_func: test_multi_requests_parallel()
+  - file: tools/server/tests/unit/test_lora.py
+    line: 1-8
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_lora.py
+    line: 10-14
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_lora.py
+    line: 16-31
+    method_or_func: test_lora()
+  - file: tools/server/tests/unit/test_lora.py
+    line: 33-59
+    method_or_func: test_lora_per_request()
+  - file: tools/server/tests/unit/test_lora.py
+    line: 61-97
+    method_or_func: test_with_big_model()
+  name: 高级特性：推测解码与 LoRA —— 性能与个性化微调的『特种部队』
+  'no': 6
+  points:
+  - '**推测解码（Speculative Decoding）验证**'
+  - '- `test_with_and_without_draft` 对比启用/禁用 draft 模型的输出一致性（确保推测解码不改变结果）'
+  - '- `test_different_draft_min_draft_max` 测试不同草稿长度参数组合下的稳定性'
+  - '- `test_slot_ctx_not_exceeded` 验证长 prompt 下上下文不被超出'
+  - '- `test_with_ctx_shift` 结合上下文偏移测试推测解码'
+  - '- `test_multi_requests_parallel` 验证多请求并行下的推测解码性能'
+  - '- `create_server` / `fixture_create_server` 配置带草稿模型的服务器实例'
+  - ''
+  - '**LoRA 适配器动态控制**'
+  - '- `test_lora` 通过 `/lora-adapters` 端点动态调整 scale，验证不同 scale 下的文本风格变化（0.0 为普通故事，1.0
+    为莎士比亚风格）'
+  - '- `test_lora_per_request` 测试多槽位并行时每个请求独立的 LoRA 配置'
+  - '- `test_with_big_model` 在 8B 级别模型上验证 LoRA 的效果（标记为慢速测试）'
+- codes:
+  - file: tools/server/tests/unit/test_ctx_shift.py
+    line: 1-183
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_slot_save.py
+    line: 1-6
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_slot_save.py
+    line: 8-13
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_slot_save.py
+    line: 15-64
+    method_or_func: test_slot_save_restore()
+  - file: tools/server/tests/unit/test_slot_save.py
+    line: 66-89
+    method_or_func: test_slot_erase()
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 1-183
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 22-35
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 12-14
+    method_or_func: LogReader.__init__()
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 15-20
+    method_or_func: LogReader.drain()
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 44-82
+    method_or_func: test_clear_and_restore()
+  - file: tools/server/tests/unit/test_kv_keep_only_active.py
+    line: 85-100
+    method_or_func: test_disabled_with_flag()
+  name: KV 缓存与上下文管理 —— 内存状态的『时空管理局』
+  'no': 7
+  points:
+  - '**上下文偏移（Context Shift）**'
+  - '- 在 `__main__` 测试块中验证启用上下文偏移后，长对话能截断旧内容继续生成（test_ctx_shift_enabled 场景）'
+  - '- 验证禁用偏移时短 prompt 正常处理（test_ctx_shift_disabled_short_prompt 场景）'
+  - '- 验证禁用偏移时超长 prompt 报错（test_ctx_shift_disabled_long_prompt 场景）'
+  - '- 测试流式响应中的截断处理（test_ctx_shift_disabled_stream 场景）'
+  - ''
+  - '**槽位状态保存与恢复**'
+  - '- `test_slot_save_restore` 验证槽位 KV 缓存可保存到文件（`slots/1?action=save`）并恢复到其他槽位（prompt_n
+    从 21 降到 6 证明缓存复用）'
+  - '- `test_slot_erase` 验证槽位擦除后重新处理所有 token'
+  - ''
+  - '**KV 缓存清理策略（Keep Only Active）**'
+  - '- `test_clear_and_restore` 通过日志标记（`__TEST_TAG_CLEAR_IDLE_SLOT__`）验证空闲槽位的 KV 被清理，且能从
+    cache-ram 恢复'
+  - '- `test_disabled_with_flag` 验证 `--no-clear-idle` 禁用自动清理'
+  - '- `LogReader` 辅助类提供增量日志读取功能，支持测试中的日志验证'
+- codes:
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 8-24
+    method_or_func: get_img_url()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 30-32
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 34-41
+    method_or_func: test_models_supports_multimodal_capability()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 43-50
+    method_or_func: test_v1_models_supports_multimodal_capability()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 52-83
+    method_or_func: test_vision_chat_completion()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 110-137
+    method_or_func: test_vision_embeddings()
+  - file: tools/server/tests/unit/test_vision_api.py
+    line: 85-108
+    method_or_func: test_vision_completion()
+  name: 多模态与视觉 API —— 图像理解的『视觉神经检查』
+  'no': 8
+  points:
+  - '**视觉能力元数据**'
+  - '- `test_models_supports_multimodal_capability` 与 `test_v1_models_supports_multimodal_capability`
+    验证模型能力标记包含 "multimodal"'
+  - '- 使用 tinygemma3 预设（自动下载 mmproj）作为测试基座'
+  - ''
+  - '**图像输入格式兼容**'
+  - '- `test_vision_chat_completion` 测试 `<__media__/>` 占位符与 image_url 类型的多种格式（URL、base64、data
+    URI）'
+  - '- 验证错误输入（malformed、404 URL、非图像数据）返回 400/500 错误'
+  - ''
+  - '**多模态嵌入（Embeddings）**'
+  - '- `test_vision_embeddings` 验证相同图文输入产生相同嵌入向量，纯文本与图文输入产生不同向量'
+  - '- 使用精确匹配（==）而非近似比较，因为多模态嵌入是确定性的'
+  - ''
+  - '**多模态补全**'
+  - '- `test_vision_completion` 验证多模态补全端点的功能'
+- codes:
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 1-12
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 14-31
+    method_or_func: test_embedding_single()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 33-51
+    method_or_func: test_embedding_multiple()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 53-75
+    method_or_func: test_embedding_multiple_with_fa()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 77-105
+    method_or_func: test_embedding_mixed_input()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 107-123
+    method_or_func: test_embedding_pooling_mean()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 125-142
+    method_or_func: test_embedding_pooling_mean_multiple()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 144-160
+    method_or_func: test_embedding_pooling_none()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 162-174
+    method_or_func: test_embedding_pooling_none_oai()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 176-184
+    method_or_func: test_embedding_openai_library_single()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 186-199
+    method_or_func: test_embedding_openai_library_multiple()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 201-210
+    method_or_func: test_embedding_error_prompt_too_long()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 212-231
+    method_or_func: test_same_prompt_give_same_result()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 233-248
+    method_or_func: test_embedding_usage_single()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 250-263
+    method_or_func: test_embedding_usage_multiple()
+  - file: tools/server/tests/unit/test_embedding.py
+    line: 265-301
+    method_or_func: test_embedding_openai_library_base64()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 1-10
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 26-47
+    method_or_func: test_rerank()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 49-70
+    method_or_func: test_rerank_tei_format()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 72-84
+    method_or_func: test_invalid_rerank_req()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 86-108
+    method_or_func: test_rerank_usage()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 110-128
+    method_or_func: test_rerank_top_n()
+  - file: tools/server/tests/unit/test_rerank.py
+    line: 130-149
+    method_or_func: test_rerank_tei_top_n()
+  - file: tools/server/tests/unit/test_tokenize.py
+    line: 1-11
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_tokenize.py
+    line: 14-29
+    method_or_func: test_tokenize_detokenize()
+  - file: tools/server/tests/unit/test_tokenize.py
+    line: 32-43
+    method_or_func: test_tokenize_with_bos()
+  - file: tools/server/tests/unit/test_tokenize.py
+    line: 46-60
+    method_or_func: test_tokenize_with_pieces()
+  - file: tools/server/tests/unit/test_template.py
+    line: 12-16
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_template.py
+    line: 18-48
+    method_or_func: test_reasoning()
+  - file: tools/server/tests/unit/test_template.py
+    line: 50-70
+    method_or_func: test_date_inside_prompt()
+  - file: tools/server/tests/unit/test_template.py
+    line: 72-91
+    method_or_func: test_add_generation_prompt()
+  - file: tools/server/tests/unit/test_infill.py
+    line: 7-10
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_infill.py
+    line: 12-21
+    method_or_func: test_infill_without_input_extra()
+  - file: tools/server/tests/unit/test_infill.py
+    line: 23-35
+    method_or_func: test_infill_with_input_extra()
+  - file: tools/server/tests/unit/test_infill.py
+    line: 37-49
+    method_or_func: test_invalid_input_extra_req()
+  - file: tools/server/tests/unit/test_infill.py
+    line: 51-63
+    method_or_func: test_with_qwen_model()
+  name: 辅助任务：Embedding、Rerank、Tokenize、Infill —— 周边功能力的『专科门诊』
+  'no': 9
+  points:
+  - '**Embedding 服务**'
+  - '- `test_embedding_single` / `test_embedding_multiple` 验证向量归一化与多输入处理'
+  - '- `test_embedding_multiple_with_fa` 测试带 Flash Attention 的嵌入'
+  - '- `test_embedding_mixed_input` 参数化测试混合输入（字符串、token列表、嵌套列表）'
+  - '- `test_embedding_pooling_mean` / `test_embedding_pooling_mean_multiple` / `test_embedding_pooling_none`
+    验证不同池化策略'
+  - '- `test_embedding_pooling_none_oai` 验证 `/v1/embeddings` 不支持 `pooling=''none''`
+    的错误处理'
+  - '- `test_embedding_openai_library_single` / `test_embedding_openai_library_multiple`
+    / `test_embedding_openai_library_base64` 验证 OpenAI SDK 兼容性与 base64 编码'
+  - '- `test_embedding_error_prompt_too_long` 验证超长 prompt 错误'
+  - '- `test_same_prompt_give_same_result` 验证嵌入确定性'
+  - '- `test_embedding_usage_single` / `test_embedding_usage_multiple` 验证 token 使用统计'
+  - ''
+  - '**Rerank 服务**'
+  - '- `test_rerank` 验证 Jina reranker 模型返回相关性排序（index 2 最相关，index 3 最不相关）'
+  - '- `test_rerank_tei_format` 测试 TEI 格式（texts 字段）兼容性'
+  - '- `test_invalid_rerank_req` 验证无效输入的 400 错误'
+  - '- `test_rerank_usage` 验证 token 计数准确性'
+  - '- `test_rerank_top_n` / `test_rerank_tei_top_n` 验证 top_n 参数功能'
+  - ''
+  - '**Tokenize 与 Detokenize**'
+  - '- `test_tokenize_detokenize` 验证文本↔token 的往返转换'
+  - '- `test_tokenize_with_bos` 验证特殊 token（BOS）的添加'
+  - '- `test_tokenize_with_pieces` 验证 token 片段信息返回'
+  - ''
+  - '**聊天模板**'
+  - '- `test_reasoning` 验证不同推理模式（on/off/auto）下的模板渲染'
+  - '- `test_date_inside_prompt` 验证日期注入功能'
+  - '- `test_add_generation_prompt` 验证生成提示符的添加控制'
+  - ''
+  - '**代码填充（Infill）**'
+  - '- `test_infill_without_input_extra` / `test_infill_with_input_extra` 测试 FIM（Fill-in-Middle）模式'
+  - '- `test_invalid_input_extra_req` 验证无效输入的错误处理'
+  - '- `test_with_qwen_model` 验证不同模型的填充能力'
+- codes:
+  - file: tools/server/tests/unit/test_router.py
+    line: 1-190
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_proxy.py
+    line: 1-42
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_security.py
+    line: 10-14
+    method_or_func: create_server()
+  - file: tools/server/tests/unit/test_security.py
+    line: 24-30
+    method_or_func: test_access_static_assets_without_api_key()
+  - file: tools/server/tests/unit/test_security.py
+    line: 16-22
+    method_or_func: test_access_public_endpoint()
+  - file: tools/server/tests/unit/test_security.py
+    line: 32-41
+    method_or_func: test_incorrect_api_key()
+  - file: tools/server/tests/unit/test_security.py
+    line: 43-52
+    method_or_func: test_correct_api_key()
+  - file: tools/server/tests/unit/test_security.py
+    line: 54-63
+    method_or_func: test_correct_api_key_anthropic_header()
+  - file: tools/server/tests/unit/test_security.py
+    line: 65-77
+    method_or_func: test_openai_library_correct_api_key()
+  - file: tools/server/tests/unit/test_security.py
+    line: 79-95
+    method_or_func: test_cors_options()
+  - file: tools/server/tests/unit/test_security.py
+    line: 97-121
+    method_or_func: test_local_media_file()
+  - file: tools/server/tests/unit/test_sleep.py
+    line: 1-9
+    method_or_func: __main__
+  - file: tools/server/tests/unit/test_sleep.py
+    line: 11-31
+    method_or_func: test_server_sleep()
+  name: 服务治理：Router、安全与睡眠 —— 服务治理的『后勤部门』
+  'no': 10
+  points:
+  - '**模型路由（Router）**'
+  - '- 在 `__main__` 全局测试块中验证 `/models/unload` 卸载模型并更新状态（test_router_unload_model 场景）'
+  - '- 测试 LRU 淘汰策略：加载第 3 个模型时第 1 个被驱逐（test_router_models_max_evicts_lru 场景）'
+  - '- 验证禁用自动加载时的错误处理（test_router_no_models_autoload 场景）'
+  - '- 验证路由器的 API 密钥认证（test_router_api_key_required 场景）'
+  - ''
+  - '**CORS 代理**'
+  - '- 在 `__main__` 中验证代理禁用时的 404 响应（test_mcp_no_proxy 场景）'
+  - '- 验证 `/cors-proxy` 转发外部请求（example.com，test_mcp_proxy 场景）'
+  - '- 验证代理内部 API 端点（test_mcp_proxy_custom_port 场景）'
+  - ''
+  - '**安全与静态资源**'
+  - '- `test_access_static_assets_without_api_key` 确保 WebUI 静态资源无需认证'
+  - '- `test_access_public_endpoint` 验证 health/models 公开端点'
+  - '- `test_incorrect_api_key` / `test_correct_api_key` / `test_correct_api_key_anthropic_header`
+    验证 API 密钥保护'
+  - '- `test_openai_library_correct_api_key` 验证 OpenAI SDK 密钥集成'
+  - '- `test_cors_options` 验证 CORS 预检请求处理'
+  - '- `test_local_media_file` 验证媒体路径限制（防目录遍历攻击）'
+  - ''
+  - '**睡眠与唤醒**'
+  - '- `test_server_sleep` 验证服务器空闲超时后进入睡眠状态（`is_sleeping: true`），生成请求后自动唤醒'

@@ -1,0 +1,703 @@
+classes:
+- desc: 一个虚拟后端的上下文结构，用于配置最大缓冲区大小、对齐方式，并跟踪由该后端分配的所有缓冲区。
+  methods:
+  - code:
+    - size_t allocated_total() const {
+    - '    size_t n = 0;'
+    - '    for (ggml_backend_buffer_t buf : buffers) {'
+    - '        n += ggml_backend_buffer_get_size(buf);'
+    - '    }'
+    - '    return n;'
+    - '}'
+    desc: 计算并返回该后端当前分配的所有缓冲区大小的总和。
+    line: 25-31
+    name: allocated_total
+  name: dummy_backend_context
+- desc: 定义虚拟后端实例的结构，包含一个上下文唯一指针和与之关联的缓冲区类型。
+  methods: []
+  name: dummy_backend
+- desc: 一个辅助结构，用于在测试中持有 ggml 上下文、计算图以及上下文的智能指针。
+  methods: []
+  name: test_context_with_graph
+desc: 该文件是 ggml 库的内存分配器（gallocr）的测试套件。它定义了一个具有可配置最大缓冲区大小和分配跟踪功能的虚拟后端，并包含多个测试用例来验证内存分配器在单缓冲区和多缓冲区类型场景下的行为，包括缓冲区大小限制、内存块重用、视图处理、内存重叠检查以及重新分配等特性。
+file: tests/test-alloc.cpp
+funcs:
+- code:
+  - static const char * dummy_backend_buffer_type_get_name(ggml_backend_buffer_type_t)
+    {
+  - '    return "dummy_buffer_type";'
+  - '}'
+  desc: 返回虚拟后端缓冲区类型的固定名称字符串。
+  line: 34-36
+  name: dummy_backend_buffer_type_get_name
+- code:
+  - static ggml_backend_buffer_t dummy_backend_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    dummy_backend_context * ctx    = (dummy_backend_context *) buft->context;'
+  - '    ggml_backend_buffer_t & buffer = ctx->buffers.emplace_back();'
+  - '    buffer                         = ggml_backend_buffer_init(buft, ctx->buffer_interface,
+    ctx, size);'
+  - '    return buffer;'
+  - '}'
+  desc: 为虚拟后端分配一个新缓冲区，将其添加到上下文的缓冲区列表，并初始化。
+  line: 39-44
+  name: dummy_backend_buffer_type_alloc_buffer
+- code:
+  - static size_t dummy_backend_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    dummy_backend_context * ctx = (dummy_backend_context *) buft->context;'
+  - '    return ctx->alignment;'
+  - '}'
+  desc: 返回虚拟后端缓冲区类型的对齐要求。
+  line: 47-50
+  name: dummy_backend_buffer_type_get_alignment
+- code:
+  - static size_t dummy_backend_buffer_type_get_max_size(ggml_backend_buffer_type_t
+    buft) {
+  - '    dummy_backend_context * ctx = (dummy_backend_context *) buft->context;'
+  - '    return ctx->max_buffer_size;'
+  - '}'
+  desc: 返回虚拟后端缓冲区类型允许的最大缓冲区大小。
+  line: 53-56
+  name: dummy_backend_buffer_type_get_max_size
+- code:
+  - static bool dummy_backend_buffer_type_is_host(ggml_backend_buffer_type_t) {
+  - '    return true;'
+  - '}'
+  desc: 指示虚拟后端缓冲区类型是否为主机内存，此处始终返回 true。
+  line: 59-61
+  name: dummy_backend_buffer_type_is_host
+- code:
+  - static void dummy_backend_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+  - '    dummy_backend_context * ctx = (dummy_backend_context *) buffer->context;'
+  - ''
+  - '    auto i = std::find(ctx->buffers.begin(), ctx->buffers.end(), buffer);'
+  - '    GGML_ASSERT(i != ctx->buffers.end());'
+  - '    ctx->buffers.erase(i);'
+  - '}'
+  desc: 释放虚拟后端缓冲区，将其从上下文的缓冲区列表中移除。
+  line: 66-73
+  name: dummy_backend_buffer_free_buffer
+- code:
+  - static void * dummy_backend_buffer_get_base(ggml_backend_buffer_t) {
+  - '    return alloc_base;'
+  - '}'
+  desc: 返回虚拟后端的基地址，固定为 alloc_base。
+  line: 76-78
+  name: dummy_backend_buffer_get_base
+- code:
+  - static ggml_status dummy_backend_buffer_init_tensor(ggml_backend_buffer_t, ggml_tensor
+    *) {
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 初始化虚拟后端缓冲区中的张量，此处始终返回成功状态。
+  line: 81-83
+  name: dummy_backend_buffer_init_tensor
+- code:
+  - static void dummy_backend_buffer_memset_tensor(ggml_backend_buffer_t, ggml_tensor
+    *, uint8_t, size_t, size_t) {}
+  desc: 虚拟后端缓冲区中张量的内存设置函数，此处为空操作。
+  line: 85-85
+  name: dummy_backend_buffer_memset_tensor
+- code:
+  - static void dummy_backend_buffer_set_tensor(ggml_backend_buffer_t, ggml_tensor
+    *, const void *, size_t, size_t) {}
+  desc: 向虚拟后端缓冲区中的张量写入数据的函数，此处为空操作。
+  line: 87-87
+  name: dummy_backend_buffer_set_tensor
+- code:
+  - static void dummy_backend_buffer_get_tensor(ggml_backend_buffer_t, const ggml_tensor
+    *, void *, size_t, size_t) {}
+  desc: 从虚拟后端缓冲区中的张量读取数据的函数，此处为空操作。
+  line: 89-89
+  name: dummy_backend_buffer_get_tensor
+- code:
+  - static void dummy_backend_buffer_clear(ggml_backend_buffer_t, uint8_t) {}
+  desc: 清空虚拟后端缓冲区的函数，此处为空操作。
+  line: 91-91
+  name: dummy_backend_buffer_clear
+- code:
+  - static dummy_backend dummy_backend_init(size_t max_buffer_size, size_t alignment
+    = 8) {
+  - '    dummy_backend b{};'
+  - '    b.context                  = std::make_unique<dummy_backend_context>();'
+  - '    b.context->alignment       = alignment;'
+  - '    b.context->max_buffer_size = max_buffer_size;'
+  - ''
+  - '    b.context->buffer_interface.free_buffer   = dummy_backend_buffer_free_buffer;'
+  - '    b.context->buffer_interface.get_base      = dummy_backend_buffer_get_base;'
+  - '    b.context->buffer_interface.init_tensor   = dummy_backend_buffer_init_tensor;'
+  - '    b.context->buffer_interface.memset_tensor = dummy_backend_buffer_memset_tensor;'
+  - '    b.context->buffer_interface.set_tensor    = dummy_backend_buffer_set_tensor;'
+  - '    b.context->buffer_interface.get_tensor    = dummy_backend_buffer_get_tensor;'
+  - '    b.context->buffer_interface.clear         = dummy_backend_buffer_clear;'
+  - ''
+  - '    b.buffer_type.context             = b.context.get();'
+  - '    b.buffer_type.iface.get_name      = dummy_backend_buffer_type_get_name;'
+  - '    b.buffer_type.iface.alloc_buffer  = dummy_backend_buffer_type_alloc_buffer;'
+  - '    b.buffer_type.iface.get_alignment = dummy_backend_buffer_type_get_alignment;'
+  - '    b.buffer_type.iface.get_max_size  = dummy_backend_buffer_type_get_max_size;'
+  - '    b.buffer_type.iface.is_host       = dummy_backend_buffer_type_is_host;'
+  - '    return b;'
+  - '}'
+  desc: 初始化虚拟后端，设置其上下文和相关缓冲区接口。
+  line: 96-115
+  name: dummy_backend_init
+- code:
+  - static test_context_with_graph make_context() {
+  - '    ggml_init_params params{};'
+  - '    params.mem_size = 48 * ggml_tensor_overhead() + ggml_graph_overhead();'
+  - '    params.no_alloc = true;'
+  - ''
+  - '    ggml_context *   ctx     = ggml_init(params);'
+  - '    ggml_context_ptr ctx_ptr = ggml_context_ptr(ctx);'
+  - '    ggml_cgraph *    graph   = ggml_new_graph(ctx);'
+  - '    return { ctx, graph, std::move(ctx_ptr) };'
+  - '}'
+  desc: 创建一个测试用的 ggml 上下文和计算图，步骤包括初始化参数，创建上下文和计算图。
+  line: 125-133
+  name: make_context
+- code:
+  - static ggml_tensor * make_input_1d(ggml_context * ctx, int64_t n_elements) {
+  - '    ggml_tensor * t = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);'
+  - '    ggml_set_input(t);'
+  - '    return t;'
+  - '}'
+  desc: 创建一个一维输入张量，并标记为输入。
+  line: 136-140
+  name: make_input_1d
+- code:
+  - static ggml_tensor * make_input_with_size(ggml_context * ctx, size_t size_bytes)
+    {
+  - '    GGML_ASSERT(size_bytes % 4 == 0);'
+  - '    return make_input_1d(ctx, size_bytes / 4);'
+  - '}'
+  desc: 创建一个指定字节大小的一维输入张量，大小必须是4的倍数。
+  line: 143-146
+  name: make_input_with_size
+- code:
+  - static void assign_names(ggml_context * ctx, const char * prefix = "x") {
+  - '    int i = 0;'
+  - '    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx,
+    t)) {'
+  - '        ggml_format_name(t, "%s%d", prefix, i++);'
+  - '    }'
+  - '}'
+  desc: 为上下文中的所有张量分配格式化的名称，前缀可自定义。
+  line: 148-153
+  name: assign_names
+- code:
+  - static int get_leaf_id(ggml_cgraph * graph, const char * tensor_name) {
+  - '    for (int i = 0; i < graph->n_leafs; ++i) {'
+  - '        if (strncmp(graph->leafs[i]->name, tensor_name, GGML_MAX_NAME) == 0)
+    {'
+  - '            return i;'
+  - '        }'
+  - '    }'
+  - '    fprintf(stderr, "leaf not found: %s\n", tensor_name);'
+  - '    return -1;'
+  - '}'
+  desc: 在计算图的叶子节点中查找指定名称的张量，返回其索引，未找到则报错并返回-1。
+  line: 156-165
+  name: get_leaf_id
+- code:
+  - static int get_node_id(ggml_cgraph * graph, const char * tensor_name) {
+  - '    for (int i = 0; i < graph->n_nodes; ++i) {'
+  - '        if (strncmp(graph->nodes[i]->name, tensor_name, GGML_MAX_NAME) == 0)
+    {'
+  - '            return i;'
+  - '        }'
+  - '    }'
+  - '    fprintf(stderr, "node not found: %s", tensor_name);'
+  - '    return -1;'
+  - '}'
+  desc: 在计算图的节点中查找指定名称的张量，返回其索引，未找到则报错并返回-1。
+  line: 167-176
+  name: get_node_id
+- code:
+  - static ggml_gallocr_ptr allocate_graph(ggml_cgraph * graph, ggml_tensor * out,
+    ggml_backend_buffer_type_t buft) {
+  - '    ggml_set_output(out);'
+  - '    ggml_build_forward_expand(graph, out);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = ggml_gallocr_ptr(ggml_gallocr_new(buft));'
+  - '    bool             result = ggml_gallocr_alloc_graph(galloc.get(), graph);'
+  - '    GGML_ASSERT(result);'
+  - '    return galloc;'
+  - '}'
+  desc: 分配计算图内存的辅助函数，设置输出、构建前向展开并执行分配。
+  line: 181-188
+  name: allocate_graph
+- code:
+  - static void check_all_allocated(ggml_cgraph * graph) {
+  - '    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {'
+  - '        ggml_tensor * t = ggml_graph_node(graph, i);'
+  - '        GGML_ASSERT(t->buffer != nullptr);'
+  - '        GGML_ASSERT(t->data != nullptr);'
+  - '    }'
+  - '}'
+  desc: 检查计算图中所有张量是否都已分配缓冲区且数据指针有效。
+  line: 193-199
+  name: check_all_allocated
+- code:
+  - static void check_max_size(ggml_context * ctx) {
+  - '    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx,
+    t)) {'
+  - '        auto   buft     = ggml_backend_buffer_get_type(t->buffer);'
+  - '        size_t max_size = ggml_backend_buft_get_max_size(buft);'
+  - '        size_t offset   = (char *) t->data - (char *) ggml_backend_buffer_get_base(t->buffer);'
+  - '        GGML_ASSERT(t->data >= ggml_backend_buffer_get_base(t->buffer));'
+  - '        GGML_ASSERT((size_t) offset + ggml_nbytes(t) <= max_size);'
+  - '    }'
+  - '}'
+  desc: 检查所有张量的内存地址和大小是否超出其缓冲区类型的最大大小限制。
+  line: 204-211
+  name: check_max_size
+- code:
+  - static bool can_reuse_memory(ggml_cgraph * graph, int current_i, ggml_tensor *
+    current, ggml_tensor * other) {
+  - '    if (other->flags & GGML_TENSOR_FLAG_OUTPUT) {'
+  - '        return false;'
+  - '    }'
+  - '    // Check if `other` is still "alive", ie. an input to any node after the
+    `current` op'
+  - '    for (int i = current_i; i < ggml_graph_n_nodes(graph); ++i) {'
+  - '        ggml_tensor * t = ggml_graph_node(graph, i);'
+  - '        for (int s = 0; s < GGML_MAX_SRC; s++) {'
+  - '            if (t == current && ggml_op_can_inplace(t->op)) {'
+  - '                continue;'
+  - '            }'
+  - '            if (t->src[s] == other) {'
+  - '                return false;'
+  - '            }'
+  - '            if (t->src[s] && t->src[s]->view_src == other) {'
+  - '                return false;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查在当前操作之后，其他张量是否仍然存活，以确定内存是否可以重用。
+  line: 213-231
+  name: can_reuse_memory
+- code:
+  - static bool memory_overlap(ggml_tensor * a, ggml_tensor * b) {
+  - '    if (a->buffer != b->buffer) {'
+  - '        return false;'
+  - '    }'
+  - '    int64_t a0 = (int64_t) a->data;'
+  - '    int64_t a1 = a0 + ggml_nbytes(a);'
+  - '    int64_t b0 = (int64_t) b->data;'
+  - '    int64_t b1 = b0 + ggml_nbytes(b);'
+  - '    return a1 > b0 && b1 > a0;'
+  - '}'
+  desc: 检查两个张量是否在同一个缓冲区中并且内存区域有重叠。
+  line: 234-242
+  name: memory_overlap
+- code:
+  - static ggml_tensor * get_view_source(ggml_tensor * t) {
+  - '    while (t->view_src) {'
+  - '        t = t->view_src;'
+  - '    }'
+  - '    return t;'
+  - '}'
+  desc: 获取张量的最终源张量，即一路回溯 view_src 直到最底层。
+  line: 244-249
+  name: get_view_source
+- code:
+  - static void check_no_overlap(ggml_cgraph * graph) {
+  - '    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {'
+  - '        for (int j = 0; j < i; ++j) {'
+  - '            ggml_tensor * t = ggml_graph_node(graph, i);'
+  - '            ggml_tensor * o = ggml_graph_node(graph, j);'
+  - '            GGML_ASSERT(t != o);'
+  - ''
+  - '            if (get_view_source(t) == get_view_source(o)) {'
+  - '                continue;'
+  - '            }'
+  - '            if (memory_overlap(t, o)) {'
+  - '                GGML_ASSERT(can_reuse_memory(graph, i, t, o));'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 检查计算图中所有张量对之间没有不合理的重叠，允许的内存复用除外。
+  line: 251-265
+  name: check_no_overlap
+- code:
+  - static void test_max_size_too_many_tensors() {
+  - '    dummy_backend backend      = dummy_backend_init(16);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[7];'
+  - '    x[0] = make_input_with_size(ctx, 8);'
+  - '    x[1] = make_input_with_size(ctx, 8);'
+  - '    x[2] = make_input_with_size(ctx, 8);'
+  - '    x[3] = ggml_mul(ctx, x[0], x[1]);'
+  - '    x[4] = ggml_add(ctx, x[1], x[2]);'
+  - '    x[5] = ggml_add(ctx, x[3], x[0]);'
+  - '    x[6] = ggml_add(ctx, x[4], x[5]);'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[6], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 16 + 16);'
+  - '}'
+  desc: 测试场景：第一个缓冲区被完全耗尽，需要分配第二个缓冲区。
+  line: 273-291
+  name: test_max_size_too_many_tensors
+- code:
+  - static void test_max_size_tensor_too_large() {
+  - '    dummy_backend backend      = dummy_backend_init(32);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[3];'
+  - '    x[0] = make_input_with_size(ctx, 16);    // chunk 0, [0 , 16)'
+  - '    x[1] = make_input_with_size(ctx, 8);     // chunk 0, [16, 24)'
+  - '    x[2] = ggml_concat(ctx, x[0], x[1], 0);  // chunk 1, [0 , 24)'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[2], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 32 + 24);'
+  - '}'
+  desc: 测试场景：第一个缓冲区剩余空间不足以容纳较大的张量，需要第二个缓冲区。
+  line: 294-309
+  name: test_max_size_tensor_too_large
+- code:
+  - static void test_tensor_larger_than_max_size() {
+  - '    dummy_backend backend      = dummy_backend_init(16);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[2];'
+  - '    x[0] = make_input_with_size(ctx, 24);'
+  - '    x[1] = ggml_scale(ctx, x[0], 2.0f);'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[1], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    GGML_ASSERT(backend.context->allocated_total() == 24);'
+  - '}'
+  desc: 测试场景：单个张量的大小超过最大缓冲区大小，分配器应该尝试更大的缓冲区。
+  line: 313-325
+  name: test_tensor_larger_than_max_size
+- code:
+  - static void test_not_enough_chunks() {
+  - '    const int max_chunks = 16;'
+  - '    const int max_size   = 8;'
+  - ''
+  - '    dummy_backend backend      = dummy_backend_init(max_size);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[max_chunks + 1];'
+  - '    for (int i = 0; i < max_chunks + 1; ++i) {'
+  - '        x[i] = make_input_with_size(ctx, max_size);'
+  - '    }'
+  - '    ggml_tensor * acc = x[0];'
+  - '    for (int i = 0; i < max_chunks; ++i) {'
+  - '        acc = ggml_add(ctx, acc, x[i + 1]);'
+  - '    }'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, acc, &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    GGML_ASSERT(backend.context->allocated_total() > max_chunks * max_size);'
+  - '}'
+  desc: 测试场景：张量数量超过最大缓冲区块数，最后一个缓冲区需要增长以容纳所有内容。
+  line: 329-349
+  name: test_not_enough_chunks
+- code:
+  - static void test_fill_leftover_space() {
+  - '    dummy_backend backend      = dummy_backend_init(16);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[4];'
+  - '    x[0] = make_input_with_size(ctx, 8);'
+  - '    x[1] = ggml_pad(ctx, x[0], 2, 0, 0, 0);'
+  - '    x[3] = ggml_mean(ctx, x[1]);'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[3], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 12 + 16);'
+  - '}'
+  desc: 测试场景：分配一个大张量后，填充块中剩余的空间。
+  line: 352-366
+  name: test_fill_leftover_space
+- code:
+  - static void test_view_inplace() {
+  - '    dummy_backend backend      = dummy_backend_init(32);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[6];'
+  - '    x[0] = make_input_1d(ctx, 4);                // chunk 0, [0, 16)'
+  - '    x[1] = ggml_reshape_2d(ctx, x[0], 2, 2);     // view of x0'
+  - '    x[2] = ggml_permute(ctx, x[1], 1, 0, 2, 3);  // view of x0'
+  - '    x[3] = ggml_view_1d(ctx, x[2], 2, 4);        // view of x0'
+  - '    x[4] = make_input_1d(ctx, 2);                // chunk 0, [16, 24)'
+  - '    x[5] = ggml_add(ctx, x[3], x[4]);            // reuse (inplace add)'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[5], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 24);'
+  - '}'
+  desc: 测试场景：计算图中的视图操作不需要额外的内存分配。
+  line: 369-385
+  name: test_view_inplace
+- code:
+  - static void test_reuse_and_free() {
+  - '    dummy_backend backend      = dummy_backend_init(40);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[9];'
+  - '    x[0] = make_input_with_size(ctx, 24);'
+  - '    x[1] = make_input_with_size(ctx, 8);'
+  - '    x[2] = make_input_with_size(ctx, 8);'
+  - '    x[3] = ggml_add(ctx, x[1], x[2]);        // reuse, free x2'
+  - '    x[4] = ggml_pad(ctx, x[0], 2, 0, 0, 0);  // alloc new buffer, free x0'
+  - '    x[5] = ggml_scale(ctx, x[4], 2.0f);      // alloc from free block'
+  - '    x[6] = ggml_add(ctx, x[4], x[5]);        // reuse, free x5'
+  - '    x[7] = ggml_view_1d(ctx, x[6], 2, 8);    // view'
+  - '    x[8] = ggml_add(ctx, x[3], x[7]);        // reuse'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[8], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 40 + 32 + 32);'
+  - '}'
+  desc: 测试场景：内存分配器重用已释放的内存块并释放不再使用的内存。
+  line: 388-406
+  name: test_reuse_and_free
+- code:
+  - static void test_merge_free_block(size_t max_buffer_size) {
+  - '    dummy_backend backend      = dummy_backend_init(max_buffer_size);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[9];'
+  - '    x[0] = make_input_with_size(ctx, 16);'
+  - '    x[1] = make_input_with_size(ctx, 16);'
+  - '    x[2] = make_input_with_size(ctx, 16);'
+  - '    x[3] = ggml_mean(ctx, x[0]);'
+  - '    x[4] = ggml_mean(ctx, x[1]);'
+  - '    x[5] = ggml_pad(ctx, x[2], 2, 0, 0, 0);'
+  - '    x[6] = ggml_add(ctx, x[3], x[4]);'
+  - '    x[7] = ggml_pad(ctx, x[6], 5, 0, 0, 0);'
+  - '    x[8] = ggml_add(ctx, x[5], x[7]);'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[8], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 32 + 32 + 24);'
+  - '}'
+  desc: 测试场景：分配器合并相邻的空闲内存块以形成更大的空闲块。
+  line: 409-428
+  name: test_merge_free_block
+- code:
+  - static void test_prefer_already_allocated_memory() {
+  - '    dummy_backend backend      = dummy_backend_init(32, /*align*/ 4);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[3];'
+  - '    x[0] = make_input_with_size(ctx, 24);  // [24b][8b unused]'
+  - '    x[1] = ggml_mean(ctx, x[0]);           // [24b free][4b][4b unused]'
+  - '    x[2] = ggml_mean(ctx, x[1]);           // should be allocated in the 24b
+    block'
+  - '    assign_names(ctx);'
+  - ''
+  - '    ggml_gallocr_ptr galloc = allocate_graph(graph, x[2], &backend.buffer_type);'
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    GGML_ASSERT(backend.context->allocated_total() <= 28);'
+  - '}'
+  desc: 测试场景：优先重用已分配但释放的内存，而不是分配新内存。
+  line: 432-444
+  name: test_prefer_already_allocated_memory
+- code:
+  - static void test_multiple_buffer_types() {
+  - '    dummy_backend backend_a = dummy_backend_init(32);'
+  - '    dummy_backend backend_b = dummy_backend_init(SIZE_MAX);'
+  - ''
+  - '    auto [ctx_a, _a, ctx_a_ptr] = make_context();'
+  - '    auto [ctx_b, _b, ctx_b_ptr] = make_context();'
+  - '    auto [ctx, graph, ctx_ptr]  = make_context();'
+  - ''
+  - '    ggml_tensor * a[2];'
+  - '    a[0] = make_input_with_size(ctx_a, 16);'
+  - '    a[1] = make_input_with_size(ctx_a, 16);'
+  - '    assign_names(ctx_a, "a");'
+  - ''
+  - '    ggml_tensor * b[2];'
+  - '    b[0] = make_input_with_size(ctx_b, 24);'
+  - '    b[1] = make_input_with_size(ctx_b, 4);'
+  - '    assign_names(ctx_b, "b");'
+  - ''
+  - '    ggml_tensor * x[9];'
+  - '    x[0] = make_input_with_size(ctx, 16);'
+  - '    x[1] = ggml_mul(ctx, x[0], a[0]);'
+  - '    x[2] = ggml_pad(ctx, x[1], 2, 0, 0, 0);'
+  - '    x[3] = ggml_mul(ctx, x[2], b[0]);'
+  - '    x[4] = ggml_mean(ctx, x[3]);'
+  - '    x[5] = ggml_add(ctx, x[4], b[1]);'
+  - '    x[6] = ggml_pad(ctx, x[5], 3, 0, 0, 0);'
+  - '    x[7] = ggml_add(ctx, x[6], a[1]);'
+  - '    x[8] = ggml_scale(ctx, x[7], 2.0f);'
+  - '    assign_names(ctx, "x");'
+  - ''
+  - '    ggml_backend_buffer_ptr    buf_a(ggml_backend_alloc_ctx_tensors_from_buft(ctx_a,
+    &backend_a.buffer_type));'
+  - '    ggml_backend_buffer_ptr    buf_b(ggml_backend_alloc_ctx_tensors_from_buft(ctx_b,
+    &backend_b.buffer_type));'
+  - '    ggml_backend_buffer_type_t bufts[2] = { &backend_a.buffer_type, &backend_b.buffer_type
+    };'
+  - ''
+  - '    // assign buffer types manually to avoid extra complexity from backend scheduler'
+  - '    ggml_set_output(x[8]);'
+  - '    ggml_build_forward_expand(graph, x[8]);'
+  - ''
+  - '    GGML_ASSERT(graph->n_leafs == 5);'
+  - '    int leaf_buffer_ids[5];'
+  - '    leaf_buffer_ids[get_leaf_id(graph, "a0")] = 0;'
+  - '    leaf_buffer_ids[get_leaf_id(graph, "a1")] = 0;'
+  - '    leaf_buffer_ids[get_leaf_id(graph, "b0")] = 1;'
+  - '    leaf_buffer_ids[get_leaf_id(graph, "b1")] = 1;'
+  - '    leaf_buffer_ids[get_leaf_id(graph, "x0")] = 0;'
+  - ''
+  - '    GGML_ASSERT(graph->n_nodes == 8);'
+  - '    int node_buffer_ids[8];'
+  - '    node_buffer_ids[get_node_id(graph, "x1")] = 0;'
+  - '    node_buffer_ids[get_node_id(graph, "x2")] = 0;'
+  - '    node_buffer_ids[get_node_id(graph, "x3")] = 1;'
+  - '    node_buffer_ids[get_node_id(graph, "x4")] = 1;'
+  - '    node_buffer_ids[get_node_id(graph, "x5")] = 1;'
+  - '    node_buffer_ids[get_node_id(graph, "x6")] = 1;'
+  - '    node_buffer_ids[get_node_id(graph, "x7")] = 0;'
+  - '    node_buffer_ids[get_node_id(graph, "x8")] = 0;'
+  - ''
+  - '    ggml_gallocr_ptr galloc(ggml_gallocr_new_n(bufts, 2));'
+  - '    ggml_gallocr_reserve_n(galloc.get(), graph, node_buffer_ids, leaf_buffer_ids);'
+  - '    ggml_gallocr_alloc_graph(galloc.get(), graph);'
+  - ''
+  - '    check_all_allocated(graph);'
+  - '    check_no_overlap(graph);'
+  - '    check_max_size(ctx);'
+  - '    GGML_ASSERT(backend_a.context->allocated_total() <= 32 + 32 + 24);'
+  - '    GGML_ASSERT(backend_b.context->allocated_total() <= 32 + 24);'
+  - '}'
+  desc: 测试场景：在多设备上分配，部分张量由外部（非 gallocr）分配。
+  line: 448-503
+  name: test_multiple_buffer_types
+- code:
+  - static void test_buffer_size_zero() {
+  - '    dummy_backend backend_a    = dummy_backend_init(SIZE_MAX);'
+  - '    dummy_backend backend_b    = dummy_backend_init(SIZE_MAX);'
+  - '    auto [ctx, graph, ctx_ptr] = make_context();'
+  - ''
+  - '    ggml_tensor * x[2];'
+  - '    x[0] = make_input_with_size(ctx, 16);'
+  - '    x[1] = ggml_scale(ctx, x[0], 2.0f);'
+  - ''
+  - '    ggml_set_output(x[1]);'
+  - '    ggml_build_forward_expand(graph, x[1]);'
+  - ''
+  - '    int leaf_buffer_ids[1] = { 0 };'
+  - '    int node_buffer_ids[1] = { 0 };'
+  - ''
+  - '    ggml_backend_buffer_type_t bufts[2] = { &backend_a.buffer_type, &backend_b.buffer_type
+    };'
+  - '    ggml_gallocr_ptr           galloc   = ggml_gallocr_ptr(ggml_gallocr_new_n(bufts,
+    2));'
+  - '    bool                       res1     = ggml_gallocr_reserve_n(galloc.get(),
+    graph, node_buffer_ids, leaf_buffer_ids);'
+  - '    bool                       res2     = ggml_gallocr_alloc_graph(galloc.get(),
+    graph);'
+  - '    GGML_ASSERT(res1 && res2);'
+  - ''
+  - '    check_all_allocated(graph);'
+  - '    GGML_ASSERT(backend_a.context->allocated_total() == 16);'
+  - '    GGML_ASSERT(backend_b.context->allocated_total() == 0);'
+  - '}'
+  desc: 测试场景：为缓冲区大小为零的后端分配内存，验证不会产生不必要的分配。
+  line: 506-528
+  name: test_buffer_size_zero
+- code:
+  - static void test_reallocation() {
+  - '    dummy_backend    backend = dummy_backend_init(32, /*align*/ 4);'
+  - '    ggml_gallocr_ptr galloc;'
+  - '    {'
+  - '        auto [ctx, graph, ctx_ptr] = make_context();'
+  - '        ggml_tensor * x[4];'
+  - '        x[0] = make_input_with_size(ctx, 24);'
+  - '        x[1] = make_input_with_size(ctx, 16);'
+  - '        x[2] = ggml_view_1d(ctx, x[0], 4, 0);'
+  - '        x[3] = ggml_add(ctx, x[2], x[1]);'
+  - '        assign_names(ctx);'
+  - ''
+  - '        galloc = allocate_graph(graph, x[3], &backend.buffer_type);'
+  - '        check_all_allocated(graph);'
+  - '        GGML_ASSERT(backend.context->allocated_total() == 40);'
+  - '    }'
+  - '    {'
+  - '        auto [ctx, graph, ctx_ptr] = make_context();'
+  - '        ggml_tensor * x[3];'
+  - '        x[0] = make_input_with_size(ctx, 20);'
+  - '        x[1] = make_input_with_size(ctx, 20);'
+  - '        x[2] = ggml_add(ctx, x[0], x[1]);'
+  - '        assign_names(ctx);'
+  - '        ggml_set_output(x[2]);'
+  - '        ggml_build_forward_expand(graph, x[2]);'
+  - ''
+  - '        bool result = ggml_gallocr_alloc_graph(galloc.get(), graph);'
+  - '        GGML_ASSERT(result);'
+  - '        check_all_allocated(graph);'
+  - '        GGML_ASSERT(backend.context->allocated_total() == 40);'
+  - '    }'
+  - '}'
+  desc: 测试场景：重用 gallocr 进行不同图的分配，新图中一个块更大导致需要重新分配。
+  line: 531-556
+  name: test_reallocation
+- code:
+  - static void run(const char * name, void (*f)()) {
+  - '    printf("%s ", name);'
+  - '    fflush(stdout);'
+  - '    f();'
+  - '    printf("PASSED\n");'
+  - '}'
+  desc: 运行测试函数的辅助函数，打印名称并处理结果。
+  line: 559-564
+  name: run
+- code:
+  - int main() {
+  - '    run("test_max_size_too_many_tensors", test_max_size_too_many_tensors);'
+  - '    run("test_max_size_tensor_too_large", test_max_size_tensor_too_large);'
+  - '    run("test_tensor_larger_than_max_size", test_tensor_larger_than_max_size);'
+  - '    run("test_not_enough_chunks", test_not_enough_chunks);'
+  - '    run("test_fill_leftover_space", test_fill_leftover_space);'
+  - '    run("test_view_inplace", test_view_inplace);'
+  - '    run("test_reuse_and_free", test_reuse_and_free);'
+  - '    run("test_merge_free_block(32)", []() { test_merge_free_block(32); });'
+  - '    run("test_merge_free_block(SIZE_MAX)", []() { test_merge_free_block(SIZE_MAX);
+    });'
+  - '    run("test_prefer_already_allocated_memory", test_prefer_already_allocated_memory);'
+  - '    run("test_multiple_buffer_types", test_multiple_buffer_types);'
+  - '    run("test_buffer_size_zero", test_buffer_size_zero);'
+  - '    run("test_reallocation", test_reallocation);'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口点，运行所有测试用例。
+  line: 566-583
+  name: main

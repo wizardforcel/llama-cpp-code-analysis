@@ -1,0 +1,97 @@
+classes: []
+desc: 该文件是一个WGSL着色器资源的自动化嵌入工具，用于将所有.wgsl着色器文件读取、处理并生成C++源代码，将各个着色器内容以原始字符串常量的形式嵌入到生成的C++头文件中，支持处理文件包含指令、内容分块和自定义原始字符串定界符，常见的WebGPU着色器资源管理场景
+file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+funcs:
+- code:
+  - 'def expand_includes(shader, input_dir):'
+  - '    include_pattern = re.compile(r''^\s*#include\s+"([^"]+)"\s*$'', re.MULTILINE)'
+  - ''
+  - '    def replacer(match):'
+  - '        fname = match.group(1)'
+  - '        file_path = os.path.join(input_dir, fname)'
+  - '        if not os.path.exists(file_path):'
+  - '            raise FileNotFoundError(f"Included file not found: {file_path}")'
+  - '        with open(file_path, "r", encoding="utf-8") as f:'
+  - '            included_code = f.read()'
+  - '        return expand_includes(included_code, input_dir)'
+  - ''
+  - '    return include_pattern.sub(replacer, shader)'
+  desc: 递归处理着色器代码中的#include指令，将引用的文件内容替换嵌入到当前位置
+  line: 4-18
+  name: expand_includes
+- code:
+  - 'def chunk_shader(shader_code, max_chunk_len=60000):'
+  - '    return [shader_code[i : i + max_chunk_len] for i in range(0, len(shader_code),
+    max_chunk_len)]'
+  desc: 将着色器代码按指定最大长度分割为多个字符串块，返回块列表
+  line: 21-23
+  name: chunk_shader
+- code:
+  - 'def raw_delim(shader_code):'
+  - '    delim = "wgsl"'
+  - '    while f"{delim}\"" in shader_code:'
+  - '        delim += "_x"'
+  - '    return delim'
+  desc: 选择一个不会出现在着色器代码中的原始字符串定界符，确保生成代码的语法正确
+  line: 26-30
+  name: raw_delim
+- code:
+  - 'def write_shader(shader_name, shader_code, output_dir, outfile, input_dir):'
+  - '    shader_code = expand_includes(shader_code, input_dir)'
+  - ''
+  - '    if output_dir:'
+  - '        wgsl_filename = os.path.join(output_dir, f"{shader_name}.wgsl")'
+  - '        with open(wgsl_filename, "w", encoding="utf-8") as f_out:'
+  - '            f_out.write(shader_code)'
+  - ''
+  - '    delim = raw_delim(shader_code)'
+  - '    chunks = chunk_shader(shader_code)'
+  - ''
+  - '    if len(chunks) == 1:'
+  - '        outfile.write(f''const char* wgsl_{shader_name} = R"{delim}({shader_code}){delim}";\n\n'')'
+  - '    else:'
+  - '        for idx, chunk in enumerate(chunks):'
+  - '            outfile.write(f''static const char wgsl_{shader_name}_part{idx}[]
+    = R"{delim}({chunk}){delim}";\n\n'')'
+  - '        outfile.write(f''static const std::string& wgsl_{shader_name}_str() {{\n'')'
+  - '        outfile.write(''    static const std::string s = []{\n'')'
+  - '        outfile.write(''        std::string tmp;\n'')'
+  - '        outfile.write(f''        tmp.reserve({len(shader_code)});\n'')'
+  - '        for idx in range(len(chunks)):'
+  - '            outfile.write(f''        tmp.append(wgsl_{shader_name}_part{idx});\n'')'
+  - '        outfile.write(''        return tmp;\n'')'
+  - '        outfile.write(''    }();\n'')'
+  - '        outfile.write(''    return s;\n'')'
+  - '        outfile.write(''}\n'')'
+  - '        outfile.write(f''const char* wgsl_{shader_name} = wgsl_{shader_name}_str().c_str();\n\n'')'
+  desc: 处理单个着色器文件，包括展开包含、写入.wgsl文件（可选）、生成C++代码并输出到目标文件
+  line: 33-49
+  name: write_shader
+- code:
+  - 'def main():'
+  - '    parser = argparse.ArgumentParser()'
+  - '    parser.add_argument("--input_dir", required=True)'
+  - '    parser.add_argument("--output_file", required=True)'
+  - '    args = parser.parse_args()'
+  - ''
+  - '    with open(args.output_file, "w", encoding="utf-8") as out:'
+  - '        out.write("// Auto-generated shader embedding\n")'
+  - '        out.write("#include <string>\n\n")'
+  - '        for fname in sorted(os.listdir(args.input_dir)):'
+  - '            if fname.endswith(".wgsl"):'
+  - '                shader_path = os.path.join(args.input_dir, fname)'
+  - '                shader_name = fname.replace(".wgsl", "")'
+  - ''
+  - '                with open(shader_path, "r", encoding="utf-8") as f:'
+  - '                    shader_code = f.read()'
+  - ''
+  - '                write_shader(shader_name, shader_code, None, out, args.input_dir)'
+  desc: 程序入口，解析命令行参数，读取输入目录中的所有.wgsl文件并逐一生成C++嵌入代码输出到指定文件
+  line: 51-67
+  name: main
+- code:
+  - 'if __name__ == "__main__":'
+  - '    main()'
+  desc: 脚本的主入口点，当脚本被直接运行时调用main函数执行流程
+  line: 69-70
+  name: __main__

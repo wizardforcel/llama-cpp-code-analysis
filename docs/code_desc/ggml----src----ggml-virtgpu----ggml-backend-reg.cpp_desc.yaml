@@ -1,0 +1,257 @@
+classes:
+- desc: 虚拟GPU句柄结构，在ggml_virtgpu.h中定义，代表一个GPU设备上下文实例
+  methods:
+  - code:
+    - void ggml_virtgpu_cleanup(virtgpu * gpu) {
+    - '    if (gpu->cached_device_info.name) {'
+    - '        free(gpu->cached_device_info.name);'
+    - '        gpu->cached_device_info.name = NULL;'
+    - '    }'
+    - '    if (gpu->cached_device_info.description) {'
+    - '        free(gpu->cached_device_info.description);'
+    - '        gpu->cached_device_info.description = NULL;'
+    - '    }'
+    - '    if (gpu->cached_buffer_type.name) {'
+    - '        free(gpu->cached_buffer_type.name);'
+    - '        gpu->cached_buffer_type.name = NULL;'
+    - '    }'
+    - ''
+    - '    mtx_destroy(&gpu->data_shmem_mutex);'
+    - '}'
+    desc: 释放GPU设备资源，包括设备名称、描述和缓存缓冲类型名称，并销毁互斥锁
+    line: 137-151
+    name: cleanup
+  name: virtgpu
+- desc: 后端设备上下文结构，存储设备索引、名称、描述和GPU句柄信息
+  methods: []
+  name: ggml_backend_remoting_device_context
+- desc: 后端注册表结构，包含API版本、接口和上下文信息
+  methods: []
+  name: ggml_backend_reg
+desc: 该文件是GGML框架中虚拟GPU后端（virtgpu）的注册与初始化实现，通过远程API（Remoting）机制实现设备信息的获取、缓存以及后端注册表的构建，核心功能是初始化和注册virtgpu后端设备。
+file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+funcs:
+- code:
+  - static virtgpu * apir_initialize() {
+  - '    static virtgpu *         gpu         = NULL;'
+  - '    static std::atomic<bool> initialized = false;'
+  - ''
+  - '    if (initialized) {'
+  - '        // fast track'
+  - '        return gpu;'
+  - '    }'
+  - ''
+  - '    {'
+  - '        static std::mutex           mutex;'
+  - '        std::lock_guard<std::mutex> lock(mutex);'
+  - ''
+  - '        if (initialized) {'
+  - '            // thread safe'
+  - '            return gpu;'
+  - '        }'
+  - ''
+  - '        gpu = create_virtgpu();'
+  - '        if (!gpu) {'
+  - '            initialized = true;'
+  - '            return NULL;'
+  - '        }'
+  - ''
+  - '        // Pre-fetch and cache all device information, it will not change'
+  - '        gpu->cached_device_info.description = apir_device_get_description(gpu);'
+  - '        if (!gpu->cached_device_info.description) {'
+  - '            GGML_ABORT(GGML_VIRTGPU "%s: failed to initialize the virtgpu device
+    description", __func__);'
+  - '        }'
+  - '        gpu->cached_device_info.device_count = apir_device_get_count(gpu);'
+  - '        gpu->cached_device_info.type         = apir_device_get_type(gpu);'
+  - ''
+  - '        {'
+  - '            // Get the remote name and create prefixed version'
+  - '            char * rmt_device_name = apir_device_get_name(gpu);'
+  - '            if (!rmt_device_name) {'
+  - '                GGML_ABORT(GGML_VIRTGPU "%s: failed to get the virtgpu device
+    name", __func__);'
+  - '            }'
+  - ''
+  - '            size_t device_name_len       = strlen(rmt_device_name) + 11;  //
+    "[virtgpu] " + null terminator'
+  - '            gpu->cached_device_info.name = (char *) malloc(device_name_len);'
+  - '            if (!gpu->cached_device_info.name) {'
+  - '                free(rmt_device_name);'
+  - '                GGML_ABORT(GGML_VIRTGPU "%s: failed to allocate memory for prefixed
+    device name", __func__);'
+  - '            }'
+  - '            snprintf(gpu->cached_device_info.name, device_name_len, "[virtgpu]
+    %s", rmt_device_name);'
+  - '            free(rmt_device_name);'
+  - '        }'
+  - ''
+  - '        apir_device_get_memory(gpu, &gpu->cached_device_info.memory_free, &gpu->cached_device_info.memory_total);'
+  - ''
+  - '        apir_buffer_type_host_handle_t buft_host_handle = apir_device_get_buffer_type(gpu);'
+  - '        gpu->cached_buffer_type.host_handle             = buft_host_handle;'
+  - '        {'
+  - '            // Get the remote name and create prefixed version'
+  - '            char * rmt_name = apir_buffer_type_get_name(gpu, buft_host_handle);'
+  - '            if (!rmt_name) {'
+  - '                GGML_ABORT(GGML_VIRTGPU "%s: failed to get the virtgpu buffer
+    type name", __func__);'
+  - '            }'
+  - ''
+  - '            size_t prefixed_len          = strlen(rmt_name) + 11;  // "[virtgpu]
+    " + null terminator'
+  - '            gpu->cached_buffer_type.name = (char *) malloc(prefixed_len);'
+  - '            if (!gpu->cached_buffer_type.name) {'
+  - '                free(rmt_name);'
+  - '                GGML_ABORT(GGML_VIRTGPU "%s: failed to allocate memory for prefixed
+    buffer type name", __func__);'
+  - '            }'
+  - '            snprintf(gpu->cached_buffer_type.name, prefixed_len, "[virtgpu] %s",
+    rmt_name);'
+  - '            free(rmt_name);'
+  - '        }'
+  - ''
+  - '        gpu->cached_buffer_type.alignment = apir_buffer_type_get_alignment(gpu,
+    buft_host_handle);'
+  - '        gpu->cached_buffer_type.max_size  = apir_buffer_type_get_max_size(gpu,
+    buft_host_handle);'
+  - ''
+  - '        initialized = true;'
+  - '    }'
+  - ''
+  - '    return gpu;'
+  - '}'
+  desc: 初始化虚拟GPU，创建virtgpu实例并缓存设备信息和缓冲类型信息，使用双重检查锁定确保线程安全
+  line: 12-70
+  name: apir_initialize
+- code:
+  - static int ggml_backend_remoting_get_device_count() {
+  - '    virtgpu * gpu = apir_initialize();'
+  - '    if (!gpu) {'
+  - '        return 0;'
+  - '    }'
+  - ''
+  - '    return gpu->cached_device_info.device_count;'
+  - '}'
+  desc: 获取virtgpu后端的设备数量，通过apir_initialize获取缓存的数量
+  line: 73-80
+  name: ggml_backend_remoting_get_device_count
+- code:
+  - static size_t ggml_backend_remoting_reg_get_device_count(ggml_backend_reg_t reg)
+    {
+  - '    UNUSED(reg);'
+  - ''
+  - '    return ggml_backend_remoting_get_device_count();'
+  - '}'
+  desc: 后端注册表接口函数，返回设备数量，忽略reg参数
+  line: 82-87
+  name: ggml_backend_remoting_reg_get_device_count
+- code:
+  - ggml_backend_dev_t ggml_backend_remoting_get_device(size_t device) {
+  - '    GGML_ASSERT(device < devices.size());'
+  - '    return devices[device];'
+  - '}'
+  desc: 根据索引从全局devices向量中获取后端设备对象，并断言索引合法
+  line: 91-94
+  name: ggml_backend_remoting_get_device
+- code:
+  - static void ggml_backend_remoting_reg_init_devices(ggml_backend_reg_t reg) {
+  - '    if (devices.size() > 0) {'
+  - '        GGML_LOG_INFO(GGML_VIRTGPU "%s: already initialized\n", __func__);'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    virtgpu * gpu = apir_initialize();'
+  - '    if (!gpu) {'
+  - '        GGML_LOG_ERROR(GGML_VIRTGPU "%s: apir_initialize failed\n", __func__);'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    static std::atomic<bool> initialized = false;'
+  - ''
+  - '    if (initialized) {'
+  - '        return;  // fast track'
+  - '    }'
+  - ''
+  - '    {'
+  - '        static std::mutex           mutex;'
+  - '        std::lock_guard<std::mutex> lock(mutex);'
+  - '        if (!initialized) {'
+  - '            for (int i = 0; i < ggml_backend_remoting_get_device_count(); i++)
+    {'
+  - '                ggml_backend_remoting_device_context * ctx       = new ggml_backend_remoting_device_context;'
+  - '                char                                   desc[256] = "ggml-virtgpu
+    API Remoting device";'
+  - ''
+  - '                ctx->device      = i;'
+  - '                ctx->name        = GGML_VIRTGPU_NAME + std::to_string(i);'
+  - '                ctx->description = desc;'
+  - '                ctx->gpu         = gpu;'
+  - ''
+  - '                ggml_backend_dev_t dev = new ggml_backend_device{'
+  - '                    /* .iface   = */ ggml_backend_remoting_device_interface,'
+  - '                    /* .reg     = */ reg,'
+  - '                    /* .context = */ ctx,'
+  - '                };'
+  - '                devices.push_back(dev);'
+  - '            }'
+  - '            initialized = true;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 初始化所有后端设备对象，创建每个设备的上下文和ggml_backend_device实例并放入全局devices向量
+  line: 96-132
+  name: ggml_backend_remoting_reg_init_devices
+- code:
+  - static ggml_backend_dev_t ggml_backend_remoting_reg_get_device(ggml_backend_reg_t
+    reg, size_t device) {
+  - '    UNUSED(reg);'
+  - ''
+  - '    return ggml_backend_remoting_get_device(device);'
+  - '}'
+  desc: 后端注册表的接口函数，返回指定索引的设备对象
+  line: 134-138
+  name: ggml_backend_remoting_reg_get_device
+- code:
+  - static const char * ggml_backend_remoting_reg_get_name(ggml_backend_reg_t reg)
+    {
+  - '    UNUSED(reg);'
+  - ''
+  - '    return GGML_VIRTGPU_NAME;'
+  - '}'
+  desc: 返回virtgpu后端的名称字符串
+  line: 140-144
+  name: ggml_backend_remoting_reg_get_name
+- code:
+  - static const ggml_backend_reg_i ggml_backend_remoting_reg_i = {
+  - '    /* .get_name         = */ ggml_backend_remoting_reg_get_name,'
+  - '    /* .get_device_count = */ ggml_backend_remoting_reg_get_device_count,'
+  - '    /* .get_device       = */ ggml_backend_remoting_reg_get_device,'
+  - '    /* .get_proc_address = */ NULL,'
+  - '};'
+  - ''
+  - ggml_backend_reg_t ggml_backend_virtgpu_reg() {
+  - '    virtgpu * gpu = apir_initialize();'
+  - '    if (!gpu) {'
+  - '        GGML_LOG_ERROR(GGML_VIRTGPU "%s: virtgpu_apir_initialize failed\n", __func__);'
+  - '    }'
+  - ''
+  - '    static ggml_backend_reg reg = {'
+  - '        /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '        /* .iface       = */ ggml_backend_remoting_reg_i,'
+  - '        /* .context     = */ gpu,'
+  - '    };'
+  - ''
+  - '    static bool initialized = false;'
+  - '    if (initialized) {'
+  - '        return &reg;'
+  - '    }'
+  - '    initialized = true;'
+  - ''
+  - '    ggml_backend_remoting_reg_init_devices(&reg);'
+  - ''
+  - '    return &reg;'
+  - '}'
+  desc: 文件级全局代码，定义后端注册表接口结构体实例和ggml_backend_virtgpu_reg注册函数
+  line: 146-164
+  name: __main__

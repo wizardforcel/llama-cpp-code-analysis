@@ -1,0 +1,477 @@
+classes:
+- desc: 核心转换类，负责将 JSON Schema 对象转换为 GBNF 语法规则。管理规则的存储、引用解析、模式访问等关键功能。
+  methods:
+  - code:
+    - std::string _add_rule(const std::string & name, const std::string & rule) {
+    - '    std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");'
+    - '    if (_rules.find(esc_name) == _rules.end() || _rules[esc_name] == rule)
+      {'
+    - '        _rules[esc_name] = rule;'
+    - '        return esc_name;'
+    - '    }'
+    - '    int i = 0;'
+    - '    while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name
+      + std::to_string(i)] != rule) {'
+    - '        i++;'
+    - '    }'
+    - '    std::string key = esc_name + std::to_string(i);'
+    - '    _rules[key] = rule;'
+    - '    return key;'
+    - '}'
+    desc: 添加一条语法规则到规则映射表中，处理规则名称冲突和重复规则。
+    line: 294-304
+    name: _add_rule
+  - code:
+    - std::string _generate_union_rule(const std::string & name, const std::vector<json>
+      & alt_schemas) {
+    - '    std::vector<std::string> rules;'
+    - '    rules.reserve(alt_schemas.size());'
+    - '    for (size_t i = 0; i < alt_schemas.size(); i++) {'
+    - '        rules.push_back(visit(alt_schemas[i], name + (name.empty() ? "alternative-"
+      : "-") + std::to_string(i)));'
+    - '    }'
+    - '    return string_join(rules, " | ");'
+    - '}'
+    desc: 生成联合类型的语法规则，将多个候选 schema 组合为 '|' 连接的形式。
+    line: 306-312
+    name: _generate_union_rule
+  - code:
+    - std::string _visit_pattern(const std::string & pattern, const std::string &
+      name) {
+    - '    // 完整实现请参考源代码'
+    - '    // 包含对正则表达式各元素的递归解析和转换'
+    - '    return _add_rule(name, "\"\\\"\" (" + to_rule(transform()) + ") \"\\\"\"
+      space");'
+    - '}'
+    desc: 将正则表达式模式转换为 GBNF 语法规则，处理字符类、分组、重复等复杂语法。
+    line: 314-428
+    name: _visit_pattern
+  - code:
+    - std::string _not_strings(const std::vector<std::string> & strings) {
+    - '    // 完整实现请参考源代码'
+    - '    // 构建 Trie 结构并生成相应的匹配规则'
+    - '    return out.str();'
+    - '}'
+    desc: 生成一个匹配不符合给定字符串列表中任何字符串的规则，使用 Trie 数据结构优化。
+    line: 430-488
+    name: _not_strings
+  - code:
+    - std::string _resolve_ref(const std::string & ref) {
+    - '    auto it = ref.find(''#'');'
+    - '    std::string ref_fragment = it != std::string::npos ? ref.substr(it + 1)
+      : ref;'
+    - '    static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");'
+    - '    std::string ref_name = "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex,
+      "-");'
+    - '    if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(ref)
+      == _refs_being_resolved.end()) {'
+    - '        _refs_being_resolved.insert(ref);'
+    - '        json resolved = _refs[ref];'
+    - '        ref_name = visit(resolved, ref_name);'
+    - '        _refs_being_resolved.erase(ref);'
+    - '    }'
+    - '    return ref_name;'
+    - '}'
+    desc: 解析 JSON Schema 中的引用，将 $ref 指向的 schema 转换为对应的规则名。
+    line: 490-502
+    name: _resolve_ref
+  - code:
+    - std::string _build_object_rule(
+    - '    const std::vector<std::pair<std::string, json>> & properties,'
+    - '    const std::unordered_set<std::string> & required,'
+    - '    const std::string & name,'
+    - '    const json & additional_properties)'
+    - '{'
+    - '    // 完整实现请参考源代码'
+    - '    return rule;'
+    - '}'
+    desc: 构建对象的语法规则，处理必填属性、可选属性和附加属性，生成完整的对象匹配规则。
+    line: 504-591
+    name: _build_object_rule
+  - code:
+    - std::string _add_primitive(const std::string & name, const BuiltinRule & rule)
+      {
+    - '    auto n = _add_rule(name, rule.content);'
+    - '    for (const auto & dep : rule.deps) {'
+    - '        BuiltinRule dep_rule;'
+    - '        auto it = PRIMITIVE_RULES.find(dep);'
+    - '        if (it == PRIMITIVE_RULES.end()) {'
+    - '            it = STRING_FORMAT_RULES.find(dep);'
+    - '            if (it == STRING_FORMAT_RULES.end()) {'
+    - '                _errors.push_back("Rule " + dep + " not known"); // 错误信息'
+    - '                continue;'
+    - '            }'
+    - '        }'
+    - '        if (_rules.find(dep) == _rules.end()) {'
+    - '            _add_primitive(dep, it->second);'
+    - '        }'
+    - '    }'
+    - '    return n;'
+    - '}'
+    desc: 添加基础类型的语法规则，并递归处理其依赖的其他基础规则。
+    line: 593-607
+    name: _add_primitive
+  - code:
+    - void resolve_refs(json & schema, const std::string & url) {
+    - '    // 完整实现请参考源代码'
+    - '    // 处理数组和对象的递归遍历及引用解析'
+    - '}'
+    desc: 递归遍历整个 schema，解析所有 $ref 引用，支持远程 URL 引用和本地指针引用。
+    line: 617-691
+    name: resolve_refs
+  - code:
+    - static std::string _generate_constant_rule(const json & value) {
+    - '    return format_literal(value.dump());'
+    - '}'
+    desc: 生成常数值的语法规则，将 JSON 值转换为格式化的字面量。
+    line: 693-695
+    name: _generate_constant_rule
+  - code:
+    - std::string visit(const json & schema, const std::string & name) {
+    - '    // 完整实现请参考源代码'
+    - '    return "";'
+    - '}'
+    desc: 主要的访问入口方法，根据 schema 的内容分发到不同的处理逻辑，生成相应的语法规则。
+    line: 697-
+    name: visit
+  name: common_schema_converter
+- desc: 负责递归访问 JSON Schema，并将其转换为内部语法规则、处理引用和收集转换错误。
+  methods:
+  - code:
+    - 'format = schema.contains("format") ? schema["format"].get<std::string>() :
+      "";'
+    - 'std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty()
+      ? "root" : name;'
+    - ''
+    - if (schema.contains("$ref")) {
+    - '    return _add_rule(rule_name, _resolve_ref(schema["$ref"]));'
+    - '}'
+    - if (schema.contains("oneOf") || schema.contains("anyOf")) {
+    - '    std::vector<json> alt_schemas = schema.contains("oneOf") ? schema["oneOf"].get<std::vector<json>>()
+      : schema["anyOf"].get<std::vector<json>>();'
+    - '    return _add_rule(rule_name, _generate_union_rule(name, alt_schemas));'
+    - '}'
+    - if (schema_type.is_array()) {
+    - '    std::vector<json> schema_types;'
+    - '    for (const auto & t : schema_type) {'
+    - '        json schema_copy(schema);'
+    - '        schema_copy["type"] = t;'
+    - '        schema_types.push_back(schema_copy);'
+    - '    }'
+    - '    return _add_rule(rule_name, _generate_union_rule(name, schema_types));'
+    - '}'
+    - if (schema.contains("const")) {
+    - '    return _add_rule(rule_name, _generate_constant_rule(schema["const"]) +
+      " space");'
+    - '}'
+    - if (schema.contains("enum")) {
+    - '    std::vector<std::string> enum_values;'
+    - '    for (const auto & v : schema["enum"]) {'
+    - '        enum_values.push_back(_generate_constant_rule(v));'
+    - '    }'
+    - '    return _add_rule(rule_name, "(" + string_join(enum_values, " | ") + ")
+      space");'
+    - '}'
+    - if ((schema_type.is_null() || schema_type == "object") &&
+    - '        (schema.contains("properties") ||'
+    - '         (schema.contains("additionalProperties") && schema["additionalProperties"]
+      != true))) {'
+    - '    std::unordered_set<std::string> required;'
+    - '    std::vector<std::pair<std::string, json>> properties;'
+    - '    return _add_rule(rule_name, _build_object_rule(properties, required, name,'
+    - '        schema.contains("additionalProperties") ? schema["additionalProperties"]
+      : json()));'
+    - '}'
+    - if ((schema_type.is_null() || schema_type == "array") &&
+    - '        (schema.contains("items") || schema.contains("prefixItems"))) {'
+    - '    json items = schema.contains("items") ? schema["items"] : schema["prefixItems"];'
+    - '    if (items.is_array()) {'
+    - '        std::string rule = "\"[\" space ";'
+    - '        for (size_t i = 0; i < items.size(); i++) {'
+    - '            if (i > 0) {'
+    - '                rule += " \",\" space ";'
+    - '            }'
+    - '            rule += visit(items[i], name + (name.empty() ? "" : "-") + "tuple-"
+      + std::to_string(i));'
+    - '        }'
+    - '        rule += " \"]\" space";'
+    - '        return _add_rule(rule_name, rule);'
+    - '    }'
+    - '    std::string item_rule_name = visit(items, name + (name.empty() ? "" : "-")
+      + "item");'
+    - '    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name,
+      min_items, max_items, "\",\" space") + " \"]\" space");'
+    - '}'
+    - if ((schema_type.is_null() || schema_type == "string") && schema.contains("pattern"))
+      {
+    - '    return _visit_pattern(schema["pattern"], rule_name);'
+    - '}'
+    - if (schema.empty() || schema_type == "object") {
+    - '    return _add_rule(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object")));'
+    - '}'
+    - if (!schema_type.is_string() || PRIMITIVE_RULES.find(schema_type.get<std::string>())
+      == PRIMITIVE_RULES.end()) {
+    - '    _errors.push_back("Unrecognized schema: " + schema.dump());'
+    - '    return "";'
+    - '}'
+    - 'return _add_primitive(rule_name == "root" ? "root" : schema_type.get<std::string>(),
+      PRIMITIVE_RULES.at(schema_type.get<std::string>()));'
+    desc: 根据 Schema 的结构和约束类型递归生成对应的语法规则，支持引用、联合类型、对象、数组、字符串、整数及基础类型等。
+    line: 848-1006
+    name: visit
+  - code:
+    - void check_errors() {
+    - '    if (!_errors.empty()) {'
+    - '        throw std::invalid_argument("JSON schema conversion failed:\n" + string_join(_errors,
+      "\n"));'
+    - '    }'
+    - '    if (!_warnings.empty()) {'
+    - '        fprintf(stderr, "WARNING: JSON schema conversion was incomplete: %s\n",
+      string_join(_warnings, "; ").c_str());'
+    - '    }'
+    - '}'
+    desc: 检查 Schema 转换过程中收集的错误和警告，并在存在错误时抛出异常。
+    line: 1008-1015
+    name: check_errors
+  - code:
+    - std::string format_grammar() {
+    - '    std::stringstream ss;'
+    - '    for (const auto & kv : _rules) {'
+    - '        ss << kv.first << " ::= " << kv.second << ''\n'';'
+    - '    }'
+    - '    return ss.str();'
+    - '}'
+    desc: 将内部保存的规则集合格式化为逐行的语法定义文本。
+    line: 1017-1024
+    name: format_grammar
+  name: common_schema_converter
+- desc: 对外提供 JSON Schema 引用解析和 Schema 字符串类型可解析性判断的封装类。
+  methods:
+  - code:
+    - common_schema_info::common_schema_info()
+    - '    : impl_(std::make_unique<common_schema_converter>('
+    - '        [](const std::string &) { return json(); },'
+    - '        false)) {}'
+    desc: 构造 Schema 信息对象，并初始化内部 Schema 转换器。
+    line: 1028-1032
+    name: common_schema_info
+  - code:
+    - common_schema_info::~common_schema_info() = default;
+    desc: 销毁 Schema 信息对象及其内部实现。
+    line: 1034-1034
+    name: ~common_schema_info
+  - code:
+    - common_schema_info::common_schema_info(common_schema_info &&) noexcept = default;
+    desc: 移动构造 Schema 信息对象。
+    line: 1036-1036
+    name: common_schema_info
+  - code:
+    - common_schema_info & common_schema_info::operator=(common_schema_info &&) noexcept
+      = default;
+    desc: 通过移动赋值转移 Schema 信息对象的内部资源。
+    line: 1037-1037
+    name: operator=
+  - code:
+    - void common_schema_info::resolve_refs(nlohmann::ordered_json & schema) {
+    - '    impl_->resolve_refs(schema, "");'
+    - '}'
+    desc: 解析并替换给定 JSON Schema 中的引用。
+    line: 1039-1041
+    name: resolve_refs
+  - code:
+    - bool common_schema_info::resolves_to_string(const nlohmann::ordered_json & schema)
+      {
+    - '    std::unordered_set<std::string> visited_refs;'
+    - ''
+    - '    std::function<bool(const json &)> check = [&](const json & s) -> bool {'
+    - '        if (!s.is_object()) {'
+    - '            return false;'
+    - '        }'
+    - '        if (s.contains("$ref")) {'
+    - '            const std::string & ref = s["$ref"];'
+    - '            if (visited_refs.find(ref) != visited_refs.end()) {'
+    - '                return false;'
+    - '            }'
+    - '            visited_refs.insert(ref);'
+    - '            auto it = impl_->_refs.find(ref);'
+    - '            if (it != impl_->_refs.end()) {'
+    - '                return check(it->second);'
+    - '            }'
+    - '            return false;'
+    - '        }'
+    - '        if (s.contains("type")) {'
+    - '            const json & schema_type = s["type"];'
+    - '            if (schema_type.is_string() && schema_type == "string") {'
+    - '                return true;'
+    - '            }'
+    - '            if (schema_type.is_array()) {'
+    - '                for (const auto & t : schema_type) {'
+    - '                    if (t == "string") {'
+    - '                        return true;'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        if (s.contains("oneOf")) {'
+    - '            for (const auto & alt : s["oneOf"]) {'
+    - '                if (check(alt)) return true;'
+    - '            }'
+    - '        }'
+    - '        if (s.contains("anyOf")) {'
+    - '            for (const auto & alt : s["anyOf"]) {'
+    - '                if (check(alt)) return true;'
+    - '            }'
+    - '        }'
+    - '        if (s.contains("allOf")) {'
+    - '            for (const auto & component : s["allOf"]) {'
+    - '                if (!check(component)) return false;'
+    - '            }'
+    - '            return true;'
+    - '        }'
+    - '        if (s.contains("const") && s["const"].is_string()) {'
+    - '            return true;'
+    - '        }'
+    - '        if (s.contains("enum")) {'
+    - '            for (const auto & val : s["enum"]) {'
+    - '                if (val.is_string()) return true;'
+    - '            }'
+    - '        }'
+    - '        if (s.contains("pattern") || s.contains("minLength") || s.contains("maxLength"))
+      {'
+    - '            return true;'
+    - '        }'
+    - '        if (s.contains("format")) {'
+    - '            const std::string & fmt = s["format"];'
+    - '            if (fmt == "date" || fmt == "time" || fmt == "date-time" ||'
+    - '                fmt == "uri" || fmt == "email" || fmt == "hostname" ||'
+    - '                fmt == "ipv4" || fmt == "ipv6" || fmt == "uuid" ||'
+    - '                fmt.find("uuid") == 0) {'
+    - '                return true;'
+    - '            }'
+    - '        }'
+    - '        return false;'
+    - '    };'
+    - ''
+    - '    return check(schema);'
+    - '}'
+    desc: 判断 Schema 是否通过直接类型、联合结构、引用、常量、枚举或字符串约束等路径解析为字符串类型。
+    line: 1043-1131
+    name: resolves_to_string
+  name: common_schema_info
+desc: 该文件实现了将 JSON Schema 转换为 GBNF（Grammar-Based Natural Format）语法的功能。它定义了多个辅助函数和一个核心转换类
+  common_schema_converter，用于处理 JSON Schema 中定义的数据结构，将其映射为可供 LLM（大型语言模型）输出的 GBNF 语法规则。文件中包含了正则表达式转换、字符串格式化、数字范围处理、对象属性构建等多种复杂逻辑。该文件实现了
+  JSON Schema 到语法规则（GBNF 或可选的 LLGuidance JSON 语法）的转换功能。核心逻辑通过解析 $ref、oneOf、anyOf、allOf、对象属性、数组、字符串约束、整数范围、枚举和常量等
+  JSON Schema 特性，递归生成命名规则并汇总为最终语法；同时提供 Schema 引用解析、错误检查、字符串可解析性判断以及面向外部调用的构建接口。
+file: common/json-schema-to-grammar.cpp
+funcs:
+- code:
+  - static std::string build_repetition(const std::string & item_rule, int min_items,
+    int max_items, const std::string & separator_rule = "") {
+  - '    // 完整实现位于323-347行'
+  - '    // 处理不同重复范围的语法生成逻辑'
+  - '}'
+  desc: 根据最小和最大重复次数构建重复语法规则，支持可选的分隔符。
+  line: 21-46
+  name: build_repetition
+- code:
+  - static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream
+    & out, int decimals_left = 16, bool top_level = true) {
+  - '    // 完整实现位于49-167行'
+  - '    // 复杂的数字范围匹配逻辑'
+  - '}'
+  desc: 构造匹配指定范围内整数的语法规则，支持正负数、不同位数的处理。
+  line: 49-167
+  name: build_min_max_int
+- code:
+  - static std::string replacePattern(const std::string & input, const std::regex
+    & regex, const std::function<std::string(const std::smatch  &)> & replacement)
+    {
+  - '    // 完整实现位于273-285行'
+  - '    // 遍历所有匹配并进行替换'
+  - '}'
+  desc: 使用正则表达式替换字符串中的匹配部分，支持自定义替换函数。
+  line: 273-285
+  name: replacePattern
+- code:
+  - static std::string format_literal(const std::string & literal) {
+  - '    // 完整实现位于287-292行'
+  - '    // 使用replacePattern处理转义'
+  - '}'
+  desc: 格式化字面量字符串，转义特殊字符并加上双引号。
+  line: 287-292
+  name: format_literal
+- code:
+  - std::string gbnf_format_literal(const std::string & literal) {
+  - '    return format_literal(literal);'
+  - '}'
+  desc: 导出函数，用于格式化 GBNF 语法的字面量，调用内部函数 format_literal。
+  line: '294'
+  name: gbnf_format_literal
+- code:
+  - std::string json_schema_to_grammar(const json & schema, bool force_gbnf) {
+  - '#ifdef LLAMA_USE_LLGUIDANCE'
+  - '    if (!force_gbnf) {'
+  - '        return "%llguidance {}\nstart: %json " + schema.dump();'
+  - '    }'
+  - '#else'
+  - '    (void)force_gbnf;'
+  - '#endif'
+  - '    return build_grammar([&](const common_grammar_builder & callbacks) {'
+  - '        auto copy = schema;'
+  - '        callbacks.resolve_refs(copy);'
+  - '        callbacks.add_schema("", copy);'
+  - '    });'
+  - '}'
+  desc: 将 JSON Schema 转换为语法文本；在启用 LLGuidance 且未强制使用 GBNF 时生成 LLGuidance JSON 语法，否则构建
+    GBNF 规则。
+  line: 1133-1147
+  name: json_schema_to_grammar
+- code:
+  - std::string build_grammar(const std::function<void(const common_grammar_builder
+    &)> & cb, const common_grammar_options & options) {
+  - '    common_schema_converter converter([&](const std::string &) { return json();
+    }, options.dotall);'
+  - '    common_grammar_builder builder {'
+  - '        [&](const std::string & name, const std::string & rule) {'
+  - '            return converter._add_rule(name, rule);'
+  - '        },'
+  - '        [&](const std::string & name, const nlohmann::ordered_json & schema)
+    {'
+  - '            return converter.visit(schema, name == "root" ? "" : name);'
+  - '        },'
+  - '        [&](nlohmann::ordered_json & schema) {'
+  - '            converter.resolve_refs(schema, "");'
+  - '        }'
+  - '    };'
+  - '    cb(builder);'
+  - '    converter.check_errors();'
+  - '    return converter.format_grammar();'
+  - '}'
+  desc: 创建 Schema 转换器和语法构建回调接口，执行调用方提供的构建逻辑并返回格式化后的语法。
+  line: 1149-1168
+  name: build_grammar
+- code:
+  - common_schema_info::common_schema_info()
+  - '    : impl_(std::make_unique<common_schema_converter>('
+  - '        [](const std::string &) { return json(); },'
+  - '        false)) {}'
+  - ''
+  - std::string json_schema_to_grammar(const json & schema, bool force_gbnf) {
+  - '    return build_grammar([&](const common_grammar_builder & callbacks) {'
+  - '        auto copy = schema;'
+  - '        callbacks.resolve_refs(copy);'
+  - '        callbacks.add_schema("", copy);'
+  - '    });'
+  - '}'
+  - ''
+  - std::string build_grammar(const std::function<void(const common_grammar_builder
+    &)> & cb, const common_grammar_options & options) {
+  - '    common_schema_converter converter([&](const std::string &) { return json();
+    }, options.dotall);'
+  - '    cb(builder);'
+  - '    converter.check_errors();'
+  - '    return converter.format_grammar();'
+  - '}'
+  desc: 文件级全局代码区域，包含 Schema 转换实现及公共接口定义；除 json_schema_to_grammar 和 build_grammar 外没有可单独识别的全局函数。
+  line: 1028-1168
+  name: __main__

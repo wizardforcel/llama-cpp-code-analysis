@@ -1,0 +1,61 @@
+classes: []
+desc: 该文件是ggml项目中用于自动生成CUDA内核实例源文件的Python脚本。它定义了若干常量、模板字符串和一个辅助函数，然后通过一系列循环，根据不同的量化类型、头大小和列数组合，生成多个.cu格式的CUDA源文件，这些文件包含了Flash
+  Attention和矩阵乘法相关的CUDA内核实例声明。
+file: ggml/src/ggml-cuda/template-instances/generate_cu_files.py
+funcs:
+- code:
+  - 'for filename in glob("*.cu"):'
+  - '    os.remove(filename)'
+  - ''
+  - 'for head_size_kq in HEAD_SIZES_KQ:'
+  - '    head_size_v = head_size_kq if head_size_kq != 576 else 512'
+  - '    with open(f"fattn-tile-instance-dkq{head_size_kq}-dv{head_size_v}.cu", "w")
+    as f:'
+  - '        f.write(SOURCE_FATTN_TILE.format(head_size_kq=head_size_kq, head_size_v=head_size_v))'
+  - ''
+  - 'for type_k in TYPES_KV:'
+  - '    for type_v in TYPES_KV:'
+  - '        with open(f"fattn-vec-instance-{get_short_name(type_k)}-{get_short_name(type_v)}.cu",
+    "w") as f:'
+  - '            f.write(SOURCE_FATTN_VEC.format(type_k=type_k, type_v=type_v))'
+  - ''
+  - 'for ncols in [8, 16, 32, 64]:'
+  - '    for ncols2 in [1, 2, 4, 8, 16, 32]:'
+  - '        if ncols2 > ncols:'
+  - '            continue'
+  - '        ncols1 = ncols // ncols2'
+  - '        with open(f"fattn-mma-f16-instance-ncols1_{ncols1}-ncols2_{ncols2}.cu",
+    "w") as f:'
+  - '            f.write(SOURCE_FATTN_MMA_START)'
+  - ''
+  - '            for head_size_kq in HEAD_SIZES_KQ:'
+  - '                if head_size_kq == 40:'
+  - '                    continue'
+  - '                if head_size_kq == 72:'
+  - '                    continue'
+  - '                if head_size_kq == 512 and ncols2 not in (4, 8):'
+  - '                    continue'
+  - '                if head_size_kq != 576 and ncols2 in (16, 32):'
+  - '                    continue'
+  - '                if head_size_kq == 576 and ncols2 not in (4, 16, 32):'
+  - '                    continue'
+  - '                head_size_v = head_size_kq if head_size_kq != 576 else 512'
+  - '                f.write(SOURCE_FATTN_MMA_CASE.format(ncols1=ncols1, ncols2=ncols2,
+    head_size_kq=head_size_kq, head_size_v=head_size_v))'
+  - ''
+  - 'for type in TYPES_MMQ:'
+  - '    with open(f"mmq-instance-{get_short_name(type)}.cu", "w") as f:'
+  - '        f.write(SOURCE_MMQ.format(type=type))'
+  - ''
+  - 'for type in range(1, 17):'
+  - '    with open(f"mmf-instance-ncols_{type}.cu", "w") as f:'
+  - '        f.write(SOURCE_MMF.format(type=type))'
+  desc: 脚本的全局执行部分，负责遍历各种配置组合并生成对应的CUDA源文件。
+  line: 69-123
+  name: __main__
+- code:
+  - 'def get_short_name(long_quant_name):'
+  - '    return long_quant_name.replace("GGML_TYPE_", "").lower()'
+  desc: 将长的量化类型名称（如GGML_TYPE_Q4_0）转换为简短的名称（如q4_0），用于生成文件名。
+  line: 64-66
+  name: get_short_name

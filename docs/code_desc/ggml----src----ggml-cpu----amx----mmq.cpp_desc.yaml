@@ -1,0 +1,1740 @@
+classes:
+- desc: 编译期强制循环展开的模板结构体，通过递归调用实现编译时的循环展开优化。
+  methods:
+  - code:
+    - template <typename Func, typename... Args>
+    - ALWAYS_INLINE void operator()(const Func& f, Args... args) const {
+    - '    Unroll<n - 1>{}(f, args...);'
+    - '    f(std::integral_constant<int, n - 1>{}, args...);'
+    - '}'
+    desc: 递归执行函数 f 以实现循环展开，传入当前迭代索引作为模板常量参数。
+    line: 47-50
+    name: operator()
+  name: Unroll
+- desc: 类型特征模板结构体，用于映射量化块类型到对应的打包数据类型（如 block_q4_0 映射到 int8_t）。
+  methods: []
+  name: PackedTypes
+- desc: 编译期类型特征，判断量化类型是否需要进行补偿计算（当前仅 block_q8_0 需要）。
+  methods: []
+  name: do_compensate
+- desc: 编译期类型特征，判断量化类型是否需要解包操作（block_q4_0 和 block_q4_1 需要）。
+  methods: []
+  name: do_unpack
+- desc: 编译期类型特征，判断量化类型是否为 QK_K 系列（block_q4_K, block_q5_K, block_q6_K, block_iq4_xs）。
+  methods: []
+  name: is_type_qkk
+- desc: AMX tile 配置数据结构，定义 tile 的调色板 ID、起始行、列字节数、行数等参数。
+  methods: []
+  name: tile_config_t
+- desc: 这是用于矩阵乘法结果累加（accumulation）的模板结构体，主模板声明为空。它通过 `apply` 静态方法定义了在不同类型组合下，如何将整数乘法累加
+    `tile` 和量化缩放因子结合，并累加到浮点输出 `C` 上的操作。
+  methods:
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_0 * A, int lda, const void * packed_B, int nr) {
+    - '    const int offset = TILE_N * TILE_K / 2;'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)((const
+      char *)packed_B + offset)));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const __m512 vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[m * lda].d));'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, _mm512_mul_ps(vd0, vd1), vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，用于执行累加操作。它根据模板参数 `TA`（A 矩阵类型）、`TB`（B 矩阵类型）和 `is_acc`（是否累加到 C 的现有值）加载缩放因子，进行乘加运算并存储结果到
+      C。
+    line: 1003-1023
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_1 * A, int lda, const void * packed_B, int nr) {
+    - '    const int offset = TILE_N * TILE_K / 2;'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)((const
+      char *)packed_B + offset)));'
+    - '    const __m512 vm0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)((const
+      char *)packed_B + offset + TILE_N * sizeof(ggml_half))));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const __m512 vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[m * lda].d));'
+    - '        const __m512 vs1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[m * lda].s));'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, _mm512_mul_ps(vd0, vd1), vsum);'
+    - '        vsum = _mm512_fmadd_ps(vm0, vs1, vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_1` 和 `block_q4_1` 类型组合。该方法额外处理了 B 矩阵的均值（`dmin`）和 A
+      矩阵的 `s` 值，从而正确处理 Q4_1 格式的偏移。
+    line: 1026-1049
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_0 * A, int lda, const void * packed_B, int nr) {
+    - '    const int offset = TILE_N * TILE_K;'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)((const
+      char *)packed_B + offset)));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const __m512 vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[m * lda].d));'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, _mm512_mul_ps(vd0, vd1), vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_0` 和 `block_q8_0` 类型组合。该方法处理 Q8_0 格式的纯缩放因子，进行乘加运算。
+    line: 1052-1071
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_K * A, int lda, const void * packed_B, int nr) {
+    - '    const uint8_t * scales = reinterpret_cast<const uint8_t *>((const char
+      *)packed_B + (QK_K / 2) * TILE_N);'
+    - '    const uint8_t * mins = scales + 8 * TILE_N;'
+    - '    const ggml_half * d0 = reinterpret_cast<const ggml_half *>(mins + 8 * TILE_N);'
+    - '    const ggml_half * dmin = d0 + TILE_N;'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)d0));'
+    - '    const __m512 vdmin = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)dmin));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const float d1 = A[m * lda].d;'
+    - '        const __m512 vd = _mm512_mul_ps(_mm512_set1_ps(d1), vd0);'
+    - '        const __m512 vdm = _mm512_mul_ps(_mm512_set1_ps(-d1), vdmin);'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        const __m256i q8sums = _mm256_loadu_si256((const __m256i *)A[m * lda].bsums);'
+    - '        const __m128i q8s = _mm_hadd_epi16(_mm256_extracti128_si256(q8sums,
+      0), _mm256_extracti128_si256(q8sums, 1));'
+    - '        __m512i acc_m = _mm512_setzero_si512();'
+    - '        for (int k = 0; k < 4; ++k) {'
+    - '            __m512i vmask = _mm512_set1_epi32(k);'
+    - '            __m512i va = _mm512_permutexvar_epi32(vmask, _mm512_castsi128_si512(q8s));'
+    - '            __m512i vb = _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i
+      *)(mins + k * 32)));'
+    - '            acc_m = _mm512_dpwssds_epi32(acc_m, va, vb);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, vd, vsum);'
+    - '        vsum = _mm512_fmadd_ps(_mm512_cvtepi32_ps(acc_m), vdm, vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_K` 和 `block_q4_K` 类型组合。该方法额外处理了 B 矩阵的 `mins` 和 A 矩阵的
+      `bsums`，计算偏移补偿。
+    line: 1074-1112
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_K * A, int lda, const void * packed_B, int nr) {
+    - '    const uint8_t * scales = reinterpret_cast<const uint8_t *>((const char
+      *)packed_B + (QK_K / 2) * TILE_N + (QK_K / 8) * TILE_N);'
+    - '    const uint8_t * mins = scales + 8 * TILE_N;'
+    - '    const ggml_half * d0 = reinterpret_cast<const ggml_half *>(mins + 8 * TILE_N);'
+    - '    const ggml_half * dmin = d0 + TILE_N;'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)d0));'
+    - '    const __m512 vdmin = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)dmin));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const float d1 = A[m * lda].d;'
+    - '        const __m512 vd = _mm512_mul_ps(_mm512_set1_ps(d1), vd0);'
+    - '        const __m512 vdm = _mm512_mul_ps(_mm512_set1_ps(-d1), vdmin);'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        const __m256i q8sums = _mm256_loadu_si256((const __m256i *)A[m * lda].bsums);'
+    - '        const __m128i q8s = _mm_hadd_epi16(_mm256_extracti128_si256(q8sums,
+      0), _mm256_extracti128_si256(q8sums, 1));'
+    - '        __m512i acc_m = _mm512_setzero_si512();'
+    - '        for (int k = 0; k < 4; ++k) {'
+    - '            __m512i vmask = _mm512_set1_epi32(k);'
+    - '            __m512i va = _mm512_permutexvar_epi32(vmask, _mm512_castsi128_si512(q8s));'
+    - '            __m512i vb = _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i
+      *)(mins + k * 32)));'
+    - '            acc_m = _mm512_dpwssds_epi32(acc_m, va, vb);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, vd, vsum);'
+    - '        vsum = _mm512_fmadd_ps(_mm512_cvtepi32_ps(acc_m), vdm, vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_K` 和 `block_q5_K` 类型组合。该方法处理 Q5_K 格式的缩放和最小值，计算偏移补偿。
+    line: 1115-1153
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_K * A, int lda, const void * packed_B, int nr) {
+    - '    const uint8_t * scales = reinterpret_cast<const uint8_t *>((const char
+      *)packed_B + (QK_K / 2) * TILE_N + (QK_K / 4) * TILE_N);'
+    - '    const ggml_half * d0 = reinterpret_cast<const ggml_half *>(scales + 16
+      * TILE_N);'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)d0));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const float d1 = A[m * lda].d;'
+    - '        const __m512 vd = _mm512_mul_ps(_mm512_set1_ps(d1), vd0);'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, vd, vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_K` 和 `block_q6_K` 类型组合。该方法处理 Q6_K 格式的缩放因子，进行乘加运算。
+    line: 1156-1177
+    name: apply
+  - code:
+    - static void apply(float * RESTRICT C, int ldc, const int32_t * RESTRICT tile,
+      const block_q8_K * A, int lda, const void * packed_B, int nr) {
+    - '    const int8_t * scales = reinterpret_cast<const int8_t *>((const char *)packed_B
+      + (QK_K / 2) * TILE_N);'
+    - '    const ggml_half * d0 = reinterpret_cast<const ggml_half *>(scales + 8 *
+      TILE_N);'
+    - '    const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)d0));'
+    - '    for (int m = 0; m < nr; ++m) {'
+    - '        const float d1 = A[m * lda].d;'
+    - '        const __m512 vd = _mm512_mul_ps(_mm512_set1_ps(d1), vd0);'
+    - '        const __m512 vtile = _mm512_cvtepi32_ps(_mm512_loadu_si512(tile + m
+      * TILE_N));'
+    - '        __m512 vsum;'
+    - '        if (is_acc) {'
+    - '            vsum = _mm512_loadu_ps(C + m * ldc);'
+    - '        } else {'
+    - '            vsum = _mm512_set1_ps(0.f);'
+    - '        }'
+    - '        vsum = _mm512_fmadd_ps(vtile, vd, vsum);'
+    - '        _mm512_storeu_ps(C + m * ldc, vsum);'
+    - '    }'
+    - '}'
+    desc: 静态成员方法，重载用于 `block_q8_K` 和 `block_iq4_xs` 类型组合。该方法处理 IQ4_XS 格式的缩放因子，进行乘加运算。
+    line: 1180-1201
+    name: apply
+  name: acc_C
+- desc: 这是一个返回指定量化类型在打包后数据段大小的模板函数（通过模板特化实现），用于计算打包 B 矩阵时数据块的偏移量。
+  methods: []
+  name: get_quants_size
+- desc: 用于 AVX 指令集的 GEMM 内核模板类。主模板定义了一个空的 `apply` 方法，作为默认实现，而针对 `float` 和 `ggml_fp16_t`
+    输入类型的特化版本则提供了实际的矩阵乘法逻辑。
+  methods:
+  - code:
+    - static void apply(int K, const TA * RESTRICT A, const TB * RESTRICT B, TC *
+      RESTRICT C, int ldc) {
+    - '    GGML_UNUSED(K);'
+    - '    GGML_UNUSED(A);'
+    - '    GGML_UNUSED(B);'
+    - '    GGML_UNUSED(C);'
+    - '    GGML_UNUSED(ldc);'
+    - '}'
+    desc: 静态成员方法，通用空实现，所有参数均被标记为未使用。
+    line: 1244-1254
+    name: apply
+  - code:
+    - static void apply(int K, const float * RESTRICT A, const ggml_fp16_t * RESTRICT
+      B, float * RESTRICT C, int ldc) {
+    - '    constexpr int ROWS = BLOCK_M;'
+    - '    constexpr int COLS = BLOCK_N;'
+    - '    assert(BLOCK_K == 16);'
+    - '    __m512 va;'
+    - '    __m512 vb[COLS];'
+    - '    __m512 vc[ROWS * COLS];'
+    - '    auto loadc = [&](auto idx) {'
+    - '        vc[idx] = _mm512_setzero_ps();'
+    - '    };'
+    - '    Unroll<ROWS * COLS>{}(loadc);'
+    - '    auto compute = [&](auto idx, auto k) {'
+    - '        constexpr int row = idx / COLS;'
+    - '        constexpr int col = idx % COLS;'
+    - '        if constexpr (col == 0) {'
+    - '            va = _mm512_loadu_ps(A + row * K + k);'
+    - '        }'
+    - '        if constexpr (row == 0) {'
+    - '            vb[col] =  _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(B
+      + col * K + k)));'
+    - '        }'
+    - '        vc[idx] = _mm512_fmadd_ps(va, vb[col], vc[idx]);'
+    - '    };'
+    - '    for (int k = 0; k < K; k += 16) {'
+    - '        Unroll<ROWS * COLS>{}(compute, k);'
+    - '    }'
+    - '    auto storec = [&](auto idx) {'
+    - '        constexpr int row = idx / COLS;'
+    - '        constexpr int col = idx % COLS;'
+    - '        C[row * ldc + col] = _mm512_reduce_add_ps(vc[idx]);'
+    - '    };'
+    - '    Unroll<ROWS * COLS>{}(storec);'
+    - '}'
+    desc: 静态成员方法，针对 `float` 和 `ggml_fp16_t` 输入的专用实现。它将输入矩阵切块，通过循环 `K` 维度，并使用 SIMD
+      指令（如 `_mm512_fmadd_ps`）进行乘加操作，最后将结果归约并存储到输出矩阵 `C`。
+    line: 1257-1297
+    name: apply
+  name: tinygemm_kernel_avx
+- desc: 使用 AVX-512 VNNI 指令集的 GEMM 内核模板类。主模板定义了一个空的 `apply` 方法作为默认实现。多个特化版本针对不同的数据类型（如
+    block_q8_0 和 block_q4_0）提供了高效的整数计算路径，利用 `_mm512_dpbusd_epi32` 指令加速点积运算。
+  methods:
+  - code: []
+    desc: 静态成员方法，通用空实现。
+    line: 1336-1336
+    name: apply
+  - code:
+    - static void apply(int KB, const void * RESTRICT _A, const void * RESTRICT _B,
+      float * RESTRICT C, int ldc) {
+    - '    constexpr int COLS = BLOCK_N / 16;'
+    - '    const int TILE_SIZE = TILE_N * sizeof(block_q4_0);'
+    - '    const block_q8_0 * RESTRICT A = static_cast<const block_q8_0 *>(_A);'
+    - '    const char * RESTRICT B = static_cast<const char *>(_B);'
+    - '    __m512i va[8];'
+    - '    __m512 vc[COLS];'
+    - '    __m512 vd1;'
+    - '    __m512i vcomp;'
+    - '    const __m512i off = _mm512_set1_epi8(8);'
+    - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+    - '    auto loadc = [&](auto col) {'
+    - '        vc[col] = _mm512_setzero_ps();'
+    - '    };'
+    - '    Unroll<COLS>{}(loadc);'
+    - '    auto compute = [&](auto col, auto i) {'
+    - '        if constexpr (col == 0) {'
+    - '            const int32_t * a_ptr = reinterpret_cast<const int32_t *>(A[0 *
+      KB + i].qs);'
+    - '            vcomp = _mm512_setzero_si512();'
+    - '            for (int k = 0; k < 8; ++k) {'
+    - '                va[k] = _mm512_set1_epi32(a_ptr[k]);'
+    - '                vcomp = _mm512_dpbusd_epi32(vcomp, off, va[k]);'
+    - '            }'
+    - '            vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[0 * KB + i].d));'
+    - '        }'
+    - '        __m512i vsum = _mm512_setzero_si512();'
+    - '        const char * b_ptr = B + PACKED_INDEX(col, i, KB, TILE_SIZE);'
+    - '        for (int k = 0; k < 8; k += 2) {'
+    - '            __m512i bytes = _mm512_loadu_si512((const __m512i *)(b_ptr + k
+      * 32));'
+    - '            __m512i vb0 = _mm512_and_si512(bytes, lowMask);'
+    - '            vsum = _mm512_dpbusd_epi32(vsum, vb0, va[k + 0]);'
+    - '            __m512i vb1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+    - '            vsum = _mm512_dpbusd_epi32(vsum, vb1, va[k + 1]);'
+    - '        }'
+    - '        const int offset = TILE_N * TILE_K / 2;'
+    - '        const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)(b_ptr + offset)));'
+    - '        vsum = _mm512_sub_epi32(vsum, vcomp);'
+    - '        vc[col] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(vsum), _mm512_mul_ps(vd0,
+      vd1), vc[col]);'
+    - '    };'
+    - '    for (int i = 0; i < KB; ++i) {'
+    - '        Unroll<COLS>{}(compute, i);'
+    - '    }'
+    - '    auto storec = [&](auto col) {'
+    - '        _mm512_storeu_ps((__m512i*)(C + 0 * ldc + col * 16), vc[col]);'
+    - '    };'
+    - '    Unroll<COLS>{}(storec);'
+    - '}'
+    desc: 静态成员方法，针对 `block_q8_0` 和 `block_q4_0` 类型的实现。它将 A 矩阵数据广播，使用 VNNI 指令计算 Q8_0
+      与 Q4_0 的点积，并利用补偿机制处理符号问题，最终累加结果到 C。
+    line: 1338-1389
+    name: apply
+  - code:
+    - static void apply(int KB, const void * RESTRICT _A, const void * RESTRICT _B,
+      float * RESTRICT C, int ldc) {
+    - '    constexpr int COLS = BLOCK_N / 16;'
+    - '    const int TILE_SIZE = TILE_N * sizeof(block_q4_1);'
+    - '    const block_q8_1 * RESTRICT A = static_cast<const block_q8_1 *>(_A);'
+    - '    const char * RESTRICT B = static_cast<const char *>(_B);'
+    - '    __m512i va[8];'
+    - '    __m512i vb[8];'
+    - '    __m512 vc[COLS];'
+    - '    __m512 vd1, vs1;'
+    - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+    - '    auto loadc = [&](auto col) {'
+    - '        vc[col] = _mm512_setzero_ps();'
+    - '    };'
+    - '    Unroll<COLS>{}(loadc);'
+    - '    auto compute = [&](auto col, auto i) {'
+    - '        if constexpr (col == 0) {'
+    - '            const int32_t * a_ptr = reinterpret_cast<const int32_t *>(A[0 *
+      KB + i].qs);'
+    - '            for (int k = 0; k < 8; ++k) {'
+    - '                va[k] = _mm512_set1_epi32(a_ptr[k]);'
+    - '            }'
+    - '            vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[0 * KB + i].d));'
+    - '            vs1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[0 * KB + i].s));'
+    - '        }'
+    - '        const char * b_ptr = B + PACKED_INDEX(col, i, KB, TILE_SIZE);'
+    - '        for (int k = 0; k < 8; k += 2) {'
+    - '            __m512i bytes = _mm512_loadu_si512((const __m512i *)(b_ptr + k
+      * 32));'
+    - '            vb[k + 0] = _mm512_and_si512(bytes, lowMask);'
+    - '            vb[k + 1] = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+    - '        }'
+    - '        const int offset = TILE_N * TILE_K / 2;'
+    - '        const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)(b_ptr + offset)));'
+    - '        const __m512 vm0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)(b_ptr + offset + TILE_N * sizeof(ggml_half))));'
+    - '        __m512i vsum = _mm512_setzero_si512();'
+    - '        for (int k = 0; k < 8; ++k) {'
+    - '            vsum = _mm512_dpbusd_epi32(vsum, vb[k], va[k]);'
+    - '        }'
+    - '        vc[col] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(vsum), _mm512_mul_ps(vd0,
+      vd1), vc[col]);'
+    - '        vc[col] = _mm512_fmadd_ps(vm0, vs1, vc[col]);'
+    - '    };'
+    - '    for (int i = 0; i < KB; ++i) {'
+    - '        Unroll<COLS>{}(compute, i);'
+    - '    }'
+    - '    auto storec = [&](auto col) {'
+    - '        _mm512_storeu_ps((__m512i*)(C + 0 * ldc + col * 16), vc[col]);'
+    - '    };'
+    - '    Unroll<COLS>{}(storec);'
+    - '}'
+    desc: 静态成员方法，针对 `block_q8_1` 和 `block_q4_1` 类型的实现。它同时处理了 `d` 和 `s`（偏移）两个缩放因子，并在
+      VNNI 整数运算后应用它们。
+    line: 1392-1450
+    name: apply
+  - code:
+    - static void apply(int KB, const void * RESTRICT _A, const void * RESTRICT _B,
+      float * RESTRICT C, int ldc) {
+    - '    constexpr int COLS = BLOCK_N / 16;'
+    - '    const int TILE_SIZE = TILE_N * sizeof(block_q8_0) + TILE_N * sizeof(int32_t);'
+    - '    const block_q8_0 * RESTRICT A = static_cast<const block_q8_0 *>(_A);'
+    - '    const char * RESTRICT B = static_cast<const char *>(_B);'
+    - '    __m512i va[8];'
+    - '    __m512i vb[8];'
+    - '    __m512 vc[COLS];'
+    - '    __m512 vd1;'
+    - '    const __m512i off = _mm512_set1_epi8(static_cast<char>(0x80));'
+    - '    auto loadc = [&](auto col) {'
+    - '        vc[col] = _mm512_setzero_ps();'
+    - '    };'
+    - '    Unroll<COLS>{}(loadc);'
+    - '    auto compute = [&](auto col, auto i) {'
+    - '        if constexpr (col == 0) {'
+    - '            const int32_t * a_ptr = reinterpret_cast<const int32_t *>(A[0 *
+      KB + i].qs);'
+    - '            for (int k = 0; k < 8; ++k) {'
+    - '                va[k] = _mm512_set1_epi32(a_ptr[k]);'
+    - '                va[k] = _mm512_add_epi8(va[k], off);'
+    - '            }'
+    - '            vd1 = _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(A[0 * KB + i].d));'
+    - '        }'
+    - '        const char * b_ptr = B + PACKED_INDEX(col, i, KB, TILE_SIZE);'
+    - '        for (int k = 0; k < 8; ++k) {'
+    - '            vb[k] = _mm512_loadu_si512((const __m512i *)(b_ptr + k * 64));'
+    - '        }'
+    - '        const int offset = TILE_N * TILE_K;'
+    - '        const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)(b_ptr + offset)));'
+    - '        const int offset2 = TILE_N * TILE_K + TILE_N * sizeof(ggml_half);'
+    - '        const __m512i vcomp = _mm512_loadu_si512((const __m512i *)(b_ptr +
+      offset2));'
+    - '        __m512i vsum = _mm512_setzero_si512();'
+    - '        for (int k = 0; k < 8; ++k) {'
+    - '            vsum = _mm512_dpbusd_epi32(vsum, va[k], vb[k]);'
+    - '        }'
+    - '        vsum = _mm512_sub_epi32(vsum, vcomp);'
+    - '        vc[col] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(vsum), _mm512_mul_ps(vd0,
+      vd1), vc[col]);'
+    - '    };'
+    - '    for (int i = 0; i < KB; ++i) {'
+    - '        Unroll<COLS>{}(compute, i);'
+    - '    }'
+    - '    auto storec = [&](auto col) {'
+    - '        _mm512_storeu_ps((__m512i*)(C + 0 * ldc + col * 16), vc[col]);'
+    - '    };'
+    - '    Unroll<COLS>{}(storec);'
+    - '}'
+    desc: 静态成员方法，针对 `block_q8_0` 和 `block_q8_0` 类型的实现。由于两个矩阵都是有符号数，需要处理符号问题，通过加上 128
+      的偏移量并使用预先计算的补偿值来修正结果。
+    line: 1453-1506
+    name: apply
+  - code:
+    - static void apply(int KB, const void * RESTRICT _A, const void * RESTRICT _B,
+      float * RESTRICT C, int ldc) {
+    - '    constexpr int COLS = BLOCK_N / 16;'
+    - '    const int TILE_SIZE = TILE_N * sizeof(block_q4_K) + TILE_N * 4;'
+    - '    const block_q8_K * RESTRICT A = static_cast<const block_q8_K *>(_A);'
+    - '    const char * RESTRICT B = static_cast<const char *>(_B);'
+    - '    __m512i va[8];'
+    - '    __m512i va_bsum;'
+    - '    __m512 vc[COLS];'
+    - '    __m512 vd1;'
+    - '    const int offset_scales = (QK_K / 2) * TILE_N;'
+    - '    const int offset_mins   = (QK_K / 2) * TILE_N +  8 * TILE_N;'
+    - '    const int offset_d0     = (QK_K / 2) * TILE_N + 16 * TILE_N;'
+    - '    const int offset_dmin   = (QK_K / 2) * TILE_N + 16 * TILE_N + TILE_N *
+      sizeof(ggml_half);'
+    - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+    - '    auto loadc = [&](auto col) {'
+    - '        vc[col] = _mm512_setzero_ps();'
+    - '    };'
+    - '    Unroll<COLS>{}(loadc);'
+    - '    auto compute = [&](auto col, auto i) {'
+    - '        if constexpr (col == 0) {'
+    - '            for (int k_group = 0; k_group < QK_K / 32; ++k_group) {'
+    - '                va[k_group] = _mm512_castsi256_si512(_mm256_loadu_si256((const
+      __m256i *)(A[0 * KB + i].qs + k_group * 32)));'
+    - '            }'
+    - '            const __m256i q8sums = _mm256_loadu_si256((const __m256i *)A[0
+      * KB + i].bsums);'
+    - '            const __m128i q8s = _mm_hadd_epi16(_mm256_extracti128_si256(q8sums,
+      0), _mm256_extracti128_si256(q8sums, 1));'
+    - '            va_bsum = _mm512_castsi128_si512(q8s);'
+    - '            vd1 = _mm512_set1_ps(A[0 * KB + i].d);'
+    - '        }'
+    - '        __m512i acc = _mm512_setzero_si512();'
+    - '        const char * b_ptr = B + PACKED_INDEX(col, i, KB, TILE_SIZE);'
+    - '        const char * b_qs  = b_ptr;'
+    - '        for (int k_group = 0; k_group < QK_K / 32; ++k_group) {'
+    - '            __m512i vsum = _mm512_setzero_si512();'
+    - '            for (int k = 0; k < 8; k += 2) {'
+    - '                __m512i va0 = _mm512_permutexvar_epi32(_mm512_set1_epi32(k
+      + 0), va[k_group]);'
+    - '                __m512i va1 = _mm512_permutexvar_epi32(_mm512_set1_epi32(k
+      + 1), va[k_group]);'
+    - '                __m512i bytes = _mm512_loadu_si512((const __m512i *)b_qs);'
+    - '                __m512i vb0 = _mm512_and_si512(bytes, lowMask);'
+    - '                vsum = _mm512_dpbusd_epi32(vsum, vb0, va0);'
+    - '                __m512i vb1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4),
+      lowMask);'
+    - '                vsum = _mm512_dpbusd_epi32(vsum, vb1, va1);'
+    - '                b_qs += 64;'
+    - '            }'
+    - '            acc = _mm512_add_epi32(acc, vsum);'
+    - '        }'
+    - '        __m512i vmin_sum = _mm512_setzero_si512();'
+    - '        for (int k = 0; k < 4; ++k) {'
+    - '            __m512i vmask = _mm512_set1_epi32(k);'
+    - '            __m512i va_b = _mm512_permutexvar_epi32(vmask, va_bsum);'
+    - '            const char * b_mins = b_ptr + offset_mins + k * TILE_N;'
+    - '            __m512i vbm = _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i
+      *)b_mins));'
+    - '            vmin_sum = _mm512_dpwssds_epi32(vmin_sum, va_b, vbm);'
+    - '        }'
+    - '        const ggml_half * b_d0 = reinterpret_cast<const ggml_half *>(b_ptr
+      + offset_d0);'
+    - '        const ggml_half * b_dmin = reinterpret_cast<const ggml_half *>(b_ptr
+      + offset_dmin);'
+    - '        const __m512 vd0 = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)b_d0));'
+    - '        const __m512 vdmin = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i
+      *)b_dmin));'
+    - '        __m512 vsumf = _mm512_cvtepi32_ps(_mm512_add_epi32(acc, vmin_sum));'
+    - '        vc[col] = _mm512_fmadd_ps(vsumf, _mm512_mul_ps(vd0, vd1), vc[col]);'
+    - '        __m512 vdmin_v = _mm512_mul_ps(_mm512_set1_ps(-A[0].d), vdmin);'
+    - '        vc[col] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(vmin_sum), vdmin_v, vc[col]);'
+    - '    };'
+    - '    for (int i = 0; i < KB; ++i) {'
+    - '        Unroll<COLS>{}(compute, i);'
+    - '    }'
+    - '    auto storec = [&](auto col) {'
+    - '        _mm512_storeu_ps((__m512i*)(C + 0 * ldc + col * 16), vc[col]);'
+    - '    };'
+    - '    Unroll<COLS>{}(storec);'
+    - '}'
+    desc: 静态成员方法，针对 `block_q8_K` 和 `block_q4_K` 类型的实现。它处理 K 量化格式的复杂布局，包括提取 A 矩阵的 `bsums`
+      和 B 矩阵的 `mins` 来计算补偿，并执行 VNNI 指令。
+    line: 1509-1589
+    name: apply
+  name: tinygemm_kernel_vnni
+- desc: 一个针对AVX-512 VNNI指令集优化的模板结构体，用于执行特定量化类型组合（如Q8_K与Q4_K等）的小型矩阵乘法。它通过模板参数BLOCK_M、BLOCK_N、BLOCK_K来定义计算块的大小，并通过apply静态方法实现核心计算逻辑。
+  methods:
+  - code:
+    - template <int BLOCK_M, int BLOCK_N, int BLOCK_K>
+    - struct tinygemm_kernel_vnni<block_q8_K, block_q4_K, float, BLOCK_M, BLOCK_N,
+      BLOCK_K> {
+    - '    static void apply(int KB, const void * RESTRICT _A, const void * RESTRICT
+      _B, float * RESTRICT C, int ldc) {'
+    - '        //... 计算逻辑 ...'
+    - '    }'
+    - '};'
+    desc: tinygemm_kernel_vnni的静态核心方法，执行具体的矩阵乘法计算。它加载A矩阵（Q8_K类型）和打包后的B矩阵（目标量化类型），利用AVX-512指令进行点积和累加，并将结果存储到输出矩阵C。不同量化类型（Q4_K,
+      Q5_K, Q6_K, IQ4_XS等）有各自特化的实现。
+    line: 1653-1818
+    name: apply
+  name: tinygemm_kernel_vnni
+- desc: 一个模板函数，针对Intel AMX指令集优化，用于执行特定量化类型组合的大规模矩阵乘法。它利用AMX的二维寄存器（TMM）来加速矩阵块乘累加操作，并通过软件流水线（double
+    buffering）隐藏内存访问延迟。
+  methods:
+  - code:
+    - template <typename TA, typename TB, typename TC, int BLOCK_K,
+    - '          typename std::enable_if<!is_type_qkk<TB>::value, int>::type = 0>'
+    - void tinygemm_kernel_amx(int M, int N, int KB, const void * RESTRICT _A, const
+      void * RESTRICT _B, TC * RESTRICT C, int ldc) {
+    - '    //... AMX计算逻辑 ...'
+    - '}'
+    desc: 针对非QKK量化类型（如Q4_0等）的AMX内核实现。它处理M维度可能超过单个AMX tile大小（TILE_M）的情况，通过分块和累加完成计算。
+    line: 1819-2024
+    name: tinygemm_kernel_amx (非QKK类型)
+  - code:
+    - template <typename TA, typename TB, typename TC, int BLOCK_K,
+    - '          typename std::enable_if<is_type_qkk<TB>::value, int>::type = 0>'
+    - void tinygemm_kernel_amx(int M, int N, int KB, const void * RESTRICT _A, const
+      void * RESTRICT _B, float * RESTRICT C, int ldc) {
+    - '    //... AMX计算逻辑...'
+    - '}'
+    desc: 针对QKK量化类型（如Q4_K、Q6_K等）的AMX内核实现。由于这类量化类型具有group概念，该内核在计算时需要对每个group分别进行矩阵乘且后累加。
+    line: 2025-2110
+    name: tinygemm_kernel_amx (QKK类型)
+  name: tinygemm_kernel_amx
+desc: 该文件是 ggml-cpu 的 AMX（Advanced Matrix Extensions）矩阵乘法核心实现，专注于在支持 AMX 和 AVX512VNNI
+  的 Intel CPU 上高效执行量化矩阵乘法。它利用 AMX 的 tile 矩阵乘法指令（TMUL）和 VNNI 指令，实现了 int8 量化数据的快速矩阵运算，涵盖多种量化格式（如block_q4_0,
+  block_q4_1, block_q8_0, block_q4_K等）的打包、转置和计算过程。文件中包含了 AMX tile 配置、数据格式转换（如浮点到量化的
+  from_float）、数据打包（pack_B）以及矩阵转置等核心支持函数，为上层神经网络推理提供了高性能的底层计算能力。该文件是 ggml 项目中 ggml-cpu/amx
+  目录下的 mmq.cpp 源文件，专注于使用 Intel AMX（Advanced Matrix Extensions）指令集和 AVX-512 来实现高度优化的矩阵乘法（GEMM）计算。该文件定义了一系列的模板特化结构体、模板类和全局函数，用于对不同的量化块类型（如
+  block_q4_K, block_q5_K, block_q6_K, block_q4_0, block_q4_1, block_q8_0, block_q8_1,
+  block_iq4_xs 等）进行打包（packing）、解包（unpacking）和矩阵乘法累加（accumulation）操作。其核心目标是通过将数据重新排列成适合特定
+  SIMD 指令计算的格式（如 VNNI 格式），并利用 AVX-512 VNNI 指令（如 `_mm512_dpbusd_epi32`）来加速低精度整数矩阵乘法，最终提升模型在
+  Intel CPU 上的推理性能。代码中包含了专门为 Q4_K, Q5_K, Q6_K 和 IQ4_XS 等量化类型设计的打包函数、解包模板特化，以及针对不同类型组合的累加器（acc_C）特化和
+  VNNI 内核（tinygemm_kernel_vnni）特化，体现了对内存布局和计算特性的精细优化。该文件是ggml库中针对Intel AMX（Advanced
+  Matrix Extensions）指令集优化的矩阵乘法内核实现。它通过模板特化，为不同的量化权重类型（如Q4_K、Q5_K、Q6_K、IQ4_XS）和浮点类型（F16）提供高效的AVX-512和AMX矩阵乘法内核。代码涵盖了从权重数据打包、矩阵分块计算到最终累加输出的完整流程。该文件实现了基于AMX（Advanced
+  Matrix Extensions）指令集的矩阵乘法量化内核，用于高效执行GGML框架中的量化矩阵乘法运算。代码针对不同批次大小（M）采用两种优化路径：单批次（M=1）时使用VNNI指令的tinygemm内核处理4个tile，多批次时使用AMX指令的tinygemm内核处理2x2
+  tile块，并通过并行化提升性能。
+file: ggml/src/ggml-cpu/amx/mmq.cpp
+funcs:
+- code:
+  - inline void ggml_tile_config_init(void) {
+  - '    static thread_local bool done = false;'
+  - '    if (done) {'
+  - '        return;'
+  - '    }'
+  - '    alignas(64) tile_config_t tc = {};'
+  - '    tc.palette_id = 1;'
+  - '    tc.start_row = 0;'
+  - '    tc.rows[0] = 8;   tc.colsb[0] = 64;'
+  - '    tc.rows[1] = 8;   tc.colsb[1] = 64;'
+  - '    tc.rows[2] = 16;  tc.colsb[2] = 32;'
+  - '    tc.rows[3] = 16;  tc.colsb[3] = 32;'
+  - '    tc.rows[4] = 16;  tc.colsb[4] = 64;'
+  - '    tc.rows[5] = 16;  tc.colsb[5] = 64;'
+  - '    tc.rows[6] = 16;  tc.colsb[6] = 64;'
+  - '    tc.rows[7] = 16;  tc.colsb[7] = 64;'
+  - '    _tile_loadconfig(&tc);'
+  - '    done = true;'
+  - '}'
+  desc: 初始化 AMX tile 配置，使用线程局部变量确保每个线程只配置一次，设置 2-2-4 的 tile 分配模式。
+  line: 170-192
+  name: ggml_tile_config_init
+- code:
+  - template <typename TB>
+  - int get_tile_size() {
+  - '    int tile_size = TILE_N * sizeof(TB);'
+  - '    if (do_compensate<TB>::value) {'
+  - '        tile_size += TILE_N * sizeof(int32_t);'
+  - '    }'
+  - '    if (std::is_same<TB, block_q4_K>::value ||'
+  - '        std::is_same<TB, block_q5_K>::value) {'
+  - '        tile_size += TILE_N * 4;'
+  - '    }'
+  - '    if (std::is_same<TB, block_iq4_xs>::value) {'
+  - '        tile_size += TILE_N * 2;'
+  - '    }'
+  - '    return tile_size;'
+  - '}'
+  desc: 根据量化类型计算 tile 所需的总内存大小，包括数据、补偿和相关附加项。
+  line: 200-213
+  name: get_tile_size
+- code:
+  - template <typename TB, int BLOCK_K>
+  - int get_row_size(int K) {
+  - '    int KB = K / BLOCK_K;'
+  - '    int row_size = KB * sizeof(TB);'
+  - '    if (do_compensate<TB>::value) {'
+  - '        row_size += KB * sizeof(int32_t);'
+  - '    }'
+  - '    if (std::is_same<TB, block_q4_K>::value ||'
+  - '        std::is_same<TB, block_q5_K>::value) {'
+  - '        row_size += KB * 4;'
+  - '    }'
+  - '    if (std::is_same<TB, block_iq4_xs>::value) {'
+  - '        row_size += KB * 2;'
+  - '    }'
+  - '    return row_size;'
+  - '}'
+  desc: 根据量化类型和矩阵维度 K 计算每行数据所需的内存大小。
+  line: 216-229
+  name: get_row_size
+- code:
+  - inline void transpose_8x8_32bit(__m256i * v, __m256i * v1) {
+  - '    v1[0] = _mm256_unpacklo_epi32(v[0], v[1]);'
+  - '    v1[1] = _mm256_unpackhi_epi32(v[0], v[1]);'
+  - '    v1[2] = _mm256_unpacklo_epi32(v[2], v[3]);'
+  - '    v1[3] = _mm256_unpackhi_epi32(v[2], v[3]);'
+  - '    v1[4] = _mm256_unpacklo_epi32(v[4], v[5]);'
+  - '    v1[5] = _mm256_unpackhi_epi32(v[4], v[5]);'
+  - '    v1[6] = _mm256_unpacklo_epi32(v[6], v[7]);'
+  - '    v1[7] = _mm256_unpackhi_epi32(v[6], v[7]);'
+  - '    v[0] = SHUFFLE_EPI32(v1[0], v1[2], 0x44);'
+  - '    v[1] = SHUFFLE_EPI32(v1[0], v1[2], 0xee);'
+  - '    v[2] = SHUFFLE_EPI32(v1[4], v1[6], 0x44);'
+  - '    v[3] = SHUFFLE_EPI32(v1[4], v1[6], 0xee);'
+  - '    v[4] = SHUFFLE_EPI32(v1[1], v1[3], 0x44);'
+  - '    v[5] = SHUFFLE_EPI32(v1[1], v1[3], 0xee);'
+  - '    v[6] = SHUFFLE_EPI32(v1[5], v1[7], 0x44);'
+  - '    v[7] = SHUFFLE_EPI32(v1[5], v1[7], 0xee);'
+  - '    v1[0] = _mm256_permute2f128_si256(v[2], v[0], 0x02);'
+  - '    v1[1] = _mm256_permute2f128_si256(v[3], v[1], 0x02);'
+  - '    v1[2] = _mm256_permute2f128_si256(v[6], v[4], 0x02);'
+  - '    v1[3] = _mm256_permute2f128_si256(v[7], v[5], 0x02);'
+  - '    v1[4] = _mm256_permute2f128_si256(v[2], v[0], 0x13);'
+  - '    v1[5] = _mm256_permute2f128_si256(v[3], v[1], 0x13);'
+  - '    v1[6] = _mm256_permute2f128_si256(v[6], v[4], 0x13);'
+  - '    v1[7] = _mm256_permute2f128_si256(v[7], v[5], 0x13);'
+  - '}'
+  desc: 使用 AVX2 指令实现 8x8 的 32 位整数矩阵转置。
+  line: 245-268
+  name: transpose_8x8_32bit
+- code:
+  - inline void transpose_16x4_32bit(__m512i * r, __m512i * d) {
+  - '    static const __m512i index1 = _mm512_set_epi32('
+  - '        0x0f, 0x0b, 0x07, 0x03,'
+  - '        0x0e, 0x0a, 0x06, 0x02,'
+  - '        0x0d, 0x09, 0x05, 0x01,'
+  - '        0x0c, 0x08, 0x04, 0x00);'
+  - '    d[0] = _mm512_permutexvar_epi32(index1, r[0]);'
+  - '    d[1] = _mm512_permutexvar_epi32(index1, r[1]);'
+  - '    d[2] = _mm512_permutexvar_epi32(index1, r[2]);'
+  - '    d[3] = _mm512_permutexvar_epi32(index1, r[3]);'
+  - '    r[0] = _mm512_shuffle_i32x4(d[0], d[1], 0x44);'
+  - '    r[1] = _mm512_shuffle_i32x4(d[0], d[1], 0xee);'
+  - '    r[2] = _mm512_shuffle_i32x4(d[2], d[3], 0x44);'
+  - '    r[3] = _mm512_shuffle_i32x4(d[2], d[3], 0xee);'
+  - '    d[0] = _mm512_shuffle_i32x4(r[0], r[2], 0x88);'
+  - '    d[1] = _mm512_shuffle_i32x4(r[0], r[2], 0xdd);'
+  - '    d[2] = _mm512_shuffle_i32x4(r[1], r[3], 0x88);'
+  - '    d[3] = _mm512_shuffle_i32x4(r[1], r[3], 0xdd);'
+  - '}'
+  desc: 使用 AVX512 指令实现 16x4 的 32 位整数矩阵转置。
+  line: 271-286
+  name: transpose_16x4_32bit
+- code:
+  - inline void transpose_16x16_32bit(__m512i * v) {
+  - '    __m512i v1[16];'
+  - '    v1[0] = _mm512_unpacklo_epi32(v[0], v[1]);'
+  - '    v1[1] = _mm512_unpackhi_epi32(v[0], v[1]);'
+  - '    v1[2] = _mm512_unpacklo_epi32(v[2], v[3]);'
+  - '    v1[3] = _mm512_unpackhi_epi32(v[2], v[3]);'
+  - '    v1[4] = _mm512_unpacklo_epi32(v[4], v[5]);'
+  - '    v1[5] = _mm512_unpackhi_epi32(v[4], v[5]);'
+  - '    v1[6] = _mm512_unpacklo_epi32(v[6], v[7]);'
+  - '    v1[7] = _mm512_unpackhi_epi32(v[6], v[7]);'
+  - '    v1[8] = _mm512_unpacklo_epi32(v[8], v[9]);'
+  - '    v1[9] = _mm512_unpackhi_epi32(v[8], v[9]);'
+  - '    v1[10] = _mm512_unpacklo_epi32(v[10], v[11]);'
+  - '    v1[11] = _mm512_unpackhi_epi32(v[10], v[11]);'
+  - '    v1[12] = _mm512_unpacklo_epi32(v[12], v[13]);'
+  - '    v1[13] = _mm512_unpackhi_epi32(v[12], v[13]);'
+  - '    v1[14] = _mm512_unpacklo_epi32(v[14], v[15]);'
+  - '    v1[15] = _mm512_unpackhi_epi32(v[14], v[15]);'
+  - '    v[0] = _mm512_unpacklo_epi64(v1[0], v1[2]);'
+  - '    v[1] = _mm512_unpackhi_epi64(v1[0], v1[2]);'
+  - '    v[2] = _mm512_unpacklo_epi64(v1[1], v1[3]);'
+  - '    v[3] = _mm512_unpackhi_epi64(v1[1], v1[3]);'
+  - '    v[4] = _mm512_unpacklo_epi64(v1[4], v1[6]);'
+  - '    v[5] = _mm512_unpackhi_epi64(v1[4], v1[6]);'
+  - '    v[6] = _mm512_unpacklo_epi64(v1[5], v1[7]);'
+  - '    v[7] = _mm512_unpackhi_epi64(v1[5], v1[7]);'
+  - '    v[8] = _mm512_unpacklo_epi64(v1[8], v1[10]);'
+  - '    v[9] = _mm512_unpackhi_epi64(v1[8], v1[10]);'
+  - '    v[10] = _mm512_unpacklo_epi64(v1[9], v1[11]);'
+  - '    v[11] = _mm512_unpackhi_epi64(v1[9], v1[11]);'
+  - '    v[12] = _mm512_unpacklo_epi64(v1[12], v1[14]);'
+  - '    v[13] = _mm512_unpackhi_epi64(v1[12], v1[14]);'
+  - '    v[14] = _mm512_unpacklo_epi64(v1[13], v1[15]);'
+  - '    v[15] = _mm512_unpackhi_epi64(v1[13], v1[15]);'
+  - '    v1[0] = _mm512_shuffle_i32x4(v[0], v[4], 0x88);'
+  - '    v1[1] = _mm512_shuffle_i32x4(v[1], v[5], 0x88);'
+  - '    v1[2] = _mm512_shuffle_i32x4(v[2], v[6], 0x88);'
+  - '    v1[3] = _mm512_shuffle_i32x4(v[3], v[7], 0x88);'
+  - '    v1[4] = _mm512_shuffle_i32x4(v[0], v[4], 0xdd);'
+  - '    v1[5] = _mm512_shuffle_i32x4(v[1], v[5], 0xdd);'
+  - '    v1[6] = _mm512_shuffle_i32x4(v[2], v[6], 0xdd);'
+  - '    v1[7] = _mm512_shuffle_i32x4(v[3], v[7], 0xdd);'
+  - '    v1[8] = _mm512_shuffle_i32x4(v[8], v[12], 0x88);'
+  - '    v1[9] = _mm512_shuffle_i32x4(v[9], v[13], 0x88);'
+  - '    v1[10] = _mm512_shuffle_i32x4(v[10], v[14], 0x88);'
+  - '    v1[11] = _mm512_shuffle_i32x4(v[11], v[15], 0x88);'
+  - '    v1[12] = _mm512_shuffle_i32x4(v[8], v[12], 0xdd);'
+  - '    v1[13] = _mm512_shuffle_i32x4(v[9], v[13], 0xdd);'
+  - '    v1[14] = _mm512_shuffle_i32x4(v[10], v[14], 0xdd);'
+  - '    v1[15] = _mm512_shuffle_i32x4(v[11], v[15], 0xdd);'
+  - '    v[0] = _mm512_shuffle_i32x4(v1[0], v1[8], 0x88);'
+  - '    v[1] = _mm512_shuffle_i32x4(v1[1], v1[9], 0x88);'
+  - '    v[2] = _mm512_shuffle_i32x4(v1[2], v1[10], 0x88);'
+  - '    v[3] = _mm512_shuffle_i32x4(v1[3], v1[11], 0x88);'
+  - '    v[4] = _mm512_shuffle_i32x4(v1[4], v1[12], 0x88);'
+  - '    v[5] = _mm512_shuffle_i32x4(v1[5], v1[13], 0x88);'
+  - '    v[6] = _mm512_shuffle_i32x4(v1[6], v1[14], 0x88);'
+  - '    v[7] = _mm512_shuffle_i32x4(v1[7], v1[15], 0x88);'
+  - '    v[8] = _mm512_shuffle_i32x4(v1[0], v1[8], 0xdd);'
+  - '    v[9] = _mm512_shuffle_i32x4(v1[1], v1[9], 0xdd);'
+  - '    v[10] = _mm512_shuffle_i32x4(v1[2], v1[10], 0xdd);'
+  - '    v[11] = _mm512_shuffle_i32x4(v1[3], v1[11], 0xdd);'
+  - '    v[12] = _mm512_shuffle_i32x4(v1[4], v1[12], 0xdd);'
+  - '    v[13] = _mm512_shuffle_i32x4(v1[5], v1[13], 0xdd);'
+  - '    v[14] = _mm512_shuffle_i32x4(v1[6], v1[14], 0xdd);'
+  - '    v[15] = _mm512_shuffle_i32x4(v1[7], v1[15], 0xdd);'
+  - '}'
+  desc: 使用 AVX512 指令实现 16x16 的 32 位整数矩阵转置。
+  line: 289-355
+  name: transpose_16x16_32bit
+- code:
+  - void quantize_row_q8_K_vnni(const float * RESTRICT x, void * RESTRICT vy, int64_t
+    k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int KB = k / QK_K;'
+  - '    constexpr int kVecs = QK_K / 16;'
+  - '    block_q8_K * y = reinterpret_cast<block_q8_K *>(vy);'
+  - '    __m512  v[kVecs];'
+  - '    __m512i vq[kVecs / 4];'
+  - '    __m512i vq_packed[kVecs / 4];'
+  - '    const __m512 signBit = _mm512_set1_ps(-0.f);'
+  - '    for (int i = 0; i < KB; ++i) {'
+  - '        __m512 vamax = _mm512_set1_ps(0.f);'
+  - '        for (int j = 0; j < kVecs; ++j) {'
+  - '            v[j] = _mm512_loadu_ps(x); x += 16;'
+  - '            vamax = _mm512_max_ps(vamax, _mm512_andnot_ps(signBit, v[j]));'
+  - '        }'
+  - '        const float amax = _mm512_reduce_max_ps(vamax);'
+  - '        const float iscale = 127.f / amax;'
+  - '        y[i].d = GGML_CPU_FP32_TO_FP16(1 / iscale);'
+  - '        const float id = ( amax != 0.0f ) ? iscale : 0.f;'
+  - '        const __m512 vscale = _mm512_set1_ps(id);'
+  - '        for (int j = 0; j < kVecs; ++j) {'
+  - '            v[j] = _mm512_mul_ps(v[j], vscale);'
+  - '            v[j] = _mm512_roundscale_ps(v[j], (_MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));'
+  - '        }'
+  - '        for (int j = 0; j < kVecs / 4; ++j) {'
+  - '            __m128i q8_0 = _mm512_cvtepi32_epi8(_mm512_cvtps_epi32(v[j * 4 +
+    0]));'
+  - '            __m128i q8_1 = _mm512_cvtepi32_epi8(_mm512_cvtps_epi32(v[j * 4 +
+    1]));'
+  - '            __m128i q8_2 = _mm512_cvtepi32_epi8(_mm512_cvtps_epi32(v[j * 4 +
+    2]));'
+  - '            __m128i q8_3 = _mm512_cvtepi32_epi8(_mm512_cvtps_epi32(v[j * 4 +
+    3]));'
+  - '            __m256i q8_01 = _mm256_insertf128_si256(_mm256_castsi128_si256(q8_0),
+    (q8_1), 1);'
+  - '            __m256i q8_23 = _mm256_insertf128_si256(_mm256_castsi128_si256(q8_2),
+    (q8_3), 1);'
+  - '            vq[j] = _mm512_inserti32x8(_mm512_castsi256_si512(q8_01), q8_23,
+    1);'
+  - '            _mm512_storeu_si512((__m512i *)(y[i].qs + j * 64), vq[j]);'
+  - '        }'
+  - '        transpose_16x4_32bit(vq, vq_packed);'
+  - '        const __m512i one = _mm512_set1_epi8(1);'
+  - '        __m512i sum = _mm512_setzero_si512();'
+  - '        for (int k = 0; k < 4; ++k) {'
+  - '            sum = _mm512_dpbusd_epi32(sum, one, vq_packed[k]);'
+  - '        }'
+  - '        _mm256_storeu_si256((__m256i *)(y[i].bsums), _mm512_cvtepi32_epi16(sum));'
+  - '    }'
+  - '}'
+  desc: 使用 AVX512 指令将浮点数据快速量化为 block_q8_K 格式的 VNNI 版本实现。
+  line: 358-405
+  name: quantize_row_q8_K_vnni
+- code:
+  - template <typename T>
+  - inline void from_float(const float * x, char * vy, int64_t k);
+  desc: 模板函数，将浮点数据转换为指定的量化类型，有部分特化版本。
+  line: 408-409
+  name: from_float
+- code:
+  - template <>
+  - inline void from_float<block_q8_0>(const float * x, char * vy, int64_t k) {
+  - '    quantize_row_q8_0(x, (block_q8_0 *)vy, k);'
+  - '}'
+  desc: block_q8_0 类型的 from_float 特化实现，调用 quantize_row_q8_0 完成量化。
+  line: 411-415
+  name: from_float<block_q8_0>
+- code:
+  - template <>
+  - inline void from_float<block_q8_1>(const float * x, char * vy, int64_t k) {
+  - '    quantize_row_q8_1(x, (block_q8_1 *)vy, k);'
+  - '}'
+  desc: block_q8_1 类型的 from_float 特化实现，调用 quantize_row_q8_1 完成量化。
+  line: 417-421
+  name: from_float<block_q8_1>
+- code:
+  - template <>
+  - inline void from_float<block_q8_K>(const float * x, char * vy, int64_t k) {
+  - '#if 1'
+  - '    // TODO: this is reference impl!'
+  - '    quantize_row_q8_K_ref(x, (block_q8_K *)vy, k);'
+  - '#else'
+  - '    quantize_row_q8_K_vnni(x, vy, k);'
+  - '#endif'
+  - '}'
+  desc: block_q8_K 类型的 from_float 特化实现，当前调用参考实现 quantize_row_q8_K_ref。
+  line: 423-432
+  name: from_float<block_q8_K>
+- code:
+  - void unpack_A(int8_t * RESTRICT tile, const block_q8_0 * RESTRICT A, int lda,
+    int nr) {
+  - '    assert(nr != TILE_M);'
+  - '    for (int m = 0; m < nr; ++m) {'
+  - '        const __m256i v = _mm256_loadu_si256((const __m256i *)(A[m * lda].qs));'
+  - '        _mm256_storeu_si256((__m256i *)(tile + m * TILE_K), v);'
+  - '    }'
+  - '}'
+  desc: 将 block_q8_0 类型的矩阵 A 解包到 tile 数组中，当行数不足时使用。
+  line: 435-441
+  name: unpack_A
+- code:
+  - void unpack_A(int8_t * RESTRICT tile, const block_q8_1 * RESTRICT A, int lda,
+    int nr) {
+  - '    assert(nr != TILE_M);'
+  - '    for (int m = 0; m < nr; ++m) {'
+  - '        const __m256i v = _mm256_loadu_si256((const __m256i *)(A[m * lda].qs));'
+  - '        _mm256_storeu_si256((__m256i *)(tile + m * TILE_K), v);'
+  - '    }'
+  - '}'
+  desc: 将 block_q8_1 类型的矩阵 A 解包到 tile 数组中，当行数不足时使用。
+  line: 443-449
+  name: unpack_A
+- code:
+  - template <typename TB>
+  - void unpack_A(int8_t * RESTRICT tile, const block_q8_K * RESTRICT A, int lda,
+    int k, int nr) {
+  - '    assert(nr <= TILE_M);'
+  - '    for (int m = 0; m < nr; ++m) {'
+  - '        const __m256i v = _mm256_loadu_si256((const __m256i *)(A[m * lda].qs
+    + k * 32));'
+  - '        _mm256_storeu_si256((__m256i *)(tile + m * TILE_K), v);'
+  - '    }'
+  - '}'
+  desc: 将 block_q8_K 类型的矩阵 A 解包到 tile 数组中，支持指定 k 偏移。
+  line: 451-457
+  name: unpack_A
+- code:
+  - template <>
+  - void unpack_A<block_q6_K>(int8_t * RESTRICT tile, const block_q8_K * RESTRICT
+    A, int lda, int k, int nr) {
+  - '    assert(nr <= TILE_M);'
+  - '    // zero padding k from 16 to 32, so that we don''t have to re-config amx'
+  - '    const __m128i zero = _mm_setzero_si128();'
+  - '    for (int m = 0; m < nr; ++m) {'
+  - '        const __m128i v = _mm_loadu_si128((const __m128i *)(A[m * lda].qs + k
+    * 16));'
+  - '        const __m256i r = _mm256_insertf128_si256(_mm256_castsi128_si256(v),
+    zero, 1);'
+  - '        _mm256_storeu_si256((__m256i *)(tile + m * TILE_K), r);'
+  - '    }'
+  - '}'
+  desc: 针对 block_q6_K 的 unpack_A 特化，将 16 字节数据零填充到 32 字节。
+  line: 459-468
+  name: unpack_A<block_q6_K>
+- code:
+  - inline __m256i bytes_from_nibbles_32(const uint8_t * rsi) {
+  - '    const __m128i tmp = _mm_loadu_si128((const __m128i *)rsi);'
+  - '    const __m256i bytes = MM256_SET_M128I(_mm_srli_epi16(tmp, 4), tmp);'
+  - '    const __m256i lowMask = _mm256_set1_epi8(0xF);'
+  - '    return _mm256_and_si256(lowMask, bytes);'
+  - '}'
+  desc: 从 16 字节中提取 32 个 4 位半字节，并将其展开为 32 个字节。
+  line: 472-476
+  name: bytes_from_nibbles_32
+- code:
+  - inline __m512i bytes_from_nibbles_64(const uint8_t * rsi) {
+  - '    const __m256i tmp = _mm256_loadu_si256((const __m256i *)rsi);'
+  - '    const __m256i lowMask = _mm256_set1_epi8(0xF);'
+  - '    const __m256i q4l = _mm256_and_si256(tmp, lowMask);'
+  - '    const __m256i q4h = _mm256_and_si256(_mm256_srli_epi16(tmp, 4), lowMask);'
+  - '    return _mm512_inserti32x8(_mm512_castsi256_si512(q4l), q4h, 1);'
+  - '}'
+  desc: 从 32 字节中提取 64 个 4 位半字节（用于 block_q4_K），并展开为 64 个字节。
+  line: 480-485
+  name: bytes_from_nibbles_64
+- code:
+  - inline __m512i bytes_from_nibbles_64(const uint8_t * qs, const uint8_t * qh, int
+    k) {
+  - '    const __m256i lowMask = _mm256_set1_epi8(0xF);'
+  - '    __m256i hmask = _mm256_set1_epi8(1);'
+  - '    hmask = _mm256_slli_epi16(hmask, k);'
+  - '    const __m256i q5bits = _mm256_loadu_si256((const __m256i *)qs);'
+  - '    const __m256i hbits = _mm256_loadu_si256((const __m256i *)qh);'
+  - '    const __m256i q5l_0 = _mm256_and_si256(q5bits, lowMask);'
+  - '    const __m256i q5h_0 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_and_si256(hbits,
+    hmask), k + 0), 4);'
+  - '    const __m256i q5_0  = _mm256_add_epi8(q5l_0, q5h_0);'
+  - '    hmask = _mm256_slli_epi16(hmask, 1);'
+  - '    const __m256i q5l_1 = _mm256_and_si256(_mm256_srli_epi16(q5bits, 4), lowMask);'
+  - '    const __m256i q5h_1 = _mm256_slli_epi16(_mm256_srli_epi16(_mm256_and_si256(hbits,
+    hmask), k + 1), 4);'
+  - '    const __m256i q5_1  = _mm256_add_epi8(q5l_1, q5h_1);'
+  - '    return _mm512_inserti32x8(_mm512_castsi256_si512(q5_0), q5_1, 1);'
+  - '}'
+  desc: 从 qs 和 qh 中提取 block_q5_K 的 4 位半字节和额外高位，并展开为 64 个字节。
+  line: 489-506
+  name: bytes_from_nibbles_64
+- code:
+  - inline void bytes_from_nibbles_128(__m512i& r0, __m512i& r1, const uint8_t * qs,
+    const uint8_t * qh) {
+  - '    const __m256i m4 = _mm256_set1_epi8(0xF);'
+  - '    const __m256i m2 = _mm256_set1_epi8(0x3);'
+  - '    const __m256i q6bits1 = _mm256_loadu_si256((const __m256i *)qs);'
+  - '    const __m256i q6bits2 = _mm256_loadu_si256((const __m256i *)(qs + 32));'
+  - '    const __m256i q6bitsH = _mm256_loadu_si256((const __m256i *)qh);'
+  - '    const __m256i q6h_0 = _mm256_slli_epi16(_mm256_and_si256(                  q6bitsH,     m2),
+    4);'
+  - '    const __m256i q6h_1 = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q6bitsH,
+    2), m2), 4);'
+  - '    const __m256i q6h_2 = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q6bitsH,
+    4), m2), 4);'
+  - '    const __m256i q6h_3 = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q6bitsH,
+    6), m2), 4);'
+  - '    const __m256i q6_0 = _mm256_or_si256(_mm256_and_si256(q6bits1, m4), q6h_0);'
+  - '    const __m256i q6_1 = _mm256_or_si256(_mm256_and_si256(q6bits2, m4), q6h_1);'
+  - '    const __m256i q6_2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q6bits1,
+    4), m4), q6h_2);'
+  - '    const __m256i q6_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q6bits2,
+    4), m4), q6h_3);'
+  - '    r0 = _mm512_inserti32x8(_mm512_castsi256_si512(q6_0), q6_1, 1);'
+  - '    r1 = _mm512_inserti32x8(_mm512_castsi256_si512(q6_2), q6_3, 1);'
+  - '}'
+  desc: 从 qs 和 qh 中提取 block_q6_K 的 4 位半字节和额外高位，并展开为两个 64 字节向量。
+  line: 510-525
+  name: bytes_from_nibbles_128
+- code:
+  - inline __m512i packNibbles(__m512i r0, __m512i r1) {
+  - '    return _mm512_or_si512(r0, _mm512_slli_epi16(r1, 4));'
+  - '}'
+  desc: 将两个 4 位半字节向量打包成一个 8 位向量，通过移位和或运算实现。
+  line: 527-530
+  name: packNibbles
+- code:
+  - template <typename TB>
+  - inline void pack_qs(void * RESTRICT packed_B, const TB * RESTRICT B, int KB) {
+  - '    int8_t tmp[8 * 64];'
+  - '    __m256i v[8], v2[8];'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        v[n] = bytes_from_nibbles_32(B[n * KB].qs);'
+  - '    }'
+  - '    transpose_8x8_32bit(v, v2);'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        _mm256_storeu_si256((__m256i *)(tmp + n * 64), v2[n]);'
+  - '    }'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        v[n] = bytes_from_nibbles_32(B[(n + 8) * KB].qs);'
+  - '    }'
+  - '    transpose_8x8_32bit(v, v2);'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        _mm256_storeu_si256((__m256i *)(tmp + n * 64 + 32), v2[n]);'
+  - '    }'
+  - '    // pack again with 128 to fully utilize vector length'
+  - '    for (int n = 0; n < 8; n += 2) {'
+  - '        __m512i r0 = _mm512_loadu_si512((const __m512i *)(tmp + n * 64));'
+  - '        __m512i r1 = _mm512_loadu_si512((const __m512i *)(tmp + n * 64 + 64));'
+  - '        __m512i r1r0 = packNibbles(r0, r1);'
+  - '        _mm512_storeu_si512((__m512i *)((char *)packed_B + n * 32), r1r0);'
+  - '    }'
+  - '}'
+  desc: 通用模板函数，将 B 矩阵量化数据打包到 VNNI 格式，通过字节提取、转置和压缩实现。
+  line: 533-552
+  name: pack_qs
+- code:
+  - template <>
+  - inline void pack_qs<block_q8_0>(void * RESTRICT packed_B, const block_q8_0 * RESTRICT
+    B, int KB) {
+  - '    __m256i v[8], v2[8];'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        v[n] = _mm256_loadu_si256((const __m256i *)(B[n * KB].qs));'
+  - '    }'
+  - '    transpose_8x8_32bit(v, v2);'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        _mm256_storeu_si256((__m256i *)((char *)packed_B + n * 64), v2[n]);'
+  - '    }'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        v[n] = _mm256_loadu_si256((const __m256i *)(B[(n + 8) * KB].qs));'
+  - '    }'
+  - '    transpose_8x8_32bit(v, v2);'
+  - '    for (int n = 0; n < 8; ++n) {'
+  - '        _mm256_storeu_si256((__m256i *)((char *)packed_B + n * 64 + 32), v2[n]);'
+  - '    }'
+  - '}'
+  desc: 针对 block_q8_0 的 pack_qs 特化，直接加载 8 位整数数据并转置打包。
+  line: 554-571
+  name: pack_qs<block_q8_0>
+- code:
+  - template <>
+  - inline void pack_qs<block_q4_K>(void * RESTRICT packed_B, const block_q4_K * RESTRICT
+    B, int KB) {
+  - '    __m512i v[16];'
+  - '    // QK_K 256 with 8 groups, handle 2 groups at a time'
+  - '    char * pb = (char *)packed_B;'
+  - '    for (int k = 0; k < QK_K / 64; ++k) {'
+  - '        for (int n = 0; n < TILE_N; ++n) {'
+  - '            v[n] = bytes_from_nibbles_64(B[n * KB].qs + k * 32);'
+  - '        }'
+  - '        transpose_16x16_32bit(v);'
+  - '        // pack again with 128 to fully utilize vector length'
+  - '        for (int n = 0; n < TILE_N; n += 2) {'
+  - '            _mm512_storeu_si512((__m512i *)pb, packNibbles(v[n], v[n + 1]));'
+  - '            pb += 64;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 针对 block_q4_K 的 pack_qs 特化，处理 4 位量化数据，分组转置和打包。
+  line: 573-588
+  name: pack_qs<block_q4_K>
+- code:
+  - template <>
+  - inline void pack_qs<block_q5_K>(void * RESTRICT packed_B, const block_q5_K * RESTRICT
+    B, int KB) {
+  - '    __m512i v[16];'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    // QK_K 256 with 8 groups, handle 2 groups at a time'
+  - '    char * pb = (char *)packed_B;'
+  - '    char * ph = (char *)packed_B + (QK_K / 2) * TILE_N;'
+  - '    for (int k = 0; k < QK_K / 64; ++k) {'
+  - '        for (int n = 0; n < TILE_N; ++n) {'
+  - '            v[n] = bytes_from_nibbles_64(B[n * KB].qs + k * 32, B[n * KB].qh,
+    /* group */2 * k);'
+  - '        }'
+  - '        transpose_16x16_32bit(v);'
+  - '        for (int n = 0; n < TILE_N; n += 2) {'
+  - '            const __m512i r0 = _mm512_and_si512(v[n], lowMask);'
+  - '            const __m512i r1 = _mm512_and_si512(v[n + 1], lowMask);'
+  - '            _mm512_storeu_si512((__m512i *)pb, packNibbles(r0, r1)); pb += 64;'
+  - '        }'
+  - '        const __m512i hmask = _mm512_set1_epi8(0x10);'
+  - '        for (int g = 0; g < 2; ++g) {'
+  - '            __m512i hbits = _mm512_setzero_si512();'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 8 + 0], hmask), 4));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 8 + 1], hmask), 3));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 8 + 2], hmask), 2));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 8 + 3], hmask), 1));'
+  - '            hbits = _mm512_add_epi8(hbits,                   _mm512_and_si512(v[g
+    * 8 + 4], hmask)    );'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_slli_epi16(_mm512_and_si512(v[g
+    * 8 + 5], hmask), 1));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_slli_epi16(_mm512_and_si512(v[g
+    * 8 + 6], hmask), 2));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_slli_epi16(_mm512_and_si512(v[g
+    * 8 + 7], hmask), 3));'
+  - '            _mm512_storeu_si512((__m512i *)ph, hbits); ph += 64;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 针对 block_q5_K 的 pack_qs 特化，处理 4 位量化数据和额外 1 位高位，分组转置和打包。
+  line: 590-623
+  name: pack_qs<block_q5_K>
+- code:
+  - template <>
+  - inline void pack_qs<block_q6_K>(void * RESTRICT packed_B, const block_q6_K * RESTRICT
+    B, int KB) {
+  - '    __m512i v[32];'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    // QK_K 256 with 8 groups, handle 4 groups at a time'
+  - '    char * pb = (char *)packed_B;'
+  - '    char * ph = (char *)packed_B + (QK_K / 2) * TILE_N;'
+  - '    for (int k = 0; k < QK_K / 128; ++k) {'
+  - '        for (int n = 0; n < TILE_N; ++n) {'
+  - '            bytes_from_nibbles_128(v[n], v[n + 16], B[n * KB].ql + k * 64, B[n
+    * KB].qh + k * 32);'
+  - '        }'
+  - '        transpose_16x16_32bit(v);'
+  - '        transpose_16x16_32bit(v + 16);'
+  - '        for (int n = 0; n < 32; n += 2) {'
+  - '            const __m512i r0 = _mm512_and_si512(v[n], lowMask);'
+  - '            const __m512i r1 = _mm512_and_si512(v[n + 1], lowMask);'
+  - '            _mm512_storeu_si512((__m512i *)pb, packNibbles(r0, r1)); pb += 64;'
+  - '        }'
+  - '        const __m512i hmask = _mm512_set1_epi8(0x30);'
+  - '        for (int g = 0; g < 8; ++g) {'
+  - '            __m512i hbits = _mm512_setzero_si512();'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 4 + 0], hmask), 4));'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_srli_epi16(_mm512_and_si512(v[g
+    * 4 + 1], hmask), 2));'
+  - '            hbits = _mm512_add_epi8(hbits,                   _mm512_and_si512(v[g
+    * 4 + 2], hmask)    );'
+  - '            hbits = _mm512_add_epi8(hbits, _mm512_slli_epi16(_mm512_and_si512(v[g
+    * 4 + 3], hmask), 2));'
+  - '            _mm512_storeu_si512((__m512i *)ph, hbits); ph += 64;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 针对 block_q6_K 的 pack_qs 特化，处理 4 位量化数据和额外 2 位高位，分组转置和打包。
+  line: 625-661
+  name: pack_qs<block_q6_K>
+- code:
+  - template <>
+  - inline void pack_qs<block_iq4_xs>(void * RESTRICT packed_B, const block_iq4_xs
+    * RESTRICT B, int KB) {
+  - '    __m512i v[16];'
+  - '    char * pb = (char *)packed_B;'
+  - '    for (int k = 0; k < QK_K / 64; ++k) {'
+  - '        for (int n = 0; n < TILE_N; ++n) {'
+  - '            __m256i r0 = bytes_from_nibbles_32(B[n * KB].qs + k * 32 +  0);'
+  - '            __m256i r1 = bytes_from_nibbles_32(B[n * KB].qs + k * 32 + 16);'
+  - '            v[n] = _mm512_inserti32x8(_mm512_castsi256_si512(r0), r1, 1);'
+  - '        }'
+  - '        transpose_16x16_32bit(v);'
+  - '        for (int n = 0; n < TILE_N; n += 2) {'
+  - '            _mm512_storeu_si512((__m512i *)pb, packNibbles(v[n], v[n + 1]));'
+  - '            pb += 64;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 针对 block_iq4_xs 的 pack_qs 特化，处理 IQ4_XS 格式的 4 位量化数据。
+  line: 663-679
+  name: pack_qs<block_iq4_xs>
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q4_0 * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    ggml_half * d0 = reinterpret_cast<ggml_half *>((char *)packed_B + TILE_N
+    * TILE_K / 2);'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        d0[n] = B[n * KB].d;'
+  - '    }'
+  - '}'
+  desc: 将 block_q4_0 类型的 B 矩阵打包到 VNNI 格式，包括数据和缩放因子。
+  line: 684-690
+  name: pack_B
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q4_1 * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    ggml_half * d0 = reinterpret_cast<ggml_half *>((char *)packed_B + TILE_N
+    * TILE_K / 2);'
+  - '    ggml_half * m0 = d0 + TILE_N;'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        d0[n] = B[n * KB].d;'
+  - '        m0[n] = B[n * KB].m;'
+  - '    }'
+  - '}'
+  desc: 将 block_q4_1 类型的 B 矩阵打包到 VNNI 格式，包括数据和缩放因子及偏移。
+  line: 692-701
+  name: pack_B
+- code:
+  - inline void s8s8_compensation(void * RESTRICT packed_B) {
+  - '    // packed_B layout:'
+  - '    //   quants {TILE_N, TILEK}  int8_t'
+  - '    //   d0     {TILE_N}      ggml_half'
+  - '    //   comp   {TILE_N}        int32_t'
+  - '    const int offset = TILE_N * TILE_K + TILE_N * sizeof(ggml_half);'
+  - '    __m512i vcomp = _mm512_setzero_si512();'
+  - '    const __m512i off = _mm512_set1_epi8(static_cast<char>(0x80));'
+  - '    for (int k = 0; k < 8; ++k) {'
+  - '        __m512i vb = _mm512_loadu_si512((const __m512i *)((const char *)packed_B
+    + k * 64));'
+  - '        vcomp = _mm512_dpbusd_epi32(vcomp, off, vb);'
+  - '    }'
+  - '    _mm512_storeu_si512((__m512i *)((char *)(packed_B) + offset), vcomp);'
+  - '}'
+  desc: 计算并存储 s8s8 点积的补偿值，用于 int8 乘法的偏移修正。
+  line: 703-713
+  name: s8s8_compensation
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q8_0 * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    ggml_half * d0 = reinterpret_cast<ggml_half *>((char *)packed_B + TILE_N
+    * TILE_K);'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        d0[n] = B[n * KB].d;'
+  - '    }'
+  - '    s8s8_compensation(packed_B);'
+  - '}'
+  desc: 将 block_q8_0 类型的 B 矩阵打包到 VNNI 格式，包括数据和缩放因子及补偿。
+  line: 715-723
+  name: pack_B
+- code:
+  - inline void unpack_mins_and_scales(const uint8_t * scales, uint32_t * utmp) {
+  - '    const uint32_t kmask1 = 0x3f3f3f3f;'
+  - '    const uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    const uint32_t kmask3 = 0x03030303;'
+  - '    memcpy(utmp, scales, 12);'
+  - '    utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);'
+  - '    const uint32_t uaux = utmp[1] & kmask1;'
+  - '    utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);'
+  - '    utmp[2] = uaux;'
+  - '    utmp[0] &= kmask1;'
+  - '}'
+  desc: 将 8 组 6 位的 min 和 scale 值解包为 8 位无符号整数。
+  line: 728-737
+  name: unpack_mins_and_scales
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q4_K * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    uint8_t * scales = reinterpret_cast<uint8_t *>((char *)packed_B + (QK_K /
+    2) * TILE_N);'
+  - '    uint8_t * mins = scales + 8 * TI'
+  desc: 将 block_q4_K 类型的 B 矩阵打包到 VNNI 格式，包括数据、缩放因子、最小值及双精度缩放。
+  line: 740-744
+  name: pack_B
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q4_K * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    uint8_t * scales = reinterpret_cast<uint8_t *>((char *)packed_B + (QK_K /
+    2) * TILE_N);'
+  - '    uint8_t * mins = scales + 8 * TILE_N;'
+  - '    ggml_half * d = reinterpret_cast<ggml_half *>(mins + 8 * TILE_N);'
+  - '    ggml_half * dmin = d + TILE_N;'
+  - '    union {'
+  - '        uint32_t u32[4];'
+  - '        uint8_t  u8[16];'
+  - '    } s;'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        unpack_mins_and_scales(B[n * KB].scales, s.u32);'
+  - '        for (int k = 0; k < 8; ++k) {'
+  - '            scales[k * TILE_N + n] = s.u8[k];'
+  - '            mins[(k >> 1) * TILE_N * 2 + n * 2 + (k & 0x1)] = s.u8[k + 8];'
+  - '        }'
+  - '        d[n] = B[n * KB].d;'
+  - '        dmin[n] = B[n * KB].dmin;'
+  - '    }'
+  - '}'
+  desc: 全局函数重载，用于将 `block_q4_K` 类型的 B 矩阵数据打包成适合 AMX 计算的内存布局。它调用 `pack_qs` 函数打包量化值，然后分别存储
+    scales、mins、d 和 dmin 数组。
+  line: 818-837
+  name: pack_B
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q5_K * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    uint8_t * scales = reinterpret_cast<uint8_t *>((char *)packed_B + (QK_K /
+    2) * TILE_N + (QK_K / 8) * TILE_N);'
+  - '    uint8_t * mins = scales + 8 * TILE_N;'
+  - '    ggml_half * d = reinterpret_cast<ggml_half *>(mins + 8 * TILE_N);'
+  - '    ggml_half * dmin = d + TILE_N;'
+  - '    union {'
+  - '        uint32_t u32[4];'
+  - '        uint8_t  u8[16];'
+  - '    } s;'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        unpack_mins_and_scales(B[n * KB].scales, s.u32);'
+  - '        for (int k = 0; k < 8; ++k) {'
+  - '            scales[k * TILE_N + n] = s.u8[k];'
+  - '            mins[(k >> 1) * TILE_N * 2 + n * 2 + (k & 0x1)] = s.u8[k + 8];'
+  - '        }'
+  - '        d[n] = B[n * KB].d;'
+  - '        dmin[n] = B[n * KB].dmin;'
+  - '    }'
+  - '}'
+  desc: 全局函数重载，用于将 `block_q5_K` 类型的 B 矩阵数据打包。它除了调用 `pack_qs` 打包量化值外，还处理 5 位量化的额外高位（qh），并存储
+    scales、mins、d 和 dmin。
+  line: 840-859
+  name: pack_B
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_q6_K * RESTRICT B, int KB) {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    uint8_t * scales = reinterpret_cast<uint8_t *>((char *)packed_B + (QK_K /
+    2) * TILE_N + (QK_K / 4) * TILE_N);'
+  - '    ggml_half * d = reinterpret_cast<ggml_half *>(scales + 16 * TILE_N);'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        const int8_t * ps = B[n * KB].scales;'
+  - '        for (int k = 0; k < 16; ++k) {'
+  - '            scales[k * TILE_N + n] = ps[k];'
+  - '        }'
+  - '        d[n] = B[n * KB].d;'
+  - '    }'
+  - '}'
+  desc: 全局函数重载，用于将 `block_q6_K` 类型的 B 矩阵数据打包。由于 Q6_K 格式没有单独的 `mins` 数组，它只存储量化值（通过
+    `pack_qs`）、scales 和 d。
+  line: 862-874
+  name: pack_B
+- code:
+  - void pack_B(void * RESTRICT packed_B, const block_iq4_xs * RESTRICT B, int KB)
+    {
+  - '    pack_qs(packed_B, B, KB);'
+  - '    int8_t * scales = reinterpret_cast<int8_t *>((char *)packed_B + (QK_K / 2)
+    * TILE_N);'
+  - '    ggml_half * d = reinterpret_cast<ggml_half *>(scales + 8 * TILE_N);'
+  - '    for (int n = 0; n < TILE_N; ++n) {'
+  - '        uint16_t sh = B[n * KB].scales_h;'
+  - '        for (int k = 0; k < 8; k += 2) {'
+  - '            const int16_t ls1 = ((B[n * KB].scales_l[k / 2] & 0xf) | ((sh <<
+    4) & 0x30)) - 32;'
+  - '            const int16_t ls2 = ((B[n * KB].scales_l[k / 2] >>  4) | ((sh <<
+    2) & 0x30)) - 32;'
+  - '            scales[(k + 0) * TILE_N + n] = ls1;'
+  - '            scales[(k + 1) * TILE_N + n] = ls2;'
+  - '            sh >>= 4;'
+  - '        }'
+  - '        d[n] = B[n * KB].d;'
+  - '    }'
+  - '}'
+  desc: 全局函数重载，用于将 `block_iq4_xs` 类型的 B 矩阵数据打包。它调用 `pack_qs` 打包量化值，并从 `scales_l` 和
+    `scales_h` 中解包得到缩放的 int32 值，然后存储 scaling 和 d。
+  line: 877-889
+  name: pack_B
+- code:
+  - template<typename TB, typename packed_B_t = packed_B_type<TB>>
+  - void unpack_B(packed_B_t * RESTRICT tile, const void * RESTRICT packed_B) {
+  - '    GGML_UNUSED(tile);'
+  - '    GGML_UNUSED(packed_B);'
+  - '}'
+  desc: 模板函数的主版本，用于为 `TB` 类型解包 B 矩阵，但默认实现为空，仅标记参数未使用。
+  line: 892-896
+  name: unpack_B
+- code:
+  - template <>
+  - void unpack_B<block_q4_0>(int8_t * RESTRICT tile, const void * RESTRICT packed_B)
+    {
+  - '  const __m512i off = _mm512_set1_epi8(8);'
+  - '  const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '  for (int n = 0; n < 8; n += 2) {'
+  - '    __m512i bytes = _mm512_loadu_si512((const __m512i *)((const char *)packed_B
+    + n * 32));'
+  - '    const __m512i r0 = _mm512_sub_epi8(_mm512_and_si512(bytes, lowMask), off);'
+  - '    const __m512i r1 = _mm512_sub_epi8(_mm512_and_si512(_mm512_srli_epi16(bytes,
+    4), lowMask), off);'
+  - '    _mm512_storeu_si512((__m512i *)(tile + n * 64 +  0), r0);'
+  - '    _mm512_storeu_si512((__m512i *)(tile + n * 64 + 64), r1);'
+  - '  }'
+  - '}'
+  desc: 针对 `block_q4_0` 类型的 `unpack_B` 模板特化。它使用 AVX-512 指令从打包数据中提取低 4 位，并减去 8 的偏移量，将结果存储到
+    tile 中。
+  line: 898-907
+  name: unpack_B
+- code:
+  - template <>
+  - void unpack_B<block_q4_1>(uint8_t * RESTRICT tile, const void * RESTRICT packed_B)
+    {
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    for (int n = 0; n < 8; n += 2) {'
+  - '        __m512i bytes = _mm512_loadu_si512((const __m512i *)((const char *)packed_B
+    + n * 32));'
+  - '        const __m512i r0 = _mm512_and_si512(bytes, lowMask);'
+  - '        const __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 +  0), r0);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 + 64), r1);'
+  - '    }'
+  - '}'
+  desc: 针对 `block_q4_1` 类型的 `unpack_B` 模板特化。它使用 AVX-512 指令从打包数据中提取低 4 位，由于 Q4_1 是无符号的，因此无需减去偏移量。
+  line: 909-917
+  name: unpack_B
+- code:
+  - template <typename TB>
+  - void unpack_B(int8_t * RESTRICT tile, const void * RESTRICT packed_B, int k) {
+  - '    const int packed_B_group_size = QK_K / 2 * TILE_N / 8;'
+  - '    const char * packed_B_group = (const char *)packed_B + k * packed_B_group_size;'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    for (int n = 0; n < 8; n += 2) {'
+  - '        __m512i bytes = _mm512_loadu_si512(packed_B_group + n * 32);'
+  - '        const __m512i r0 = _mm512_and_si512(bytes, lowMask);'
+  - '        const __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 +  0), r0);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 + 64), r1);'
+  - '    }'
+  - '}'
+  desc: 通用模板版本的 `unpack_B` 函数，用于 QKK 格式的量化类型（如 Q4_K）。它根据 `k` 索引计算偏移量，提取低 4 位数据并存储到
+    tile 中。
+  line: 919-930
+  name: unpack_B
+- code:
+  - template <>
+  - void unpack_B<block_q5_K>(int8_t * RESTRICT tile, const void * RESTRICT packed_B,
+    int k) {
+  - '    const int packed_l4_group_size = QK_K / 2 * TILE_N / 8;'
+  - '    const char * pb = (const char *)packed_B + k * packed_l4_group_size;'
+  - '    const int packed_h1_group_size = QK_K / 8 * TILE_N / 8;'
+  - '    const char * ph = (const char *)packed_B + (QK_K / 2) * TILE_N + k * packed_h1_group_size;'
+  - '    const __m512i hbits = _mm512_loadu_si512(ph);'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    __m512i hmask0 = _mm512_set1_epi8(0x1);'
+  - '    __m512i hmask1 = _mm512_set1_epi8(0x2);'
+  - '    for (int n = 0; n < 8; n += 2) {'
+  - '        __m512i bytes = _mm512_loadu_si512(pb + n * 32);'
+  - '        __m512i r0 = _mm512_and_si512(bytes, lowMask);'
+  - '        __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+  - '        __m512i h0 = _mm512_slli_epi16(_mm512_srli_epi16(_mm512_and_si512(hbits,
+    hmask0), n), 4);'
+  - '        __m512i h1 = _mm512_slli_epi16(_mm512_srli_epi16(_mm512_and_si512(hbits,
+    hmask1), n + 1), 4);'
+  - '        hmask0 = _mm512_slli_epi16(hmask0, 2);'
+  - '        hmask1 = _mm512_slli_epi16(hmask1, 2);'
+  - '        r0 = _mm512_add_epi8(r0, h0);'
+  - '        r1 = _mm512_add_epi8(r1, h1);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 +  0), r0);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 + 64), r1);'
+  - '    }'
+  - '}'
+  desc: 针对 `block_q5_K` 类型的 `unpack_B` 模板特化。它处理低 4 位数据，并从高 1 位数据中恢复 Q5_K 格式的第五位，然后合并结果。
+  line: 932-954
+  name: unpack_B
+- code:
+  - template <>
+  - void unpack_B<block_q6_K>(int8_t * RESTRICT tile, const void * RESTRICT packed_B,
+    int k) {
+  - '    const int packed_l4_group_size = QK_K / 2 * TILE_N / 16;'
+  - '    const char * pb = (const char *)packed_B + k * packed_l4_group_size;'
+  - '    const int packed_h2_group_size = QK_K / 4 * TILE_N / 16;'
+  - '    const char * ph = (const char *)packed_B + (QK_K / 2) * TILE_N + k * packed_h2_group_size;'
+  - '    const __m512i hbits = _mm512_loadu_si512(ph);'
+  - '    const __m512i off = _mm512_set1_epi8(32);'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    __m512i hmask0 = _mm512_set1_epi8(0x3);'
+  - '    __m512i hmask1 = _mm512_set1_epi8(0xC);'
+  - '    __m512i bytes = _mm512_loadu_si512(pb);'
+  - '    __m512i r0 = _mm512_and_si512(bytes, lowMask);'
+  - '    __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+  - '    __m512i h0 = _mm512_slli_epi16(_mm512_and_si512(hbits, hmask0), 4);'
+  - '    __m512i h1 = _mm512_slli_epi16(_mm512_and_si512(hbits, hmask1), 2);'
+  - '    _mm512_storeu_si512((__m512i *)(tile +  0), _mm512_sub_epi8(_mm512_add_epi8(r0,
+    h0), off));'
+  - '    _mm512_storeu_si512((__m512i *)(tile + 64), _mm512_sub_epi8(_mm512_add_epi8(r1,
+    h1), off));'
+  - '    hmask0 = _mm512_slli_epi16(hmask0, 4);'
+  - '    hmask1 = _mm512_slli_epi16(hmask1, 4);'
+  - '    bytes = _mm512_loadu_si512(pb + 64);'
+  - '    r0 = _mm512_and_si512(bytes, lowMask);'
+  - '    r1 = _mm512_and_si512(_mm512_srli_epi16(bytes, 4), lowMask);'
+  - '    h0 =                   _mm512_and_si512(hbits, hmask0);'
+  - '    h1 = _mm512_srli_epi16(_mm512_and_si512(hbits, hmask1), 2);'
+  - '    _mm512_storeu_si512((__m512i *)(tile + 128), _mm512_sub_epi8(_mm512_add_epi8(r0,
+    h0), off));'
+  - '    _mm512_storeu_si512((__m512i *)(tile + 192), _mm512_sub_epi8(_mm512_add_epi8(r1,
+    h1), off));'
+  - '}'
+  desc: 针对 `block_q6_K` 类型的 `unpack_B` 模板特化。它处理低 4 位数据，并从高 2 位数据中恢复 Q6_K 格式的第六位和第七位，然后合并并减去偏移量
+    32。
+  line: 957-975
+  name: unpack_B
+- code:
+  - template <>
+  - void unpack_B<block_iq4_xs>(int8_t * RESTRICT tile, const void * RESTRICT packed_B,
+    int k) {
+  - '    static const __m512i values128 = _mm512_set_epi8('
+  - '        113, 89, 69, 53, 38, 25, 13, 1, -10, -22, -35, -49, -65, -83, -104, -127,'
+  - '        113, 89, 69, 53, 38, 25, 13, 1, -10, -22, -35, -49, -65, -83, -104, -127,'
+  - '        113, 89, 69, 53, 38, 25, 13, 1, -10, -22, -35, -49, -65, -83, -104, -127,'
+  - '        113, 89, 69, 53, 38, 25, 13, 1, -10, -22, -35, -49, -65, -83, -104, -127'
+  - '    );'
+  - '    const int packed_B_group_size = QK_K / 2 * TILE_N / 8;'
+  - '    const char * pb = (const char *)packed_B + k * packed_B_group_size;'
+  - '    const __m512i lowMask = _mm512_set1_epi8(0xF);'
+  - '    for (int n = 0; n < 8; n += 2) {'
+  - '        __m512i bytes = _mm512_loadu_si512(pb + n * 32);'
+  - '        const __m512i r0 = _mm512_shuffle_epi8(values128, _mm512_and_si512(bytes,
+    lowMask));'
+  - '        const __m512i r1 = _mm512_shuffle_epi8(values128, _mm512_and_si512(_mm512_srli_epi16(bytes,
+    4), lowMask));'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 +  0), r0);'
+  - '        _mm512_storeu_si512((__m512i *)(tile + n * 64 + 64), r1);'
+  - '    }'
+  - '}'
+  desc: 针对 `block_iq4_xs` 类型的 `unpack_B` 模板特化。它使用一个预定义的查找表（`values128`）将 4 位索引转换为
+    dequantized 的 int8 值。
+  line: 977-992
+  name: unpack_B
+- code:
+  - template <typename TB, bool is_acc,
+  - '          typename std::enable_if<is_type_qkk<TB>::value, int>::type = 0>'
+  - inline void scale_C(const int32_t * RESTRICT tile, int32_t * RESTRICT sumi, const
+    void * packed_B, int k, int nr) {
+  - '    const uint8_t * scales = reinterpret_cast<const uint8_t *>((const char *)packed_B
+    + get_quants_size<TB>());'
+  - '    const __m512i vscale = _mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i
+    *)(scales + k * TILE_N)));'
+  - '    for (int m = 0; m < nr; ++m) {'
+  - '        __m512i vsumi;'
+  - '        if (is_acc) {'
+  - '            vsumi = _mm512_loadu_si512(sumi + m * TILE_N);'
+  - '        } else {'
+  - '            vsumi = _mm512_setzero_si512();'
+  - '        }'
+  - '        __m512i vtile = _mm512_loadu_si512(tile + m * TILE_N);'
+  - '        vsumi = _mm512_add_epi32(vsumi, _mm512_mullo_epi32(vtile, vscale));'
+  - '        _mm512_storeu_si512((__m512i *)(sumi + m * TILE_N), vsumi);'
+  - '    }'
+  - '}'
+  desc: 该模板函数用于在 VNNI 计算过程中，将中间整数累加结果 `tile` 与 `packed_B` 中存储的缩放因子相乘并累加到 `sumi` 中。这是处理
+    K 量化格式中 `dmin` 项的关键步骤。
+  line: 1234-1241
+  name: scale_C
+- code:
+  - template<typename TB, int BLOCK_K>
+  - void convert_B_packed_format(void * RESTRICT packed_B, const TB * RESTRICT B,
+    int N, int K) {
+  - '    const int NB = N / TILE_N;'
+  - '    const int KB = K / BLOCK_K;'
+  - '    const int TILE_SIZE = get_tile_size<TB>();'
+  - '    parallel_for(NB, [&](int begin, int end) {'
+  - '        for (int n = begin; n < end; ++n) {'
+  - '            for (int k = 0; k < KB; ++k) {'
+  - '                int n0 = n * TILE_N;'
+  - '                pack_B((char *)packed_B + PACKED_INDEX(n, k, KB, TILE_SIZE),
+    &B[n0 * KB + k], KB);'
+  - '            }'
+  - '        }'
+  - '    });'
+  - '}'
+  desc: 该模板函数负责将 B 矩阵从原始的量化块布局转换为适合 VNNI 指令计算的打包格式。它根据 N 和 K 的维度进行分块，并并行调用 `pack_B`
+    函数。
+  line: 1323-1334
+  name: convert_B_packed_format
+- code:
+  - size_t ggml_backend_amx_get_alloc_size(const struct ggml_tensor * tensor) {
+  - '    //... 获取并计算张量内存大小 ...'
+  - '}'
+  desc: 计算并返回在AMX后端中为给定张量（tensor）分配内存的大小。对于支持AMX内核的量化类型，它会返回打包后的数据大小，否则返回原始张量大小。
+  line: 2111-2126
+  name: ggml_backend_amx_get_alloc_size
+- code:
+  - void ggml_backend_amx_convert_weight(struct ggml_tensor * tensor, const void *
+    data, size_t offset, size_t size) {
+  - '    //... 调用转换函数进行打包 ...'
+  - '}'
+  desc: 将给定的权重数据（`data`）转换为AMX后端所需的特定VNNI打包格式，并将结果存储到目标张量（`tensor->data`）中。
+  line: 2127-2142
+  name: ggml_backend_amx_convert_weight
+- code:
+  - inline int64_t ggml_batch_offset(const ggml_tensor * t, int64_t batch_idx, int64_t
+    ne2) {
+  - '    //... 计算批次偏移 ...'
+  - '}'
+  desc: 根据给定的批次索引（`batch_idx`）和批次维度大小（`ne2`），计算该批次在张量中的内存偏移量。这个函数是内联的，用于辅助多批次计算。
+  line: 2143-2147
+  name: ggml_batch_offset
+- code:
+  - size_t ggml_backend_amx_desired_wsize(const struct ggml_tensor * dst) {
+  - '    //... 计算所需工作空间大小 ...'
+  - '}'
+  desc: 根据目标输出张量（`dst`）和输入张量（`src0`）计算AMX后端所需的工作空间（workspace）大小。对于浮点类型，不需要额外工作空间；对于量化类型，则计算处理输入数据所需的空间。
+  line: 2148-2163
+  name: ggml_backend_amx_desired_wsize
+- code:
+  - void ggml_backend_amx_mul_mat(const ggml_compute_params * params, struct ggml_tensor
+    * dst) {
+  - '    //... 分发到特定内核并执行计算 ...'
+  - '}'
+  desc: AMX后端的主矩阵乘法入口函数。它根据src0的类型（浮点或量化）分发到不同的内核实现，并负责设置执行环境，并行处理批次和分块计算。
+  line: 2164-2300
+  name: ggml_backend_amx_mul_mat
+- code:
+  - 'improvement: merge quant A'
+  - ' // if (params->ith == 0) {'
+  - '        GGML_DISPATCH_QTYPES(TYPE, [&] {'
+  - '            const size_t row_size_A = K / blck_size * sizeof(vec_dot_type);'
+  - '            const size_t desired_wsize = n_batch * M * row_size_A;'
+  - '            if (params->wsize < desired_wsize) {'
+  - '                GGML_ABORT("insufficient work space size");'
+  - '            }'
+  - '            // Q4_0, Q4_1, Q8_0 handles 1 TILE_K per blck_size'
+  - '            // Q4_K, Q5_K, Q6_K, IQ4_XS handles 8 TILE_K per blck_size'
+  - '            GGML_ASSERT(TILE_K == blck_size || TILE_K * 8 == blck_size);'
+  - '            parallel_for_ggml(params, n_batch, [&](int begin, int end) {'
+  - '                for (int batch_idx = begin; batch_idx < end; ++batch_idx) {'
+  - '                    int64_t src1_offset = ggml_batch_offset(src1, batch_idx,
+    ne2);'
+  - '                    const float * A_data = (const float *)((const char *)src1->data
+    + src1_offset);'
+  - '                    char * wdata_batch = (char *)wdata + batch_idx * M * row_size_A;'
+  - '                    for (int m = 0; m < M; ++m) {'
+  - '                        from_float<vec_dot_type>(A_data + m * K, wdata_batch
+    + m * row_size_A, K);'
+  - '                    }'
+  - '                }'
+  - '            });'
+  - '        });'
+  - ' // }'
+  - '    ggml_barrier(params->threadpool);'
+  - '    if (M == 1) {'
+  - '        // MB = 1 and handle 8 tiles in each block'
+  - '        constexpr int kTilesN = 4;'
+  - '        constexpr int BLOCK_N = TILE_N * kTilesN;'
+  - '        const int NB = div_up(N, BLOCK_N);'
+  - '        parallel_for_ggml(params, n_batch * NB, [&](int begin, int end) {'
+  - '            GGML_DISPATCH_QTYPES(TYPE, [&] {'
+  - '                const int KB = K / blck_size;'
+  - '                const int TILE_SIZE = get_tile_size<type>();'
+  - '                const int row_size_A = KB * sizeof(vec_dot_type);'
+  - '                for (int i = begin; i < end; ++i) {'
+  - '                    int batch_idx = i / NB;'
+  - '                    int nb = i % NB;'
+  - '                    int64_t src0_offset = ggml_batch_offset(src0, batch_idx,
+    ne2);'
+  - '                    int64_t dst_offset  = ggml_batch_offset(dst,  batch_idx,
+    ne2);'
+  - '                    const char * wdata_batch = (const char *)wdata + batch_idx
+    * row_size_A;'
+  - '                    int nb_start = nb * BLOCK_N;'
+  - '                    int nb_size = std::min(BLOCK_N, N - nb_start); // 32, 64,
+    96'
+  - '                    switch (nb_size) {'
+  - '                        //case 160: LAUNCH_TINYGEMM_KERNEL_VNNI(160); break;'
+  - '                        case 128: LAUNCH_TINYGEMM_KERNEL_VNNI(128); break;'
+  - '                        case 96: LAUNCH_TINYGEMM_KERNEL_VNNI(96); break;'
+  - '                        case 64: LAUNCH_TINYGEMM_KERNEL_VNNI(64); break;'
+  - '                        case 32: LAUNCH_TINYGEMM_KERNEL_VNNI(32); break;'
+  - '                        default: fprintf(stderr, "Unexpected n block size!\n");'
+  - '                    }'
+  - '                }'
+  - '            });'
+  - '        });'
+  - '        return;'
+  - '    }'
+  - '    // handle 4 tiles at a tile'
+  - '    constexpr int BLOCK_M = TILE_M * 2;'
+  - '    constexpr int BLOCK_N = TILE_N * 2;'
+  - '    const int MB = div_up(M, BLOCK_M);'
+  - '    const int NB = div_up(N, BLOCK_N);'
+  - '    parallel_for_ggml(params, n_batch * MB * NB, [&](int begin, int end) {'
+  - '        // init tile config for each thread'
+  - '        ggml_tile_config_init();'
+  - '        GGML_DISPATCH_QTYPES(TYPE, [&] {'
+  - '            const int KB = K / blck_size;'
+  - '            const int TILE_SIZE = get_tile_size<type>();'
+  - '            const int row_size_A = KB * sizeof(vec_dot_type);'
+  - '            for (int i = begin; i < end; ++i) {'
+  - '                int batch_idx = i / (MB * NB);'
+  - '                int remaining = i % (MB * NB);'
+  - '                int mb = remaining / NB;'
+  - '                int nb = remaining % NB;'
+  - '                int64_t src0_offset = ggml_batch_offset(src0, batch_idx, ne2);'
+  - '                int64_t dst_offset  = ggml_batch_offset(dst,  batch_idx, ne2);'
+  - '                const char * wdata_batch = (const char *)wdata + batch_idx *
+    M * row_size_A;'
+  - '                int mb_start = mb * BLOCK_M;'
+  - '                int mb_size = std::min(BLOCK_M, M - mb_start);'
+  - '                int nb_start = nb * BLOCK_N;'
+  - '                int nb_size = BLOCK_N;'
+  - '                tinygemm_kernel_amx<vec_dot_type, type, float, blck_size>('
+  - '                    mb_size, nb_size, KB,'
+  - '                    wdata_batch + mb_start * row_size_A,'
+  - '                    (const char *)src0->data + src0_offset + PACKED_INDEX(nb
+    * 2, 0, KB, TILE_SIZE),'
+  - '                    (float *) dst->data + dst_offset + mb_start * N + nb_start,
+    ldc);'
+  - '            }'
+  - '        });'
+  - '    });'
+  - '}'
+  - '#endif // if defined(__AMX_INT8__) && defined(__AVX512VNNI__)'
+  desc: GGML矩阵乘法前向计算函数（AMX优化版本），负责调度量化矩阵乘法，包含数据预处理和两种不同内核分派路径。
+  line: 2440-2562
+  name: ggml_compute_forward_mul_mat

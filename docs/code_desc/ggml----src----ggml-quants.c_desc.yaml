@@ -1,0 +1,3142 @@
+classes:
+- desc: A struct that holds lookup tables for IQ2 and IQ1 quantization, including
+    a grid, a map, and neighbour indices.
+  methods: []
+  name: iq2_entry_t
+desc: 该文件是 ggml 库中的量化与反量化核心实现，提供了多种低比特位（1-8 bit）张量数据类型的参考量化、优化量化及反量化函数，这些函数在模型生成和推理过程中用于在浮点表示和紧凑的量化块表示之间进行转换，以显著减少模型的内存占用和计算开销。该代码片段来自
+  ggml/src/ggml-quants.c，主要实现多种 K 组量化格式及传统量化格式的浮点数据压缩与解压缩，包括 Q2_K、Q3_K、Q4_K、Q5_K、Q6_K、Q4_0、Q4_1、Q5_0
+  等格式。代码通过块级缩放因子、最小值、低位与高位比特打包，以及可选量化权重支持，在压缩率、重构精度和量化误差之间进行平衡。This file provides
+  quantization and dequantization routines for various low-bit precision data types
+  used in the GGML tensor library, including Q5_0, Q5_1, Q8_0, MXFP4, NVFP4, TQ1_0,
+  TQ2_0, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M, IQ4_NL, IQ4_XS, and
+  Q8_K. It includes reference implementations for converting float data to quantized
+  formats and back, along with efficient quantizer entry points that handle row-wise
+  operations with optional weighted quantization. The code leverages lookup tables
+  and bit-packing schemes to achieve compact representation while maintaining precision,
+  and initializes lookup grids for IQ types.该代码片段来自 ggml 的量化实现文件 ggml-quants.c，主要负责初始化和释放
+  IQ1/IQ2 量化所需的离散网格、索引映射及近邻表，并利用加权误差最小化、符号编码和网格近邻搜索，将浮点向量分别量化为 IQ2_XXS 与 IQ2_XS 格式。当前输入从文件第
+  2920 行开始，但片段未提供完整函数起始位置，因此只能对可见函数给出基于片段的行号范围估计。该代码片段来自 ggml/src/ggml-quants.c，主要实现基于有限格点搜索的低比特量化算法，包含
+  IQ2 和 IQ3 系列量化格式。代码负责初始化 3-bit D4 格点及其映射、构建近邻索引，并通过加权误差最小化为输入浮点数据选择量化格点、缩放因子和符号位，最终将结果编码为紧凑的块状量化数据。该代码片段来自
+  ggml/src/ggml-quants.c，主要实现 IQ1_S、IQ1_M、IQ4_NL、IQ4_XS 和 IQ2_S 等低比特非线性量化算法。代码通过加权平方误差优化、候选量化网格搜索、邻居网格回退、尺度重估计以及位级数据打包，将
+  FP32 向量压缩为适用于 GGML 推理的紧凑量化块格式。This file implements quantization and validation routines
+  for various low-bit quantized tensor formats used in the GGML tensor library. It
+  contains the core quantization logic for IQ2_S (integer 2-bit signed) quantization
+  along with comprehensive data validation functions that check tensor data for NaN
+  and infinity values across all supported quantization types.
+file: ggml/src/ggml-quants.c
+funcs:
+- code:
+  - static inline int best_index_int8(int n, const int8_t * val, float x) {
+  - '    if (x <= val[0]) return 0;'
+  - '    if (x >= val[n-1]) return n-1;'
+  - '    int ml = 0, mu = n-1;'
+  - '    while (mu-ml > 1) {'
+  - '        int mav = (ml+mu)/2;'
+  - '        if (x < val[mav]) mu = mav; else ml = mav;'
+  - '    }'
+  - '    return x - val[mu-1] < val[mu] - x ? mu-1 : mu;'
+  - '}'
+  desc: 在一个已排序的 int8 数组中，通过二分查找找到最接近浮点值 x 的元素的索引。
+  line: 26-35
+  name: best_index_int8
+- code:
+  - void quantize_row_q1_0_ref(const float * GGML_RESTRICT x, block_q1_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK1_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float sum_abs = 0.0f;'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            sum_abs += fabsf(x[i*qk + j]);'
+  - '        }'
+  - '        const float d = sum_abs / qk;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        for (int j = 0; j < qk / 8; ++j) {'
+  - '            y[i].qs[j] = 0;'
+  - '        }'
+  - '        for (int j = 0; j < qk; ++j) {'
+  - '            const int bit_index = j;'
+  - '            const int byte_index = bit_index / 8;'
+  - '            const int bit_offset = bit_index % 8;'
+  - '            if (x[i*qk + j] >= 0.0f) {'
+  - '                y[i].qs[byte_index] |= (1 << bit_offset);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 1 比特量化成 block_q1_0 块，每个权重只存储其符号位。
+  line: 40-67
+  name: quantize_row_q1_0_ref
+- code:
+  - void quantize_row_q4_0_ref(const float * GGML_RESTRICT x, block_q4_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK4_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        float max  = 0.0f;'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            const float v = x[i*qk + j];'
+  - '            if (amax < fabsf(v)) {'
+  - '                amax = fabsf(v);'
+  - '                max  = v;'
+  - '            }'
+  - '        }'
+  - '        const float d  = max / -8;'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const float x0 = x[i*qk + 0    + j]*id;'
+  - '            const float x1 = x[i*qk + qk/2 + j]*id;'
+  - '            const uint8_t xi0 = MIN(15, (int8_t)(x0 + 8.5f));'
+  - '            const uint8_t xi1 = MIN(15, (int8_t)(x1 + 8.5f));'
+  - '            y[i].qs[j]  = xi0;'
+  - '            y[i].qs[j] |= xi1 << 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 4 比特量化成 block_q4_0 块，无最小值偏移。
+  line: 72-104
+  name: quantize_row_q4_0_ref
+- code:
+  - void quantize_row_q4_1_ref(const float * GGML_RESTRICT x, block_q4_1 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    const int qk = QK4_1;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float min = FLT_MAX;'
+  - '        float max = -FLT_MAX;'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            const float v = x[i*qk + j];'
+  - '            if (v < min) min = v;'
+  - '            if (v > max) max = v;'
+  - '        }'
+  - '        const float d  = (max - min) / ((1 << 4) - 1);'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        y[i].m = GGML_FP32_TO_FP16(min);'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const float x0 = (x[i*qk + 0    + j] - min)*id;'
+  - '            const float x1 = (x[i*qk + qk/2 + j] - min)*id;'
+  - '            const uint8_t xi0 = MIN(15, (int8_t)(x0 + 0.5f));'
+  - '            const uint8_t xi1 = MIN(15, (int8_t)(x1 + 0.5f));'
+  - '            y[i].qs[j]  = xi0;'
+  - '            y[i].qs[j] |= xi1 << 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 4 比特量化成 block_q4_1 块，包含最小值偏移。
+  line: 108-141
+  name: quantize_row_q4_1_ref
+- code:
+  - void quantize_row_q5_0_ref(const float * GGML_RESTRICT x, block_q5_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK5_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        float max  = 0.0f;'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            const float v = x[i*qk + j];'
+  - '            if (amax < fabsf(v)) {'
+  - '                amax = fabsf(v);'
+  - '                max  = v;'
+  - '            }'
+  - '        }'
+  - '        const float d  = max / -16;'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        uint32_t qh = 0;'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const float x0 = x[i*qk + 0    + j]*id;'
+  - '            const float x1 = x[i*qk + qk/2 + j]*id;'
+  - '            const uint8_t xi0 = MIN(31, (int8_t)(x0 + 16.5f));'
+  - '            const uint8_t xi1 = MIN(31, (int8_t)(x1 + 16.5f));'
+  - '            y[i].qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);'
+  - '            qh |= ((xi0 & 0x10u) >> 4) << (j + 0);'
+  - '            qh |= ((xi1 & 0x10u) >> 4) << (j + qk/2);'
+  - '        }'
+  - '        memcpy(&y[i].qh, &qh, sizeof(qh));'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 5 比特量化成 block_q5_0 块，无最小值偏移，使用额外 qh 位存储第 5 位。
+  line: 145-187
+  name: quantize_row_q5_0_ref
+- code:
+  - void quantize_row_q5_1_ref(const float * GGML_RESTRICT x, block_q5_1 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    const int qk = QK5_1;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float min = FLT_MAX;'
+  - '        float max = -FLT_MAX;'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            const float v = x[i*qk + j];'
+  - '            if (v < min) min = v;'
+  - '            if (v > max) max = v;'
+  - '        }'
+  - '        const float d  = (max - min) / ((1 << 5) - 1);'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        y[i].m = GGML_FP32_TO_FP16(min);'
+  - '        uint32_t qh = 0;'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const float x0 = (x[i*qk + 0    + j] - min)*id;'
+  - '            const float x1 = (x[i*qk + qk/2 + j] - min)*id;'
+  - '            const uint8_t xi0 = (uint8_t)(x0 + 0.5f);'
+  - '            const uint8_t xi1 = (uint8_t)(x1 + 0.5f);'
+  - '            y[i].qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);'
+  - '            qh |= ((xi0 & 0x10u) >> 4) << (j + 0);'
+  - '            qh |= ((xi1 & 0x10u) >> 4) << (j + qk/2);'
+  - '        }'
+  - '        memcpy(&y[i].qh, &qh, sizeof(y[i].qh));'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 5 比特量化成 block_q5_1 块，包含最小值偏移。
+  line: 191-234
+  name: quantize_row_q5_1_ref
+- code:
+  - void quantize_row_q8_0_ref(const float * GGML_RESTRICT x, block_q8_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        for (int j = 0; j < QK8_0; j++) {'
+  - '            const float v = x[i*QK8_0 + j];'
+  - '            amax = MAX(amax, fabsf(v));'
+  - '        }'
+  - '        const float d = amax / ((1 << 7) - 1);'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        for (int j = 0; j < QK8_0; ++j) {'
+  - '            const float x0 = x[i*QK8_0 + j]*id;'
+  - '            y[i].qs[j] = roundf(x0);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 8 比特量化成 block_q8_0 块，无最小值偏移。
+  line: 238-259
+  name: quantize_row_q8_0_ref
+- code:
+  - void quantize_row_q8_1_ref(const float * GGML_RESTRICT x, block_q8_1 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(QK8_1 == 32);'
+  - '    assert(k % QK8_1 == 0);'
+  - '    const int nb = k / QK8_1;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        for (int j = 0; j < QK8_1; j++) {'
+  - '            const float v = x[i*QK8_1 + j];'
+  - '            amax = MAX(amax, fabsf(v));'
+  - '        }'
+  - '        const float d = amax / ((1 << 7) - 1);'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        int sum = 0;'
+  - '        for (int j = 0; j < QK8_1/2; ++j) {'
+  - '            const float v0 = x[i*QK8_1           + j]*id;'
+  - '            const float v1 = x[i*QK8_1 + QK8_1/2 + j]*id;'
+  - '            y[i].qs[          j] = roundf(v0);'
+  - '            y[i].qs[QK8_1/2 + j] = roundf(v1);'
+  - '            sum += y[i].qs[          j];'
+  - '            sum += y[i].qs[QK8_1/2 + j];'
+  - '        }'
+  - '        y[i].s = GGML_FP32_TO_FP16(sum*d);'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 8 比特量化成 block_q8_1 块，包含用于点积的 sum 字段。
+  line: 263-291
+  name: quantize_row_q8_1_ref
+- code:
+  - static inline int best_index_mxfp4(float x, float e) {
+  - '    int best_index = 0;'
+  - '    float best_err = fabsf(kvalues_mxfp4[0]*e - x);'
+  - '    for (int i = 1; i < 16; i++) {'
+  - '        float err = fabsf(kvalues_mxfp4[i]*e - x);'
+  - '        if (err < best_err) {'
+  - '            best_index = i;'
+  - '            best_err = err;'
+  - '        }'
+  - '    }'
+  - '    return best_index;'
+  - '}'
+  desc: 在预定义的 mxfp4 值表中寻找最接近给定浮点值的索引，用于 mxfp4 量化。
+  line: 295-306
+  name: best_index_mxfp4
+- code:
+  - void quantize_row_mxfp4_ref(const float * GGML_RESTRICT x, block_mxfp4 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK_MXFP4;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        for (int j = 0; j < qk; j++) {'
+  - '            const float v = x[i*qk + j];'
+  - '            if (amax < fabsf(v)) {'
+  - '                amax = fabsf(v);'
+  - '            }'
+  - '        }'
+  - '        const uint8_t e = amax > 0.0f ? (uint8_t) (floorf(log2f(amax)) - 2 +
+    127) : 0;'
+  - '        const float d = GGML_E8M0_TO_FP32_HALF(e);'
+  - '        y[i].e = e;'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const uint8_t x0 = best_index_mxfp4(x[i*qk + 0    + j], d);'
+  - '            const uint8_t x1 = best_index_mxfp4(x[i*qk + qk/2 + j], d);'
+  - '            y[i].qs[j]  = x0;'
+  - '            y[i].qs[j] |= x1 << 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 mxfp4 格式量化成 block_mxfp4 块。
+  line: 310-335
+  name: quantize_row_mxfp4_ref
+- code:
+  - void quantize_row_nvfp4_ref(const float * GGML_RESTRICT x, block_nvfp4 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK_NVFP4;'
+  - '    static const int qk_sub = QK_NVFP4_SUB;'
+  - '    static const int n_sub = QK_NVFP4 / QK_NVFP4_SUB;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int s = 0; s < n_sub; s++) {'
+  - '            const float * xb = x + i*qk + s*qk_sub;'
+  - '            float amax = 0.0f;'
+  - '            for (int j = 0; j < qk_sub; j++) {'
+  - '                if (amax < fabsf(xb[j])) {'
+  - '                    amax = fabsf(xb[j]);'
+  - '                }'
+  - '            }'
+  - '            const uint8_t ue = ggml_fp32_to_ue4m3(amax / 6.0f);'
+  - '            y[i].d[s] = ue;'
+  - '            const float d = ggml_ue4m3_to_fp32(ue);'
+  - '            for (int j = 0; j < qk_sub/2; ++j) {'
+  - '                const uint8_t x0 = best_index_mxfp4(xb[0        + j], d);'
+  - '                const uint8_t x1 = best_index_mxfp4(xb[qk_sub/2 + j], d);'
+  - '                y[i].qs[s*(qk_sub/2) + j] = x0 | (x1 << 4);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 nvfp4 格式量化为 block_nvfp4 块，包含子块缩放。
+  line: 339-371
+  name: quantize_row_nvfp4_ref
+- code:
+  - void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK1_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const float neg_d = -d;'
+  - '        for (int j = 0; j < qk; ++j) {'
+  - '            const int byte_index = j / 8;'
+  - '            const int bit_offset = j % 8;'
+  - '            const uint8_t bit = (x[i].qs[byte_index] >> bit_offset) & 1;'
+  - '            y[i*qk + j] = bit ? d : neg_d;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q1_0 块反量化为浮点数组。
+  line: 375-391
+  name: dequantize_row_q1_0
+- code:
+  - void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK4_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const int x0 = (x[i].qs[j] & 0x0F) - 8;'
+  - '            const int x1 = (x[i].qs[j] >>   4) - 8;'
+  - '            y[i*qk + j + 0   ] = x0*d;'
+  - '            y[i*qk + j + qk/2] = x1*d;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q4_0 块反量化为浮点数组。
+  line: 395-412
+  name: dequantize_row_q4_0
+- code:
+  - void dequantize_row_q4_1(const block_q4_1 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK4_1;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const float m = GGML_FP16_TO_FP32(x[i].m);'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const int x0 = (x[i].qs[j] & 0x0F);'
+  - '            const int x1 = (x[i].qs[j] >>   4);'
+  - '            y[i*qk + j + 0   ] = x0*d + m;'
+  - '            y[i*qk + j + qk/2] = x1*d + m;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q4_1 块反量化为浮点数组。
+  line: 416-433
+  name: dequantize_row_q4_1
+- code:
+  - void dequantize_row_q5_0(const block_q5_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK5_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        uint32_t qh;'
+  - '        memcpy(&qh, x[i].qh, sizeof(qh));'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const uint8_t xh_0 = ((qh >> (j +  0)) << 4) & 0x10;'
+  - '            const uint8_t xh_1 = ((qh >> (j + 12))     ) & 0x10;'
+  - '            const int32_t x0 = ((x[i].qs[j] & 0x0F) | xh_0) - 16;'
+  - '            const int32_t x1 = ((x[i].qs[j] >>   4) | xh_1) - 16;'
+  - '            y[i*qk + j + 0   ] = x0*d;'
+  - '            y[i*qk + j + qk/2] = x1*d;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q5_0 块反量化为浮点数组。
+  line: 437-459
+  name: dequantize_row_q5_0
+- code:
+  - void dequantize_row_q5_1(const block_q5_1 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK5_1;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const float m = GGML_FP16_TO_FP32(x[i].m);'
+  - '        uint32_t qh;'
+  - '        memcpy(&qh, x[i].qh, sizeof(qh));'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const uint8_t xh_0 = ((qh >> (j +  0)) << 4) & 0x10;'
+  - '            const uint8_t xh_1 = ((qh >> (j + 12))     ) & 0x10;'
+  - '            const int x0 = (x[i].qs[j] & 0x0F) | xh_0;'
+  - '            const int x1 = (x[i].qs[j] >>   4) | xh_1;'
+  - '            y[i*qk + j + 0   ] = x0*d + m;'
+  - '            y[i*qk + j + qk/2] = x1*d + m;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q5_1 块反量化为浮点数组。
+  line: 463-486
+  name: dequantize_row_q5_1
+- code:
+  - void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK8_0;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int j = 0; j < qk; ++j) {'
+  - '            y[i*qk + j] = x[i].qs[j]*d;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q8_0 块反量化为浮点数组。
+  line: 490-503
+  name: dequantize_row_q8_0
+- code:
+  - void dequantize_row_mxfp4(const block_mxfp4 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK_MXFP4;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_E8M0_TO_FP32_HALF(x[i].e);'
+  - '        for (int j = 0; j < qk/2; ++j) {'
+  - '            const int8_t x0 = kvalues_mxfp4[x[i].qs[j] & 0x0F];'
+  - '            const int8_t x1 = kvalues_mxfp4[x[i].qs[j] >>   4];'
+  - '            y[i*qk + j + 0   ] = x0*d;'
+  - '            y[i*qk + j + qk/2] = x1*d;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_mxfp4 块反量化为浮点数组。
+  line: 507-522
+  name: dequantize_row_mxfp4
+- code:
+  - void dequantize_row_nvfp4(const block_nvfp4 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    static const int qk = QK_NVFP4;'
+  - '    static const int qk_sub = QK_NVFP4_SUB;'
+  - '    static const int n_sub = QK_NVFP4 / QK_NVFP4_SUB;'
+  - '    assert(k % qk == 0);'
+  - '    const int nb = k / qk;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int s = 0; s < n_sub; s++) {'
+  - '            const float d = ggml_ue4m3_to_fp32(x[i].d[s]);'
+  - '            float * yb = y + i*qk + s*qk_sub;'
+  - '            for (int j = 0; j < qk_sub/2; ++j) {'
+  - '                const int8_t v0 = kvalues_mxfp4[x[i].qs[s*(qk_sub/2) + j] & 0x0F];'
+  - '                const int8_t v1 = kvalues_mxfp4[x[i].qs[s*(qk_sub/2) + j] >>   4];'
+  - '                yb[j + 0       ] = v0*d;'
+  - '                yb[j + qk_sub/2] = v1*d;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_nvfp4 块反量化为浮点数组。
+  line: 526-551
+  name: dequantize_row_nvfp4
+- code:
+  - static inline int nearest_int(float fval) {
+  - '    assert(fabsf(fval) <= 4194303.f);'
+  - '    float val = fval + 12582912.f;'
+  - '    int i; memcpy(&i, &val, sizeof(int));'
+  - '    return (i & 0x007fffff) - 0x00400000;'
+  - '}'
+  desc: 一个快速四舍五入到最近整数的函数，使用魔数技巧实现，输入必须小于 2^22。
+  line: 557-562
+  name: nearest_int
+- code:
+  - static float make_qx_quants(int n, int nmax, const float * GGML_RESTRICT x, int8_t
+    * GGML_RESTRICT L, int rmse_type,
+  - '        const float * GGML_RESTRICT qw) {'
+  - '    float max = 0;'
+  - '    float amax = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        float ax = fabsf(x[i]);'
+  - '        if (ax > amax) { amax = ax; max = x[i]; }'
+  - '    }'
+  - '    if (amax < GROUP_MAX_EPS) { // all zero'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            L[i] = 0;'
+  - '        }'
+  - '        return 0.f;'
+  - '    }'
+  - '    float iscale = -nmax / max;'
+  - '    if (rmse_type == 0) {'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale * x[i]);'
+  - '            L[i] = nmax + MAX(-nmax, MIN(nmax-1, l));'
+  - '        }'
+  - '        return 1/iscale;'
+  - '    }'
+  - '    bool return_early = false;'
+  - '    if (rmse_type < 0) {'
+  - '        rmse_type = -rmse_type;'
+  - '        return_early = true;'
+  - '    }'
+  - '    float sumlx = 0;'
+  - '    float suml2 = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        int l = nearest_int(iscale * x[i]);'
+  - '        l = MAX(-nmax, MIN(nmax-1, l));'
+  - '        L[i] = l + nmax;'
+  - '        float w = qw ? qw[i] : rmse_type == 1 ? x[i] * x[i] : rmse_type == 2
+    ? 1 : rmse_type == 3 ? fabsf(x[i]) : sqrtf(fabsf(x[i]));'
+  - '        sumlx += w*x[i]*l;'
+  - '        suml2 += w*l*l;'
+  - '    }'
+  - '    float scale = suml2 ? sumlx/suml2 : 0.0f;'
+  - '    if (return_early) return suml2 > 0 ? 0.5f*(scale + 1/iscale) : 1/iscale;'
+  - '    float best = scale * sumlx;'
+  - '    for (int is = -9; is <= 9; ++is) {'
+  - '        if (is == 0) {'
+  - '            continue;'
+  - '        }'
+  - '        iscale = -(nmax + 0.1f*is) / max;'
+  - '        sumlx = suml2 = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale * x[i]);'
+  - '            l = MAX(-nmax, MIN(nmax-1, l));'
+  - '            float w = qw ? qw[i] : rmse_type == 1 ? x[i] * x[i] : rmse_type ==
+    2 ? 1 : rmse_type == 3 ? fabsf(x[i]) : sqrtf(fabsf(x[i]));'
+  - '            sumlx += w*x[i]*l;'
+  - '            suml2 += w*l*l;'
+  - '        }'
+  - '        if (suml2 > 0 && sumlx*sumlx > best*suml2) {'
+  - '            for (int i = 0; i < n; ++i) {'
+  - '                int l = nearest_int(iscale * x[i]);'
+  - '                L[i] = nmax + MAX(-nmax, MIN(nmax-1, l));'
+  - '            }'
+  - '            scale = sumlx/suml2; best = scale*sumlx;'
+  - '        }'
+  - '    }'
+  - '    return scale;'
+  - '}'
+  desc: 为一般性的 k-bit 量化生成量化数值和比例因子，支持多种 RMSE 类型和权重，用于生成确定性模型文件。
+  line: 565-629
+  name: make_qx_quants
+- code:
+  - static float make_q3_quants(int n, int nmax, const float * GGML_RESTRICT x, int8_t
+    * GGML_RESTRICT L, bool do_rmse) {
+  - '    float max = 0;'
+  - '    float amax = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        float ax = fabsf(x[i]);'
+  - '        if (ax > amax) { amax = ax; max = x[i]; }'
+  - '    }'
+  - '    if (amax < GROUP_MAX_EPS) { // all zero'
+  - '        for (int i = 0; i < n; ++i) { L[i] = 0; }'
+  - '        return 0.f;'
+  - '    }'
+  - '    float iscale = -nmax / max;'
+  - '    if (do_rmse) {'
+  - '        float sumlx = 0;'
+  - '        float suml2 = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale * x[i]);'
+  - '            l = MAX(-nmax, MIN(nmax-1, l));'
+  - '            L[i] = l;'
+  - '            float w = x[i]*x[i];'
+  - '            sumlx += w*x[i]*l;'
+  - '            suml2 += w*l*l;'
+  - '        }'
+  - '        for (int itry = 0; itry < 5; ++itry) {'
+  - '            int n_changed = 0;'
+  - '            for (int i = 0; i < n; ++i) {'
+  - '                float w = x[i]*x[i];'
+  - '                float slx = sumlx - w*x[i]*L[i];'
+  - '                if (slx > 0) {'
+  - '                    float sl2 = suml2 - w*L[i]*L[i];'
+  - '                    int new_l = nearest_int(x[i] * sl2 / slx);'
+  - '                    new_l = MAX(-nmax, MIN(nmax-1, new_l));'
+  - '                    if (new_l != L[i]) {'
+  - '                        slx += w*x[i]*new_l;'
+  - '                        sl2 += w*new_l*new_l;'
+  - '                        if (sl2 > 0 && slx*slx*suml2 > sumlx*sumlx*sl2) {'
+  - '                            L[i] = new_l; sumlx = slx; suml2 = sl2;'
+  - '                            ++n_changed;'
+  - '                        }'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '            if (!n_changed) {'
+  - '                break;'
+  - '            }'
+  - '        }'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            L[i] += nmax;'
+  - '        }'
+  - '        return suml2 > 0.0f ? sumlx / suml2 : 0.0f;'
+  - '    }'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        int l = nearest_int(iscale * x[i]);'
+  - '        l = MAX(-nmax, MIN(nmax-1, l));'
+  - '        L[i] = l + nmax;'
+  - '    }'
+  - '    return 1/iscale;'
+  - '}'
+  desc: 为 3-bit 量化生成量化数值和比例因子，支持可选的 RMSE 优化，用于生成确定性模型文件。
+  line: 633-700
+  name: make_q3_quants
+- code:
+  - static float make_qkx1_quants(int n, int nmax, const float * GGML_RESTRICT x,
+    uint8_t * GGML_RESTRICT L, float * GGML_RESTRICT the_min,
+  - '        int ntry, float alpha) {'
+  - '    float min = x[0];'
+  - '    float max = x[0];'
+  - '    for (int i = 1; i < n; ++i) {'
+  - '        if (x[i] < min) min = x[i];'
+  - '        if (x[i] > max) max = x[i];'
+  - '    }'
+  - '    if (max == min) {'
+  - '        for (int i = 0; i < n; ++i) L[i] = 0;'
+  - '        *the_min = 0;'
+  - '        return 0.f;'
+  - '    }'
+  - '    if (min > 0) min = 0;'
+  - '    float iscale = nmax/(max - min);'
+  - '    float scale = 1/iscale;'
+  - '    for (int itry = 0; itry < ntry; ++itry) {'
+  - '        float sumlx = 0; int suml2 = 0;'
+  - '        bool did_change = false;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale*(x[i] - min));'
+  - '            l = MAX(0, MIN(nmax, l));'
+  - '            if (l != L[i]) {'
+  - '                L[i] = l;'
+  - '                did_change = true;'
+  - '            }'
+  - '            sumlx += (x[i] - min)*l;'
+  - '            suml2 += l*l;'
+  - '        }'
+  - '        scale = sumlx/suml2;'
+  - '        float sum = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            sum += x[i] - scale*L[i];'
+  - '        }'
+  - '        min = alpha*min + (1 - alpha)*sum/n;'
+  - '        if (min > 0) min = 0;'
+  - '        iscale = 1/scale;'
+  - '        if (!did_change) break;'
+  - '    }'
+  - '    *the_min = -min;'
+  - '    return scale;'
+  - '}'
+  desc: 为 k-bit 量化生成量化数值和比例因子，并优化最小值偏移，用于生成确定性模型文件。
+  line: 704-750
+  name: make_qkx1_quants
+- code:
+  - static float make_qkx2_quants(int n, int nmax, const float * GGML_RESTRICT x,
+    const float * GGML_RESTRICT weights,
+  - '        uint8_t * GGML_RESTRICT L, float * GGML_RESTRICT the_min, uint8_t * GGML_RESTRICT
+    Laux,'
+  - '        float rmin, float rdelta, int nstep, bool use_mad) {'
+  - '    float min = x[0];'
+  - '    float max = x[0];'
+  - '    float sum_w = weights[0];'
+  - '    float sum_x = sum_w * x[0];'
+  - '    for (int i = 1; i < n; ++i) {'
+  - '        if (x[i] < min) min = x[i];'
+  - '        if (x[i] > max) max = x[i];'
+  - '        float w = weights[i];'
+  - '        sum_w += w;'
+  - '        sum_x += w * x[i];'
+  - '    }'
+  - '    if (min > 0) min = 0;'
+  - '    if (max == min) {'
+  - '        for (int i = 0; i < n; ++i) L[i] = 0;'
+  - '        *the_min = -min;'
+  - '        return 0.f;'
+  - '    }'
+  - '    float iscale = nmax/(max - min);'
+  - '    float scale = 1/iscale;'
+  - '    float best_error = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        int l = nearest_int(iscale*(x[i] - min));'
+  - '        L[i] = MAX(0, MIN(nmax, l));'
+  - '        float diff = scale * L[i] + min - x[i];'
+  - '        diff = use_mad ? fabsf(diff) : diff * diff;'
+  - '        float w = weights[i];'
+  - '        best_error += w * diff;'
+  - '    }'
+  - '    if (nstep < 1) {'
+  - '        *the_min = -min;'
+  - '        return scale;'
+  - '    }'
+  - '    for (int is = 0; is <= nstep; ++is) {'
+  - '        iscale = (rmin + rdelta*is + nmax)/(max - min);'
+  - '        float sum_l = 0, sum_l2 = 0, sum_xl = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale*(x[i] - min));'
+  - '            l = MAX(0, MIN(nmax, l));'
+  - '            Laux[i] = l;'
+  - '            float w = weights[i];'
+  - '            sum_l += w*l;'
+  - '            sum_l2 += w*l*l;'
+  - '            sum_xl += w*l*x[i];'
+  - '        }'
+  - '        float D = sum_w * sum_l2 - sum_l * sum_l;'
+  - '        if (D > 0) {'
+  - '            float this_scale = (sum_w * sum_xl - sum_x * sum_l)/D;'
+  - '            float this_min   = (sum_l2 * sum_x - sum_l * sum_xl)/D;'
+  - '            if (this_min > 0) {'
+  - '                this_min = 0;'
+  - '                this_scale = sum_xl / sum_l2;'
+  - '            }'
+  - '            float cur_error = 0;'
+  - '            for (int i = 0; i < n; ++i) {'
+  - '                float diff = this_scale * Laux[i] + this_min - x[i];'
+  - '                diff = use_mad ? fabsf(diff) : diff * diff;'
+  - '                float w = weights[i];'
+  - '                cur_error += w * diff;'
+  - '            }'
+  - '            if (cur_error < best_error) {'
+  - '                for (int i = 0; i < n; ++i) {'
+  - '                    L[i] = Laux[i];'
+  - '                }'
+  - '                best_error = cur_error;'
+  - '                scale = this_scale;'
+  - '                min = this_min;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    *the_min = -min;'
+  - '    return scale;'
+  - '}'
+  desc: 使用加权最小二乘优化生成 k-bit 量化数值，并优化比例和最小值，用于生成确定性模型文件。
+  line: 754-835
+  name: make_qkx2_quants
+- code:
+  - static inline void get_scale_min_k4(int j, const uint8_t * GGML_RESTRICT q, uint8_t
+    * GGML_RESTRICT d, uint8_t * GGML_RESTRICT m) {
+  - '    if (j < 4) {'
+  - '        *d = q[j] & 63; *m = q[j + 4] & 63;'
+  - '    } else {'
+  - '        *d = (q[j+4] & 0xF) | ((q[j-4] >> 6) << 4);'
+  - '        *m = (q[j+4] >>  4) | ((q[j-0] >> 6) << 4);'
+  - '    }'
+  - '}'
+  desc: 从打包的量化数据中提取 4-bit 比例和最小值。
+  line: 839-846
+  name: get_scale_min_k4
+- code:
+  - void quantize_row_q2_K_ref(const float * GGML_RESTRICT x, block_q2_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    uint8_t L[QK_K];'
+  - '    uint8_t Laux[16];'
+  - '    float   weights[16];'
+  - '    float mins[QK_K/16];'
+  - '    float scales[QK_K/16];'
+  - '    const float q4scale = 15.f;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float max_scale = 0;'
+  - '        float max_min = 0;'
+  - '        for (int j = 0; j < QK_K/16; ++j) {'
+  - '            for (int l = 0; l < 16; ++l) weights[l] = fabsf(x[16*j + l]);'
+  - '            scales[j] = make_qkx2_quants(16, 3, x + 16*j, weights, L + 16*j,
+    &mins[j], Laux, -0.5f, 0.1f, 15, true);'
+  - '            float scale = scales[j];'
+  - '            if (scale > max_scale) {'
+  - '                max_scale = scale;'
+  - '            }'
+  - '            float min = mins[j];'
+  - '            if (min > max_min) {'
+  - '                max_min = min;'
+  - '            }'
+  - '        }'
+  - '        if (max_scale > 0) {'
+  - '            float iscale = q4scale/max_scale;'
+  - '            for (int j = 0; j < QK_K/16; ++j) {'
+  - '                int l = nearest_int(iscale*scales[j]);'
+  - '                y[i].scales[j] = l;'
+  - '            }'
+  - '            y[i].d = GGML_FP32_TO_FP16(max_scale/q4scale);'
+  - '        } else {'
+  - '            for (int j = 0; j < QK_K/16; ++j) y[i].scales[j] = 0;'
+  - '            y[i].d = GGML_FP32_TO_FP16(0.f);'
+  - '        }'
+  - '        if (max_min > 0) {'
+  - '            float iscale = q4scale/max_min;'
+  - '            for (int j = 0; j < QK_K/16; ++j) {'
+  - '                int l = nearest_int(iscale*mins[j]);'
+  - '                y[i].scales[j] |= (l << 4);'
+  - '            }'
+  - '            y[i].dmin = GGML_FP32_TO_FP16(max_min/q4scale);'
+  - '        } else {'
+  - '            y[i].dmin = GGML_FP32_TO_FP16(0.f);'
+  - '        }'
+  - '        for (int j = 0; j < QK_K/16; ++j) {'
+  - '            const float d = GGML_FP16_TO_FP32(y[i].d) * (y[i].scales[j] & 0xF);'
+  - '            if (!d) continue;'
+  - '            const float dm = GGML_FP16_TO_FP32(y[i].dmin) * (y[i].scales[j] >>
+    4);'
+  - '            for (int ii = 0; ii < 16; ++ii) {'
+  - '                int l = nearest_int((x[16*j + ii] + dm)/d);'
+  - '                l = MAX(0, MIN(3, l));'
+  - '                L[16*j + ii] = l;'
+  - '            }'
+  - '        }'
+  - '        for (int j = 0; j < QK_K; j += 128) {'
+  - '            for (int l = 0; l < 32; ++l) {'
+  - '                y[i].qs[j/4 + l] = L[j + l] | (L[j + l + 32] << 2) | (L[j + l
+    + 64] << 4) | (L[j + l + 96] << 6);'
+  - '            }'
+  - '        }'
+  - '        x += QK_K;'
+  - '    }'
+  - '}'
+  desc: 参考实现，将一个浮点数组按 2-bit 量化为 block_q2_K 超级块。
+  line: 851-924
+  name: quantize_row_q2_K_ref
+- code:
+  - void dequantize_row_q2_K(const block_q2_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const float min = GGML_FP16_TO_FP32(x[i].dmin);'
+  - '        const uint8_t * q = x[i].qs;'
+  - '        int is = 0;'
+  - '        float dl, ml;'
+  - '        for (int n = 0; n < QK_K; n += 128) {'
+  - '            int shift = 0;'
+  - '            for (int j = 0; j < 4; ++j) {'
+  - '                uint8_t sc = x[i].scales[is++];'
+  - '                dl = d * (sc & 0xF); ml = min * (sc >> 4);'
+  - '                for (int l = 0; l < 16; ++l) *y++ = dl * ((int8_t)((q[l] >> shift)
+    & 3)) - ml;'
+  - '                sc = x[i].scales[is++];'
+  - '                dl = d * (sc & 0xF); ml = min * (sc >> 4);'
+  - '                for (int l = 0; l < 16; ++l) *y++ = dl * ((int8_t)((q[l+16] >>
+    shift) & 3)) - ml;'
+  - '                shift += 2;'
+  - '            }'
+  - '            q += 32;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 block_q2_K 超级块反量化为浮点数组。
+  line: 928-954
+  name: dequantize_row_q2_K
+- code:
+  - static float make_qkx3_quants(int n, int nmax, const float * GGML_RESTRICT x,
+    const float * GGML_RESTRICT weights,
+  - '        uint8_t * GGML_RESTRICT L, float * GGML_RESTRICT the_min, uint8_t * GGML_RESTRICT
+    Laux,'
+  - '        float rmin, float rdelta, int nstep, bool use_mad) {'
+  - '    float min = x[0];'
+  - '    float max = x[0];'
+  - '    float sum_w = weights ? weights[0] : x[0]*x[0];'
+  - '    float sum_x = sum_w * x[0];'
+  - '    for (int i = 1; i < n; ++i) {'
+  - '        if (x[i] < min) min = x[i];'
+  - '        if (x[i] > max) max = x[i];'
+  - '        float w = weights ? weights[i] : x[i]*x[i];'
+  - '        sum_w += w;'
+  - '        sum_x += w * x[i];'
+  - '    }'
+  - '    if (min > 0) {'
+  - '        min = 0;'
+  - '    }'
+  - '    if (max <= min) {'
+  - '        memset(L, 0, n);'
+  - '        *the_min = -min;'
+  - '        return 0.f;'
+  - '    }'
+  - '    float iscale = nmax/(max - min);'
+  - '    float scale = 1/iscale;'
+  - '    float best_mad = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        int l = nearest_int(iscale*(x[i] - min));'
+  - '        L[i] = MAX(0, MIN(nmax, l));'
+  - '        float diff = scale * L[i] + min - x[i];'
+  - '        diff = use_mad ? fabsf(diff) : diff*diff;'
+  - '        float w = weights ? weights[i] : x[i]*x[i];'
+  - '        best_mad += w * diff;'
+  - '    }'
+  - '    if (nstep < 1) {'
+  - '        *the_min = -min;'
+  - '        return scale;'
+  - '    }'
+  - '    for (int is = 0; is <= nstep; ++is) {'
+  - '        iscale = (rmin + rdelta*is + nmax)/(max - min);'
+  - '        float sum_l = 0, sum_l2 = 0, sum_xl = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale*(x[i] - min));'
+  - '            l = MAX(0, MIN(nmax, l));'
+  - '            Laux[i] = l;'
+  - '            float w = weights ? weights[i] : x[i]*x[i];'
+  - '            sum_l  += w*l;'
+  - '            sum_l2 += w*l*l;'
+  - '            sum_xl += w*l*x[i];'
+  - '        }'
+  - '        float D = sum_w * sum_l2 - sum_l * sum_l;'
+  - '        if (D > 0) {'
+  - '            float this_scale = (sum_w * sum_xl - sum_x * sum_l)/D;'
+  - '            float this_min   = (sum_l2 * sum_x - sum_l * sum_xl)/D;'
+  - '            if (this_min > 0) {'
+  - '                this_min = 0;'
+  - '                this_scale = sum_xl / sum_l2;'
+  - '            }'
+  - '            float mad = 0;'
+  - '            for (int i = 0; i < n; ++i) {'
+  - '                float diff = this_scale * Laux[i] + this_min - x[i];'
+  - '                diff = use_mad ? fabsf(diff) : diff*diff;'
+  - '                float w = weights ? weights[i] : x[i]*x[i];'
+  - '                mad += w * diff;'
+  - '            }'
+  - '            if (mad < best_mad) {'
+  - '                for (int i = 0; i < n; ++i) {'
+  - '                    L[i] = Laux[i];'
+  - '                }'
+  - '                best_mad = mad;'
+  - '                scale = this_scale;'
+  - '                min = this_min;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    *the_min = -min;'
+  - '    return scale;'
+  - '}'
+  desc: 使用加权最小二乘优化生成 k-bit 量化数值，并优化比例和最小值，支持可选的权重数组。
+  line: 958-1054
+  name: make_qkx3_quants
+- code:
+  - static float make_qp_quants(int n, int nmax, const float * GGML_RESTRICT x, uint8_t
+    * GGML_RESTRICT L, const float * quant_weights) {
+  - '    float max = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        max = MAX(max, x[i]);'
+  - '    }'
+  - '    if (max < GROUP_MAX_EPS) { // all zero'
+  - '        for (int i = 0; i < n; ++i) { L[i] = 0; }'
+  - '        return 0.f;'
+  - '    }'
+  - '    float iscale = nmax / max;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        L[i] = nearest_int(iscale * x[i]);'
+  - '    }'
+  - '    float scale = 1/iscale;'
+  - '    float best_mse = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        float diff = x[i] - scale*L[i];'
+  - '        float w = quant_weights[i];'
+  - '        best_mse += w*diff*diff;'
+  - '    }'
+  - '    for (int is = -4; is <= 4; ++is) {'
+  - '        if (is == 0) continue;'
+  - '        float iscale_is = (0.1f*is + nmax)/max;'
+  - '        float scale_is = 1/iscale_is;'
+  - '        float mse = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            int l = nearest_int(iscale_is*x[i]);'
+  - '            l = MIN(nmax, l);'
+  - '            float diff = x[i] - scale_is*l;'
+  - '            float w = quant_weights[i];'
+  - '            mse += w*diff*diff;'
+  - '        }'
+  - '        if (mse < best_mse) {'
+  - '            best_mse = mse;'
+  - '            iscale = iscale_is;'
+  - '        }'
+  - '    }'
+  - '    float sumlx = 0;'
+  - '    float suml2 = 0;'
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        int l = nearest_int(iscale * x[i]);'
+  - '        l = MIN(nmax, l);'
+  - '        L[i] = l;'
+  - '        float w = quant_weights[i];'
+  - '        sumlx += w*x[i]*l;'
+  - '        suml2 += w*l*l;'
+  - '    }'
+  - '    for (int itry = 0; itry < 5; ++itry) {'
+  - '        int n_changed = 0;'
+  - '        for (int i = 0; i < n; ++i) {'
+  - '            float w = quant_weights[i];'
+  - '            float slx = sumlx - w*x[i]*L[i];'
+  - '            float sl2 = suml2 - w*L[i]*L[i];'
+  - '            if (slx > 0 && sl2 > 0) {'
+  - '                int new_l = nearest_int(x[i] * sl2 / slx);'
+  - '                new_l = MIN(nmax, new_l);'
+  - '                if (new_l != L[i]) {'
+  - '                    slx += w*x[i]*new_l;'
+  - '                    sl2 += w*new_l*new_l;'
+  - '                    if (slx*slx*suml2 > sumlx*sumlx*sl2) {'
+  - '                        L[i] = new_l; sumlx = slx; suml2 = sl2;'
+  - '                        ++n_changed;'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        if (!n_changed) {'
+  - '            break;'
+  - '        }'
+  - '    }'
+  - '    return suml2 > 0.0f ? sumlx / suml2 : 0.0f;'
+  - '}'
+  desc: 为给定的量化权重生成比例因子的优化值，通过最小化加权均方误差，用于 k-bit 量化。
+  line: 1058-1128
+  name: make_qp_quants
+- code:
+  - static void quantize_row_q2_K_impl(const float * GGML_RESTRICT x, block_q2_K *
+    GGML_RESTRICT y, int k, const float * GGML_RESTRICT quant_weights) {
+  - '    GGML_ASSERT(quant_weights);'
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    const bool requantize = true;'
+  - '    uint8_t L[QK_K];'
+  - '    uint8_t Laux[16];'
+  - '    float mins[QK_K/16];'
+  - '    float scales[QK_K/16];'
+  - '    float sw[QK_K/16];'
+  - '    float weight[16];'
+  - '    uint8_t Ls[QK_K/16], Lm[QK_K/16];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        memset(sw, 0, QK_K/16*sizeof(float));'
+  - '        float sumx2 = 0;'
+  - '        for (int j = 0; j < QK_K; ++j) sumx2 += x[j]*x[j];'
+  - '        float sigma2 = sumx2/QK_K;'
+  - '        for (int j = 0; j < QK_K/16; ++j) {'
+  - '            const float * GGML_RESTRICT qw = quant_weights + QK_K * i + 16*j;'
+  - '            for (int l = 0; l < 16; ++l) weight[l] = qw[l] * sqrtf(sigma2 + x[16*j
+    + l]*x[16*j + l]);'
+  - '            for (int l = 0; l < QK_K/16; ++l) sw[j] += weight[l];'
+  - '            scales[j] = make_qkx3_quants(16, 3, x + 16*j, weight, L + 16*j, &mins[j],
+    Laux, -0.9f, 0.05f, 36, false);'
+  - '        }'
+  - '        float dm, mm;'
+  - '        dm  = make_qp_quants(QK_K/16, 15, scales, Ls, sw);'
+  - '        mm  = make_qp_quants(QK_K/16, 15, mins,   Lm, sw);'
+  - '        y[i].d    = GGML_FP32_TO_FP16(dm);'
+  - '        y[i].dmin = GGML_FP32_TO_FP16(mm);'
+  - '        dm        = GGML_FP16_TO_FP32(y[i].d);'
+  - '        mm        = GGML_FP16_TO_FP32(y[i].dmin);'
+  - '        for (int j = 0; j < QK_K/16; ++j) {'
+  - '            y[i].scales[j] = Ls[j] | (Lm[j] << 4);'
+  - '        }'
+  - '        if (requantize) {'
+  - '            for (int j = 0; j < QK_K/16; ++j) {'
+  - '                const float d = dm * (y[i].scales[j] & 0xF);'
+  - '                if (!d) continue;'
+  - '                const float m = mm * (y[i].scales[j] >> 4);'
+  - '                for (int ii = 0; ii < 16; ++ii) {'
+  - '                    int l = nearest_int((x[16*j + ii] + m)/d);'
+  - '                    l = MAX(0, MIN(3, l));'
+  - '                    L[16*j + ii] = l;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        for (int j = 0; j < QK_K; j += 128) {'
+  - '            for (int l = 0; l < 32; ++l) {'
+  - '                y[i].qs[j/4 + l] = L[j + l] | (L[j + l + 32] << 2) | (L[j + l
+    + 64] << 4) | (L[j + l + 96] << 6);'
+  - '            }'
+  - '        }'
+  - '        x += QK_K;'
+  - '    }'
+  - '}'
+  desc: 带权重优化的 2-bit 量化实现，使用更复杂的比例和最小值优化策略，用于生成更高质量的量化模型。
+  line: 1132-1199
+  name: quantize_row_q2_K_impl
+- code:
+  - size_t quantize_q2_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q2_K, n_per_row);'
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q2_K_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    }'
+  - '    else {'
+  - '        char * qrow = (char *)dst;'
+  - '        for (int64_t row = 0; row < nrow; ++row) {'
+  - '            quantize_row_q2_K_impl(src, (block_q2_K*)qrow, n_per_row, quant_weights);'
+  - '            src += n_per_row;'
+  - '            qrow += row_size;'
+  - '        }'
+  - '    }'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将浮点数据按行量化为 Q2_K 格式，并返回生成的量化数据大小。
+  line: 约1149-1164
+  name: quantize_q2_K
+- code:
+  - void quantize_row_q3_K_ref(const float * GGML_RESTRICT x, block_q3_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    int8_t L[QK_K];'
+  - '    float scales[QK_K / 16];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        // 计算子块尺度并编码到 y[i].scales'
+  - '        // 量化元素并拆分高位到 hmask、低位到 qs'
+  - '        x += QK_K;'
+  - '    }'
+  - '}'
+  desc: 将连续浮点数据按 QK_K 大小的块量化为参考 Q3_K 格式，并编码量化尺度、高位掩码和低位量化值。
+  line: 约1167-1231
+  name: quantize_row_q3_K_ref
+- code:
+  - void dequantize_row_q3_K(const block_q3_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    const uint32_t kmask1 = 0x03030303;'
+  - '    const uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    // 解包尺度并根据 qs、hmask 重建每个量化值'
+  - '    // 将量化值乘以对应尺度后写入 y'
+  - '}'
+  desc: 读取 Q3_K 块中的尺度、低位量和高位掩码，将量化数据还原为浮点值。
+  line: 约1233-1283
+  name: dequantize_row_q3_K
+- code:
+  - static void quantize_row_q3_K_impl(const float * GGML_RESTRICT x, block_q3_K *
+    GGML_RESTRICT y, int64_t n_per_row, const float * GGML_RESTRICT quant_weights)
+    {
+  - '    assert(n_per_row % QK_K == 0);'
+  - '    const int nb = n_per_row / QK_K;'
+  - '    // 计算元素权重、子块尺度和块级尺度'
+  - '    // 量化为 3-bit 值并编码高位掩码与低位数据'
+  - '}'
+  desc: 使用可选量化权重执行 Q3_K 的加权优化量化，并生成压缩后的块数据。
+  line: 约1285-1367
+  name: quantize_row_q3_K_impl
+- code:
+  - size_t quantize_q3_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q3_K, n_per_row);'
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q3_K_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    } else {'
+  - '        // 逐行调用 quantize_row_q3_K_impl'
+  - '    }'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为 Q3_K 格式，支持参考路径和加权优化路径。
+  line: 约1369-1384
+  name: quantize_q3_K
+- code:
+  - void quantize_row_q4_K_ref(const float * GGML_RESTRICT x, block_q4_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 计算各子块的 scale 和 min'
+  - '    // 将 4-bit 量化值打包到 qs'
+  - '}'
+  desc: 将浮点块量化为带尺度和最小值的 4-bit Q4_K 格式。
+  line: 约1387-1454
+  name: quantize_row_q4_K_ref
+- code:
+  - void dequantize_row_q4_K(const block_q4_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 读取 scale、min 和 qs'
+  - '    // 对每组量化值执行 d * q - min'
+  - '}'
+  desc: 根据 Q4_K 的块尺度、最小值和 4-bit 打包数据恢复浮点数据。
+  line: 约1456-1480
+  name: dequantize_row_q4_K
+- code:
+  - static void quantize_row_q4_K_impl(const float * GGML_RESTRICT x, block_q4_K *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    assert(n_per_row % QK_K == 0);'
+  - '    // 计算子块权重、scale、min'
+  - '    // 量化并编码 Q4_K 的尺度和 4-bit 数据'
+  - '}'
+  desc: 使用权重和块级优化参数执行 Q4_K 加权量化。
+  line: 约1482-1561
+  name: quantize_row_q4_K_impl
+- code:
+  - size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q4_K, n_per_row);'
+  - '    // 根据是否提供 quant_weights 选择参考或优化量化实现'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据转换为 Q4_K 量化格式。
+  line: 约1563-1578
+  name: quantize_q4_K
+- code:
+  - void quantize_row_q5_K_ref(const float * GGML_RESTRICT x, block_q5_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 计算 scale 和 min'
+  - '    // 生成 0 到 31 的量化值'
+  - '    // 将低 4 位写入 qs，将第 5 位写入 qh'
+  - '}'
+  desc: 将浮点数据量化为 5-bit Q5_K 格式，并把第五位拆分存储到高位掩码中。
+  line: 约1581-1653
+  name: quantize_row_q5_K_ref
+- code:
+  - void dequantize_row_q5_K(const block_q5_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 读取 qs、qh、scale 和 min'
+  - '    // 合并低位与高位后执行反量化'
+  - '}'
+  desc: 解码 Q5_K 的低四位和高位比特，并恢复原始浮点值。
+  line: 约1655-1680
+  name: dequantize_row_q5_K
+- code:
+  - static void quantize_row_q5_K_impl(const float * GGML_RESTRICT x, block_q5_K *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    assert(n_per_row % QK_K == 0);'
+  - '    // 计算加权 scale、min 和块级参数'
+  - '    // 生成 5-bit 量化值并打包 qs、qh'
+  - '}'
+  desc: 使用可选量化权重执行 Q5_K 的优化量化。
+  line: 约1682-1766
+  name: quantize_row_q5_K_impl
+- code:
+  - size_t quantize_q5_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q5_K, n_per_row);'
+  - '    // 根据 quant_weights 选择参考或优化实现'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为 Q5_K 格式。
+  line: 约1768-1783
+  name: quantize_q5_K
+- code:
+  - void quantize_row_q6_K_ref(const float * GGML_RESTRICT x, block_q6_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 计算每个 16 元素子块的尺度'
+  - '    // 将 6-bit 量化值拆分为 ql 和 qh'
+  - '}'
+  desc: 将浮点数据量化为 6-bit Q6_K 格式，使用 4 位低数据和 2 位高数据进行存储。
+  line: 约1786-1851
+  name: quantize_row_q6_K_ref
+- code:
+  - void dequantize_row_q6_K(const block_q6_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    // 合并 ql 和 qh 中的 6-bit 值'
+  - '    // 使用块尺度和子块尺度生成输出'
+  - '}'
+  desc: 解码 Q6_K 的低位和高位数据，并乘以对应尺度恢复浮点值。
+  line: 约1853-1882
+  name: dequantize_row_q6_K
+- code:
+  - static void quantize_row_q6_K_impl(const float * GGML_RESTRICT x, block_q6_K *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    assert(n_per_row % QK_K == 0);'
+  - '    // 根据权重计算子块量化尺度'
+  - '    // 生成并打包 Q6_K 数据'
+  - '}'
+  desc: 支持量化权重的 Q6_K 优化量化实现。
+  line: 约1884-1962
+  name: quantize_row_q6_K_impl
+- code:
+  - size_t quantize_q6_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q6_K, n_per_row);'
+  - '    // 选择参考或加权优化实现'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为 Q6_K 格式并返回输出大小。
+  line: 约1964-1979
+  name: quantize_q6_K
+- code:
+  - static void quantize_row_q4_0_impl(const float * GGML_RESTRICT x, block_q4_0 *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    static_assert(QK4_0 == 32, "QK4_0 must be 32");'
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q4_0_ref(x, y, n_per_row);'
+  - '        return;'
+  - '    }'
+  - '    // 计算加权量化尺度并打包 4-bit 数据'
+  - '}'
+  desc: 在提供量化权重时执行传统 Q4_0 格式的加权量化，否则调用参考实现。
+  line: 约1981-2010
+  name: quantize_row_q4_0_impl
+- code:
+  - size_t quantize_q1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q1_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '        return nrow * ggml_row_size(GGML_TYPE_Q1_0, n_per_row);'
+  - '    }'
+  - '    // 逐行调用 quantize_row_q1_0_ref'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为 Q1_0 格式；该片段中即使提供权重也使用参考量化函数。
+  line: 约2012-2027
+  name: quantize_q1_0
+- code:
+  - size_t quantize_q4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q4_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '        return nrow * ggml_row_size(GGML_TYPE_Q4_0, n_per_row);'
+  - '    }'
+  - '    // 逐行调用 quantize_row_q4_0_impl'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为传统 Q4_0 格式，并在有权重时使用优化实现。
+  line: 约2029-2044
+  name: quantize_q4_0
+- code:
+  - static void quantize_row_q4_1_impl(const float * GGML_RESTRICT x, block_q4_1 *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    static_assert(QK4_1 == 32, "QK4_1 must be 32");'
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q4_1_ref(x, y, n_per_row);'
+  - '        return;'
+  - '    }'
+  - '    // 计算 scale、min 并将量化值打包到 qs'
+  - '}'
+  desc: 在 Q4_1 格式中结合最小值和尺度执行加权量化。
+  line: 约2046-2077
+  name: quantize_row_q4_1_impl
+- code:
+  - size_t quantize_q4_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q4_1_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '        return nrow * ggml_row_size(GGML_TYPE_Q4_1, n_per_row);'
+  - '    }'
+  - '    // 逐行调用 quantize_row_q4_1_impl'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: 将多行浮点数据量化为传统 Q4_1 格式。
+  line: 约2079-2094
+  name: quantize_q4_1
+- code:
+  - static void quantize_row_q5_0_impl(const float * GGML_RESTRICT x, block_q5_0 *
+    GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+  - '    static_assert(QK5_0 == 32, "QK5_0 must be 32");'
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q5_0_ref(x, y, n_per_row);'
+  - '        return;'
+  - '    }'
+  - '    // 计算加权量化结果'
+  - '    // 将低 4 位写入 qs，第 5 位写入 qh'
+  - '}'
+  desc: 在 Q5_0 格式中执行带权重的 5-bit 量化，并将第五位写入 qh。
+  line: 约2096-2136
+  name: quantize_row_q5_0_impl
+- code:
+  - size_t quantize_q5_0(const f
+  desc: 量化多行浮点数据为传统 Q5_0 格式；该函数在代码片段末尾被截断。
+  line: 约2138-末尾（代码截断）
+  name: quantize_q5_0
+- code:
+  - //========================= 3-bit (de)-quantization
+  - // ====================== 4-bit (de)-quantization
+  - // ====================== 5-bit (de)-quantization
+  - // ====================== 6-bit (de)-quantization
+  desc: 文件级全局代码，包括量化格式分组注释及各函数定义，不包含类定义。
+  line: 约1149-末尾
+  name: __main__
+- code:
+  - size_t quantize_q5_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q5_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '        return nrow * ggml_row_size(GGML_TYPE_Q5_0, n_per_row);'
+  - '    }'
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q5_0, n_per_row);'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_q5_0_impl(src, (block_q5_0*)qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += row_size;'
+  - '    }'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: Quantizes a block of float data to Q5_0 format, either using a reference implementation
+    for unweighted quantization or a custom implementation for weighted quantization.
+  line: 2168-2179
+  name: quantize_q5_0
+- code:
+  - size_t quantize_q5_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    if (!quant_weights) {'
+  - '        quantize_row_q5_1_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '        return nrow * ggml_row_size(GGML_TYPE_Q5_1, n_per_row);'
+  - '    }'
+  - '    size_t row_size = ggml_row_size(GGML_TYPE_Q5_1, n_per_row);'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_q5_1_impl(src, (block_q5_1*)qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += row_size;'
+  - '    }'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: Quantizes a block of float data to Q5_1 format, either using a reference implementation
+    for unweighted quantization or a custom implementation for weighted quantization.
+  line: 2208-2219
+  name: quantize_q5_1
+- code:
+  - size_t quantize_q8_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    (void)quant_weights; // not used'
+  - '    const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, n_per_row);'
+  - '    quantize_row_q8_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: Quantizes a block of float data to Q8_0 format using the reference implementation,
+    ignoring the quant weights.
+  line: 2221-2227
+  name: quantize_q8_0
+- code:
+  - size_t quantize_mxfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_UNUSED(quant_weights);'
+  - '    quantize_row_mxfp4_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    return nrow * ggml_row_size(GGML_TYPE_MXFP4, n_per_row);'
+  - '}'
+  desc: Quantizes a block of float data to MXFP4 format using the reference implementation,
+    ignoring the quant weights.
+  line: 2229-2235
+  name: quantize_mxfp4
+- code:
+  - size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_UNUSED(quant_weights);'
+  - '    quantize_row_nvfp4_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    return nrow * ggml_row_size(GGML_TYPE_NVFP4, n_per_row);'
+  - '}'
+  desc: Quantizes a block of float data to NVFP4 format using the reference implementation,
+    ignoring the quant weights.
+  line: 2237-2243
+  name: quantize_nvfp4
+- code:
+  - void quantize_row_tq1_0_ref(const float * GGML_RESTRICT x, block_tq1_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int64_t i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        for (int j = 0; j < QK_K; j++) {'
+  - '            const float v = x[j];'
+  - '            amax = MAX(amax, fabsf(v));'
+  - '        }'
+  - '        const float d = amax;'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        for (size_t j = 0; j < sizeof(y->qs) - sizeof(y->qs) % 32; j += 32) {'
+  - '            for (size_t m = 0; m < 32; ++m) {'
+  - '                uint8_t q = 0;'
+  - '                for (size_t n = 0; n < 5; ++n) {'
+  - '                    int xi = lroundf(x[m + n*32] * id) + 1; // -1, 0, 1 -> 0,
+    1, 2'
+  - '                    q *= 3;'
+  - '                    q += xi;'
+  - '                }'
+  - '                q = ((uint16_t)q * 256 + (243 - 1)) / 243;'
+  - '                y[i].qs[j + m] = q;'
+  - '            }'
+  - '            x += 5*32;'
+  - '        }'
+  - '        for (size_t j = sizeof(y->qs) - sizeof(y->qs) % 32; j < sizeof(y->qs);
+    j += 16) {'
+  - '            for (size_t m = 0; m < 16; ++m) {'
+  - '                uint8_t q = 0;'
+  - '                for (size_t n = 0; n < 5; ++n) {'
+  - '                    int xi = lroundf(x[m + n*16] * id) + 1; // -1, 0, 1 -> 0,
+    1, 2'
+  - '                    q *= 3;'
+  - '                    q += xi;'
+  - '                }'
+  - '                q = ((uint16_t)q * 256 + (243 - 1)) / 243;'
+  - '                y[i].qs[j + m] = q;'
+  - '            }'
+  - '            x += 5*16;'
+  - '        }'
+  - '        for (size_t j = 0; j < sizeof(y->qh); ++j) {'
+  - '            uint8_t q = 0;'
+  - '            for (size_t m = 0; m < 4; ++m) {'
+  - '                int xi = lroundf(x[j + m*sizeof(y->qh)] * id) + 1;'
+  - '                q *= 3;'
+  - '                q += xi;'
+  - '            }'
+  - '            q *= 3;'
+  - '            q = ((uint16_t)q * 256 + (243 - 1)) / 243;'
+  - '            y[i].qh[j] = q;'
+  - '        }'
+  - '        x += 4*sizeof(y->qh);'
+  - '    }'
+  - '}'
+  desc: Reference implementation for quantizing float data to TQ1_0 format, which
+    packs 5 ternary values into a byte using base-3 encoding.
+  line: 2245-2297
+  name: quantize_row_tq1_0_ref
+- code:
+  - void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int64_t i = 0; i < nb; i++) {'
+  - '        float amax = 0.0f; // absolute max'
+  - '        for (int j = 0; j < QK_K; j++) {'
+  - '            const float v = x[j];'
+  - '            amax = MAX(amax, fabsf(v));'
+  - '        }'
+  - '        const float d = amax;'
+  - '        const float id = d ? 1.0f/d : 0.0f;'
+  - '        y[i].d = GGML_FP32_TO_FP16(d);'
+  - '        for (size_t j = 0; j < sizeof(y->qs); j += 32) {'
+  - '            for (size_t m = 0; m < 32; ++m) {'
+  - '                uint8_t q = 0;'
+  - '                for (size_t n = 0; n < 4; ++n) {'
+  - '                    int xi = lroundf(x[m + n*32] * id) + 1;'
+  - '                    q += (xi & 3) << (2*n);'
+  - '                }'
+  - '                y[i].qs[j + m] = q;'
+  - '            }'
+  - '            x += 4*32;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Reference implementation for quantizing float data to TQ2_0 format, which
+    packs 4 ternary values into a byte using 2-bit per value.
+  line: 2299-2320
+  name: quantize_row_tq2_0_ref
+- code:
+  - size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    (void)quant_weights; // not used'
+  - '    const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_0, n_per_row);'
+  - '    quantize_row_tq1_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: Quantizes a block of float data to TQ1_0 format using the reference implementation,
+    ignoring quant weights.
+  line: 2322-2328
+  name: quantize_tq1_0
+- code:
+  - size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    (void)quant_weights; // not used'
+  - '    const size_t row_size = ggml_row_size(GGML_TYPE_TQ2_0, n_per_row);'
+  - '    quantize_row_tq2_0_ref(src, dst, (int64_t)nrow*n_per_row);'
+  - '    return nrow * row_size;'
+  - '}'
+  desc: Quantizes a block of float data to TQ2_0 format using the reference implementation,
+    ignoring quant weights.
+  line: 2330-2336
+  name: quantize_tq2_0
+- code:
+  - void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    const uint8_t pow3[6] = {1, 3, 9, 27, 81, 243};'
+  - '    for (int64_t i = 0; i < nb; ++i) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (size_t j = 0; j < sizeof(x->qs) - sizeof(x->qs) % 32; j += 32) {'
+  - '            for (size_t n = 0; n < 5; ++n) {'
+  - '                for (size_t m = 0; m < 32; ++m) {'
+  - '                    uint8_t q = x[i].qs[j + m] * pow3[n];'
+  - '                    int16_t xi = ((uint16_t) q * 3) >> 8;'
+  - '                    *y++ = (float) (xi - 1) * d;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        for (size_t j = sizeof(x->qs) - sizeof(x->qs) % 32; j < sizeof(x->qs);
+    j += 16) {'
+  - '            for (size_t n = 0; n < 5; ++n) {'
+  - '                for (size_t m = 0; m < 16; ++m) {'
+  - '                    uint8_t q = x[i].qs[j + m] * pow3[n];'
+  - '                    int16_t xi = ((uint16_t) q * 3) >> 8;'
+  - '                    *y++ = (float) (xi - 1) * d;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        for (size_t n = 0; n < 4; ++n) {'
+  - '            for (size_t j = 0; j < sizeof(x->qh); ++j) {'
+  - '                uint8_t q = x[i].qh[j] * pow3[n];'
+  - '                int16_t xi = ((uint16_t) q * 3) >> 8;'
+  - '                *y++ = (float) (xi - 1) * d;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes TQ1_0 data back to float, decoding base-3 encoded trits and applying
+    the scale factor.
+  line: 2338-2373
+  name: dequantize_row_tq1_0
+- code:
+  - void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int64_t i = 0; i < nb; ++i) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (size_t j = 0; j < sizeof(x->qs); j += 32) {'
+  - '            for (size_t l = 0; l < 4; ++l) {'
+  - '                for (size_t m = 0; m < 32; ++m) {'
+  - '                    int8_t q = (x[i].qs[j + m] >> (l*2)) & 3;'
+  - '                    *y++ = (float) (q - 1) * d;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes TQ2_0 data back to float, decoding 2-bit packed ternary values
+    and applying the scale factor.
+  line: 2375-2390
+  name: dequantize_row_tq2_0
+- code:
+  - void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    uint32_t aux32[2];'
+  - '    const uint8_t * aux8 = (const uint8_t *)aux32;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {'
+  - '            memcpy(aux32, x[i].qs + 4*ib32, 2*sizeof(uint32_t));'
+  - '            const float db = d * (0.5f + (aux32[1] >> 28)) * 0.25f;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const uint8_t * grid = (const uint8_t *)(iq2xxs_grid + aux8[l]);'
+  - '                const uint8_t  signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = db * grid[j] * (signs & kmask_iq2xs[j] ? -1.f : 1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ2_XXS data to float, using a lookup grid for the 2-bit quantized
+    values and applying scale and sign information.
+  line: 2392-2415
+  name: dequantize_row_iq2_xxs
+- code:
+  - void dequantize_row_iq2_xs(const block_iq2_xs * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    float db[2];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {'
+  - '            db[0] = d * (0.5f + (x[i].scales[ib32] & 0xf)) * 0.25f;'
+  - '            db[1] = d * (0.5f + (x[i].scales[ib32] >>  4)) * 0.25f;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const uint8_t * grid = (const uint8_t *)(iq2xs_grid + (x[i].qs[4*ib32
+    + l] & 511));'
+  - '                const uint8_t  signs = ksigns_iq2xs[x[i].qs[4*ib32 + l] >> 9];'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = db[l/2] * grid[j] * (signs & kmask_iq2xs[j] ? -1.f
+    : 1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ2_XS data to float, using lookup grids and per-block scale factors.
+  line: 2417-2437
+  name: dequantize_row_iq2_xs
+- code:
+  - void dequantize_row_iq2_s(const block_iq2_s * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    float db[2];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const uint8_t * qh = x[i].qh;'
+  - '        const uint8_t * signs = qs + QK_K/8;'
+  - '        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {'
+  - '            db[0] = d * (0.5f + (x[i].scales[ib32] & 0xf)) * 0.25f;'
+  - '            db[1] = d * (0.5f + (x[i].scales[ib32] >>  4)) * 0.25f;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const float dl = db[l/2];'
+  - '                const uint8_t * grid = (const uint8_t *)(iq2s_grid + (qs[l] |
+    (qh[ib32] << (8-2*l) & 0x300)));'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = dl * grid[j] * (signs[l] & kmask_iq2xs[j] ? -1.f :
+    1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qs += 4;'
+  - '            signs += 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ2_S data to float, using a lookup grid with extended indices
+    and per-block scale factors.
+  line: 2439-2464
+  name: dequantize_row_iq2_s
+- code:
+  - void dequantize_row_iq3_xxs(const block_iq3_xxs * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    uint32_t aux32;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const uint8_t * scales_and_signs = qs + QK_K/4;'
+  - '        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {'
+  - '            memcpy(&aux32, scales_and_signs + 4*ib32, sizeof(uint32_t));'
+  - '            const float db = d * (0.5f + (aux32 >> 28)) * 0.5f;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const uint8_t  signs = ksigns_iq2xs[(aux32 >> 7*l) & 127];'
+  - '                const uint8_t * grid1 = (const uint8_t *)(iq3xxs_grid + qs[2*l+0]);'
+  - '                const uint8_t * grid2 = (const uint8_t *)(iq3xxs_grid + qs[2*l+1]);'
+  - '                for (int j = 0; j < 4; ++j) {'
+  - '                    y[j+0] = db * grid1[j] * (signs & kmask_iq2xs[j+0] ? -1.f
+    : 1.f);'
+  - '                    y[j+4] = db * grid2[j] * (signs & kmask_iq2xs[j+4] ? -1.f
+    : 1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qs += 8;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ3_XXS data to float, using lookup grids and a packed scale/sign
+    word.
+  line: 2466-2491
+  name: dequantize_row_iq3_xxs
+- code:
+  - void dequantize_row_iq3_s(const block_iq3_s * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const uint8_t * qh = x[i].qh;'
+  - '        const uint8_t * signs = x[i].signs;'
+  - '        for (int ib32 = 0; ib32 < QK_K/32; ib32 += 2) {'
+  - '            const float db1 = d * (1 + 2*(x[i].scales[ib32/2] & 0xf));'
+  - '            const float db2 = d * (1 + 2*(x[i].scales[ib32/2] >>  4));'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const uint8_t * grid1 = (const uint8_t *)(iq3s_grid + (qs[2*l+0]
+    | ((qh[0] << (8-2*l)) & 256)));'
+  - '                const uint8_t * grid2 = (const uint8_t *)(iq3s_grid + (qs[2*l+1]
+    | ((qh[0] << (7-2*l)) & 256)));'
+  - '                for (int j = 0; j < 4; ++j) {'
+  - '                    y[j+0] = db1 * grid1[j] * (signs[l] & kmask_iq2xs[j+0] ?
+    -1.f : 1.f);'
+  - '                    y[j+4] = db1 * grid2[j] * (signs[l] & kmask_iq2xs[j+4] ?
+    -1.f : 1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qs += 8;'
+  - '            signs += 4;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const uint8_t * grid1 = (const uint8_t *)(iq3s_grid + (qs[2*l+0]
+    | ((qh[1] << (8-2*l)) & 256)));'
+  - '                const uint8_t * grid2 = (const uint8_t *)(iq3s_grid + (qs[2*l+1]
+    | ((qh[1] << (7-2*l)) & 256)));'
+  - '                for (int j = 0; j < 4; ++j) {'
+  - '                    y[j+0] = db2 * grid1[j] * (signs[l] & kmask_iq2xs[j+0] ?
+    -1.f : 1.f);'
+  - '                    y[j+4] = db2 * grid2[j] * (signs[l] & kmask_iq2xs[j+4] ?
+    -1.f : 1.f);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qh += 2;'
+  - '            qs += 8;'
+  - '            signs += 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ3_S data to float, using lookup grids, high bits, and separate
+    scale factors for pairs of 32-element blocks.
+  line: 2493-2540
+  name: dequantize_row_iq3_s
+- code:
+  - void dequantize_row_iq1_s(const block_iq1_s * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        const uint8_t  * qs = x[i].qs;'
+  - '        const uint16_t * qh = x[i].qh;'
+  - '        for (int ib = 0; ib < QK_K/32; ++ib) {'
+  - '            const float dl = d * (2*((qh[ib] >> 12) & 7) + 1);'
+  - '            const float delta = qh[ib] & 0x8000 ? -IQ1S_DELTA : IQ1S_DELTA;'
+  - '            for (int l = 0; l < 4; ++l) {'
+  - '                const int8_t * grid = (const int8_t *)(iq1s_grid + (qs[l] | (((qh[ib]
+    >> 3*l) & 7) << 8)));'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = dl * (grid[j] + delta);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qs += 4;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ1_S data to float, using a lookup grid with 8-bit indices and
+    a per-block scale and delta.
+  line: 2542-2565
+  name: dequantize_row_iq1_s
+- code:
+  - void dequantize_row_iq1_m(const block_iq1_m * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    float delta[4];'
+  - '    uint16_t idx[4];'
+  - '    iq1m_scale_t scale;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const uint16_t * sc = (const uint16_t *)x[i].scales;'
+  - '        scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) &
+    0x0f00) | (sc[3] & 0xf000);'
+  - '        const float d = GGML_FP16_TO_FP32(scale.f16);'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const uint8_t * qh = x[i].qh;'
+  - '        for (int ib = 0; ib < QK_K/32; ++ib) {'
+  - '            const float dl1 = d * (2*((sc[ib/2] >> (6*(ib%2)+0)) & 0x7) + 1);'
+  - '            const float dl2 = d * (2*((sc[ib/2] >> (6*(ib%2)+3)) & 0x7) + 1);'
+  - '            idx[0] = qs[0] | ((qh[0] << 8) & 0x700);'
+  - '            idx[1] = qs[1] | ((qh[0] << 4) & 0x700);'
+  - '            idx[2] = qs[2] | ((qh[1] << 8) & 0x700);'
+  - '            idx[3] = qs[3] | ((qh[1] << 4) & 0x700);'
+  - '            delta[0] = qh[0] & 0x08 ? -IQ1S_DELTA : IQ1S_DELTA;'
+  - '            delta[1] = qh[0] & 0x80 ? -IQ1S_DELTA : IQ1S_DELTA;'
+  - '            delta[2] = qh[1] & 0x08 ? -IQ1S_DELTA : IQ1S_DELTA;'
+  - '            delta[3] = qh[1] & 0x80 ? -IQ1S_DELTA : IQ1S_DELTA;'
+  - '            for (int l = 0; l < 2; ++l) {'
+  - '                const int8_t * grid = (const int8_t *)(iq1s_grid + idx[l]);'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = dl1 * (grid[j] + delta[l]);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            for (int l = 2; l < 4; ++l) {'
+  - '                const int8_t * grid = (const int8_t *)(iq1s_grid + idx[l]);'
+  - '                for (int j = 0; j < 8; ++j) {'
+  - '                    y[j] = dl2 * (grid[j] + delta[l]);'
+  - '                }'
+  - '                y += 8;'
+  - '            }'
+  - '            qs += 4;'
+  - '            qh += 2;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ1_M data to float, using a lookup grid, per-block scales, and
+    delta signs.
+  line: 2567-2615
+  name: dequantize_row_iq1_m
+- code:
+  - void dequantize_row_iq4_nl(const block_iq4_nl * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK4_NL == 0);'
+  - '    const int64_t nb = k / QK4_NL;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int j = 0; j < QK4_NL/2; ++j) {'
+  - '            y[j+       0] = d * kvalues_iq4nl[qs[j] & 0xf];'
+  - '            y[j+QK4_NL/2] = d * kvalues_iq4nl[qs[j] >>  4];'
+  - '        }'
+  - '        y  += QK4_NL;'
+  - '        qs += QK4_NL/2;'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ4_NL data to float, using a lookup table for 4-bit values.
+  line: 2617-2633
+  name: dequantize_row_iq4_nl
+- code:
+  - void dequantize_row_iq4_xs(const block_iq4_xs * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const uint8_t * qs = x[i].qs;'
+  - '        const float d = GGML_FP16_TO_FP32(x[i].d);'
+  - '        for (int ib = 0; ib < QK_K/32; ++ib) {'
+  - '            const int ls = ((x[i].scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((x[i].scales_h
+    >> 2*ib) & 3) << 4);'
+  - '            const float dl = d * (ls - 32);'
+  - '            for (int j = 0; j < 16; ++j) {'
+  - '                y[j+ 0] = dl * kvalues_iq4nl[qs[j] & 0xf];'
+  - '                y[j+16] = dl * kvalues_iq4nl[qs[j] >>  4];'
+  - '            }'
+  - '            y  += 32;'
+  - '            qs += 16;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes IQ4_XS data to float, using a lookup table and per-block scale
+    factors from low and high scale bits.
+  line: 2635-2654
+  name: dequantize_row_iq4_xs
+- code:
+  - void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float max = 0;'
+  - '        float amax = 0;'
+  - '        for (int j = 0; j < QK_K; ++j) {'
+  - '            float ax = fabsf(x[j]);'
+  - '            if (ax > amax) {'
+  - '                amax = ax; max = x[j];'
+  - '            }'
+  - '        }'
+  - '        if (!amax) {'
+  - '            y[i].d = 0;'
+  - '            memset(y[i].qs, 0, QK_K);'
+  - '            x += QK_K;'
+  - '            continue;'
+  - '        }'
+  - '        const float iscale = -127.f/max;'
+  - '        for (int j = 0; j < QK_K; ++j) {'
+  - '            int v = nearest_int(iscale*x[j]);'
+  - '            y[i].qs[j] = MIN(127, v);'
+  - '        }'
+  - '        for (int j = 0; j < QK_K/16; ++j) {'
+  - '            int sum = 0;'
+  - '            for (int ii = 0; ii < 16; ++ii) {'
+  - '                sum += y[i].qs[j*16 + ii];'
+  - '            }'
+  - '            y[i].bsums[j] = sum;'
+  - '        }'
+  - '        y[i].d = 1/iscale;'
+  - '        x += QK_K;'
+  - '    }'
+  - '}'
+  desc: Reference implementation for quantizing float data to Q8_K format, computing
+    a scale based on the max absolute value and packing 8-bit signed integers.
+  line: 2656-2690
+  name: quantize_row_q8_K_ref
+- code:
+  - void dequantize_row_q8_K(const block_q8_K * GGML_RESTRICT x, float * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    const int64_t nb = k / QK_K;'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int j = 0; j < QK_K; ++j) {'
+  - '            *y++ = x[i].d * x[i].qs[j];'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Dequantizes Q8_K data back to float by multiplying each quantized value by
+    the scale factor.
+  line: 2692-2703
+  name: dequantize_row_q8_K
+- code:
+  - static inline int iq2_data_index(enum ggml_type type) {
+  - '    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type
+    == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);'
+  - '    return type == GGML_TYPE_IQ2_XXS ? 0 :'
+  - '           type == GGML_TYPE_IQ2_XS  ? 1 :'
+  - '           type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? 2 : 3;'
+  - '}'
+  desc: Maps a GGML type to an index for the iq2_data lookup table, asserting the
+    type is valid.
+  line: 2708-2713
+  name: iq2_data_index
+- code:
+  - static inline int iq2_grid_size(enum ggml_type type) {
+  - '    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type
+    == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);'
+  - '    return type == GGML_TYPE_IQ2_XXS ? 256 :'
+  - '           type == GGML_TYPE_IQ2_XS  ? 512 :'
+  - '           type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? NGRID_IQ1S :
+    1024;'
+  - '}'
+  desc: Returns the grid size for a given IQ type, asserting the type is valid.
+  line: 2715-2720
+  name: iq2_grid_size
+- code:
+  - static int iq2_compare_func(const void * left, const void * right) {
+  - '    const int * l = (const int *)left;'
+  - '    const int * r = (const int *)right;'
+  - '    return l[0] < r[0] ? -1 : l[0] > r[0] ? 1 : l[1] < r[1] ? -1 : l[1] > r[1]
+    ? 1 : 0;'
+  - '}'
+  desc: Comparison function used for sorting integer pairs, comparing first by the
+    first element and then by the second.
+  line: 2722-2727
+  name: iq2_compare_func
+- code:
+  - void iq2xs_init_impl(enum ggml_type type) {
+  - '    const int gindex = iq2_data_index(type);'
+  - '    const int grid_size = iq2_grid_size(type);'
+  - '    if (iq2_data[gindex].grid) {'
+  - '        return;'
+  - '    }'
+  - '    static const uint16_t kgrid_2bit_256[256] = {'
+  - '            0,     2,     5,     8,    10,    17,    20,    32,    34,    40,    42,    65,    68,    80,    88,    97,'
+  - '          100,   128,   130,   138,   162,   257,   260,   272,   277,   320,   388,   408,   512,   514,   546,   642,'
+  - '         1025,  1028,  1040,  1057,  1060,  1088,  1090,  1096,  1120,  1153,  1156,  1168,  1188,  1280,  1282,  1288,'
+  - '         1312,  1350,  1385,  1408,  1425,  1545,  1552,  1600,  1668,  1700,  2048,  2053,  2056,  2068,  2088,  2113,'
+  - '         2116,  2128,  2130,  2184,  2308,  2368,  2562,  2580,  4097,  4100,  4112,  4129,  4160,  4192,  4228,  4240,'
+  - '         4245,  4352,  4360,  4384,  4432,  4442,  4480,  4644,  4677,  5120,  5128,  5152,  5157,  5193,  5248,  5400,'
+  - '         5474,  5632,  5654,  6145,  6148,  6160,  6208,  6273,  6400,  6405,  6560,  6737,  8192,  8194,  8202,  8260,'
+  - '         8289,  8320,  8322,  8489,  8520,  8704,  8706,  9217,  9220,  9232,  9280,  9302,  9472,  9537,  9572,  9872,'
+  - '        10248, 10272, 10388, 10820, 16385, 16388, 16400, 16408, 16417, 16420,
+    16448, 16456, 16470, 16480, 16513, 16516,'
+  - '        16528, 16640, 16672, 16737, 16768, 16773, 16897, 16912, 16968, 16982,
+    17000, 17408, 17416, 17440, 17536, 17561,'
+  - '        17682, 17700, 17920, 18433, 18436, 18448, 18496, 18501, 18688, 18776,
+    18785, 18818, 19013, 19088, 20480, 20488,'
+  - '        20497, 20505, 20512, 20608, 20616, 20740, 20802, 20900, 21137, 21648,
+    21650, 21770, 22017, 22100, 22528, 22545,'
+  - '        22553, 22628, 22848, 23048, 24580, 24592, 24640, 24680, 24832, 24917,
+    25112, 25184, 25600, 25605, 25872, 25874,'
+  - '        25988, 26690, 32768, 32770, 32778, 32833, 32898, 33028, 33048, 33088,
+    33297, 33793, 33796, 33808, 33813, 33856,'
+  - '        33888, 34048, 34118, 34196, 34313, 34368, 34400, 34818, 35076, 35345,
+    36868, 36880, 36900, 36928, 37025, 37142,'
+  - '        37248, 37445, 37888, 37922, 37956, 38225, 39041, 39200, 40962, 41040,
+    41093, 41225, 41472, 42008, 43088, 43268,'
+  - '    };'
+  - '    static const uint16_t kgrid_2bit_512[512] = {'
+  - '            0,     2,     5,     8,    10,    17,    20,    22,    25,    32,    34,    37,    40,    65,    68,    70,'
+  - '           73,    80,    82,    85,    88,    97,   100,   128,   130,   133,   136,   145,   148,   153,   160,   257,'
+  - '          260,   262,   265,   272,   274,   277,   280,   282,   289,   292,   320,   322,   325,   328,   337,   340,'
+  - '          352,   360,   385,   388,   400,   512,   514,   517,   520,   529,   532,   544,   577,   580,   592,   597,'
+  - '          640,   650,  1025,  1028,  1030,  1033,  1040,  1042,  1045,  1048,  1057,  1060,  1088,  1090,  1093,  1096,'
+  - '         1105,  1108,  1110,  1120,  1153,  1156,  1168,  1280,  1282,  1285,  1288,  1297,  1300,  1312,  1345,  1348,'
+  - '         1360,  1377,  1408,  1537,  1540,  1552,  1574,  1600,  1602,  1668,  2048,  2050,  2053,  2056,  2058,  2065,'
+  - '         2068,  2080,  2085,  2113,  2116,  2128,  2136,  2176,  2208,  2218,  2305,  2308,  2320,  2368,  2433,  2441,'
+  - '         2560,  2592,  2600,  2710,  2720,  4097,  4100,  4102,  4105,  4112,  4114,  4117,  4120,  4129,  4132,  4160,'
+  - '         4162,  4165,  4168,  4177,  4180,  4192,  4202,  4225,  4228,  4240,  4352,  4354,  4357,  4360,  4369,  4372,'
+  - '         4384,  4417,  4420,  4432,  4480,  4500,  4502,  4609,  4612,  4614,  4624,  4672,  4704,  5120,  5122,  5125,'
+  - '         5128,  5137,  5140,  5152,  5185,  5188,  5193,  5200,  5220,  5248,  5377,  5380,  5392,  5440,  5632,  5652,'
+  - '         5705,  6145,  6148,  6160,  6162,  6208,  6228,  6278,  6400,  6405,  6502,  6737,  6825,  8192,  8194,  8197,'
+  - '         8200,  8202,  8209,  8212,  8224,  8257,  8260,  8272,  8320,  8352,  8449,  8452,  8464,  8512,  8520,  8549,'
+  - '         8704,  8738,  8832,  8872,  9217,  9220,  9232,  9257,  9280,  9472,  9537,  9554,  9625,  9729,  9754,  9894,'
+  - '        10240, 10248, 10250, 10272, 10325, 10376, 10402, 10600, 10640, 10760,
+    10784, 10882, 10888, 10890, 16385, 16388,'
+  - '        16390, 16393, 16400, 16402, 16405, 16408, 16417, 16420, 16448, 16450,
+    16453, 16456, 16458, 16465, 16468, 16480,'
+  - '        16485, 16513, 16516, 16528, 16640, 16642, 16645, 16648, 16657, 16660,
+    16672, 16705, 16708, 16720, 16768, 16773,'
+  - '        16802, 16897, 16900, 16912, 16914, 16937, 16960, 17408, 17410, 17413,
+    17416, 17425, 17428, 17433, 17440, 17473,'
+  - '        17476, 17488, 17536, 17556, 17665, 17668, 17680, 17700, 17728, 17818,
+    17920, 17930, 17988, 18000, 18433, 18436,'
+  - '        18448, 18496, 18501, 18516, 18530, 18688, 18705, 18756, 18768, 18793,
+    18948, 20480, 20482, 20485, 20488, 20497,'
+  - '        20500, 20512, 20520, 20545, 20548, 20560, 20608, 20737, 20740, 20752,
+    20757, 20800, 20802, 20992, 21060, 21162,'
+  - '        21505, 21508, 21520, 21537, 21568, 21600, 21633, 21665, 21760, 21768,
+    21888, 21896, 22049, 22120, 22177, 22528,'
+  - '        22548, 22593, 22608, 22681, 22810, 22848, 22850, 23173, 24577, 24580,
+    24592, 24640, 24660, 24674, 24710, 24745,'
+  - '        24832, 25124, 25162, 25234, 25600, 25622, 25872, 25920, 25925, 26020,
+    26625, 26730, 26917, 27142, 27220, 27234,'
+  - '        32768, 32770, 32773, 32776, 32785, 32788, 32800, 32810, 32833, 32836,
+    32848, 32896, 32898, 32936, 32938, 33025,'
+  - '        33028, 33030, 33040, 33088, 33105, 33113, 33280, 33312, 33408, 33410,
+    33440, 33448, 33793, 33796, 33808, 33810,'
+  - '        33813, 33856, 33888, 33929, 34048, 34116, 34213, 34328, 34410, 34816,
+    34824, 34853, 34906, 34944, 34946, 34984,'
+  - '        35078, 35362, 35456, 35464, 35478, 35496, 36865, 36868, 36880, 36928,
+    36950, 36996, 37120, 37154, 37220, 37462,'
+  - '        37513, 37888, 37893, 37956, 37968, 37976, 38185, 38288, 38290, 38465,
+    38993, 39078, 39241, 39445, 39520, 40960,'
+  - '        40962, 40968, 40970, 40992, 41002, 41120, 41297, 41305, 41382, 41472,
+    41474, 41480, 41514, 41600, 41632, 42048,'
+  - '        42133, 42597, 42648, 43018, 43040, 43042, 43048, 43168, 43176, 43268,
+    43396, 43398, 43560, 43562, 43665, 43690,'
+  - '    };'
+  - '    static const uint16_t kgrid_1bit_2048[NGRID_IQ1S] = {'
+  - '            0,     2,     5,     8,    10,    17,    21,    32,    34,    40,    42,    69,    81,    84,    86,   101,'
+  - '          128,   130,   136,   138,   149,   160,   162,   168,   170,   260,   261,   273,   276,   278,   281,   282,'
+  - '          293,   321,   326,   329,   338,   341,   346,   353,   356,   358,   360,   389,   401,   404,   406,   421,'
+  - '          512,   514,   520,   522,   533,   544,   546,   552,   554,   581,   593,   601,   612,   617,   640,   642,'
+  - '          648,   650,   657,   661,   665,   672,   674,   680,   682,  1041,  1044,  1046,  1061,  1089,  1097,  1109,'
+  - '         1114,  1124,  1125,  1169,  1177,  1189,  1281,  1284,  1285,  1286,  1301,  1304,  1306,  1321,  1344,  1349,'
+  - '         1354,  1360,  1361,  1364,  1365,  1366,  1369,  1376,  1378,  1381,  1384,  1386,  1409,  1425,  1429,  1432,'
+  - '         1434,  1441,  1444,  1445,  1446,  1449,  1556,  1561,  1601,  1604,  1616,  1618,  1621,  1624,  1632,  1633,'
+  - '         1638,  1641,  1669,  1681,  1684,  1689,  2048,  2050,  2056,  2058,  2069,  2080,  2082,  2088,  2090,  2117,'
+  - '         2129,  2134,  2149,  2176,  2178,  2184,  2186,  2197,  2208,  2210,  2216,  2218,  2309,  2321,  2324,  2329,'
+  - '         2340,  2341,  2369,  2384,  2385,  2389,  2401,  2404,  2409,  2449,  2452,  2454,  2457,  2469,  2560,  2562,'
+  - '         2568,  2570,  2581,  2592,  2594,  2600,  2602,  2629,  2641,  2649,  2657,  2661,  2688,  2690,  2693,  2696,'
+  - '         2698,  2709,  2720,  2722,  2728,  2730,  4112,  4113,  4116,  4121,  4132,  4133,  4161,  4164,  4176,  4181,'
+  - '         4184,  4193,  4196,  4197,  4201,  4241,  4244,  4246,  4257,  4261,  4353,  4356,  4358,  4361,  4368,  4370,'
+  - '         4373,  4376,  4385,  4388,  4393,  4421,  4426,  4432,  4433,  4434,  4436,  4437,  4438,  4441,  4448,  4453,'
+  - '         4484,  4498,  4501,  4513,  4516,  4625,  4628,  4630,  4645,  4672,  4678,  4681,  4690,  4693,  4696,  4698,'
+  - '         4708,  4710,  4741,  4753,  4756,  4758,  4773,  5121,  5126,  5129,  5140,  5141,  5144,  5145,  5153,  5158,'
+  - '         5185,  5189,  5190,  5192,  5194,  5201,  5204,  5205,  5206,  5209,  5218,  5221,  5224,  5252,  5257,  5264,'
+  - '         5268,  5269,  5272,  5273,  5274,  5281,  5284,  5285,  5289,  5378,  5381,  5386,  5393,  5396,  5397,  5398,'
+  - '         5401,  5408,  5410,  5413,  5416,  5418,  5441,  5444,  5445,  5446,  5457,  5458,  5460,  5461,  5462,  5465,'
+  - '         5466,  5473,  5476,  5477,  5478,  5481,  5504,  5506,  5508,  5509,  5512,  5514,  5520,  5521,  5524,  5525,'
+  - '         5526,  5529,  5530,  5536,  5538,  5541,  5633,  5636,  5637,  5638,  5653,  5654,  5656,  5658,  5665,  5670,'
+  - '         5696,  5698,  5700,  5701,  5704,  5706,  5713,  5717,  5718,  5720,  5721,  5729,  5732,  5733,  5736,  5737,'
+  - '         5738,  5766,  5770,  5778,  5781,  5796,  5801,  6161,  6166,  6181,  6209,  6212,  6214,  6217,  6224,  6229,'
+  - '         6232,  6234,  6240,  6241,  6244,  6246,  6249,  6277,  6289,  6292,  6309,  6416,  6418,  6421,  6426,  6433,'
+  - '         6437,  6466,  6468,  6469,  6472,  6481,  6484,  6485,  6486,  6489,  6490,  6496,  6501,  6506,  6537,  6545,'
+  - '         6546,  6549,  6552,  6561,  6566,  6569,  6665,  6678,  6692,  6694,  6724,  6726,  6729,  6736,  6738,  6741,'
+  - '         6744,  6753,  6758,  6761,  6789,  6801,  6806,  6810,  8192,  8194,  8200,  8202,  8213,  8224,  8226,  8229,'
+  - '         8232,  8234,  8261,  8273,  8281,  8289,  8293,  8320,  8322,  8328,  8330,  8341,  8352,  8354,  8357,  8360,'
+  - '         8362,  8453,  8465,  8468,  8473,  8485,  8514,  8516,  8521,  8533,  8536,  8538,  8545,  8548,  8549,  8550,'
+  - '         8581,  8592,  8598,  8601,  8613,  8705,  8712,  8714,  8721,  8725,  8736,  8738,  8744,  8746,  8773,  8785,'
+  - '         8790,  8793,  8805,  8833,  8840,  8842,  8849,  8853,  8864,  8866,  8872,  8874,  9221,  9236,  9238,  9241,'
+  - '         9253,  9284,  9285,  9286,  9289,  9298,  9301,  9304,  9306,  9318,  9349,  9361,  9364,  9369,  9377,  9381,'
+  - '         9481,  9493,  9505,  9513,  9536,  9541,  9544,  9553,  9556,  9557,  9561,  9570,  9573,  9576,  9609,  9616,'
+  - '         9620,  9621,  9624,  9626,  9633,  9636,  9638,  9641,  9733,  9744,  9746,  9753,  9765,  9793,  9801,  9813,'
+  - '         9824,  9825,  9833,  9860,  9862,  9872,  9882, 10240, 10242, 10248,
+    10250, 10261, 10272, 10274, 10280, 10282,'
+  - '        10309, 10321, 10324, 10341, 10368, 10370, 10376, 10378, 10400, 10402,
+    10408, 10410, 10505, 10513, 10516, 10521,'
+  - '        10533, 10566, 10569, 10578, 10581, 10593, 10596, 10598, 10601, 10629,
+    10640, 10646, 10649, 10660, 10661, 10752,'
+  - '        10754, 10760, 10762, 10784, 10786, 10792, 10794, 10821, 10833, 10838,
+    10841, 10853, 10880, 10882, 10888, 10890,'
+  - '        10901, 10912, 10914, 10920, 10922, 16389, 16401, 16406, 16421, 16457,
+    16466, 16469, 16472, 16474, 16481, 16484,'
+  - '        16486, 16532, 16537, 16545, 16550, 16640, 16641, 16644, 16646, 16649,
+    16658, 16661, 16662, 16664, 16666, 16673,'
+  - '        16678, 16681, 16709, 16712, 16714, 16721, 16724, 16725, 16726, 16729,
+    16730, 16741, 16744, 16746, 16769, 16772,'
+  - '        16774, 16784, 16786, 16789, 16800, 16801, 16802, 16901, 16913, 16916,
+    16918, 16933, 16961, 16978, 16981, 16986,'
+  - '        16996, 17001, 17033, 17044, 17061, 17409, 17429, 17433, 17449, 17477,
+    17480, 17482, 17489, 17492, 17493, 17494,'
+  - '        17505, 17506, 17509, 17512, 17514, 17537, 17542, 17545, 17552, 17554,
+    17557, 17568, 17569, 17577, 17665, 17666,'
+  - '        17669, 17674, 17681, 17684, 17685, 17686, 17689, 17696, 17701, 17706,
+    17729, 17732, 17733, 17734, 17737, 17744,'
+  - '        17745, 17748, 17749, 17750, 17752, 17753, 17761, 17764, 17765, 17766,
+    17769, 17794, 17796, 17797, 17800, 17809,'
+  - '        17812, 17813, 17814, 17817, 17818, 17829, 17832, 17834, 17921, 17925,
+    17929, 17940, 17941, 17944, 17946, 17953,'
+  - '        17956, 17961, 17984, 17986, 17989, 17992, 18000, 18001, 18002, 18005,
+    18006, 18009, 18018, 18021, 18024, 18049,'
+  - '        18053, 18058, 18068, 18069, 18081, 18084, 18086, 18437, 18449, 18453,
+    18458, 18469, 18498,'
+  - '    };'
+  - '    // ... (rest of function truncated in provided code)'
+  - '}'
+  desc: Initializes the lookup tables for IQ2 and IQ1 types, including grids and maps,
+    if not already initialized.
+  line: 2729-2845
+  name: iq2xs_init_impl
+- code:
+  - void iq2xs_free_impl(enum ggml_type type) {
+  - '    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type
+    == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);'
+  - '    const int gindex = iq2_data_index(type);'
+  - '    if (iq2_data[gindex].grid) {'
+  - '        free(iq2_data[gindex].grid);'
+  - '        iq2_data[gindex].grid = NULL;'
+  - '        free(iq2_data[gindex].map);'
+  - '        iq2_data[gindex].map = NULL;'
+  - '        free(iq2_data[gindex].neighbours);'
+  - '        iq2_data[gindex].neighbours = NULL;'
+  - '    }'
+  - '}'
+  desc: 释放指定 IQ1/IQ2 量化类型对应的网格、映射表和近邻表资源。
+  line: 约 2920-2930
+  name: iq2xs_free_impl
+- code:
+  - static int iq2_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours,
+    const uint64_t * GGML_RESTRICT grid,
+  - '        const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight,
+    float scale, int8_t * GGML_RESTRICT L) {'
+  - '    int num_neighbors = neighbours[0];'
+  - '    GGML_ASSERT(num_neighbors > 0);'
+  - '    float best_d2 = FLT_MAX;'
+  - '    int grid_index = -1;'
+  - '    for (int j = 1; j <= num_neighbors; ++j) {'
+  - '        const int8_t * pg = (const int8_t *)(grid + neighbours[j]);'
+  - '        float d2 = 0;'
+  - '        for (int i = 0; i < 8; ++i) {'
+  - '            float q = pg[i];'
+  - '            float diff = scale*q - xval[i];'
+  - '            d2 += weight[i]*diff*diff;'
+  - '        }'
+  - '        if (d2 < best_d2) {'
+  - '            best_d2 = d2;'
+  - '            grid_index = neighbours[j];'
+  - '        }'
+  - '    }'
+  - '    GGML_ASSERT(grid_index >= 0);'
+  - '    const int8_t * pg = (const int8_t *)(grid + grid_index);'
+  - '    for (int i = 0; i < 8; ++i) L[i] = (pg[i] - 1)/2;'
+  - '    return grid_index;'
+  - '}'
+  desc: 在候选量化网格近邻中，根据加权平方误差选择与输入向量最匹配的网格点，并输出量化等级。
+  line: 约 2932-2960
+  name: iq2_find_best_neighbour
+- code:
+  - static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t n, const float * GGML_RESTRICT quant_weights) {
+  - '    const int gindex = iq2_data_index(GGML_TYPE_IQ2_XXS);'
+  - '    const uint64_t * kgrid_q2xs = iq2_data[gindex].grid;'
+  - '    const int * kmap_q2xs = iq2_data[gindex].map;'
+  - '    const uint16_t * kneighbors_q2xs = iq2_data[gindex].neighbours;'
+  - '    GGML_ASSERT(quant_weights && "missing quantization weights");'
+  - '    GGML_ASSERT(kgrid_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(kmap_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(kneighbors_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(n%QK_K == 0);'
+  - '    const int64_t nbl = n/QK_K;'
+  - '    block_iq2_xxs * y = vy;'
+  - '    for (int ibl = 0; ibl < nbl; ++ibl) {'
+  - '        // 计算每个 32 元素子块的权重、符号、候选量化等级和尺度'
+  - '        // 使用 kmap_q2xs 快速查找网格点，未命中时调用 iq2_find_best_neighbour'
+  - '        // 汇总块内尺度并编码到输出结构'
+  - '    }'
+  - '}'
+  desc: 将浮点数组按 QK_K 分块量化为 IQ2_XXS 格式，包含符号编码、加权尺度优化、二维量化网格匹配和块级尺度编码。
+  line: 约 2962-3130
+  name: quantize_row_iq2_xxs_impl
+- code:
+  - static void quantize_row_iq2_xs_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t n, const float * GGML_RESTRICT quant_weights) {
+  - '    const int gindex = iq2_data_index(GGML_TYPE_IQ2_XS);'
+  - '    const uint64_t * kgrid_q2xs = iq2_data[gindex].grid;'
+  - '    const int * kmap_q2xs = iq2_data[gindex].map;'
+  - '    const uint16_t * kneighbors_q2xs = iq2_data[gindex].neighbours;'
+  - '    GGML_ASSERT(quant_weights && "missing quantization weights");'
+  - '    GGML_ASSERT(kmap_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(kgrid_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(kneighbors_q2xs && "forgot to call ggml_quantize_init()?");'
+  - '    GGML_ASSERT(n%QK_K == 0);'
+  - '    const int64_t nbl = n/QK_K;'
+  - '    block_iq2_xs * y = vy;'
+  - '    for (int ibl = 0; ibl < nbl; ++ibl) {'
+  - '        // 计算 16 元素子块的加权输入、符号和候选量化等级'
+  - '        // 搜索最佳尺度与网格编码，并对未命中网格的候选使用近邻搜索'
+  - '        // 最终写入 IQ2_XS 的尺度、量化索引和符号字段'
+  - '    }'
+  - '}'
+  desc: 将浮点数组按 QK_K 分块量化为 IQ2_XS 格式，针对 16 元素子块优化尺度和网格点选择，并编码子块尺度与符号信息。
+  line: 约 3132-后续未完整提供
+  name: quantize_row_iq2_xs_impl
+- code:
+  - typedef struct {
+  - '    uint32_t * grid;'
+  - '    int      * map;'
+  - '    uint16_t * neighbours;'
+  - '} iq3_entry_t;'
+  - ''
+  - static iq3_entry_t iq3_data[2] = {
+  - '    {NULL, NULL, NULL},'
+  - '    {NULL, NULL, NULL},'
+  - '};'
+  - ''
+  - '#define IQ3S_BLOCK_SIZE 32'
+  desc: 文件级全局代码，包含 IQ3 量化数据结构、静态全局状态和相关宏定义。
+  line: 约3505-4050
+  name: __main__
+- code:
+  - size_t quantize_iq2_xxs(const float * GGML_RESTRICT src, void * GGML_RESTRICT
+    dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq2_xxs_impl(src, qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq2_xxs);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq2_xxs);'
+  - '}'
+  desc: 将多行浮点数据按 QK_K 分块量化为 IQ2_XS 之外的 IQ2_XXS 格式。
+  line: 约3510-3520
+  name: quantize_iq2_xxs
+- code:
+  - size_t quantize_iq2_xs(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq2_xs_impl(src, qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq2_xs);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq2_xs);'
+  - '}'
+  desc: 将多行浮点数据按 QK_K 分块量化为 IQ2_XS 格式。
+  line: 约3522-3532
+  name: quantize_iq2_xs
+- code:
+  - static inline int iq3_data_index(int grid_size) {
+  - '    (void)grid_size;'
+  - '    GGML_ASSERT(grid_size == 256 || grid_size == 512);'
+  - '    return grid_size == 256 ? 0 : 1;'
+  - '}'
+  desc: 根据 IQ3 格点规模返回对应的全局格点数据索引，并校验规模只能为 256 或 512。
+  line: 约3545-3549
+  name: iq3_data_index
+- code:
+  - static int iq3_compare_func(const void * left, const void * right) {
+  - '    const int * l = (const int *)left;'
+  - '    const int * r = (const int *)right;'
+  - '    return l[0] < r[0] ? -1 : l[0] > r[0] ? 1 : l[1] < r[1] ? -1 : l[1] > r[1]
+    ? 1 : 0;'
+  - '}'
+  desc: 按照距离值和格点索引对整数对进行排序，用于近邻格点搜索。
+  line: 约3551-3555
+  name: iq3_compare_func
+- code:
+  - void iq3xs_init_impl(int grid_size) {
+  - '    const int gindex = iq3_data_index(grid_size);'
+  - '    if (iq3_data[gindex].grid) {'
+  - '        return;'
+  - '    }'
+  - '    // 根据 grid_size 选择预定义格点表'
+  - '    // 构造奇数坐标格点、编码反向映射和近邻列表'
+  - '    // 将结果保存到 iq3_data[gindex]'
+  - '}'
+  desc: 初始化 IQ3 256 或 512 格点、编码映射表以及每个非格点对应的最近候选格点列表。
+  line: 约3557-3745
+  name: iq3xs_init_impl
+- code:
+  - void iq3xs_free_impl(int grid_size) {
+  - '    GGML_ASSERT(grid_size == 256 || grid_size == 512);'
+  - '    const int gindex = iq3_data_index(grid_size);'
+  - '    if (iq3_data[gindex].grid) {'
+  - '        free(iq3_data[gindex].grid);'
+  - '        iq3_data[gindex].grid = NULL;'
+  - '        free(iq3_data[gindex].map);'
+  - '        iq3_data[gindex].map = NULL;'
+  - '        free(iq3_data[gindex].neighbours);'
+  - '        iq3_data[gindex].neighbours = NULL;'
+  - '    }'
+  - '}'
+  desc: 释放指定 IQ3 格点规模对应的格点、映射表和近邻数据。
+  line: 约3747-3758
+  name: iq3xs_free_impl
+- code:
+  - static int iq3_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours,
+    const uint32_t * GGML_RESTRICT grid,
+  - '        const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight,
+    float scale, int8_t * GGML_RESTRICT L) {'
+  - '    int num_neighbors = neighbours[0];'
+  - '    GGML_ASSERT(num_neighbors > 0);'
+  - '    float best_d2 = FLT_MAX;'
+  - '    int grid_index = -1;'
+  - '    for (int j = 1; j <= num_neighbors; ++j) {'
+  - '        const int8_t * pg = (const int8_t *)(grid + neighbours[j]);'
+  - '        float d2 = 0;'
+  - '        for (int i = 0; i < 4; ++i) {'
+  - '            float q = pg[i];'
+  - '            float diff = scale*q - xval[i];'
+  - '            d2 += weight[i]*diff*diff;'
+  - '        }'
+  - '        if (d2 < best_d2) {'
+  - '            best_d2 = d2;'
+  - '            grid_index = neighbours[j];'
+  - '        }'
+  - '    }'
+  - '    GGML_ASSERT(grid_index >= 0);'
+  - '    const int8_t * pg = (const int8_t *)(grid + grid_index);'
+  - '    for (int i = 0; i < 4; ++i) L[i] = (pg[i] - 1)/2;'
+  - '    return grid_index;'
+  - '}'
+  desc: 在候选 IQ3 格点近邻中寻找加权平方误差最小的格点，并将其量化等级写入输出数组。
+  line: 约3760-3783
+  name: iq3_find_best_neighbour
+- code:
+  - static void quantize_row_iq3_xxs_impl(int grid_size, const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int64_t n,
+  - '        const float * GGML_RESTRICT quant_weights) {'
+  - '    const int gindex = iq3_data_index(grid_size);'
+  - '    // 获取格点、映射表和近邻表'
+  - '    // 按 QK_K 分块计算权重和绝对值'
+  - '    // 搜索最佳缩放因子与 IQ3 格点'
+  - '    // 编码量化索引、尺度和符号'
+  - '}'
+  desc: 对一行浮点数据执行 IQ3_XXS 或 IQ3_S 的核心格点量化，包括符号提取、尺度搜索、近邻修正和位级编码。
+  line: 约3785-3945
+  name: quantize_row_iq3_xxs_impl
+- code:
+  - size_t quantize_iq3_xxs(const float * GGML_RESTRICT src, void * GGML_RESTRICT
+    dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq3_xxs_impl(256, src, qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq3_xxs);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq3_xxs);'
+  - '}'
+  desc: 将多行浮点数据量化为 IQ3_XXS 格式，固定使用 256 个格点。
+  line: 约3947-3957
+  name: quantize_iq3_xxs
+- code:
+  - void quantize_row_iq3_xxs_ref(const float * GGML_RESTRICT x, block_iq3_xxs * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    quantize_row_iq3_xxs_impl(256, x, y, k, NULL);'
+  - '}'
+  desc: 提供 IQ3_XXS 单行参考量化接口，使用默认无权重量化。
+  line: 约3959-3962
+  name: quantize_row_iq3_xxs_ref
+- code:
+  - static void quantize_row_iq3_s_impl(int block_size, const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int n,
+  - '        const float * GGML_RESTRICT quant_weights,'
+  - '        float * scales, float * weight, float * xval, int8_t * L, int8_t * Laux,'
+  - '        float * waux, bool * is_on_grid, bool * is_on_grid_aux, uint8_t * block_signs)
+    {'
+  - '    const int gindex = iq3_data_index(512);'
+  - '    // 使用 512 点 IQ3 格点表'
+  - '    // 对每个子块搜索最佳尺度和格点'
+  - '    // 编码低 8 位、高位索引、符号以及块级尺度'
+  - '}'
+  desc: 执行 IQ3_S 格式的核心量化流程，支持可变子块大小，并将格点索引、高位、符号和尺度写入目标块。
+  line: 约3965-4085
+  name: quantize_row_iq3_s_impl
+- code:
+  - size_t quantize_iq3_s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    float scales[QK_K/IQ3S_BLOCK_SIZE];'
+  - '    float weight[IQ3S_BLOCK_SIZE];'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq3_s_impl(IQ3S_BLOCK_SIZE, src, qrow, n_per_row, quant_weights,'
+  - '                scales, weight, xval, L, Laux, waux, is_on_grid, is_on_grid_aux,
+    block_signs);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq3_s);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq3_s);'
+  - '}'
+  desc: 将多行浮点数据量化为 IQ3_S 格式，并为每行复用临时工作缓冲区。
+  line: 约4088-4110
+  name: quantize_iq3_s
+- code:
+  - void quantize_row_iq3_s_ref(const float * GGML_RESTRICT x, block_iq3_s * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    quantize_iq3_s(x, y, 1, k, NULL);'
+  - '}'
+  desc: 提供 IQ3_S 单行参考量化接口，调用 IQ3_S 批量量化入口完成单行处理。
+  line: 约4112-4115
+  name: quantize_row_iq3_s_ref
+- code:
+  - static int iq1_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours,
+    const uint64_t * GGML_RESTRICT grid,
+  - '        const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight,
+    float * scale, int8_t * GGML_RESTRICT L, int ngrid) {'
+  - '    int num_neighbors = neighbours[0];'
+  - '    GGML_ASSERT(num_neighbors > 0);'
+  - '    float best_score = -FLT_MAX;'
+  - '    int grid_index = -1;'
+  - '    for (int j = 1; j <= num_neighbors; ++j) {'
+  - '        const int8_t * pg = (const int8_t *)(grid + neighbours[j]);'
+  - '        float sumqx = 0, sumq2 = 0;'
+  - '        for (int i = 0; i < 8; ++i) {'
+  - '            float q = (pg[i] - 3)/2;'
+  - '            float w = weight[i];'
+  - '            sumqx += w*q*xval[i];'
+  - '            sumq2 += w*q*q;'
+  - '        }'
+  - '        if (sumqx > 0 && sumq2 > 0 && sumqx*sumqx > best_score*sumq2) {'
+  - '            *scale = sumqx/sumq2;'
+  - '            best_score = *scale * sumqx;'
+  - '            grid_index = neighbours[j];'
+  - '        }'
+  - '    }'
+  - '    if (grid_index < 0) {'
+  - '        for (int i = 0; i < ngrid; ++i) {'
+  - '            const int8_t * grid_i = (const int8_t *)(grid + i);'
+  - '            float sumqx = 0, sumq2 = 0;'
+  - '            for (int j = 0; j < 8; ++j) {'
+  - '                float w = weight[j];'
+  - '                float q = (grid_i[j] - 3)/2;'
+  - '                sumqx += w*q*xval[j];'
+  - '                sumq2 += w*q*q;'
+  - '            }'
+  - '            if (sumqx > 0 && sumq2 > 0 && sumqx*sumqx > best_score*sumq2) {'
+  - '                *scale = sumqx/sumq2;'
+  - '                best_score = *scale*sumqx;'
+  - '                grid_index = i;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 在 IQ1 候选格点近邻中按加权相关性选择最佳格点，并在候选无效时回退遍历整个格点集合。
+  line: 约4120-4165
+  name: iq1_find_best_neighbour
+- code:
+  - static int iq1_find_best_neighbour2(const uint16_t * GGML_RESTRICT neighbours,
+    const uint64_t * GGML_RESTRICT grid,
+  - '        const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight,
+    float scale, const float * GGML_RESTRICT xg, int8_t * GGML_RESTRICT L, int ngrid)
+    {'
+  - '    int num_neighbors = neighbours[0];'
+  - '    GGML_ASSERT(num_neighbors > 0);'
+  - '    float best_score = FLT_MAX;'
+  - '    int grid_index = -1;'
+  - '    for (int j = 1; j <= num_neighbors; ++j) {'
+  - '        const int8_t * pg = (const int8_t *)(grid + neighbours[j]);'
+  - '        float d2 = 0;'
+  - '        for (int i = 0; i < 8; ++i) {'
+  - '            float q = xg[(pg[i] - 1)/2];'
+  - '            float w = weight[i];'
+  - '            float diff = scale*q - xval[i];'
+  - '            d2 += w*diff*diff;'
+  - '        }'
+  - '        if (d2 < best_score) {'
+  - '            best_score = d2;'
+  - '            grid_index = neighbours[j];'
+  - '        }'
+  - '    }'
+  - '    if (grid_index < 0) {'
+  - '        for (int i = 0; i < ngrid; ++i) {'
+  - '            const int8_t * grid_i = (const int8_t *)(grid + i);'
+  - '            float d2 = 0;'
+  - '            for (int j = 0; j < 8; ++j) {'
+  - '                float w = weight[j];'
+  - '                float q = xg[(grid_i[j] - 1)/2];'
+  - '                float diff = scale*q - xval[i];'
+  - '                d2 += w*diff*diff;'
+  - '            }'
+  - '            if (d2 < best_score) {'
+  - '                best_score = d2;'
+  - '                grid_index = i;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    GGML_ASSERT(grid_index >= 0);'
+  - '    const int8_t * pg = (const int8_t *)(grid + grid_index);'
+  - '    for (int i = 0; i < 8; ++i) L[i] = (pg[i] - 1)/2;'
+  - '    return grid_index;'
+  - '}'
+  desc: 在指定量化网格的邻居集合中搜索与输入向量加权平方误差最小的候选，并输出对应的量化等级。
+  line: 4318-4373
+  name: iq1_find_best_neighbour2
+- code:
+  - static int iq1_sort_helper(const void * left, const void * right) {
+  - '    const float * l = left;'
+  - '    const float * r = right;'
+  - '    return *l < *r ? -1 : *l > *r ? 1 : 0;'
+  - '}'
+  desc: 为 IQ1 量化过程提供按浮点值升序排序的 qsort 比较函数。
+  line: 4375-4379
+  name: iq1_sort_helper
+- code:
+  - static void quantize_row_iq1_s_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t n, const float * GGML_RESTRICT quant_weights,
+  - '        float * scales, float * weight, float * sumx, float * sumw, float * pairs,
+    int8_t * L,'
+  - '        uint16_t * index, int8_t * shifts) {'
+  - '    const int gindex = iq2_data_index(GGML_TYPE_IQ1_S);'
+  - '    const uint64_t * kgrid_q2xs = iq2_data[gindex].grid;'
+  - '    const int * kmap_q2xs = iq2_data[gindex].map;'
+  - '    const uint16_t * kneighbors_q2xs = iq2_data[gindex].neighbours;'
+  - '    GGML_ASSERT(quant_weights);'
+  - '    GGML_ASSERT(kgrid_q2xs && kmap_q2xs && kneighbors_q2xs);'
+  - '    GGML_ASSERT(n%QK_K == 0);'
+  - '    block_iq1_s * y = vy;'
+  - '    const int64_t nbl = n/QK_K;'
+  - '    const int block_size = IQ1S_BLOCK_SIZE;'
+  - '    const float x_p[3] = {-1 + IQ1S_DELTA, IQ1S_DELTA, 1 + IQ1S_DELTA};'
+  - '    const float x_m[3] = {-1 - IQ1S_DELTA, -IQ1S_DELTA, 1 - IQ1S_DELTA};'
+  - '    int * idx = (int *)(pairs + 1);'
+  - '    for (int ibl = 0; ibl < nbl; ++ibl) {'
+  - '        /* 初始化块并计算每个子块的最优三值量化方案 */'
+  - '        /* 对候选分割点进行穷举，映射到 IQ2 网格并打包结果 */'
+  - '    }'
+  - '}'
+  desc: 对一行数据按 IQ1_S 格式执行加权三值量化，搜索最优分组、尺度、符号偏移和网格索引，并将结果写入量化块。
+  line: 4382-4523
+  name: quantize_row_iq1_s_impl
+- code:
+  - size_t quantize_iq1_s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq1_s_impl(src, qrow, n_per_row, quant_weights, scales,
+    weight, sumx, sumw, pairs, L, index, shifts);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq1_s);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq1_s);'
+  - '}'
+  desc: 将多行 FP32 数据转换为 IQ1_S 量化块，并返回生成的字节数。
+  line: 4525-4544
+  name: quantize_iq1_s
+- code:
+  - static void quantize_row_iq1_m_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t n, const float * GGML_RESTRICT quant_weights,
+  - '        float * scales, float * weight, float * pairs, int8_t * L, uint16_t *
+    index, int8_t * shifts) {'
+  - '    const int gindex = iq2_data_index(GGML_TYPE_IQ1_M);'
+  - '    const uint64_t * kgrid_q2xs = iq2_data[gindex].grid;'
+  - '    const int * kmap_q2xs = iq2_data[gindex].map;'
+  - '    const uint16_t * kneighbors_q2xs = iq2_data[gindex].neighbours;'
+  - '    GGML_ASSERT(kgrid_q2xs && kmap_q2xs && kneighbors_q2xs);'
+  - '    GGML_ASSERT(n%QK_K == 0);'
+  - '    block_iq1_m * y = vy;'
+  - '    const int64_t nbl = n/QK_K;'
+  - '    const int block_size = IQ1M_BLOCK_SIZE;'
+  - '    const uint8_t masks[4] = {0x00, 0x80, 0x08, 0x88};'
+  - '    for (int ibl = 0; ibl < nbl; ++ibl) {'
+  - '        /* 计算权重、穷举分割点和四种符号组合 */'
+  - '        /* 选择最优候选，必要时搜索邻居网格，并写入 IQ1_M 块 */'
+  - '    }'
+  - '}'
+  desc: 对一行数据执行 IQ1_M 格式的加权三值量化，针对不同半块使用不同符号偏移组合，并完成网格匹配与块打包。
+  line: 4546-4691
+  name: quantize_row_iq1_m_impl
+- code:
+  - size_t quantize_iq1_m(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq1_m_impl(src, qrow, n_per_row, quant_weights, scales,
+    weight, pairs, L, index, shifts);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq1_m);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq1_m);'
+  - '}'
+  desc: 将多行 FP32 数据编码为 IQ1_M 格式并返回输出大小。
+  line: 4693-4712
+  name: quantize_iq1_m
+- code:
+  - static void quantize_row_iq4_nl_impl(const int super_block_size, const int block_size,
+    const float * GGML_RESTRICT x,
+  - '        ggml_fp16_t * dh, uint8_t * q4, uint16_t * scales_h, uint8_t * scales_l,'
+  - '        float * scales, float * weight, uint8_t * L, const int8_t * values,'
+  - '        const float * quant_weights, const int ntry) {'
+  - '    float sigma2 = 0;'
+  - '    for (int j = 0; j < super_block_size; ++j) sigma2 += x[j]*x[j];'
+  - '    memset(q4, 0, super_block_size/2);'
+  - '    float max_scale = 0, amax_scale = 0;'
+  - '    for (int ib = 0; ib < super_block_size/block_size; ++ib) {'
+  - '        /* 计算权重、初始尺度并迭代搜索最优非线性量化尺度 */'
+  - '    }'
+  - '    /* 编码超块尺度、局部尺度和 4-bit 量化索引 */'
+  - '}'
+  desc: 使用 16 个非线性量化值对一个或多个子块进行加权量化，优化尺度并编码局部及超块尺度。
+  line: 4715-4809
+  name: quantize_row_iq4_nl_impl
+- code:
+  - size_t quantize_iq4_nl(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK4_NL == 0);'
+  - '    int64_t nblock = n_per_row/QK4_NL;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        block_iq4_nl * iq4 = (block_iq4_nl *)qrow;'
+  - '        for (int ibl = 0; ibl < nblock; ++ibl) {'
+  - '            quantize_row_iq4_nl_impl(QK4_NL, 32, src + QK4_NL*ibl, &iq4[ibl].d,
+    iq4[ibl].qs, &unused_h, unused_l, &scale, weight, L, kvalues_iq4nl, qw, 7);'
+  - '        }'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq4_nl);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq4_nl);'
+  - '}'
+  desc: 将多行 FP32 数据量化为 IQ4_NL 格式，每个量化块使用非线性 4-bit 码本。
+  line: 4811-4835
+  name: quantize_iq4_nl
+- code:
+  - void quantize_row_iq4_nl_ref(const float * GGML_RESTRICT x, block_iq4_nl * GGML_RESTRICT
+    y, int64_t k) {
+  - '    GGML_ASSERT(k%QK4_NL == 0);'
+  - '    int64_t nblock = k/QK4_NL;'
+  - '    for (int ibl = 0; ibl < nblock; ++ibl) {'
+  - '        quantize_row_iq4_nl_impl(QK4_NL, 32, x + QK4_NL*ibl, &iq4[ibl].d, iq4[ibl].qs,
+    &unused_h, unused_l, &scale, weight, L, kvalues_iq4nl, NULL, -1);'
+  - '    }'
+  - '}'
+  desc: 以参考实现方式将一行 FP32 数据量化为 IQ4_NL，并使用非优化搜索参数生成量化块。
+  line: 4838-4852
+  name: quantize_row_iq4_nl_ref
+- code:
+  - size_t quantize_iq4_xs(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        block_iq4_xs * iq4 = (block_iq4_xs *)qrow;'
+  - '        for (int ibl = 0; ibl < nblock; ++ibl) {'
+  - '            quantize_row_iq4_nl_impl(QK_K, 32, src + QK_K*ibl, &iq4[ibl].d, iq4[ibl].qs,
+    &iq4[ibl].scales_h, iq4[ibl].scales_l, scales, weight, L, kvalues_iq4nl, qw, 7);'
+  - '        }'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq4_xs);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq4_xs);'
+  - '}'
+  desc: 将多行 FP32 数据量化为 IQ4_XS 超块格式，并保存共享尺度及局部尺度信息。
+  line: 4854-4878
+  name: quantize_iq4_xs
+- code:
+  - void quantize_row_iq4_xs_ref(const float * GGML_RESTRICT x, block_iq4_xs * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    quantize_iq4_xs(x, y, 1, k, NULL);'
+  - '}'
+  desc: 调用 IQ4_XS 量化器将单行数据转换为参考 IQ4_XS 量化结果。
+  line: 4880-4883
+  name: quantize_row_iq4_xs_ref
+- code:
+  - static void quantize_row_iq2_s_impl(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t n, const float * GGML_RESTRICT quant_weights) {
+  - '    const int gindex = iq2_data_index(GGML_TYPE_IQ2_S);'
+  - '    const uint64_t * kgrid_q2xs = iq2_data[gindex].grid;'
+  - '    const int * kmap_q2xs = iq2_data[gindex].map;'
+  - '    const uint16_t * kneighbors_q2xs = iq2_data[gindex].neighbours;'
+  - '    GGML_ASSERT(kmap_q2xs && kgrid_q2xs && kneighbors_q2xs);'
+  - '    GGML_ASSERT(n%QK_K == 0);'
+  - '    const int kMaxQ = 3;'
+  - '    const int64_t nbl = n/QK_K;'
+  - '    block_iq2_s * y = vy;'
+  - '    for (int ibl = 0; ibl < nbl; ++ibl) {'
+  - '        /* 计算子块权重、分离符号并搜索最佳尺度 */'
+  - '        /* 将等级映射到量化网格，必要时使用邻居搜索 */'
+  - '    }'
+  - '}'
+  desc: 对 IQ2_S 的 16 元素子块执行正值等级量化、符号编码、候选尺度搜索和量化网格匹配。
+  line: 4886-4958
+  name: quantize_row_iq2_s_impl
+- code:
+  - static void quantize_row_iq2_s_impl(const float * GGML_RESTRICT x, block_iq2_s
+    * GGML_RESTRICT y, int64_t k, const float * quant_weights) {
+  - '    GGML_ASSERT(k % QK_K == 0);'
+  - '    const int64_t nblocks = k / QK_K;'
+  - '    float * scales = (float *)y->scales;'
+  - '    float max_scale = 0;'
+  - '    for (int64_t ib = 0; ib < nblocks; ++ib) {'
+  - '        const float * xval = x + ib*QK_K;'
+  - '        const float * waux = quant_weights ? quant_weights + ib*QK_K : NULL;'
+  - '        float weight[16];'
+  - '        for (int i = 0; i < 16; ++i) weight[i] = waux ? waux[i] : 1.0f;'
+  - '        float scale = 0, best = -1, sumqx, sumq2;'
+  - '        int Laux[16], L[16];'
+  - '        bool is_on_grid_aux[2], is_on_grid[2];'
+  - '        for (int s = 0; s < 40; ++s) {'
+  - '            for (int k = 0; k < 2; ++k) is_on_grid_aux[k] = false;'
+  - '            for (int k = 0; k < 16; ++k) Laux[k] = (s >> 3 & 1) ? ((s/3 + k)
+    % 8) : (k / 2);'
+  - '            for (int k = 0; k < 2; ++k) {'
+  - '                if (s < 32) {'
+  - '                    Laux[8*k] = (s >> k) & 1;'
+  - '                    Laux[8*k+7] = (s >> (k+2)) & 1;'
+  - '                } else {'
+  - '                    Laux[8*k] = 2;'
+  - '                    Laux[8*k+7] = 2;'
+  - '                }'
+  - '            }'
+  - '            uint16_t u = 0;'
+  - '            for (int i = 0; i < 8; ++i) u |= (Laux[8*k+i] << 2*i);'
+  - '            int grid_index = kmap_q2xs[u];'
+  - '            if (grid_index < 0) {'
+  - '                const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u]
+    - 1;'
+  - '                grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs,
+    xval + 8*k, waux + 8*k, scale, Laux + 8*k);'
+  - '                is_on_grid_aux[k] = false;'
+  - '            } else {'
+  - '                is_on_grid_aux[k] = true;'
+  - '            }'
+  - '            if (s == 0) {'
+  - '                for (int k = 0; k < 16; ++k) L[k] = Laux[k];'
+  - '                for (int k = 0; k < 2; ++k) is_on_grid[k] = is_on_grid_aux[k];'
+  - '            }'
+  - '            sumqx = 0; sumq2 = 0;'
+  - '            for (int i = 0; i < 16; ++i) {'
+  - '                float w = weight[i];'
+  - '                float q = 2*Laux[i] + 1;'
+  - '                sumqx += w*xval[i]*q;'
+  - '                sumq2 += w*q*q;'
+  - '            }'
+  - '            if (sumq2 > 0 && sumqx*sumqx > best*sumq2) {'
+  - '                scale = sumqx/sumq2; best = scale*sumqx;'
+  - '                for (int i = 0; i < 16; ++i) L[i] = Laux[i];'
+  - '                for (int k = 0; k < 2; ++k) is_on_grid[k] = is_on_grid_aux[k];'
+  - '            }'
+  - '        }'
+  - '        int n_not_ongrid = 0;'
+  - '        for (int k = 0; k < 2; ++k) if (!is_on_grid[k]) ++n_not_ongrid;'
+  - '        if (n_not_ongrid > 0 && scale > 0) {'
+  - '            float id = 1/scale;'
+  - '            for (int k = 0; k < 2; ++k) {'
+  - '                if (is_on_grid[k]) continue;'
+  - '                uint16_t u = 0;'
+  - '                for (int i = 0; i < 8; ++i) {'
+  - '                    int l = nearest_int(0.5f*(id*xval[8*k+i]-1));'
+  - '                    l = MAX(0, MIN(kMaxQ-1, l));'
+  - '                    u |= (l << 2*i);'
+  - '                    L[8*k + i] = l;'
+  - '                }'
+  - '                int grid_index = kmap_q2xs[u];'
+  - '                if (grid_index < 0) {'
+  - '                    const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u]
+    - 1;'
+  - '                    grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs,
+    xval + 8*k, waux + 8*k, scale, L + 8*k);'
+  - '                }'
+  - '            }'
+  - '            float sumqx = 0, sumq2 = 0;'
+  - '            for (int i = 0; i < 16; ++i) {'
+  - '                float w = weight[i];'
+  - '                float q = 2*L[i] + 1;'
+  - '                sumqx += w*xval[i]*q;'
+  - '                sumq2 += w*q*q;'
+  - '            }'
+  - '            if (sumq2 > 0) scale = sumqx/sumq2;'
+  - '        }'
+  - '        if (scale < 0) {'
+  - '            scale = -scale;'
+  - '            for (int k = 0; k < 2; ++k) block_signs[k] = ~block_signs[k];'
+  - '        }'
+  - '        for (int k = 0; k < 2; ++k) {'
+  - '            uint16_t u = 0;'
+  - '            for (int i = 0; i < 8; ++i) u |= (L[8*k+i] << 2*i);'
+  - '            int grid_index = kmap_q2xs[u];'
+  - '            if (grid_index < 0) {'
+  - '                printf("Oops: found point %u not on grid:", u);'
+  - '                for (int i = 0; i < 8; ++i) printf(" %d", L[8*k+i]);'
+  - '                printf("\n");'
+  - '                GGML_ABORT("fatal error");'
+  - '            }'
+  - '            const int i8 = 2*ib + k;'
+  - '            y[ibl].qs[i8] = grid_index & 255;'
+  - '            y[ibl].qh[i8/4] |= ((grid_index >> 8) << 2*(i8%4));'
+  - '            y[ibl].qs[QK_K/8 + i8] = block_signs[k];'
+  - '        }'
+  - '        GGML_ASSERT(scale >= 0);'
+  - '        scales[ib] = scale;'
+  - '        max_scale = MAX(max_scale, scale);'
+  - '    }'
+  - '    if (!max_scale) {'
+  - '        continue;'
+  - '    }'
+  - '    float d = max_scale/31;'
+  - '    y[ibl].d = GGML_FP32_TO_FP16(d * 0.9875f);'
+  - '    float id = 1/d;'
+  - '    for (int ib = 0; ib < QK_K/16; ++ib) {'
+  - '        int l = nearest_int(0.5f*(id*scales[ib]-1));'
+  - '        l = MAX(0, MIN(15, l));'
+  - '        if (ib%2 == 0) y[ibl].scales[ib/2] = l;'
+  - '        else y[ibl].scales[ib/2] |= (l << 4);'
+  - '    }'
+  - '}'
+  desc: Implements the core IQ2_S (integer 2-bit signed) quantization algorithm for
+    a single row of data. This function performs an exhaustive search over the quantized
+    grid to find the optimal scale and quantized values, handling sub-blocks of 16
+    elements with sign compensation and grid neighbor search for non-representable
+    points.
+  line: 5135-5320
+  name: quantize_row_iq2_s_impl
+- code:
+  - size_t quantize_iq2_s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+    int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+  - '    GGML_ASSERT(n_per_row%QK_K == 0);'
+  - '    int64_t nblock = n_per_row/QK_K;'
+  - '    char * qrow = (char *)dst;'
+  - '    for (int64_t row = 0; row < nrow; ++row) {'
+  - '        quantize_row_iq2_s_impl(src, qrow, n_per_row, quant_weights);'
+  - '        src += n_per_row;'
+  - '        qrow += nblock*sizeof(block_iq2_s);'
+  - '    }'
+  - '    return nrow * nblock * sizeof(block_iq2_s);'
+  - '}'
+  desc: Public entry point for IQ2_S quantization that processes multiple rows of
+    data, calling quantize_row_iq2_s_impl for each row and managing the output buffer.
+  line: 5322-5337
+  name: quantize_iq2_s
+- code:
+  - void quantize_row_iq2_s_ref(const float * GGML_RESTRICT x, block_iq2_s * GGML_RESTRICT
+    y, int64_t k) {
+  - '    assert(k % QK_K == 0);'
+  - '    quantize_iq2_s(x, y, 1, k, NULL);'
+  - '}'
+  desc: Reference implementation for IQ2_S quantization that processes a single row
+    using the public quantize_iq2_s API.
+  line: 5339-5343
+  name: quantize_row_iq2_s_ref
+- code:
+  - static bool validate_float(float f, size_t i) {
+  - '    if (isinf(f)) {'
+  - '        fprintf(stderr, "ggml_validate_row_data: found inf value at block %zu\n",
+    i);'
+  - '        return false;'
+  - '    }'
+  - '    if (isnan(f)) {'
+  - '        fprintf(stderr, "ggml_validate_row_data: found nan value at block %zu\n",
+    i);'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: Validates a single float value for NaN and infinity, printing an error message
+    and returning false if invalid.
+  line: 5345-5355
+  name: validate_float
+- code:
+  - static bool isinf_fp16(ggml_fp16_t f) {
+  - '    return (f & 0x7c00) == 0x7c00 && (f & 0x03ff) == 0;'
+  - '}'
+  desc: Checks if a 16-bit float value represents infinity by examining the exponent
+    and mantissa bits.
+  line: 5357-5359
+  name: isinf_fp16
+- code:
+  - static bool isnan_fp16(ggml_fp16_t f) {
+  - '    return (f & 0x7c00) == 0x7c00 && (f & 0x03ff) != 0;'
+  - '}'
+  desc: Checks if a 16-bit float value represents NaN by examining the exponent and
+    mantissa bits.
+  line: 5361-5363
+  name: isnan_fp16
+- code:
+  - static bool validate_fp16(ggml_fp16_t f, size_t i) {
+  - '    if (isinf_fp16(f)) {'
+  - '        fprintf(stderr, "ggml_validate_row_data: found inf value at block %zu\n",
+    i);'
+  - '        return false;'
+  - '    }'
+  - '    if (isnan_fp16(f)) {'
+  - '        fprintf(stderr, "ggml_validate_row_data: found nan value at block %zu\n",
+    i);'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: Validates a single 16-bit float value for NaN and infinity, printing an error
+    message and returning false if invalid.
+  line: 5365-5375
+  name: validate_fp16
+- code:
+  - static bool validate_e_e8m0(uint8_t e, size_t i) {
+  - '    if (e == 0xff) {'
+  - '        fprintf(stderr, "ggml_validate_row_data: found invalid e value %d at
+    block %zu\n", e, i);'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: Validates an 8-bit exponent value in E8M0 format, rejecting the all-ones pattern
+    which is invalid.
+  line: 5377-5383
+  name: validate_e_e8m0
+- code:
+  - bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbytes)
+    {
+  - '    if (type < 0 || type >= GGML_TYPE_COUNT) {'
+  - '        fprintf(stderr, "%s: invalid type %d\n", __func__, type);'
+  - '        return false;'
+  - '    }'
+  - '    if (nbytes % ggml_type_size(type) != 0) {'
+  - '        fprintf(stderr, "%s: invalid size %zu for type %s (type size = %zu)\n",
+    __func__, nbytes, ggml_type_name(type), ggml_type_size(type));'
+  - '        return false;'
+  - '    }'
+  - '    const size_t nb = nbytes/ggml_type_size(type);'
+  - '    switch (type) {'
+  - '        case GGML_TYPE_BF16: {'
+  - '            int nans = 0; int infs = 0;'
+  - '            const unsigned short * f = (const unsigned short *) data;'
+  - '            for (size_t i = 0; i < nb; ++i) {'
+  - '                nans += (f[i] & 0x7fff) > 0x7f80;'
+  - '                infs += (f[i] & 0x7fff) == 0x7f80;'
+  - '            }'
+  - '            if (nans) { fprintf(stderr, "%s: found %d NaNs in row of %zu BF16
+    values\n", __func__, nans, nb); return false; }'
+  - '            if (infs) { fprintf(stderr, "%s: found %d infinities in row of %zu
+    BF16 values\n", __func__, infs, nb); return false; }'
+  - '        } break;'
+  - '        case GGML_TYPE_F16: {'
+  - '            const ggml_fp16_t * f = (const ggml_fp16_t *) data;'
+  - '            size_t i = 0;'
+  - '            #if defined(__AVX2__)'
+  - '            for (; i + 15 < nb; i += 16) {'
+  - '                __m256i v = _mm256_loadu_si256((const __m256i *)(f + i));'
+  - '                __m256i vexp = _mm256_and_si256(v, _mm256_set1_epi16(0x7c00));'
+  - '                __m256i cmp = _mm256_cmpeq_epi16(vexp, _mm256_set1_epi16(0x7c00));'
+  - '                int mask = _mm256_movemask_epi8(cmp);'
+  - '                if (mask) { for (size_t j = 0; j < 16; ++j) { if (!validate_fp16(f[i
+    + j], i + j)) return false; } GGML_UNREACHABLE(); }'
+  - '            }'
+  - '            #elif defined(__ARM_NEON)'
+  - '            for (; i + 7 < nb; i += 8) {'
+  - '                uint16x8_t v = vld1q_u16(f + i);'
+  - '                uint16x8_t vexp = vandq_u16(v, vdupq_n_u16(0x7c00));'
+  - '                uint16x8_t cmp = vceqq_u16(vexp, vdupq_n_u16(0x7c00));'
+  - '                uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(cmp,
+    4)), 0);'
+  - '                if (mask) { for (size_t j = 0; j < 8; ++j) { if (!validate_fp16(f[i
+    + j], i + j)) return false; } GGML_UNREACHABLE(); }'
+  - '            }'
+  - '            #endif'
+  - '            for (; i < nb; ++i) { if (!validate_fp16(f[i], i)) return false;
+    }'
+  - '        } break;'
+  - '        case GGML_TYPE_F32: {'
+  - '            const float * f = (const float *) data;'
+  - '            size_t i = 0;'
+  - '            #if defined(__AVX2__)'
+  - '            for (; i + 7 < nb; i += 8) {'
+  - '                __m256i v = _mm256_loadu_si256((const __m256i *)(f + i));'
+  - '                __m256i vexp = _mm256_and_si256(v, _mm256_set1_epi32(0x7f800000));'
+  - '                __m256i cmp = _mm256_cmpeq_epi32(vexp, _mm256_set1_epi32(0x7f800000));'
+  - '                int mask = _mm256_movemask_epi8(cmp);'
+  - '                if (mask) { for (size_t j = 0; j < 8; ++j) { if (!validate_float(f[i
+    + j], i + j)) return false; } GGML_UNREACHABLE(); }'
+  - '            }'
+  - '            #elif defined(__ARM_NEON)'
+  - '            for (; i + 3 < nb; i += 4) {'
+  - '                uint32x4_t v = vld1q_u32((const uint32_t *)f + i);'
+  - '                uint32x4_t vexp = vandq_u32(v, vdupq_n_u32(0x7f800000));'
+  - '                uint32x4_t cmp = vceqq_u32(vexp, vdupq_n_u32(0x7f800000));'
+  - '                uint64_t mask = vget_lane_u64(vreinterpret_u64_u16(vshrn_n_u32(cmp,
+    8)), 0);'
+  - '                if (mask) { for (size_t j = 0; j < 4; ++j) { if (!validate_float(f[i
+    + j], i + j)) return false; } GGML_UNREACHABLE(); }'
+  - '            }'
+  - '            #endif'
+  - '            for (; i < nb; ++i) { if (!validate_float(f[i], i)) return false;
+    }'
+  - '        } break;'
+  - '        case GGML_TYPE_F64: {'
+  - '            const double * f = (const double *) data;'
+  - '            for (size_t i = 0; i < nb; ++i) { if (!validate_float(f[i], i)) return
+    false; }'
+  - '        } break;'
+  - '        case GGML_TYPE_Q1_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q1_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_Q4_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q4_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_Q4_1: { VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_1, data,
+    nb, d, m); } break;'
+  - '        case GGML_TYPE_Q5_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q5_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_Q5_1: { VALIDATE_ROW_DATA_DM_F16_IMPL(block_q5_1, data,
+    nb, d, m); } break;'
+  - '        case GGML_TYPE_Q8_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q8_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_MXFP4: { VALIDATE_ROW_DATA_E_E8M0_IMPL(block_mxfp4, data,
+    nb); } break;'
+  - '        case GGML_TYPE_NVFP4: { GGML_UNUSED(data); GGML_UNUSED(nb); } break;'
+  - '        case GGML_TYPE_Q2_K: { VALIDATE_ROW_DATA_DM_F16_IMPL(block_q2_K, data,
+    nb, d, dmin); } break;'
+  - '        case GGML_TYPE_Q3_K: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q3_K, data,
+    nb); } break;'
+  - '        case GGML_TYPE_Q4_K: { VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K, data,
+    nb, d, dmin); } break;'
+  - '        case GGML_TYPE_Q5_K: { VALIDATE_ROW_DATA_DM_F16_IMPL(block_q5_K, data,
+    nb, d, dmin); } break;'
+  - '        case GGML_TYPE_Q6_K: { VALIDATE_ROW_DATA_D_F16_IMPL(block_q6_K, data,
+    nb); } break;'
+  - '        case GGML_TYPE_Q8_K: { const block_q8_K * q = (const block_q8_K *) data;
+    for (size_t i = 0; i < nb; ++i) { if (!validate_float(q[i].d, i)) return false;
+    } } break;'
+  - '        case GGML_TYPE_TQ1_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_tq1_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_TQ2_0: { VALIDATE_ROW_DATA_D_F16_IMPL(block_tq2_0, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ1_S: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq1_s, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ1_M: {'
+  - '            const block_iq1_m * q = (const block_iq1_m *) data;'
+  - '            for (size_t i = 0; i < nb; ++i) {'
+  - '                iq1m_scale_t scale; const uint16_t * sc = (const uint16_t *)q[i].scales;'
+  - '                scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2]
+    >> 4) & 0x0f00) | (sc[3] & 0xf000);'
+  - '                if (!validate_fp16(scale.f16, i)) return false;'
+  - '            }'
+  - '        } break;'
+  - '        case GGML_TYPE_IQ2_XXS: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq2_xxs,
+    data, nb); } break;'
+  - '        case GGML_TYPE_IQ2_XS: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq2_xs, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ2_S: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq2_s, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ3_XXS: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq3_xxs,
+    data, nb); } break;'
+  - '        case GGML_TYPE_IQ3_S: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq3_s, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ4_XS: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq4_xs, data,
+    nb); } break;'
+  - '        case GGML_TYPE_IQ4_NL: { VALIDATE_ROW_DATA_D_F16_IMPL(block_iq4_nl, data,
+    nb); } break;'
+  - '        case GGML_TYPE_I8: case GGML_TYPE_I16: case GGML_TYPE_I32: case GGML_TYPE_I64:'
+  - '            break;'
+  - '        default: { fprintf(stderr, "%s: invalid type %d\n", __func__, type);
+    return false; }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: Comprehensive data validation function that checks a row of tensor data for
+    NaN and infinity values across all supported quantization types. Uses SIMD optimizations
+    for F32 and F16 types where available.
+  line: 5385-5467
+  name: ggml_validate_row_data

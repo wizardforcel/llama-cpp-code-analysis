@@ -1,0 +1,124 @@
+classes: []
+desc: 该文件是 ggml 项目中 SYCL 后端的 Flash Attention 向量化实现，定义了用于并行计算注意力机制的模板化 kernel 函数，支持不同的头维度、键/值类型以及
+  logit softcap 选项，并提供了针对这些模板参数的实例化声明以实现不同配置下的编译分发。
+file: ggml/src/ggml-sycl/fattn-vec.hpp
+funcs:
+- code:
+  - static int ggml_sycl_fattn_vec_get_nthreads_host(const int cc) {
+  - '    return 128;'
+  - '    GGML_UNUSED(cc);'
+  - '}'
+  desc: 返回 Flash Attention 向量 kernel 在主机端配置的线程数，始终为 128。
+  line: 30-34
+  name: ggml_sycl_fattn_vec_get_nthreads_host
+- code:
+  - static constexpr int ggml_sycl_fattn_vec_get_nthreads_device() {
+  - '    return 128;'
+  - '}'
+  desc: 返回 Flash Attention 向量 kernel 在设备端配置的线程数，为 constexpr 常量 128。
+  line: 36-38
+  name: ggml_sycl_fattn_vec_get_nthreads_device
+- code:
+  - template <int D,
+  - '          int ncols,'
+  - '          int type_K,'
+  - '          int type_V,'
+  - '          bool use_logit_softcap,'
+  - '          int warp_size>'
+  - static void flash_attn_ext_vec(const char* __restrict__ Q,
+  - '                        const char* __restrict__ K,'
+  - '                        const char* __restrict__ V,'
+  - '                        const char* __restrict__ mask,'
+  - '                        const char* __restrict__ sinks,'
+  - '                        const int* __restrict__ KV_max,'
+  - '                        float* __restrict__ dst,'
+  - '                        sycl::float2* __restrict__ dst_meta,'
+  - '                        const float scale,'
+  - '                        const float max_bias,'
+  - '                        const float m0,'
+  - '                        const float m1,'
+  - '                        const uint32_t n_head_log2,'
+  - '                        const float logit_softcap,'
+  - '                        const int32_t ne00,'
+  - '                        const sycl::uint3 ne01,'
+  - '                        const int32_t ne02,'
+  - '                        const int32_t ne03,'
+  - '                        const int32_t nb01,'
+  - '                        const int32_t nb02,'
+  - '                        const int32_t nb03,'
+  - '                        const int32_t ne10,'
+  - '                        const int32_t ne11,'
+  - '                        const int32_t ne12,'
+  - '                        const int32_t ne13,'
+  - '                        const int32_t nb11,'
+  - '                        const int32_t nb12,'
+  - '                        const int64_t nb13,'
+  - '                        const int32_t nb21,'
+  - '                        const int32_t nb22,'
+  - '                        const int64_t nb23,'
+  - '                        const int32_t ne31,'
+  - '                        const int32_t ne32,'
+  - '                        const int32_t ne33,'
+  - '                        const int32_t nb31,'
+  - '                        const int32_t nb32,'
+  - '                        const int64_t nb33) {'
+  - '    ...'
+  - '}'
+  desc: SYCL 内核函数，针对向量化 Flash Attention 进行计算，处理 Q、K、V 矩阵及掩码，实现带缩放、偏置和 logit softcap
+    的注意力机制，输出结果及元数据。
+  line: 50-376
+  name: flash_attn_ext_vec
+- code:
+  - template <int D, int cols_per_block, int type_K, int type_V, bool use_logit_softcap>
+  - void ggml_sycl_flash_attn_ext_vec_case_impl(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    const int warp_size = WARP_16_SIZE;'
+  - '    const int cc = ggml_sycl_info().devices[ggml_sycl_get_device()].cc;'
+  - '    const int nthreads = ggml_sycl_fattn_vec_get_nthreads_host(cc);'
+  - '    const int nwarps   = nthreads / warp_size;'
+  - '    const bool need_f16_K = type_K == GGML_TYPE_F16;'
+  - '    const bool need_f16_V = type_V == GGML_TYPE_F16;'
+  - '    constexpr size_t nbytes_shared = 0;'
+  - '    launch_fattn<D, cols_per_block, 1,'
+  - '                 flash_attn_ext_vec<D, cols_per_block, type_K, type_V,'
+  - '                                    use_logit_softcap, warp_size>, warp_size>('
+  - '        ctx, dst, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);'
+  - '}'
+  desc: 模板函数，负责根据给定的 D 和 cols_per_block 参数调用 launch_fattn 来启动 flash_attn_ext_vec 内核。
+  line: 379-390
+  name: ggml_sycl_flash_attn_ext_vec_case_impl
+- code:
+  - template <int D, int type_K, int type_V>
+  - void ggml_sycl_flash_attn_ext_vec_case(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    const ggml_tensor * KQV = dst;'
+  - '    const ggml_tensor * Q   = dst->src[0];'
+  - '    float logit_softcap;'
+  - '    memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));'
+  - '    if (Q->ne[1] == 1) {'
+  - '        constexpr int cols_per_block = 1;'
+  - '        if (logit_softcap == 0.0f) {'
+  - '            constexpr bool use_logit_softcap = false;'
+  - '            ggml_sycl_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K,
+    type_V, use_logit_softcap>(ctx, dst);'
+  - '        } else {'
+  - '            constexpr bool use_logit_softcap = true;'
+  - '            ggml_sycl_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K,
+    type_V, use_logit_softcap>(ctx, dst);'
+  - '        }'
+  - '        return;'
+  - '    }'
+  - '    constexpr int cols_per_block = 2;'
+  - '    if (logit_softcap == 0.0f) {'
+  - '        constexpr bool use_logit_softcap = false;'
+  - '        ggml_sycl_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V,
+    use_logit_softcap>(ctx, dst);'
+  - '    } else {'
+  - '        constexpr bool use_logit_softcap = true;'
+  - '        ggml_sycl_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V,
+    use_logit_softcap>(ctx, dst);'
+  - '    }'
+  - '}'
+  desc: 模板函数，根据 Q 的列数和 logit_softcap 参数选择合适的 cols_per_block 和 use_logit_softcap 值，并调用对应的实现函数。
+  line: 393-421
+  name: ggml_sycl_flash_attn_ext_vec_case

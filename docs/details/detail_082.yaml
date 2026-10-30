@@ -1,0 +1,564 @@
+code_map:
+- tools/server/server-models.h
+- ├── 数据结构与枚举
+- '│   ├── enum server_model_status              # 模型状态枚举「交通灯」'
+- │   │   ├── SERVER_MODEL_STATUS_UNLOADED
+- │   │   ├── SERVER_MODEL_STATUS_LOADING
+- │   │   ├── SERVER_MODEL_STATUS_LOADED
+- │   │   └── SERVER_MODEL_STATUS_SLEEPING
+- │   │
+- '│   ├── struct server_model_meta            # 模型元数据「身份证」'
+- '│   │   ├── preset / name / aliases / tags  # 预设配置与标识'
+- '│   │   ├── port / status / last_used       # 运行状态与时间戳'
+- '│   │   ├── update_args()                   # 渲染启动参数（注入host/port/alias）'
+- '│   │   ├── is_ready() / is_running() / is_failed()  # 状态查询'
+- │   │   └── 构造函数与成员初始化
+- │   │
+- '│   ├── class server_models                 # 多模型调度中枢（线程安全）'
+- │   │   ├── 构造与初始化
+- '│   │   │   ├── server_models()               # 构造函数：初始化预设、环境、路径'
+- '│   │   │   └── load_models()                 # 加载全部模型配置（缓存/本地/INI）'
+- │   │   ├── 实例管理
+- '│   │   │   ├── add_model()                   # 注册新模型到映射表'
+- '│   │   │   ├── load()                        # 加载模型：spawn子进程+双线程监控'
+- '│   │   │   ├── unload()                      # 卸载指定模型'
+- '│   │   │   ├── unload_all()                  # 停止所有模型'
+- '│   │   │   └── unload_lru()                  # LRU淘汰：释放最久未用实例'
+- │   │   ├── 状态查询
+- │   │   │   ├── has_model() / get_meta() / get_all_meta()
+- │   │   │   ├── update_meta() / update_status()
+- │   │   │   ├── wait_until_loading_finished()
+- '│   │   │   └── ensure_model_ready()          # 阻塞等待模型就绪'
+- │   │   └── 子进程通信
+- '│   │       ├── is_child_server()             # 检测是否子进程模式'
+- '│   │       ├── setup_child_server()          # 子进程初始化（发送READY）'
+- '│   │       └── notify_router_sleeping_state() # 通知父进程睡眠状态'
+- │   │
+- '│   ├── struct server_models_routes           # HTTP路由注册器'
+- '│   │   ├── server_models_routes()            # 构造函数：初始化并解析WebUI配置'
+- '│   │   └── init_routes()                     # 注册GET/POST处理逻辑'
+- │   │
+- '│   ├── struct server_http_proxy              # HTTP代理转发器'
+- '│   │   ├── server_http_proxy()               # 构造：建立连接、启动转发线程'
+- '│   │   └── ~server_http_proxy()              # 析构：清理回调'
+- │   │
+- │   └── 工具函数与常量
+- '│       ├── server_model_status_from_string() # 字符串转状态枚举'
+- '│       ├── server_model_status_to_string()   # 状态枚举转字符串'
+- │       └── __main__（全局常量与宏）
+- ''
+- tools/server/server-models.cpp
+- ├── 平台兼容层与工具函数
+- '│   ├── get_server_exec_path()            # 获取可执行文件路径（Win/macOS/Linux）'
+- '│   ├── get_environment()                 # 获取环境变量（宽字符转UTF-8）'
+- '│   ├── wide_to_utf8()                    # Windows专用：宽字符转UTF-8'
+- '│   ├── get_free_port()                   # 获取空闲端口（bind(0)+getsockname）'
+- '│   ├── to_char_ptr_array()               # vector<string> → char*[]'
+- '│   ├── unset_reserved_args()             # 清理保留参数（SSL/API key等）'
+- '│   ├── to_lower_copy()                   # 字符串转小写'
+- '│   └── should_strip_proxy_header()       # 过滤代理响应头（CORS/Transfer-Encoding等）'
+- │
+- ├── 核心类方法实现
+- │   └── server_models
+- '│       ├── server_models()               # 构造：初始化预设上下文、base_env、bin_path'
+- '│       ├── load_models()                 # 三源合并：缓存→本地→INI→base_preset'
+- '│       ├── add_model()                   # 解析alias/tags，校验冲突'
+- '│       ├── load()                        # 三步走：LRU→get_free_port→subprocess_create'
+- │       │   └── 监控线程组
+- '│       │       ├── log_thread            # 日志转发+READY/SLEEP信号识别'
+- '│       │       └── stopping_thread       # 监听退出/崩溃，超时force kill'
+- '│       ├── unload() / unload_all()       # 停止信号发送与线程join'
+- '│       ├── unload_lru()                  # 遍历找最久未用，阻塞等待退出'
+- '│       ├── ensure_model_ready()          # 加载+wait_until_loading_finished'
+- '│       ├── proxy_request()               # 创建server_http_proxy转发请求'
+- '│       └── update_status() / update_meta() # 线程安全的状态更新'
+- │
+- '├── struct pipe_t                         # 流式管道（共享队列+条件变量）'
+- '│   ├── read()                            # 阻塞读取，支持取消（close_read）'
+- '│   ├── write()                           # 写入数据，检测broken pipe'
+- '│   └── close_write() / close_read()      # 关闭端点并通知对端'
+- │
+- '├── server_http_proxy                     # HTTP代理实现'
+- '│   └── server_http_proxy()               # 构造：过滤头、异步发送、pipe流式读取'
+- │
+- '├── server_models_routes                  # 路由处理'
+- '│   ├── init_routes()                     # 注册lambda处理函数'
+- '│   ├── get_router_props()                # 返回/router属性（role:router）'
+- '│   ├── get_router_models()               # 返回模型列表（含状态、args、preset快照）'
+- '│   ├── post_router_models_load()         # POST /models/load'
+- '│   ├── proxy_get() / proxy_post()        # 转发请求到具体模型'
+- '│   └── router_validate_model()           # 验证模型存在性与autoload逻辑'
+- │
+- '├── res_ok() / res_err()                  # 统一响应格式化'
+- '├── is_autoload()                         # 解析autoload参数'
+- └── 常量定义与全局代码
+- '    ├── DEFAULT_STOP_TIMEOUT              # 默认停止超时时间（10秒）'
+- '    ├── CMD_ROUTER_TO_CHILD_EXIT          # 父进程到子进程：退出命令'
+- '    ├── CMD_CHILD_TO_ROUTER_READY         # 子进程到父进程：就绪信号'
+- '    ├── CMD_CHILD_TO_ROUTER_SLEEP         # 子进程到父进程：睡眠信号'
+- '    ├── CHILD_ADDR                        # 子进程监听地址（127.0.0.1）'
+- '    └── __main__（全局初始化与常量）'
+exercises:
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第429-462行的 `unload_lru()` 函数与第463-597行的 `load()`
+    函数。
+  - 回答以下问题：
+  - 1. `unload_lru()` 如何找到「最久未使用」的模型？为什么使用 `ggml_time_ms()` 而不是系统时间戳？
+  - 2. `load()` 函数在调用 `unload_lru()` 后，为什么还要在持有锁的情况下重新检查 `count_active >= models_max`？这是为了防止什么并发问题？
+  - 3. 如果两个线程同时调用 `load()` 加载不同模型，而系统已达到 `models_max`，会发生什么？描述时序。
+  'no': 1
+  title: LRU淘汰策略深度分析
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第463-597行的 `load()` 方法，重点关注启动的两个监控线程（log_thread
+    和 stopping_thread）。
+  - 回答以下问题：
+  - 1. `log_thread` 如何识别子进程发送的 READY 和 SLEEP 信号？这些信号通过什么方式发送（stdout/stdin/共享内存）？
+  - 2. `stopping_thread` 的退出条件有哪些？为什么需要 `cv_stop.wait_for` 循环检查而不是一次性等待？
+  - 3. 子进程崩溃但父进程未收到信号时，`stopping_thread` 如何检测并处理？`subprocess_alive` 的作用是什么？
+  'no': 2
+  title: 子进程生命周期与双线程监控
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第1108-1182行的 `server_http_proxy` 构造函数，以及第1058-1091行的
+    `pipe_t` 类。
+  - 回答以下问题：
+  - 1. `pipe_t::read()` 如何实现「取消机制」？`should_stop` 回调在什么时机被调用？
+  - 2. `server_http_proxy` 过滤了哪些HTTP头（`should_strip_proxy_header`）为什么需要过滤 CORS 相关的头？
+  - 3. 如果子进程响应非常慢，`pipe_t::read` 的 `poll_interval` (500ms) 会导致什么问题？如何优化为事件驱动？
+  'no': 3
+  title: HTTP代理与流式管道实现
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第222-343行的 `load_models()` 函数，以及 `common/preset.h`
+    中的 `cascade` 和 `merge` 方法。
+  - 回答以下问题：
+  - 1. 三个预设来源（cached、local、custom INI）的合并优先级是怎样的？如果同一个模型在 cached 和 local 中都存在，哪个生效？
+  - 2. `base_preset` 在什么时候被注入？它的优先级相对于模型特定预设是高还是低？
+  - 3. `unset_reserved_args` 清理了哪些参数？为什么这些参数不能从父进程传递给子进程？
+  'no': 4
+  title: 预设合并与优先级
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第51-86行（`get_server_exec_path`）、第103-145行（`get_environment`）、第383-417行（`get_free_port`）。
+  - 回答以下问题：
+  - 1. Windows 和 Linux 获取可执行文件路径的方式有何本质不同？macOS 为什么需要两次调用 `_NSGetExecutablePath`？
+  - 2. Windows 环境变量为什么是宽字符（wchar_t）？`wide_to_utf8` 的转换失败时返回什么？
+  - 3. `get_free_port` 通过 `bind(0)` 获取临时端口后，端口什么时候真正被释放？高并发下是否可能出现端口冲突？
+  'no': 5
+  title: 跨平台兼容层实践
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 第780-810行的 `router_validate_model` 和 `is_autoload`
+    函数。
+  - 回答以下问题：
+  - 1. `router_validate_model` 如何处理模型别名（alias）？为什么要将别名解析为规范名称？
+  - 2. `is_autoload` 的默认行为是什么？请求参数如何覆盖服务器全局配置？
+  - 3. 当 `autoload=false` 且模型未加载时，路由返回什么错误？HTTP 状态码是多少？
+  'no': 6
+  title: 模型路由与自动加载机制
+- contents:
+  - 阅读 `tools/server/server-models.cpp` 中所有使用 `std::mutex` 和 `std::condition_variable`
+    的位置（如 `update_meta`、`update_status`、`wait_until_loading_finished`、`ensure_model_ready`）。
+  - 回答以下问题：
+  - 1. 为什么 `update_meta` 需要 `cv.notify_all()`？如果没有通知会发生什么？
+  - 2. `wait_until_loading_finished` 的等待条件是什么？为什么使用 lambda 捕获 `this` 和 `name`？
+  - 3. 如果 `ensure_model_ready` 在模型加载失败时直接返回而不抛异常，会对上层调用者产生什么影响？
+  'no': 7
+  title: 线程同步与条件变量实战
+learning_targets:
+- 理解 server_models 作为多模型「列车调度室」的核心职责与线程安全设计
+- 掌握模型生命周期管理：加载（spawn）、监控（双保险线程）、卸载（优雅退出/强制杀死）
+- 理解 LRU 淘汰策略与 models_max 并发上限的协同机制
+- 掌握 HTTP 代理转发（server_http_proxy）与流式管道（pipe_t）的实现原理
+- 熟悉跨平台兼容层：路径获取、环境变量、端口分配等系统调用的封装技巧
+- 能阅读并修改模型路由 REST 端点（/models/load、/models/unload）
+- 理解子进程与父进程间的命令通信协议（READY/SLEEP/EXIT）
+- 掌握请求参数解析与模型自动加载（autoload）机制
+- 掌握线程同步原语（mutex、condition_variable、atomic）在多进程管理中的应用
+- 理解预设合并优先级与启动参数渲染机制
+life_analogy:
+- 想象 llama-server 的模型管理系统是一家**大型智能火车站的调度中心**：
+- '- **server_models** = 列车调度总台（统一指挥所有车次的进出站）'
+- '- **server_model_meta** = 每趟列车的「车牌档案」（记录着车型号、当前状态、停靠站台、最后发车时间）'
+- '- **LRU 淘汰机制** = 站台容量管理（站台满了？让最久没发车的列车先回库休息）'
+- '- **spawn 子进程** = 列车出站（调度台启动新车次，分配专属轨道 port，并派监控员跟车）'
+- '- **双监控线程** = 随车安全员（一人看日志汇总车况，一人盯紧急制动信号，超时未归就强制拖回）'
+- '- **pipe_t 管道** = 列车与调度中心的「专用对讲机」（流式传输实况，一喊停就断线）'
+- '- **HTTP 代理转发** = 中转售票窗口（乘客在总服务台买票，后台自动转给具体车次窗口处理）'
+- '- **状态机 UNLOADED/LOADING/LOADED/SLEEPING** = 列车状态（车库待命/正在出库/运行中/临时休眠）'
+- '- **命令协议（READY/SLEEP/EXIT）** = 列车与调度台的「暗号」（标准应答信号，确保双方状态同步）'
+- 就像调度中心需要精确控制每趟列车的进出时间、防止站台拥堵，server_models 通过互斥锁和条件变量确保多线程环境下模型加载、卸载、状态迁移互不干扰，实现高并发下的稳定调度。
+'no': 81
+summary:
+- concept: '`server_models`'
+  desc: 多模型调度中枢，管理模型实例的加载、卸载与生命周期
+- concept: '`server_model_meta`'
+  desc: 模型元数据档案，记录状态、端口、预设、最近使用时间
+- concept: '`server_model_status`'
+  desc: 状态枚举四态：UNLOADED/LOADING/LOADED/SLEEPING
+- concept: '`server_model_status_to_string()`'
+  desc: 状态枚举与字符串的双向转换工具
+- concept: '`load_models()`'
+  desc: 三源合并策略：缓存预设 → 本地目录 → 自定义INI，最后注入base_preset
+- concept: '`load()` / `unload()`'
+  desc: 模型生命周期：子进程spawn + 双线程监控（日志/停止）
+- concept: '`unload_lru()`'
+  desc: LRU淘汰算法，超出models_max时自动清理最久未用实例
+- concept: '`ensure_model_ready()`'
+  desc: 阻塞式等待模型就绪，自动触发加载（autoload）
+- concept: '`pipe_t`'
+  desc: 线程安全流式管道，支持读写分离与取消机制
+- concept: '`server_http_proxy`'
+  desc: HTTP代理转发器，过滤请求头并流式转发到子进程
+- concept: '`router_validate_model()`'
+  desc: 路由前置验证，解析模型名、处理alias、检查autoload
+- concept: '`get_free_port()`'
+  desc: 跨平台端口分配（bind(0)+getsockname）
+- concept: '`is_child_server()`'
+  desc: 通过环境变量LLAMA_SERVER_ROUTER_PORT识别子进程身份
+- concept: '`setup_child_server()`'
+  desc: 子进程初始化：发送READY信号，监控stdin退出命令
+- concept: '`notify_router_sleeping_state()`'
+  desc: 子进程通知父进程进入/退出睡眠状态
+- concept: '`update_args()`'
+  desc: 预设渲染：注入host/port/alias，生成最终启动参数
+- concept: '`stopping_models`'
+  desc: 停止信号集合，协调多线程安全退出
+- concept: '`is_autoload()`'
+  desc: 解析请求参数，判断是否自动加载未运行模型
+- concept: '`CMD_*` 命令常量'
+  desc: 父子进程间标准通信协议（READY/SLEEP/EXIT）
+units:
+- codes:
+  - file: tools/server/server-models.h
+    line: 94-156
+    method_or_func: server_models
+  - file: tools/server/server-models.h
+    line: '110'
+    method_or_func: server_models::server_models
+  - file: tools/server/server-models.h
+    line: '112'
+    method_or_func: server_models::load_models
+  - file: tools/server/server-models.h
+    line: 116-119
+    method_or_func: server_models::has_model
+  - file: tools/server/server-models.h
+    line: '119'
+    method_or_func: server_models::get_meta
+  - file: tools/server/server-models.h
+    line: '122'
+    method_or_func: server_models::get_all_meta
+  - file: tools/server/server-models.h
+    line: '107'
+    method_or_func: server_models::add_model
+  - file: tools/server/server-models.h
+    line: '101'
+    method_or_func: server_models::update_meta
+  - file: tools/server/server-models.cpp
+    line: 140-159
+    method_or_func: server_models::server_models
+  - file: tools/server/server-models.cpp
+    line: 222-343
+    method_or_func: server_models::load_models
+  - file: tools/server/server-models.cpp
+    line: 346-354
+    method_or_func: server_models::update_meta
+  - file: tools/server/server-models.cpp
+    line: 356-366
+    method_or_func: server_models::has_model
+  - file: tools/server/server-models.cpp
+    line: 368-381
+    method_or_func: server_models::get_meta
+  - file: tools/server/server-models.cpp
+    line: 418-427
+    method_or_func: server_models::get_all_meta
+  - file: tools/server/server-models.cpp
+    line: 161-221
+    method_or_func: server_models::add_model
+  name: server_models 调度中枢 —— 多模型实例的「列车调度室」
+  'no': 1
+  points:
+  - '**为什么需要集中式模型管理？**'
+  - '- 多模型场景下需要统一协调加载、卸载、状态查询'
+  - '- 避免重复加载浪费内存，LRU 淘汰不活跃模型'
+  - '- 通过子进程隔离实现故障隔离与资源控制'
+  - '**预设优先级与合并策略**'
+  - '- 从缓存、本地目录、INI 文件三处收集预设'
+  - '- 本地预设覆盖缓存，自定义 INI 覆盖本地'
+  - '- 最终通过 base_preset 注入服务器全局参数'
+  - '**启动即加载（autoload）的陷阱**'
+  - '- 若预设标记了 load_on_startup=true 则立即 spawn'
+  - '- 必须校验数量是否超过 models_max，超出即抛异常'
+  - '**模型注册与冲突检测**'
+  - '- add_model 解析 alias/tags 并校验名称冲突'
+  - '- 别名与真实模型名必须全局唯一，防止路由歧义'
+- codes:
+  - file: tools/server/server-models.h
+    line: '126'
+    method_or_func: server_models::load
+  - file: tools/server/server-models.h
+    line: '127'
+    method_or_func: server_models::unload
+  - file: tools/server/server-models.h
+    line: '128'
+    method_or_func: server_models::unload_all
+  - file: tools/server/server-models.h
+    line: '131'
+    method_or_func: server_models::update_status
+  - file: tools/server/server-models.h
+    line: '135'
+    method_or_func: server_models::wait_until_loading_finished
+  - file: tools/server/server-models.h
+    line: '140'
+    method_or_func: server_models::ensure_model_ready
+  - file: tools/server/server-models.h
+    line: '147'
+    method_or_func: server_models::is_child_server
+  - file: tools/server/server-models.h
+    line: '151'
+    method_or_func: server_models::setup_child_server
+  - file: tools/server/server-models.h
+    line: '154'
+    method_or_func: server_models::notify_router_sleeping_state
+  - file: tools/server/server-models.cpp
+    line: 463-597
+    method_or_func: server_models::load
+  - file: tools/server/server-models.cpp
+    line: 599-612
+    method_or_func: server_models::unload
+  - file: tools/server/server-models.cpp
+    line: 614-632
+    method_or_func: server_models::unload_all
+  - file: tools/server/server-models.cpp
+    line: 720-723
+    method_or_func: server_models::is_child_server
+  - file: tools/server/server-models.cpp
+    line: 725-753
+    method_or_func: server_models::setup_child_server
+  - file: tools/server/server-models.cpp
+    line: 755-762
+    method_or_func: server_models::notify_router_sleeping_state
+  - file: tools/server/server-models.cpp
+    line: 634-644
+    method_or_func: server_models::update_status
+  - file: tools/server/server-models.cpp
+    line: 646-656
+    method_or_func: server_models::wait_until_loading_finished
+  - file: tools/server/server-models.cpp
+    line: 658-690
+    method_or_func: server_models::ensure_model_ready
+  name: 子进程生命周期管理 —— 模型的「产房与病房」
+  'no': 2
+  points:
+  - '**spawn：三步走战略**'
+  - 1. 检查并发上限并做 LRU 淘汰
+  - 2. 调用 get_free_port 分配端口，防止冲突
+  - 3. 通过 subprocess_create_ex 启动子进程并捕获 stdin/stdout
+  - '**监控线程的双保险**'
+  - '- log_thread 负责转发子进程日志，识别 READY/SLEEP 信号'
+  - '- stopping_thread 监听退出信号或子进程崩溃，超时后 force kill'
+  - '- 主调度线程等待子进程退出并记录 exit_code'
+  - '**子进程自我感知**'
+  - '- is_child_server() 通过环境变量 LLAMA_SERVER_ROUTER_PORT 判断身份'
+  - '- setup_child_server 在完成模型加载后向父进程回送 READY 消息'
+  - '**状态同步机制**'
+  - '- notify_router_sleeping_state() 向父进程报告睡眠/唤醒状态'
+  - '- 通过标准输出（stdout）发送预定义命令字符串'
+- codes:
+  - file: tools/server/server-models.h
+    line: '144'
+    method_or_func: server_models::proxy_request
+  - file: tools/server/server-models.h
+    line: 215-233
+    method_or_func: server_http_proxy
+  - file: tools/server/server-models.h
+    line: 216-227
+    method_or_func: server_http_proxy::server_http_proxy
+  - file: tools/server/server-models.h
+    line: 228-232
+    method_or_func: server_http_proxy::~server_http_proxy
+  - file: tools/server/server-models.cpp
+    line: 692-718
+    method_or_func: server_models::proxy_request
+  - file: tools/server/server-models.cpp
+    line: 1058-1061
+    method_or_func: pipe_t::close_write
+  - file: tools/server/server-models.cpp
+    line: 1062-1065
+    method_or_func: pipe_t::close_read
+  - file: tools/server/server-models.cpp
+    line: 1066-1083
+    method_or_func: pipe_t::read
+  - file: tools/server/server-models.cpp
+    line: 1084-1091
+    method_or_func: pipe_t::write
+  - file: tools/server/server-models.cpp
+    line: 1108-1182
+    method_or_func: server_http_proxy::server_http_proxy
+  - file: tools/server/server-models.cpp
+    line: 1093-1097
+    method_or_func: to_lower_copy
+  - file: tools/server/server-models.cpp
+    line: 1099-1106
+    method_or_func: should_strip_proxy_header
+  name: HTTP 代理转发 —— 父子进程间的「信使通道」
+  'no': 3
+  points:
+  - '**代理请求构造的关键点**'
+  - '- 仅允许对运行中的模型发起代理，非运行状态直接抛异常'
+  - '- 更新 last_used 时间戳以便 LRU 淘汰'
+  - '- 支持 GET/POST，POST 会更新 last_used'
+  - '**pipe_t 流式管道**'
+  - '- 采用共享队列 + condition_variable 实现读写分离'
+  - '- read/write 都支持取消与 EOF 检测'
+  - '- close_read 触发 broken pipe 通知，避免死锁'
+  - '**请求与响应的转发细节**'
+  - '- 保留原始 path/query，重写 Host 头'
+  - '- 过滤 proxy、CORS 等特殊头，避免回环'
+  - '- 通过独立线程异步发送并写回 pipe'
+- codes:
+  - file: tools/server/server-models.h
+    line: 175-195
+    method_or_func: server_models_routes
+  - file: tools/server/server-models.h
+    line: 177-188
+    method_or_func: server_models_routes::server_models_routes
+  - file: tools/server/server-models.h
+    line: '190'
+    method_or_func: server_models_routes::init_routes
+  - file: tools/server/server-models.cpp
+    line: 765-867
+    method_or_func: server_models_routes::init_routes
+  - file: tools/server/server-models.cpp
+    line: 765-803
+    method_or_func: server_models_routes::get_router_props
+  - file: tools/server/server-models.cpp
+    line: 805-811
+    method_or_func: server_models_routes::proxy_get
+  - file: tools/server/server-models.cpp
+    line: 813-821
+    method_or_func: server_models_routes::proxy_post
+  - file: tools/server/server-models.cpp
+    line: 823-841
+    method_or_func: server_models_routes::post_router_models_load
+  - file: tools/server/server-models.cpp
+    line: 843-867
+    method_or_func: server_models_routes::get_router_models
+  - file: tools/server/server-models.cpp
+    line: 780-800
+    method_or_func: router_validate_model
+  - file: tools/server/server-models.cpp
+    line: 802-810
+    method_or_func: is_autoload
+  - file: tools/server/server-models.cpp
+    line: 88-101
+    method_or_func: unset_reserved_args
+  - file: tools/server/server-models.cpp
+    line: 768-772
+    method_or_func: res_ok
+  - file: tools/server/server-models.cpp
+    line: 774-778
+    method_or_func: res_err
+  name: 路由 REST 端点 —— 对外的「调度总台」
+  'no': 4
+  points:
+  - '**路由注册与请求分发**'
+  - '- init_routes 统一注册 GET/POST 处理逻辑'
+  - '- router_validate_model 验证模型存在性与状态，支持 autoload'
+  - '- proxy_get / proxy_post 仅做转发，真正的业务逻辑交给子进程'
+  - '**模型列表与状态反馈**'
+  - '- get_router_models 将映射表转换为 JSON，包含状态、参数、preset 快照'
+  - '- 补充 exit_code / failed 字段便于前端展示'
+  - '- get_router_props 返回路由实例信息（role: router）'
+  - '**模型加载端点**'
+  - '- post_router_models_load 接收 JSON body {"model": name}'
+  - '- 若已运行则返回 400，否则调用 load() 并返回 success'
+  - '**自动加载（autoload）机制**'
+  - '- is_autoload() 解析请求参数，决定是否自动加载未运行模型'
+  - '- 优先级：请求参数 > 服务器全局配置'
+- codes:
+  - file: tools/server/server-models.cpp
+    line: 51-86
+    method_or_func: get_server_exec_path
+  - file: tools/server/server-models.cpp
+    line: 125-145
+    method_or_func: get_environment
+  - file: tools/server/server-models.cpp
+    line: 383-417
+    method_or_func: get_free_port
+  - file: tools/server/server-models.cpp
+    line: 427-435
+    method_or_func: to_char_ptr_array
+  - file: tools/server/server-models.cpp
+    line: 103-122
+    method_or_func: wide_to_utf8
+  - file: tools/server/server-models.cpp
+    line: 1093-1097
+    method_or_func: to_lower_copy
+  - file: tools/server/server-models.cpp
+    line: 1099-1106
+    method_or_func: should_strip_proxy_header
+  name: 平台兼容与工具函数 —— 跨平台的「幕后英雄」
+  'no': 5
+  points:
+  - '**可执行路径获取**'
+  - '- Windows 通过 GetModuleFileNameW，macOS 通过 _NSGetExecutablePath，Linux 读 /proc/self/exe'
+  - '**环境变量与字符串编码**'
+  - '- get_environment 在 Windows 上返回 wchar_t 需要转 UTF-8'
+  - '- wide_to_utf8 处理多字节编码转换'
+  - '**端口分配与 socket 操作**'
+  - '- get_free_port 通过绑定 0 端口、getsockname 获取临时端口，跨平台差异用宏屏蔽'
+  - '**常用工具函数**'
+  - '- to_char_ptr_array 将 vector<string> 转为 argv 形式的 char* 数组'
+  - '- to_lower_copy / should_strip_proxy_header 字符串处理与HTTP头过滤'
+- codes:
+  - file: tools/server/server-models.h
+    line: 1-45
+    method_or_func: __main__
+  - file: tools/server/server-models.h
+    line: 47-67
+    method_or_func: server_model_meta
+  - file: tools/server/server-models.h
+    line: 53-55
+    method_or_func: server_model_meta::is_ready
+  - file: tools/server/server-models.h
+    line: 57-59
+    method_or_func: server_model_meta::is_running
+  - file: tools/server/server-models.h
+    line: 61-63
+    method_or_func: server_model_meta::is_failed
+  - file: tools/server/server-models.h
+    line: '66'
+    method_or_func: server_model_meta::update_args
+  - file: tools/server/server-models.cpp
+    line: 127-134
+    method_or_func: server_model_meta::update_args
+  - file: tools/server/server-models.h
+    line: '104'
+    method_or_func: server_models::unload_lru
+  - file: tools/server/server-models.cpp
+    line: 429-462
+    method_or_func: server_models::unload_lru
+  - file: tools/server/server-models.cpp
+    line: 634-644
+    method_or_func: server_models::update_status
+  - file: tools/server/server-models.cpp
+    line: 646-656
+    method_or_func: server_models::wait_until_loading_finished
+  - file: tools/server/server-models.cpp
+    line: 658-690
+    method_or_func: server_models::ensure_model_ready
+  - file: tools/server/server-models.cpp
+    line: 18-45
+    method_or_func: __main__
+  name: server_models 元数据与生命周期 —— 模型的「身份证」
+  'no': 6
+  points:
+  - '**server_model_meta 结构详解**'
+  - '- 存储 preset、别名、tags、port、状态、last_used、args、exit_code 等核心信息'
+  - '- update_args 负责把预设渲染为最终启动参数，同时注入 host、port、alias'
+  - '**状态机的三种状态**'
+  - '- UNLOADED / LOADING / LOADED / SLEEPING，配合 is_running / is_ready 判断'
+  - '- is_failed 判断是否为加载失败状态'
+  - '**线程安全与并发**'
+  - '- 大部分接口内部使用 std::lock_guard<std::mutex> 与 condition_variable 同步'
+  - '- 通过 stopping_models 集合 + cv_stop 监控线程安全退出'
+  - '**LRU 淘汰策略**'
+  - '- 当活动实例数达到 models_max 时，淘汰 last_used 最小者并等待其退出'
+  - '- 避免无限增长造成内存压力'

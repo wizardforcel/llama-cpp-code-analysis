@@ -1,0 +1,605 @@
+code_map:
+- tools/server/server-context.cpp
+- ├── struct server_slot (163-604行)
+- '│   ├── prompt_save()           # 保存提示词到缓存（KV缓存+token序列）'
+- '│   ├── prompt_load()           # 从缓存加载提示词状态'
+- '│   ├── prompt_clear()          # 使用 llama_memory_seq_rm 精确清除缓存'
+- '│   ├── reset()                 # 重置生成状态、统计信息和采样器'
+- '│   ├── init_sampler()          # 初始化采样器并回填历史 token'
+- '│   ├── can_split()             # 检查是否支持批次分割（内存模块与池化类型）'
+- '│   ├── can_batch_with()        # 检查 LoRA 配置一致性，确保批处理兼容性'
+- '│   ├── has_budget()            # 检查生成预算（n_predict 剩余额度）'
+- '│   ├── is_processing()         # 检查是否处于处理状态（非IDLE）'
+- '│   ├── can_speculate()         # 检查是否支持推测解码'
+- '│   ├── add_token()             # 添加生成的 token 到概率列表'
+- '│   ├── get_n_draft_max()       # 动态计算推测解码最大草稿 token 数'
+- '│   ├── release()               # 释放资源，状态机切换至 IDLE'
+- '│   ├── get_timings()           # 返回时间统计信息（吞吐率、延迟）'
+- '│   ├── find_stopping_strings() # 停止词检测（全词匹配与部分匹配）'
+- '│   ├── print_timings()         # 打印详细性能统计与推测解码接受率'
+- '│   ├── to_json()               # 槽位状态序列化为 JSON（用于 /slots 端点）'
+- '│   └── copy_state_to()         # 跨槽位状态复制（KV缓存与生成参数）'
+- ├── struct server_metrics (643-683行)
+- '│   ├── init()                  # 初始化时间戳基准'
+- '│   ├── on_prompt_eval()        # 提示词处理阶段指标累积'
+- '│   ├── on_prediction()         # Token 生成阶段性能统计'
+- '│   ├── on_decoded()            # 每次解码迭代更新并发指标'
+- '│   └── reset_bucket()          # 周期性桶重置（Prometheus抓取间隔）'
+- ├── class server_context_impl (786-2550行)
+- '│   ├── destroy()               # 销毁模型、上下文与批量资源，释放推测解码状态'
+- '│   ├── slot_save_and_clear()   # 空闲槽位保存到提示词缓存并清除内存'
+- '│   ├── handle_sleeping_state() # 休眠状态切换：销毁或重新加载模型'
+- '│   ├── load_model()            # 主模型/草稿模型/多模态加载中枢（含 n_ctx 限制）'
+- '│   ├── init()                  # 队列回调绑定、聊天模板初始化、--clear-idle 配置检查'
+- '│   ├── get_slot_by_id()        # 槽位ID循环查找'
+- '│   ├── get_available_slot()    # 双策略选择：LCP相似度优先 + LRU'
+- '│   ├── get_slot_n_ctx()        # 获取槽位上下文长度'
+- '│   ├── get_response_reader()   # 创建响应读取器（支持多消费者）'
+- '│   ├── launch_slot()           # 单槽位启动内部实现（LoRA配置与采样器初始化）'
+- '│   ├── launch_slots_with_parent_task() # 父子任务槽位批量启动'
+- '│   └── update_slots()          # 推理主循环：批次构建、上下文移位、槽位状态更新'
+- ├── class ServerContext / 文件作用域方法 (1035-2792行)
+- '│   ├── try_clear_idle_slots()  # 清理空闲槽位（内存回收）'
+- '│   ├── construct_lora_list()   # 构建LoRA适配器配置列表'
+- '│   ├── launch_slot_with_task() # 启动槽位任务（处理LoRA适配器与采样器初始化）'
+- '│   ├── process_token()         # 单token处理：停止词检测、UTF-8完整性、上下文限制'
+- '│   ├── populate_token_probs()  # 填充token概率信息（采样前后模式）'
+- '│   ├── send_error()            # 标准化错误响应包装'
+- '│   ├── check_no_mtmd()         # 检查多模态支持兼容性'
+- '│   ├── send_partial_response() # 流式响应发送（SSE）'
+- '│   ├── send_final_response()   # 最终结果发送（含token概率、usage）'
+- '│   ├── send_embedding()        # 嵌入结果发送（支持不同池化类型）'
+- '│   ├── send_rerank()           # 重排序结果发送'
+- '│   ├── tokenize_cli_input()    # CLI输入令牌化（含多模态处理）'
+- '│   ├── get_free_slots()        # 获取空闲槽位列表（用于父子任务分配）'
+- '│   ├── launch_slots_with_parent_task() # 父子任务槽位启动（支持多子任务）'
+- '│   ├── get_available_slot()    # 任务级槽位选择（支持LRU与提示词缓存更新）'
+- '│   ├── process_single_task()   # 任务类型分发（COMPLETION/EMBEDDING/RERANK/CANCEL/SLOT_SAVE等）'
+- '│   └── update_slots()          # 推理主循环：ctx_shift + 两阶段批次构建（生成+提示词处理）'
+- ├── class server_context (2555-2650行)
+- '│   ├── server_context()        # 构造函数（Pimpl惯用法初始化）'
+- '│   ├── ~server_context()       # 析构函数（资源释放）'
+- '│   ├── load_model()            # 委托给 impl 的模型加载'
+- '│   ├── start_loop()            # 启动事件循环，支持 sleep_idle_seconds'
+- '│   ├── terminate()             # 优雅终止队列处理'
+- '│   ├── get_llama_context()     # 获取底层 llama_context 指针（非线程安全）'
+- '│   ├── get_response_reader()   # 获取响应读取器'
+- '│   ├── get_meta()              # 返回 server_context_meta 静态快照'
+- '│   └── on_sleeping_changed()   # 注册睡眠状态变化回调'
+- ├── struct server_res_generator (2630-2645行)
+- '│   ├── server_res_generator()  # 构造时根据 bypass_sleep 决定是否等待唤醒'
+- '│   ├── ok()                    # 标准化 200 响应封装'
+- '│   └── error()                 # 统一错误格式包装（提取错误码）'
+- ├── class server_routes (3313-5400行)
+- '│   ├── create_response()       # 创建响应生成器工厂方法'
+- '│   ├── server_routes()         # 构造函数（初始化上下文与队列引用）'
+- '│   ├── update_meta()           # 更新元数据快照'
+- '│   ├── init_routes()           # 注册 20+ REST 端点（/health, /completion, /chat, /slots等）'
+- '│   ├── handle_completions_impl() # 文本补全与 infill 任务处理（流式/非流式）'
+- '│   ├── handle_embeddings_impl()  # OpenAI 兼容的嵌入请求处理'
+- '│   ├── handle_slots_save()       # KV 缓存持久化到文件'
+- '│   ├── handle_slots_restore()    # 从文件恢复槽位状态'
+- '│   └── handle_slots_erase()      # 清除槽位状态'
+- └── __main__ / 文件作用域函数 (1874-2184行)
+- '    └── 任务处理主逻辑        # SLOT_SAVE/RESTORE/ERASE/GET_LORA/SET_LORA 的完整实现'
+- ''
+- tools/server/server-context.h
+- '├── struct server_context_meta  # 只读元数据结构（模型名、聊天模板能力、多模态标志）'
+- ├── class server_context (45-67行)
+- '│   ├── server_context()        # 默认构造函数声明'
+- '│   ├── ~server_context()       # 析构函数声明'
+- '│   ├── load_model()            # 模型加载接口声明'
+- '│   ├── start_loop()            # 启动事件循环声明'
+- '│   ├── terminate()             # 终止循环声明'
+- '│   ├── get_llama_context()     # 获取底层上下文指针声明'
+- '│   ├── get_response_reader()   # 获取响应读取器声明'
+- '│   ├── get_meta()              # 获取元数据快照声明'
+- '│   └── on_sleeping_changed()   # 睡眠状态回调注册声明'
+- └── class server_routes (79-123行)
+- '    ├── server_routes()         # 构造函数声明'
+- '    ├── init_routes()           # 初始化路由声明'
+- '    ├── update_meta()           # 更新元数据声明'
+- '    ├── handle_completions_impl() # 补全实现声明'
+- '    ├── handle_embeddings_impl()  # 嵌入实现声明'
+- '    ├── handle_slots_save()       # 槽位保存声明'
+- '    ├── handle_slots_restore()    # 槽位恢复声明'
+- '    ├── handle_slots_erase()      # 槽位擦除声明'
+- '    └── create_response()         # 响应创建声明'
+exercises:
+- contents:
+  - 阅读 `tools/server/server-context.cpp` 中 server_slot 类的完整实现（163-604行），绘制状态转换图，重点分析以下方法：
+  - 1. `reset()` 方法中清理了哪些状态字段？为什么必须显式调用 `llama_set_sampler(ctx, id, nullptr)`？
+  - 2. `release()` 方法中状态从 PROCESSING 到 IDLE 的切换条件是什么？`task_prev = std::move(task)`
+    的设计意图是什么？
+  - 3. `copy_state_to()` 方法如何使用 `llama_memory_seq_cp` 实现 KV 缓存的跨槽位复制？这在什么业务场景下会被触发（提示：考虑批量处理或故障转移）？
+  - 4. `can_split()` 与池化类型（pooling_type）的关系是什么？为什么嵌入任务在特定条件下不能分割批次？
+  - 思考问题：
+  - '- 如果两个槽位的 LoRA 配置不同，`can_batch_with()` 会如何阻止它们被合并到同一批次？这体现了什么样的并发控制设计原则？'
+  - '- `get_n_draft_max()` 中的 `n_ctx - prompt.n_tokens() - 2` 这个减 2 的操作是为了防止什么边界条件？'
+  'no': 1
+  title: 槽位状态机与生命周期追踪
+- contents:
+  - 深入研读 `ServerContext::update_slots()`（约2185-2792行）与 `server_context_impl::get_available_slot()`（1018-1062行），绘制执行流程图：
+  - 1. 上下文移位（ctx_shift）触发条件：当 `slot.prompt.n_tokens() + 1 >= slot.n_ctx` 时，代码如何通过
+    `llama_memory_seq_rm` 和 `llama_memory_seq_add` 实现「丢弃中段、保留头尾」的滑动窗口效果？
+  - 2. 两阶段批次构建策略：为什么先收集所有 GENERATING 状态的槽位构建草稿/解码批次，再处理 STARTED/PROCESSING_PROMPT
+    状态的新请求？这种顺序对吞吐量有何影响？
+  - 3. 推测解码集成：当 `can_speculate()` 返回 true 时，`i_batch_dft` 数组如何记录草稿 token 在全局批次中的位置？`common_speculative_draft()`
+    的调用时机与结果截断逻辑是什么？
+  - 4. 缓存复用优化：`n_cache_reuse` 参数如何控制 KV 缓存的块级复用？`while (head_c < slot.prompt.tokens.size()...)`
+    这段代码实现了什么样的匹配算法？为什么需要 `llama_memory_can_shift` 检查？
+  - 5. 槽位选择策略：`get_available_slot` 中 LCP（最长公共前缀）相似度与 LRU 策略的优先级如何？`slot_prompt_similarity`
+    阈值的作用是什么？
+  - 实践任务：尝试修改代码，在 `update_slots()` 的适当位置添加日志，打印每次批次的实际组成（各槽位贡献的 token 数），观察在不同并发负载下的批处理行为。
+  'no': 2
+  title: 连续批处理、上下文移位与缓存复用
+- contents:
+  - 分析 `ServerContext` 类的任务处理流水线（约1308-2166行）：
+  - 1. `launch_slot_with_task()` 如何处理 per-request LoRA 适配器？`aLoRA` 调用令牌（alora_invocation_start）的检测逻辑是什么？为什么只缓存到
+    `alora_invocation_start - 1`？
+  - 2. `process_token()` 中停止词检测的实现细节：`find_stopping_strings()` 如何处理部分匹配（partial match）？UTF-8
+    完整性检查的必要性是什么？
+  - 3. `populate_token_probs()` 的两种模式：采样后（post_sampling=true）与采样前（false）在数据来源和概率计算上有何差异？
+  - 4. `process_single_task()` 的任务类型分发逻辑：COMPLETION、EMBEDDING、RERANK 三种任务在槽位分配和资源需求上的差异是什么？
+  - 5. `construct_lora_list()` 如何结合全局配置与请求级配置生成最终的 LoRA 适配器列表？
+  - 思考问题：为什么需要 `check_no_mtmd()` 检查？多模态输入与推测解码、槽位状态保存功能存在什么冲突？
+  'no': 3
+  title: 任务处理与 LoRA 调度机制
+- contents:
+  - 研究结果发送机制与路由层的交互（约1719-2767行）：
+  - 1. `send_partial_response()` 与 `send_final_response()` 的触发时机有何不同？流式（stream=true）与非流式模式下，token
+    和 content 的填充策略有何差异？
+  - 2. `send_embedding()` 如何处理不同的池化类型（LLAMA_POOLING_TYPE_NONE vs LAST）？`embd_normalize`
+    参数的默认值和作用是什么？
+  - 3. `populate_token_probs()` 中 `post_sampling` 标志位的含义？在记录 token 概率时，采样前与采样后的数据来源分别是什么？
+  - 4. `server_res_generator` 的 `ok()` 与 `error()` 方法如何统一响应格式？`bypass_sleep` 机制在构造函数中的实现逻辑是什么？
+  - 5. `handle_completions_impl()` 与 `handle_embeddings_impl()` 如何支持 OpenAI 兼容格式？流式响应（SSE）的实现机制是什么？
+  - 实践任务：修改 `send_final_response()`，添加对推测解码接受率（draft acceptance rate）的统计输出，参考 `server_slot::print_timings()`
+    中的实现。
+  'no': 4
+  title: 结果封装与协议适配
+- contents:
+  - 对比分析 `server_context`（Pimpl 门面）与 `server_routes`（HTTP 路由层）的设计与协作：
+  - 1. `server_context` 类的设计哲学：为什么使用 `std::unique_ptr<server_context_impl>` 而不是直接继承或包含实现？这种设计对
+    ABI 稳定性和编译依赖的具体好处是什么？
+  - 2. `server_routes::init_routes()` 中路由注册的机制：如何组织 /health、/completion、/slots 等 20+
+    个端点？`create_response()` 的工厂方法模式解决了什么问题？
+  - 3. `handle_slots_save()` / `handle_slots_restore()` / `handle_slots_erase()` 的路由参数与任务构造：`fs_validate_filename()`
+    的安全验证逻辑是什么？如何防止路径遍历攻击？
+  - 4. `handle_embeddings_impl()` 中 `res_type` 参数的作用：`TASK_RESPONSE_TYPE_OAI_EMBD`
+    与默认类型在响应格式上有何差异？
+  - 5. `server_context::on_sleeping_changed()` 的回调注册机制：`handle_sleeping_state()` 在销毁（destroy）与重新加载（load_model）时的资源管理策略是什么？
+  - 调试任务：使用 `LLAMA_SERVER_SLOTS_DEBUG` 环境变量启用槽位调试模式，观察 `/slots` 端点的输出，理解 `server_slot::to_json()`
+    方法生成的状态信息。
+  'no': 5
+  title: Pimpl 模式、HTTP 路由与槽位持久化
+- contents:
+  - 分析 `tools/server/server-context.cpp` 文件末尾的全局作用域代码（约1874-2184行）：
+  - 1. `SERVER_TASK_TYPE_SLOT_SAVE` 的处理流程：如何通过 `llama_state_seq_save_file` 将指定槽位的
+    KV 缓存和 token 序列写入磁盘文件？哪些字段被记录到 `server_task_result_slot_save_load` 中？
+  - 2. `SERVER_TASK_TYPE_SLOT_RESTORE` 的恢复逻辑：如何从文件加载状态并验证？如果 `llama_state_seq_load_file`
+    返回 0，会触发什么错误处理？
+  - 3. `SERVER_TASK_TYPE_SLOT_ERASE` 的清除机制：与 `slot->prompt_clear(false)` 的关系是什么？为什么不需要检查
+    `llama_memory_can_shift`？
+  - 4. `GET_LORA` / `SET_LORA` 任务类型：如何遍历并返回当前加载的 LoRA 适配器列表？`construct_lora_list`
+    如何应用新的 scale 配置？
+  - 5. 文件路径安全：全局代码和 `server_routes` 中如何协同使用 `fs_validate_filename` 防止路径遍历攻击？
+  - 实践任务：编写一个 Python 客户端脚本，测试 `/slots/{id}/save`、`/slots/{id}/restore` 和 `/slots/{id}/erase`
+    端点的完整生命周期，验证保存后恢复是否能生成完全一致的文本。
+  'no': 6
+  title: 全局任务处理与 KV 缓存持久化
+learning_targets:
+- 掌握 server_slot 的完整生命周期管理：从提示词保存/加载（prompt_save/load）到状态重置（reset）与释放（release）的状态机转换
+- 理解 server_metrics 的双维度统计模型：区分总累计值（_total）与周期性桶值（bucket），掌握 on_prompt_eval/on_prediction/on_decoded
+  的指标采集时机
+- 精通 ServerContext 类的任务调度体系：包括任务分发（process_single_task）、槽位启动（launch_slot_with_task/launch_slots_with_parent_task）、批次构建与更新（update_slots）
+- 掌握 server_context_impl 的核心调度逻辑：模型加载（load_model）、槽位分配（get_available_slot）、空闲槽位清理（try_clear_idle_slots）与休眠状态管理
+- 理解 server_context 的 Pimpl（Pointer to Implementation）设计模式：通过门面接口隐藏 server_context_impl
+  的实现细节，保证 ABI 稳定性
+- 掌握 server_res_generator 的响应封装机制：统一处理 ok/error 响应格式，支持睡眠旁路（bypass_sleep）控制
+- 精通 server_routes 的 REST 端点实现：包括补全（handle_completions_impl）、嵌入（handle_embeddings_impl）、槽位持久化（handle_slots_save/restore/erase）等路由注册与处理
+- 理解 LoRA 适配器与推测解码的集成：aLoRA 检测（launch_slot_with_task）、推测解码配置（can_speculate/get_n_draft_max）与缓存复用机制
+- 掌握全局作用域的任务处理逻辑：SLOT_SAVE/RESTORE/ERASE/GET_LORA/SET_LORA 等任务类型的文件级处理流程与 KV 缓存持久化机制
+life_analogy:
+- 想象 llama-server 是一家**高级餐厅的中央厨房调度系统**：
+- '- **server_slot** = 独立厨师工作台，每个工位有自己的食材备料区（KV缓存）、专属工具（采样器）和当前订单（task），工位之间互不干扰但可共享中央炉灶（GPU）；支持推测解码的工位还配有「助理厨师」（草稿模型）帮忙预切配菜'
+- '- **server_metrics** = 餐厅经理的实时监控大屏，既显示累计营业额（_total），也显示当前营业时段的翻台率（bucket），帮助管理者了解厨房负载'
+- '- **server_context_impl** = 厨房总指挥官的私人助理，负责接收订单（任务分发）、调度空闲厨师（槽位分配）、协调多个厨师同时做菜（连续批处理），以及在食材不足时动态调整菜单（上下文移位
+  ctx_shift）'
+- '- **ServerContext** = 厨房的实际操作团队，直接处理食材准备（tokenize）、烹饪过程监控（process_token）、菜品装盘（send_*_response）等具体执行任务'
+- '- **server_context** = 餐厅前台接待，对外提供标准化的服务窗口（API），隐藏后厨复杂的操作流程（Pimpl模式），顾客只需知道能点到菜，无需了解厨师怎么炒菜'
+- '- **server_res_generator** = 传菜员手中的智能餐盘，能根据餐厅当前是否歇业（sleep状态）决定立即上菜还是等待开业，支持单点上菜（非流式）或边做边上（SSE流式）'
+- '- **server_routes** = 餐厅的点餐系统菜单，将顾客的 HTTP 请求（/completion, /embeddings, /slots）准确路由到对应的厨房工位，并确保每份订单都有对应的取餐号（任务ID）；支持「菜品暂存」（/slots/save）与「回锅」（/slots/restore）服务'
+- '- **__main__（文件作用域）** = 餐厅的标准操作程序（SOP）手册，定义了如何处理特殊订单类型：菜品暂存（SLOT_SAVE）、回锅加热（SLOT_RESTORE）、丢弃剩菜（SLOT_ERASE）、查询配料表（GET_LORA）和调整配方（SET_LORA）'
+'no': 84
+summary:
+- concept: server_slot
+  desc: 单请求隔离容器，通过状态机（IDLE→STARTED→PROCESSING_PROMPT→GENERATING）管理KV缓存、采样状态与生成进度，实现请求级隔离
+- concept: prompt_save/load/clear
+  desc: KV缓存生命周期管理三剑客，通过llama_memory_seq_rm实现缓存的精确清除与复用，支持提示词持久化到内存缓存
+- concept: init_sampler
+  desc: 初始化采样器并回填历史token，确保生成连续性；若任务不需要采样（如嵌入任务）则跳过
+- concept: can_batch_with / can_split
+  desc: 批处理兼容性检查双保险：前者确保LoRA配置一致，后者根据内存模块和池化类型（LLAMA_POOLING_TYPE_LAST）判断是否支持批次分割
+- concept: get_n_draft_max
+  desc: 动态计算推测解码草稿token数，综合考虑剩余上下文(n_ctx)与生成预算(n_predict)，防止超出边界并确保最小草稿数量
+- concept: server_metrics
+  desc: 双维度指标系统，同时维护总累计值(_total)与周期性桶值(bucket)，支持Prometheus风格监控与速率计算
+- concept: server_context_impl
+  desc: 服务端核心大脑，负责模型加载（含多模态投影器与草稿模型）、槽位池化管理、LCP+LRU双策略槽位分配
+- concept: get_available_slot
+  desc: 智能槽位分配策略，结合基于提示词相似度(LCP)的缓存亲和性（slot_prompt_similarity）与LRU均衡策略，优化KV缓存命中率
+- concept: ServerContext::process_single_task
+  desc: 任务分发中枢，根据SERVER_TASK_TYPE（COMPLETION/EMBEDDING/RERANK/CANCEL/SLOT_SAVE等）路由到具体处理器
+- concept: ServerContext::update_slots
+  desc: 推理主循环，实现两阶段批次构建（先处理GENERATING状态的草稿/解码，再处理STARTED/PROCESSING_PROMPT状态的新请求），支持ctx_shift动态上下文移位与缓存复用（n_cache_reuse）
+- concept: launch_slot_with_task
+  desc: 槽位启动核心，处理aLoRA（适配器激活令牌）检测、LoRA配置应用、采样器初始化与任务状态切换
+- concept: send_partial/final_response/embedding/rerank
+  desc: 结果发送家族，支持流式SSE输出、最终完成响应、嵌入向量（支持不同池化类型与归一化）以及重排序分数计算
+- concept: server_context
+  desc: Pimpl惯用法的门面接口，通过unique_ptr隐藏server_context_impl，保证ABI稳定性与编译防火墙
+- concept: server_res_generator
+  desc: 响应生成器，统一处理睡眠旁路逻辑（bypass_sleep）与流式/非流式协议适配，支持OpenAI chat/completion与Anthropic消息格式
+- concept: server_routes
+  desc: REST端点注册中心，提供/slots/save/restore/erase等KV缓存持久化接口，集成多模态预处理流水线与路径安全验证(fs_validate_filename)
+- concept: handle_embeddings_impl
+  desc: 嵌入处理实现，支持OpenAI兼容格式，处理embd_normalize参数（默认L2归一化）与多输入批量处理
+- concept: handle_slots_save/restore/erase
+  desc: 槽位持久化三剑客，通过llama_state_seq_save/load_file实现KV缓存的磁盘持久化与恢复，支持文件名安全验证
+- concept: __main__ (文件作用域任务处理)
+  desc: 全局任务处理块，实现SLOT_SAVE/RESTORE/ERASE和GET/SET_LORA等任务的完整逻辑，包括文件I/O、KV缓存序列化与LoRA配置热更新
+units:
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 163-177
+    method_or_func: server_slot::prompt_save()
+  - file: tools/server/server-context.cpp
+    line: 179-188
+    method_or_func: server_slot::prompt_load()
+  - file: tools/server/server-context.cpp
+    line: 190-200
+    method_or_func: server_slot::prompt_clear()
+  - file: tools/server/server-context.cpp
+    line: 346-376
+    method_or_func: server_slot::reset()
+  - file: tools/server/server-context.cpp
+    line: 378-396
+    method_or_func: server_slot::init_sampler()
+  - file: tools/server/server-context.cpp
+    line: 402-411
+    method_or_func: server_slot::can_split()
+  - file: tools/server/server-context.cpp
+    line: 413-417
+    method_or_func: server_slot::can_batch_with()
+  - file: tools/server/server-context.cpp
+    line: 419-433
+    method_or_func: server_slot::has_budget()
+  - file: tools/server/server-context.cpp
+    line: 435-438
+    method_or_func: server_slot::is_processing()
+  - file: tools/server/server-context.cpp
+    line: 440-443
+    method_or_func: server_slot::can_speculate()
+  - file: tools/server/server-context.cpp
+    line: 445-452
+    method_or_func: server_slot::add_token()
+  - file: tools/server/server-context.cpp
+    line: 454-470
+    method_or_func: server_slot::get_n_draft_max()
+  - file: tools/server/server-context.cpp
+    line: 472-489
+    method_or_func: server_slot::release()
+  - file: tools/server/server-context.cpp
+    line: 491-508
+    method_or_func: server_slot::get_timings()
+  - file: tools/server/server-context.cpp
+    line: 510-533
+    method_or_func: server_slot::find_stopping_strings()
+  - file: tools/server/server-context.cpp
+    line: 535-562
+    method_or_func: server_slot::print_timings()
+  - file: tools/server/server-context.cpp
+    line: 564-585
+    method_or_func: server_slot::to_json()
+  - file: tools/server/server-context.cpp
+    line: 587-604
+    method_or_func: server_slot::copy_state_to()
+  name: server_slot：单请求的"独立工位"
+  'no': 1
+  points:
+  - '**核心设计理念**：每个推理请求独占一个槽位（slot），独立管理其KV缓存、采样状态和生成进度，通过状态机（IDLE/STARTED/PROCESSING_PROMPT/GENERATING）实现请求间的隔离与并发控制'
+  - '**提示词生命周期管理**：通过prompt_save/prompt_load与server_prompt_cache交互，实现KV缓存的序列化持久化；prompt_clear使用llama_memory_seq_rm精确清除指定序列的缓存'
+  - '**状态机机制**：slot.state在IDLE/STARTED/PROCESSING_PROMPT/GENERATING等状态间流转，is_processing()和release()控制状态转换与资源回收'
+  - '**推测解码集成**：can_speculate()检查是否启用，get_n_draft_max()动态计算最大草稿token数（考虑n_ctx剩余空间和n_predict预算），i_batch_dft记录草稿token在批次中的位置'
+  - '**LoRA适配器隔离**：lora字段存储当前任务激活的适配器配置，can_batch_with()确保只有相同任务类型且LoRA配置一致的槽位才能合并批处理，保证计算正确性'
+  - '**采样器与概率管理**：init_sampler()回填历史token，add_token()累积生成token概率，populate_token_probs()支持采样前后两种概率记录模式'
+  - '**性能统计与调试**：get_timings()返回详细的时间统计（提示处理、生成速度），to_json()支持槽位状态序列化用于监控'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 643-646
+    method_or_func: server_metrics::init()
+  - file: tools/server/server-context.cpp
+    line: 648-655
+    method_or_func: server_metrics::on_prompt_eval()
+  - file: tools/server/server-context.cpp
+    line: 657-663
+    method_or_func: server_metrics::on_prediction()
+  - file: tools/server/server-context.cpp
+    line: 665-675
+    method_or_func: server_metrics::on_decoded()
+  - file: tools/server/server-context.cpp
+    line: 677-683
+    method_or_func: server_metrics::reset_bucket()
+  name: server_metrics：服务端的"体检仪表盘"
+  'no': 2
+  points:
+  - '**双维度统计**：维护总累计值（_total后缀）和当前桶值（bucket），通过reset_bucket()实现周期性指标暴露，支持Prometheus等监控系统抓取'
+  - '**提示处理追踪**：on_prompt_eval()累加n_prompt_tokens_processed和t_prompt_processing，记录token级提示吞吐量'
+  - '**生成性能监控**：on_prediction()统计n_tokens_predicted和t_tokens_generation，计算生成阶段的token/s速率'
+  - '**系统负载洞察**：on_decoded()每次批处理结束时更新n_decode_total（迭代次数）和n_busy_slots_total（忙碌槽位），反映并发利用率'
+  - '**极值记录**：n_tokens_max追踪历史最大序列长度，用于容量规划和异常检测'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 786-800
+    method_or_func: server_context_impl::destroy()
+  - file: tools/server/server-context.cpp
+    line: 802-813
+    method_or_func: server_context_impl::slot_save_and_clear()
+  - file: tools/server/server-context.cpp
+    line: 815-829
+    method_or_func: server_context_impl::handle_sleeping_state()
+  - file: tools/server/server-context.cpp
+    line: 831-947
+    method_or_func: server_context_impl::load_model()
+  - file: tools/server/server-context.cpp
+    line: 949-1005
+    method_or_func: server_context_impl::init()
+  - file: tools/server/server-context.cpp
+    line: 1007-1016
+    method_or_func: server_context_impl::get_slot_by_id()
+  - file: tools/server/server-context.cpp
+    line: 1018-1062
+    method_or_func: server_context_impl::get_available_slot()
+  - file: tools/server/server-context.cpp
+    line: 1390-1670
+    method_or_func: server_context_impl::launch_slot()
+  - file: tools/server/server-context.cpp
+    line: 1350-1390
+    method_or_func: server_context_impl::launch_slots_with_parent_task()
+  - file: tools/server/server-context.cpp
+    line: 1670-2540
+    method_or_func: server_context_impl::update_slots()
+  - file: tools/server/server-context.cpp
+    line: 2540-2545
+    method_or_func: server_context_impl::get_slot_n_ctx()
+  - file: tools/server/server-context.cpp
+    line: 2546-2550
+    method_or_func: server_context_impl::get_response_reader()
+  name: server_context_impl：推理资源的"总调度师"
+  'no': 3
+  points:
+  - '**模型加载中枢**：load_model() orchestrates多层次加载——主模型（llama_init_from_params）、可选草稿模型（speculative）、多模态投影器（mmproj），并处理兼容性降级（如多模态禁用ctx_shift）'
+  - '**槽位池化管理**：初始化n_parallel个server_slot实例，每个分配独立n_ctx（受模型训练上下文长度n_ctx_train限制），并配置推测解码上下文'
+  - '**智能槽位分配**：get_available_slot()实现双策略选择——基于提示词相似度（LCP，最长公共前缀）的缓存亲和性调度，以及LRU（最近最少使用）策略，平衡缓存命中率与负载均衡'
+  - '**资源回收机制**：slot_save_and_clear()将空闲槽位保存到提示词缓存并清除内存，try_clear_idle_slots()主动清理空闲槽位释放KV缓存'
+  - '**休眠状态管理**：handle_sleeping_state()在sleeping状态切换时销毁或重新加载模型，实现零闲置资源占用'
+  - '**元数据快照**：get_meta()封装模型能力信息（聊天模板支持、多模态标志等），供路由层查询'
+  - '**批量任务启动**：launch_slots_with_parent_task()支持父子任务的多槽位协同启动，实现复杂推理图的分布式占位'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 1247-1283
+    method_or_func: ServerContext::try_clear_idle_slots()
+  - file: tools/server/server-context.cpp
+    line: 1285-1306
+    method_or_func: ServerContext::construct_lora_list()
+  - file: tools/server/server-context.cpp
+    line: 1308-1481
+    method_or_func: ServerContext::launch_slot_with_task()
+  - file: tools/server/server-context.cpp
+    line: 1483-1601
+    method_or_func: ServerContext::process_token()
+  - file: tools/server/server-context.cpp
+    line: 1603-1662
+    method_or_func: ServerContext::populate_token_probs()
+  - file: tools/server/server-context.cpp
+    line: 1664-1705
+    method_or_func: ServerContext::send_error()
+  - file: tools/server/server-context.cpp
+    line: 1707-1717
+    method_or_func: ServerContext::check_no_mtmd()
+  - file: tools/server/server-context.cpp
+    line: 1719-1789
+    method_or_func: ServerContext::send_partial_response()
+  - file: tools/server/server-context.cpp
+    line: 1791-1881
+    method_or_func: ServerContext::send_final_response()
+  - file: tools/server/server-context.cpp
+    line: 1883-1943
+    method_or_func: ServerContext::send_embedding()
+  - file: tools/server/server-context.cpp
+    line: 1945-1984
+    method_or_func: ServerContext::send_rerank()
+  - file: tools/server/server-context.cpp
+    line: 1986-2008
+    method_or_func: ServerContext::tokenize_cli_input()
+  - file: tools/server/server-context.cpp
+    line: 2010-2025
+    method_or_func: ServerContext::get_free_slots()
+  - file: tools/server/server-context.cpp
+    line: 2027-2078
+    method_or_func: ServerContext::launch_slots_with_parent_task()
+  - file: tools/server/server-context.cpp
+    line: 2080-2166
+    method_or_func: ServerContext::process_single_task()
+  - file: tools/server/server-context.cpp
+    line: 1035-1245
+    method_or_func: ServerContext::get_available_slot()
+  - file: tools/server/server-context.cpp
+    line: 2185-2792
+    method_or_func: ServerContext::update_slots()
+  name: ServerContext：任务执行的"装配流水线"
+  'no': 4
+  points:
+  - '**空闲槽位清理**：try_clear_idle_slots()遍历所有槽位，清除非活跃槽位的提示词缓存，释放KV缓存内存，配合prompt_cache实现资源复用'
+  - '**LoRA配置构建**：construct_lora_list()根据任务参数动态构建适配器配置列表，支持per-request的LoRA权重调整与aLoRA（激活令牌）检测'
+  - '**任务启动管线**：launch_slot_with_task()是槽位启动的核心，处理aLoRA检测（alora_invocation_start）、LoRA配置应用、采样器初始化，并将槽位状态切换为活跃'
+  - '**Token处理细节**：process_token()执行生成的每个token的停止词检测（find_stopping_strings）、UTF-8字符完整性验证、生成预算检查与上下文限制'
+  - '**概率填充机制**：populate_token_probs()支持采样后（post_sampling=true）与采样前（false）两种模式，从sampler或logits中提取top-k候选概率'
+  - '**多任务类型支持**：识别COMPLETION/EMBEDDING/RERANK/CANCEL/SLOT_SAVE等任务类型，分发到相应处理器'
+  - '**推测解码集成**：在update_slots()中检测can_speculate()，调用common_speculative_draft生成草稿token，并通过i_batch_dft跟踪批次位置'
+  - '**错误处理规范化**：send_error()统一将内部错误（上下文超限、服务器错误等）转换为标准化JSON错误响应'
+  - '**智能槽位选择**：get_available_slot()根据任务需求选择最优槽位，结合LRU策略与缓存亲和性预测'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: '2555'
+    method_or_func: server_context::server_context()
+  - file: tools/server/server-context.cpp
+    line: '2556'
+    method_or_func: server_context::~server_context()
+  - file: tools/server/server-context.cpp
+    line: 2558-2560
+    method_or_func: server_context::load_model()
+  - file: tools/server/server-context.cpp
+    line: 2562-2565
+    method_or_func: server_context::start_loop()
+  - file: tools/server/server-context.cpp
+    line: 2567-2569
+    method_or_func: server_context::terminate()
+  - file: tools/server/server-context.cpp
+    line: 2571-2573
+    method_or_func: server_context::get_llama_context()
+  - file: tools/server/server-context.cpp
+    line: 2575-2577
+    method_or_func: server_context::get_response_reader()
+  - file: tools/server/server-context.cpp
+    line: 2579-2618
+    method_or_func: server_context::get_meta()
+  - file: tools/server/server-context.cpp
+    line: 2648-2650
+    method_or_func: server_context::on_sleeping_changed()
+  - file: tools/server/server-context.h
+    line: '45'
+    method_or_func: server_context::server_context()
+  - file: tools/server/server-context.h
+    line: '46'
+    method_or_func: server_context::~server_context()
+  - file: tools/server/server-context.h
+    line: '49'
+    method_or_func: server_context::load_model()
+  - file: tools/server/server-context.h
+    line: '52'
+    method_or_func: server_context::start_loop()
+  - file: tools/server/server-context.h
+    line: '55'
+    method_or_func: server_context::terminate()
+  - file: tools/server/server-context.h
+    line: '58'
+    method_or_func: server_context::get_llama_context()
+  - file: tools/server/server-context.h
+    line: '61'
+    method_or_func: server_context::get_response_reader()
+  - file: tools/server/server-context.h
+    line: '64'
+    method_or_func: server_context::get_meta()
+  - file: tools/server/server-context.h
+    line: '67'
+    method_or_func: server_context::on_sleeping_changed()
+  name: server_context：对外暴露的"门面接口"（Pimpl模式）
+  'no': 5
+  points:
+  - '**Pimpl惯用法**：通过std::unique_ptr<server_context_impl>隐藏实现细节，头文件仅暴露接口，降低编译依赖，便于ABI稳定'
+  - '**生命周期控制**：load_model()负责资源初始化，start_loop()启动事件循环并处理sleep_idle_seconds休眠唤醒，terminate()优雅停止队列处理'
+  - '**元数据快照**：get_meta()返回server_context_meta结构体，封装模型名称、聊天模板能力（jinja/grammar/supports_thinking）、多模态支持标志等静态配置'
+  - '**线程边界**：明确标注get_llama_context()仅在主线程调用，非线程安全；响应读取通过get_response_reader()创建独立读取器，支持多消费者并发'
+  - '**睡眠状态回调**：on_sleeping_changed()注册回调，在模型休眠/唤醒时通知上层应用'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 2630-2637
+    method_or_func: server_res_generator::server_res_generator()
+  - file: tools/server/server-context.cpp
+    line: 2638-2641
+    method_or_func: server_res_generator::ok()
+  - file: tools/server/server-context.cpp
+    line: 2642-2645
+    method_or_func: server_res_generator::error()
+  name: server_res_generator：响应的"智能信使"
+  'no': 6
+  points:
+  - '**睡眠状态同步**：构造函数中根据sleep_idle_seconds配置决定是否调用wait_until_no_sleep()，若服务器处于休眠模式且未禁用，则阻塞等待唤醒，实现推理资源的按需激活'
+  - '**标准化响应封装**：ok()设置HTTP 200并序列化JSON数据，error()提取错误码并包装为统一错误格式，屏蔽底层llama.cpp的C API复杂性'
+  - '**流式与非流式统一**：通过server_response_reader机制，既支持SSE（Server-Sent Events）的增量推送，也支持阻塞式的wait_for_all()批量获取，适配OpenAI/Anthropic不同协议需求'
+  - '**旁路机制**：bypass_sleep标志允许某些紧急请求跳过睡眠检查，实现零延迟响应'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 3313-3315
+    method_or_func: server_routes::create_response()
+  - file: tools/server/server-context.cpp
+    line: 3317-3323
+    method_or_func: server_routes::server_routes()
+  - file: tools/server/server-context.cpp
+    line: 3325-5311
+    method_or_func: server_routes::init_routes()
+  - file: tools/server/server-context.cpp
+    line: 2653-2767
+    method_or_func: server_routes::handle_completions_impl()
+  - file: tools/server/server-context.cpp
+    line: 5368-5400
+    method_or_func: server_routes::handle_embeddings_impl()
+  - file: tools/server/server-context.cpp
+    line: 5313-5330
+    method_or_func: server_routes::handle_slots_save()
+  - file: tools/server/server-context.cpp
+    line: 5332-5349
+    method_or_func: server_routes::handle_slots_restore()
+  - file: tools/server/server-context.cpp
+    line: 5351-5366
+    method_or_func: server_routes::handle_slots_erase()
+  - file: tools/server/server-context.h
+    line: '79'
+    method_or_func: server_routes::server_routes()
+  - file: tools/server/server-context.h
+    line: '82'
+    method_or_func: server_routes::init_routes()
+  - file: tools/server/server-context.h
+    line: 86-89
+    method_or_func: server_routes::update_meta()
+  - file: tools/server/server-context.h
+    line: 104-108
+    method_or_func: server_routes::handle_completions_impl()
+  - file: tools/server/server-context.h
+    line: '116'
+    method_or_func: server_routes::handle_embeddings_impl()
+  - file: tools/server/server-context.h
+    line: '110'
+    method_or_func: server_routes::handle_slots_save()
+  - file: tools/server/server-context.h
+    line: '112'
+    method_or_func: server_routes::handle_slots_restore()
+  - file: tools/server/server-context.h
+    line: '114'
+    method_or_func: server_routes::handle_slots_erase()
+  - file: tools/server/server-context.h
+    line: '123'
+    method_or_func: server_routes::create_response()
+  name: server_routes：HTTP 路由的"楼层指南"
+  'no': 7
+  points:
+  - '**端点注册中心**：init_routes()中定义20+个lambda处理器，覆盖/health、/metrics、/completion、/chat/completions、/embeddings、/rerank、/slots等RESTful端点'
+  - '**统一响应工厂**：create_response()生成server_res_generator实例，自动关联任务队列和结果队列，所有处理器必须以create_response()开头确保响应通道就绪'
+  - '**槽位管理端点**：handle_slots_save/restore/erase提供KV缓存的持久化与恢复，通过文件名验证（fs_validate_filename）防止路径遍历攻击'
+  - '**嵌入与重排序**：handle_embeddings_impl处理OpenAI兼容的/embeddings请求，支持embd_normalize参数控制L2归一化；handle_completions_impl统一处理文本补全与infill任务'
+  - '**元数据管理**：update_meta()维护最新的server_context_meta快照，确保路由层能访问最新的模型能力信息（如是否支持jinja模板、是否有图像/音频输入）'
+- codes:
+  - file: tools/server/server-context.cpp
+    line: 1874-2184
+    method_or_func: __main__
+  name: 文件作用域任务处理：SOP 标准作业程序
+  'no': 8
+  points:
+  - '**槽位状态持久化**：处理 SLOT_SAVE/SLOT_RESTORE 任务类型，通过 llama_state_seq_save_file/load_file
+    实现 KV 缓存到磁盘的序列化与反序列化，支持跨会话状态恢复'
+  - '**槽位空间清理**：处理 SLOT_ERASE 任务类型，调用 slot->prompt_clear(false) 释放 KV 缓存内存，支持强制清理与容量管理'
+  - '**LoRA 动态配置**：处理 GET_LORA/SET_LORA 任务，遍历查询或应用 lora_adapters 配置，支持运行时适配器热切换'
+  - '**任务路由分发**：作为 process_single_task 的核心实现，将不同 SERVER_TASK_TYPE 分发到具体处理逻辑，是连接 HTTP
+    层与推理引擎的转换器'

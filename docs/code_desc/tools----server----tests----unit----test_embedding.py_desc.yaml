@@ -1,0 +1,334 @@
+classes: []
+desc: 该文件是 embedding 服务的单元测试套件，使用 pytest 框架，覆盖了 bert_bge_small 模型的多种请求场景，包括单条/多条输入、不同池化策略、混合数据类型、错误处理、OpenAI
+  库兼容性及 base64 编码格式等。
+file: tools/server/tests/unit/test_embedding.py
+funcs:
+- code:
+  - import base64
+  - import struct
+  - import pytest
+  - from openai import OpenAI
+  - from utils import *
+  - ''
+  - server = ServerPreset.bert_bge_small()
+  - ''
+  - EPSILON = 1e-3
+  - ''
+  - '@pytest.fixture(autouse=True)'
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.bert_bge_small()'
+  desc: 文件的全局代码，主要进行初始化设置，包括创建服务器实例、定义 epsilon 常量、设置全局服务器变量，并通过 pytest fixture 在每次测试前重置服务器状态。
+  line: 1-12
+  name: __main__
+- code:
+  - 'def test_embedding_single():'
+  - '    global server'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": "I believe the meaning of life is",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 1'
+  - '    assert ''embedding'' in res.body[''data''][0]'
+  - '    assert len(res.body[''data''][0][''embedding'']) > 1'
+  - ''
+  - '    # make sure embedding vector is normalized'
+  - '    assert abs(sum([x ** 2 for x in res.body[''data''][0][''embedding'']]) -
+    1) < EPSILON'
+  desc: 测试单条文本输入生成 embedding，验证响应状态码、结果数量和向量归一化性质。
+  line: 14-31
+  name: test_embedding_single
+- code:
+  - 'def test_embedding_multiple():'
+  - '    global server'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": ['
+  - '            "I believe the meaning of life is",'
+  - '            "Write a joke about AI from a very long prompt which will not be
+    truncated",'
+  - '            "This is a test",'
+  - '            "This is another test",'
+  - '        ],'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 4'
+  - '    for d in res.body[''data'']:'
+  - '        assert ''embedding'' in d'
+  - '        assert len(d[''embedding'']) > 1'
+  desc: 测试多条文本输入生成 embedding，验证返回结果数量和每条数据的 embedding 字段。
+  line: 33-51
+  name: test_embedding_multiple
+- code:
+  - 'def test_embedding_multiple_with_fa():'
+  - '    server = ServerPreset.bert_bge_small_with_fa()'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    # one of these should trigger the FA branch (i.e. context size % 256 == 0)'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": ['
+  - '            "a "*253,'
+  - '            "b "*254,'
+  - '            "c "*255,'
+  - '            "d "*256,'
+  - '        ],'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 4'
+  - '    for d in res.body[''data'']:'
+  - '        assert ''embedding'' in d'
+  - '        assert len(d[''embedding'']) > 1'
+  desc: 测试多输入且包含触发 Flash Attention 分支的场景（context size 为 256 的倍数），验证嵌入结果。
+  line: 53-75
+  name: test_embedding_multiple_with_fa
+- code:
+  - '@pytest.mark.parametrize('
+  - '    "input,is_multi_prompt",'
+  - '    ['
+  - '        # do not crash on empty input'
+  - '        ("", False),'
+  - '        # single prompt'
+  - '        ("string", False),'
+  - '        ([12, 34, 56], False),'
+  - '        ([12, 34, "string", 56, 78], False),'
+  - '        # multiple prompts'
+  - '        (["string1", "string2"], True),'
+  - '        (["string1", [12, 34, 56]], True),'
+  - '        ([[12, 34, 56], [12, 34, 56]], True),'
+  - '        ([[12, 34, 56], [12, "string", 34, 56]], True),'
+  - '    ]'
+  - ')    '
+  - 'def test_embedding_mixed_input(input, is_multi_prompt: bool):'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={"input": input})'
+  - '    assert res.status_code == 200'
+  - '    data = res.body[''data'']'
+  - '    if is_multi_prompt:'
+  - '        assert len(data) == len(input)'
+  - '        for d in data:'
+  - '            assert ''embedding'' in d'
+  - '            assert len(d[''embedding'']) > 1'
+  - '    else:'
+  - '        assert ''embedding'' in data[0]'
+  - '        assert len(data[0][''embedding'']) > 1'
+  desc: 通过参数化测试验证各种混合输入类型（字符串、整数列表、字符串列表等），检查多提示和单提示的处理逻辑。
+  line: 77-105
+  name: test_embedding_mixed_input
+- code:
+  - 'def test_embedding_pooling_mean():'
+  - '    global server'
+  - '    server.pooling = ''mean'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": "I believe the meaning of life is",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 1'
+  - '    assert ''embedding'' in res.body[''data''][0]'
+  - '    assert len(res.body[''data''][0][''embedding'']) > 1'
+  - ''
+  - '    # make sure embedding vector is normalized'
+  - '    assert abs(sum([x ** 2 for x in res.body[''data''][0][''embedding'']]) -
+    1) < EPSILON'
+  desc: 测试 mean 池化策略下单个输入的嵌入生成，验证响应和向量归一化。
+  line: 107-123
+  name: test_embedding_pooling_mean
+- code:
+  - 'def test_embedding_pooling_mean_multiple():'
+  - '    global server'
+  - '    server.pooling = ''mean'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": ['
+  - '            "I believe the meaning of life is",'
+  - '            "Write a joke about AI",'
+  - '            "This is a test",'
+  - '        ],'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 3'
+  - '    for d in res.body[''data'']:'
+  - '        assert ''embedding'' in d'
+  - '        assert len(d[''embedding'']) > 1'
+  desc: 测试 mean 池化策略下多条输入的嵌入生成，验证响应结果数量。
+  line: 125-142
+  name: test_embedding_pooling_mean_multiple
+- code:
+  - 'def test_embedding_pooling_none():'
+  - '    global server'
+  - '    server.pooling = ''none'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/embeddings", data={'
+  - '        "input": "hello hello hello",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert ''embedding'' in res.body[0]'
+  - '    assert len(res.body[0][''embedding'']) == 5 # 3 text tokens + 2 special'
+  - ''
+  - '    # make sure embedding vector is not normalized'
+  - '    for x in res.body[0][''embedding'']:'
+  - '        assert abs(sum([x ** 2 for x in x]) - 1) > EPSILON'
+  desc: 测试 none 池化策略下使用 /embeddings 端点，验证特殊 token 数量和向量未归一化。
+  line: 144-160
+  name: test_embedding_pooling_none
+- code:
+  - 'def test_embedding_pooling_none_oai():'
+  - '    global server'
+  - '    server.pooling = ''none'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": "hello hello hello",'
+  - '    })'
+  - ''
+  - '    # /v1/embeddings does not support pooling type ''none'''
+  - '    assert res.status_code == 400'
+  - '    assert "error" in res.body'
+  desc: 测试 none 池化策略下使用 /v1/embeddings 端点，验证返回 400 状态码和错误信息。
+  line: 162-174
+  name: test_embedding_pooling_none_oai
+- code:
+  - 'def test_embedding_openai_library_single():'
+  - '    global server'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")'
+  - '    res = client.embeddings.create(model="text-embedding-3-small", input="I believe
+    the meaning of life is")'
+  - '    assert len(res.data) == 1'
+  - '    assert len(res.data[0].embedding) > 1'
+  desc: 测试使用 OpenAI Python 客户端库对 /v1/embeddings 接口进行单条输入请求。
+  line: 176-184
+  name: test_embedding_openai_library_single
+- code:
+  - 'def test_embedding_openai_library_multiple():'
+  - '    global server'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")'
+  - '    res = client.embeddings.create(model="text-embedding-3-small", input=['
+  - '        "I believe the meaning of life is",'
+  - '        "Write a joke about AI from a very long prompt which will not be truncated",'
+  - '        "This is a test",'
+  - '        "This is another test",'
+  - '    ])'
+  - '    assert len(res.data) == 4'
+  - '    for d in res.data:'
+  - '        assert len(d.embedding) > 1'
+  desc: 测试使用 OpenAI Python 客户端库对 /v1/embeddings 接口进行多条输入请求。
+  line: 186-199
+  name: test_embedding_openai_library_multiple
+- code:
+  - 'def test_embedding_error_prompt_too_long():'
+  - '    global server'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": "This is a test " * 512,'
+  - '    })'
+  - '    assert res.status_code != 200'
+  - '    assert "too large" in res.body["error"]["message"]'
+  desc: 测试超长输入提示词时的错误处理，验证返回非 200 状态码和错误信息。
+  line: 201-210
+  name: test_embedding_error_prompt_too_long
+- code:
+  - 'def test_same_prompt_give_same_result():'
+  - '    server.pooling = ''last'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": ['
+  - '            "I believe the meaning of life is",'
+  - '            "I believe the meaning of life is",'
+  - '            "I believe the meaning of life is",'
+  - '            "I believe the meaning of life is",'
+  - '            "I believe the meaning of life is",'
+  - '        ],'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body[''data'']) == 5'
+  - '    for i in range(1, len(res.body[''data''])):'
+  - '        v0 = res.body[''data''][0][''embedding'']'
+  - '        vi = res.body[''data''][i][''embedding'']'
+  - '        for x, y in zip(v0, vi):'
+  - '            assert abs(x - y) < EPSILON'
+  desc: 测试相同输入提示词重复提交时返回相同的 embedding 结果，验证确定性。
+  line: 212-231
+  name: test_same_prompt_give_same_result
+- code:
+  - '@pytest.mark.parametrize('
+  - '    "content,n_tokens",'
+  - '    ['
+  - '        ("I believe the meaning of life is", 9),'
+  - '        ("This is a test", 6),'
+  - '    ]'
+  - )
+  - 'def test_embedding_usage_single(content, n_tokens):'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={"input": content})'
+  - '    assert res.status_code == 200'
+  - '    assert res.body[''usage''][''prompt_tokens''] == res.body[''usage''][''total_tokens'']'
+  - '    assert res.body[''usage''][''prompt_tokens''] == n_tokens'
+  desc: 参数化测试验证单条输入的 token 使用量，确保 prompt_tokens 和 total_tokens 匹配预期值。
+  line: 233-248
+  name: test_embedding_usage_single
+- code:
+  - 'def test_embedding_usage_multiple():'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": ['
+  - '            "I believe the meaning of life is",'
+  - '            "I believe the meaning of life is",'
+  - '        ],'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert res.body[''usage''][''prompt_tokens''] == res.body[''usage''][''total_tokens'']'
+  - '    assert res.body[''usage''][''prompt_tokens''] == 2 * 9'
+  desc: 测试多条输入时 token 使用量计算，验证 prompt_tokens 等于输入的 token 之和。
+  line: 250-263
+  name: test_embedding_usage_multiple
+- code:
+  - 'def test_embedding_openai_library_base64():'
+  - '    server.start()'
+  - '    test_input = "Test base64 embedding output"'
+  - ''
+  - '    # get embedding in default format'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": test_input'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    vec0 = res.body["data"][0]["embedding"]'
+  - ''
+  - '    # get embedding in base64 format'
+  - '    res = server.make_request("POST", "/v1/embeddings", data={'
+  - '        "input": test_input,'
+  - '        "encoding_format": "base64"'
+  - '    })'
+  - ''
+  - '    assert res.status_code == 200'
+  - '    assert "data" in res.body'
+  - '    assert len(res.body["data"]) == 1'
+  - ''
+  - '    embedding_data = res.body["data"][0]'
+  - '    assert "embedding" in embedding_data'
+  - '    assert isinstance(embedding_data["embedding"], str)'
+  - ''
+  - '    # Verify embedding is valid base64'
+  - '    decoded = base64.b64decode(embedding_data["embedding"])'
+  - '    # Verify decoded data can be converted back to float array'
+  - '    float_count = len(decoded) // 4  # 4 bytes per float'
+  - '    floats = struct.unpack(f''{float_count}f'', decoded)'
+  - '    assert len(floats) > 0'
+  - '    assert all(isinstance(x, float) for x in floats)'
+  - '    assert len(floats) == len(vec0)'
+  - ''
+  - '    # make sure the decoded data is the same as the original'
+  - '    for x, y in zip(floats, vec0):'
+  - '        assert abs(x - y) < EPSILON'
+  desc: 测试 base64 编码格式的 embedding 输出，解码后与默认格式的向量进行比较验证一致性。
+  line: 265-301
+  name: test_embedding_openai_library_base64

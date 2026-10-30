@@ -1,0 +1,970 @@
+code_map:
+- examples/convert_legacy_llama.py
+- ├── 数据类型体系
+- '│   ├── DataType / UnquantizedDataType / QuantizedDataType  # 抽象基类'
+- '│   │   └── DataType.elements_to_bytes()                  # 字节数计算'
+- '│   │   └── QuantizedDataType.elements_to_bytes()          # 按块大小计算'
+- '│   │   └── QuantizedDataType.quantize()                  # 量化抽象方法'
+- '│   ├── DT_F16 / DT_F32 / DT_I32 / DT_BF16                 # 非量化类型实例'
+- '│   └── DT_Q8_0 (Q8_0QuantizedDataType)                    # Python 端 Q8_0 量化实现'
+- '│       └── Q8_0QuantizedDataType.quantize()                # 分块量化核心算法'
+- ├── GGMLFileType 枚举
+- '│   ├── AllF32 / MostlyF16 / MostlyQ8_0                     # 三种输出精度'
+- '│   └── GGMLFileType.type_for_tensor()                     # 1D 张量强制 F32'
+- ├── Params：超参数猜测与加载
+- '│   ├── Params.guessed()                                   # 通过 tensor 名称反推 n_layer/n_head'
+- '│   ├── Params.loadHFTransformerJson()                     # 处理 HF config.json'
+- '│   ├── Params.loadOriginalParamsJson()                    # 处理 LLaMA v2 params.json'
+- '│   └── Params.load()                                      # 三级回退：HF→Original→Guessed'
+- ├── 惰性加载体系
+- '│   ├── LazyTensor / LazyStorage / LazyStorageKind         # 按需加载的核心数据结构'
+- '│   │   ├── LazyTensor.load()                              # 触发实际读取'
+- '│   │   ├── LazyTensor.astype()                            # 惰性类型转换'
+- '│   │   └── LazyTensor.validate_conversion_to()            # 校验合法转换'
+- '│   ├── LazyUnpickler                                      # 拦截 torch pickle 反序列化'
+- '│   │   ├── LazyUnpickler.persistent_load()                # 按需读取 zip 内 storage'
+- '│   │   ├── LazyUnpickler.lazy_rebuild_tensor_v2()         # 惰性重建张量'
+- '│   │   ├── LazyUnpickler.rebuild_from_type_v2()           # 类型重建入口'
+- '│   │   └── LazyUnpickler.find_class()                     # CLASSES 路由表查找'
+- '│   ├── lazy_load_torch_file()                             # PyTorch zip 格式加载'
+- '│   ├── lazy_load_safetensors_file()                       # SafeTensors mmap 加载'
+- '│   ├── must_read()                                        # 严格字节读取辅助'
+- '│   └── lazy_load_file()                                   # 格式自动识别入口'
+- ├── 张量操作工具
+- │   ├── Tensor 抽象基类
+- │   │   ├── Tensor.astype() / Tensor.permute() / Tensor.permute_part()
+- │   │   ├── Tensor.part() / Tensor.to_ggml()
+- │   ├── UnquantizedTensor 实现
+- '│   │   ├── UnquantizedTensor.astype()                     # 含 BF16→FP32 转换'
+- │   │   ├── UnquantizedTensor.permute() / permute_part() / part()
+- │   │   └── UnquantizedTensor.to_ggml()
+- '│   ├── bf16_to_fp32()                                     # BF16 位运算转 FP32'
+- '│   ├── permute()                                          # head 维度重排核心'
+- '│   ├── permute_lazy() / permute_part_lazy() / part_lazy() # 惰性版本'
+- '│   ├── load_unquantized()                                 # 加载并校验张量'
+- '│   ├── pack_experts_lazy()                                # MoE 专家权重 3D 打包'
+- '│   ├── merge_sharded()                                    # 分片模型拼接（列/行拼接策略）'
+- '│   └── merge_multifile_models()                           # 多文件模型合并入口'
+- ├── 并发与输出
+- '│   ├── bounded_parallel_map()                             # 限流并发（每线程缓冲 1 结果）'
+- '│   ├── per_model_weight_count_estimation()                # 参数量估算（含 expert 区分）'
+- '│   ├── pick_output_type()                                 # 输出精度自动选择'
+- '│   ├── convert_to_output_type()                           # 按维度应用精度'
+- '│   ├── convert_model_names()                              # HF→GGUF 命名规范化'
+- '│   ├── nth_multifile_path() / find_multifile_paths()      # 分片文件路径解析'
+- '│   ├── load_some_model()                                  # 目录/文件统一加载'
+- '│   ├── do_dump_model()                                    # dump 模式打印模型结构'
+- '│   ├── default_convention_outfile() / default_outfile()   # 输出文件名规范'
+- '│   └── OutputFile                                         # GGUF 打包机'
+- '│       ├── OutputFile.add_meta_model()                    # 写入模型元信息'
+- '│       ├── OutputFile.add_meta_arch()                     # 写入架构超参数'
+- '│       ├── OutputFile.extract_vocabulary_from_model()     # 抽取 tokens/scores/toktypes'
+- │       ├── OutputFile.add_meta_vocab() / add_meta_special_vocab()
+- '│       ├── OutputFile.add_tensor_info()                   # 注册张量元信息'
+- '│       ├── OutputFile.write_meta() / write_tensor_info()  # 分阶段刷新文件'
+- '│       ├── OutputFile.write_tensor_data()                # 分片写入 + Q8_0 量化切换'
+- '│       ├── OutputFile.do_item() / OutputFile.maybe_do_quantize()  # 静态流水线节点'
+- '│       ├── OutputFile.write_vocab_only() / OutputFile.write_all()  # 顶层入口'
+- '│       └── OutputFile.close()                             # 关闭 GGUFWriter'
+- ├── 词表与主流程
+- '│   ├── VocabFactory                                       # SPM/BPE/HFFT 词表工厂'
+- '│   │   ├── VocabFactory._create_special_vocab()           # SpecialVocab 构造'
+- '│   │   ├── VocabFactory._create_vocab_by_path()           # 按顺序尝试分词器'
+- '│   │   └── VocabFactory.load_vocab()                      # 加载主流程'
+- '│   ├── check_vocab_size()                                 # vocab 完整性校验 + pad_vocab'
+- '│   └── main()                                             # 命令行入口与流程编排'
+- tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+- ├── 辅助工具
+- '│   ├── k()                                                # 模板字符串格式化（TEXT/VISION）'
+- '│   └── bytes_to_unicode()                                 # BPE 字节↔Unicode 映射表'
+- ├── 张量命名与过滤
+- '│   ├── should_skip_tensor()                               # 跳过 logit_scale / position_ids
+  / projector 头'
+- '│   └── get_tensor_name()                                  # HF→GGUF 命名翻译表'
+- │       ├── image_newline → model.image_newline
+- │       ├── multi_modal_projector → mm.model.mlp/peg
+- │       └── text_model→t / vision_model→v / encoder.layers→blk
+- ├── 模型加载与元数据
+- '│   ├── 三种 encoder 分支（CLIP / CLIPVision / Siglip）    # 通过 argparse 互斥组选择'
+- '│   ├── text encoder hparams block                         # 写入 TEXT 超参数'
+- '│   └── vision encoder hparams block                       # 写入 VISION 超参数 + image_grid_pinpoints'
+- ├── vision feature layer 处理
+- '│   └── get_non_negative_vision_feature_layers()           # 负数索引→正数（-1→num_layers+1）'
+- ├── LLaVA projector 集成
+- '│   └── has_llava_projector block                          # 加载独立 projector 并合并写入（main
+  流程第 281-313 行）'
+- ├── __main__ 入口
+- '│   └── main() / __main__                                  # argparse 解析与流程编排（第
+  111-330 行）'
+- tools/mtmd/legacy-models/glmedge-surgery.py
+- ├── 模型加载：AutoModel.from_pretrained
+- '├── mm_tensors extraction                                  # 提取 vision.adapter.*
+  → glm.projector（第 18-21 行）'
+- '├── clip tensors extraction                                # 提取 vision.vit.model.vision_model.*
+  → glm.clip（第 24-27 行）'
+- '├── added_tokens.json 清空                                # 兼容 Mistral tokenizer'
+- '└── main() / __main__                                      # argparse 入口（第 11-35
+  行）'
+- tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+- ├── 辅助工具
+- '│   ├── k() / bytes_to_unicode()                           # 与 CLIP 转换器共享工具'
+- '│   ├── should_skip_tensor()                               # 跳过 SigLIP 探测头'
+- '│   └── get_tensor_name()                                  # HF→GGUF 命名翻译（vision.adapter.*
+  → mm）'
+- '├── SiglipVisionModel loader                               # 重新构造 SiglipVisionModel
+  加载 glm.clip（第 120-124 行）'
+- '├── has_glm_projector block                                # 加载 glm.projector 并按
+  vision.adapter.* 重命名写入（第 238-263 行）'
+- '├── vision_model head 过滤                                # 去除 attention probe /
+  mlp 等冗余权重'
+- '└── main() / __main__                                      # argparse 入口与流程编排（第
+  103-281 行）'
+- tools/mtmd/legacy-models/llava_surgery.py
+- '├── main() / __main__                                      # argparse 入口（第 11-37
+  行）'
+- '├── mm_tensors extraction                                  # 提取 model.mm_projector
+  → llava.projector（第 16-19 行）'
+- '└── BakLLaVA CLIP 提取                                     # 提取 model.vision_tower
+  → llava.clip'
+- tools/mtmd/legacy-models/llava_surgery_v2.py
+- ├── 格式识别
+- '│   ├── is_safetensor_file()                               # 后缀判断'
+- '│   └── load_model() / save_model()                        # .bin / .safetensors
+  双格式读写'
+- ├── 权重名匹配
+- │   ├── is_vision_tower() / is_newline() / is_mm_projector()
+- '│   └── newline_criteria() / proj_criteria()               # 分片查找谓词'
+- ├── 提取流程
+- '│   ├── clean_vision_tower_from_checkpoint()               # 从所有分片中剥离 vision tower'
+- '│   ├── find_relevant_checkpoints()                        # 跨文件寻找 projector 与
+  newline 所在分片'
+- '│   └── mtime 排序 + 按需更新                              # 避免重复提取'
+- '└── main() / __main__                                      # argparse 入口（--clean-vision-tower
+  开关，第 116-186 行）'
+- tools/mtmd/legacy-models/minicpmv-surgery.py
+- '├── main() / __main__                                      # argparse 入口（第 9-44
+  行）'
+- '├── resampler.proj scale fix                               # 按 scale_emb 缩放投影器（第
+  20-22 行）'
+- '├── vpm.* → minicpmv.clip                                  # 视觉预处理器映射提取'
+- '├── added_tokens.json 清空                                # 兼容 Mistral tokenizer'
+- '└── LLM 部分保存到 model/ 子目录                          # 含 auto_map 重写与 tokenizer 保存'
+- tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+- ├── SigLIP 模型定义（内嵌 HF 源码）
+- '│   ├── SiglipVisionConfig.__init__()                      # 配置类'
+- '│   ├── SiglipVisionEmbeddings.__init__()                  # patch 嵌入 + 位置嵌入'
+- '│   ├── SiglipAttention.__init__()                         # Q/K/V/O 投影'
+- '│   ├── SiglipMLP.__init__()                               # fc1/fc2 MLP'
+- '│   ├── SiglipEncoderLayer / SiglipEncoder.__init__()      # 编码层与堆叠'
+- '│   ├── SiglipVisionTransformer.__init__()                 # 完整 ViT 主干'
+- │   │   └── SiglipVisionTransformer.get_input_embeddings()
+- '│   ├── SiglipPreTrainedModel._init_weights()              # 初始化策略'
+- '│   ├── _get_unpad_data() / _trunc_normal_() / trunc_normal_tf_()  # 注意力与截断正态'
+- '│   └── variance_scaling_() / lecun_normal_() / default_flax_embed_init()  # 权重初始化家族'
+- '├── Idefics2VisionTransformer / Config                   # 由 transformers 提供（注释导入）'
+- ├── 辅助工具
+- '│   ├── add_key_str()                                      # 模板字符串格式化'
+- │   ├── bytes_to_unicode()
+- '│   ├── should_skip_tensor()                               # 跳过 position_ids /
+  projection'
+- '│   └── get_tensor_name()                                  # HF→GGUF 命名翻译'
+- '├── minicpmv_version config switch                         # 1/2/3/4/5/6/100045
+  七种版本自动检测（第 358-388 行）'
+- │   └── 同时支持 config.json 覆盖默认硬编码值
+- ├── 位置嵌入
+- '│   ├── get_1d_sincos_pos_embed_from_grid()                # 1D sin-cos 嵌入'
+- '│   ├── get_2d_sincos_pos_embed_from_grid()                # 2D 网格嵌入'
+- '│   └── get_2d_sincos_pos_embed()                          # 70×70 网格 2D 位置编码'
+- ├── Resampler 张量重塑
+- '│   ├── _replace_name()                                     # vision_model.* 前缀补全
+  + position_embedding 升维'
+- '│   └── _replace_name_resampler()                          # proj 拆分为 weight+pos_embed_k,
+  in_proj_* 按 chunk(3) 拆 q/k/v'
+- '├── has_minicpmv_projector block                           # 投影器写入 + projector_type=resampler（第
+  492-532 行）'
+- '└── main() / __main__                                      # argparse 入口与流程编排（第
+  281-585 行）'
+exercises:
+- contents:
+  - 阅读 `examples/convert_legacy_llama.py` 第 300-580 行，理解以下惰性加载的核心设计：
+  - 1. `LazyTensor` 的 `_load` 回调是如何实现「只在需要时才读取磁盘」的？
+  - 2. `LazyUnpickler.persistent_load()` 中的 `LazyStorage` 是如何按需读取 zip 内特定偏移的？
+  - 3. `lazy_load_safetensors_file()` 与 `lazy_load_torch_file()` 的 mmap 策略有何不同？
+  - 回答问题：
+  - '- 如果一个 70B 模型有 100 个分片，`merge_sharded()` 在不加载完整张量的情况下如何知道每个分片的形状？'
+  - '- `LazyTensor.astype()` 的惰性转换是如何在加载链上叠加多个操作的？'
+  'no': 1
+  title: 分析惰性加载的核心设计
+- contents:
+  - 阅读 `examples/convert_legacy_llama.py` 第 65-90 行和第 815-870 行，理解 Q8_0 量化的完整路径：
+  - 1. `Q8_0QuantizedDataType.quantize()` 的分块量化算法是如何工作的？
+  - 2. `GGMLFileType.type_for_tensor()` 如何决定每个张量的输出精度？
+  - 3. `bounded_parallel_map()` 在 `MostlyQ8_0` 模式下为什么切换为 `ProcessPoolExecutor`？
+  - 回答问题：
+  - '- 如果输入是 F16 模型但输出选择 Q8_0，`convert_to_output_type()` 与 `maybe_do_quantize()` 的调用顺序是怎样的？'
+  - '- 为什么 1D 张量（如 bias）在 `type_for_tensor()` 中强制转换为 F32？'
+  'no': 2
+  title: 追踪 Q8_0 量化的完整路径
+- contents:
+  - 阅读 `tools/mtmd/legacy-models/` 下的三个手术脚本，对比它们的分离策略：
+  - 1. `glmedge-surgery.py`：如何从 GLM 模型中分离视觉部分？
+  - 2. `llava_surgery_v2.py`：`clean_vision_tower_from_checkpoint()` 与 `find_relevant_checkpoints()`
+    的协作流程是怎样的？
+  - 3. `minicpmv-surgery.py`：Resampler 投影器的 `scale_emb` 缩放是在哪里处理的？
+  - 回答问题：
+  - '- 为什么 GLM-Edge 需要两个脚本协作，而 LLaVA v2 可以在一个脚本中完成？'
+  - '- MiniCPM-V 的 `vpm.*` 与 LLaVA 的 `model.vision_tower` 在命名上有何本质区别？'
+  'no': 3
+  title: 对比三种多模态分离方案
+- contents:
+  - 基于本章所学，为一个假想的「LLaMA v1 + CLIP 视觉塔」遗留模型设计转换验证方案：
+  - 1. 写出完整的转换流水线步骤（从 PyTorch checkpoint 到可用的 mmproj GGUF）
+  - 2. 列出至少 5 个关键的「转换正确性检查点」（如：张量数量、形状、词表大小、元数据完整性）
+  - 3. 说明在哪些环节最容易出现「静默错误」（即转换成功但模型不可用）
+  - 回答问题：
+  - '- 如果 checkpoint 中同时存在 `model.embed_tokens.weight` 和 `tok_embeddings.weight`，`Params.guessed()`
+    会优先选择哪一个？'
+  - '- `convert_model_names()` 中的 `skip_unknown` 参数在什么场景下应该开启？开启后可能带来什么风险？'
+  'no': 4
+  title: 设计一个遗留模型转换的测试用例
+learning_targets:
+- 理解旧版 LLaMA 转换器的核心机制：惰性加载、参数猜测、Q8_0 量化与 GGMLFileType 选择策略
+- 掌握 convert_legacy_llama.py 中 Params、LazyTensor、OutputFile 三大核心类的设计哲学与协作流程
+- 掌握视觉编码器转换器的张量命名规范（HF→GGUF 翻译表）与元数据写入机制
+- 理解多模态模型分离与重组的「手术刀」式处理流程（GLM-Edge / LLaVA / MiniCPM-V 三套方案）
+- 了解 LazyStorage + LazyUnpickler 如何实现 PyTorch checkpoint 的零依赖惰性反序列化
+- 理解 bounded_parallel_map 的限流并发机制与 ProcessPoolExecutor 在 Q8_0 量化中的应用
+- 能阅读并修改遗留模型转换脚本以适配新的 checkpoint 格式
+life_analogy:
+- 想象遗留模型转换工具集是一家**「老照片修复工作室」：**
+- '- **convert_legacy_llama.py** = 老照片修复师，能把 decades 前的 PyTorch checkpoint 逐步修复成可读的
+  GGUF 格式'
+- '- **惰性加载（LazyTensor/LazyStorage）** = 按需翻阅的放大镜，只在需要时才从底片（zip/safetensors）中读取特定区域'
+- '- **Params.guessed()** = 老照片修复中的「凭痕迹推测」，通过张量名称的磨损程度（embed_tokens/W_pack/layers）反推模型的
+  n_layer、n_head'
+- '- **Q8_0 量化与 GGMLFileType** = 老照片的数字化压缩，AllF32/MostlyF16/MostlyQ8_0 三种精度选择就像三种不同的扫描分辨率'
+- '- **convert_image_encoder_to_gguf.py** = 视觉神经的「移植手术」，把 CLIP/SigLIP 的视觉部分从 HuggingFace
+  的躯体中完整取出'
+- '- **GLM-Edge 双脚本协作** = 分身术第一阶段（surgery.py）把视觉部分从原 LLM 中物理分离，第二阶段（convert）把分离出来的视觉部分封装为可被
+  mtmd 加载的 mmproj'
+- '- **LLaVA surgery v1/v2** = 拆弹专家的两种武器：v1 是「一刀切」只读最后一个分片，v2 是「多文件侦探」跨所有分片搜索 projector
+  与 newline'
+- '- **MiniCPM-V 转换器** = 多版本兼容的拼装工厂，通过 minicpmv_version 参数自动识别 7 种不同版本的 Resampler
+  与视觉塔结构（同时内嵌了一份 SigLIP 的纯 NumPy 复刻定义）'
+- '- **bounded_parallel_map** = 限流并发的交通警察，最多同时启动 N 个线程但每个线程只缓冲 1 个结果，Q8_0 时切换 ProcessPoolExecutor
+  真正利用多核'
+- 就像修复师需要根据照片的年代、材质、破损程度选择不同的修复策略，遗留转换工具也需要根据模型的版本、格式、模态选择不同的提取与打包方案。
+'no': 7
+summary:
+- concept: '`Params.guessed()`'
+  desc: 通过 tensor 名称反推 n_layer/n_head/n_ff，三级回退（HF→Original→Guessed）保证兼容
+- concept: '`LazyTensor/LazyStorage`'
+  desc: 按需加载机制，70B 模型无需一次性装入内存，支持 PyTorch zip 与 safetensors 双格式
+- concept: '`permute/part/permute_part`'
+  desc: QKV 拆分与 head 维度重排，处理 HF 与 LLaMA 布局差异及 Baichuan W_pack 打包
+- concept: '`merge_sharded`'
+  desc: 分片模型拼接：tok_embeddings/wo/w2 按列拼接，其他按行拼接，1D 张量直接复用
+- concept: '`DataType.elements_to_bytes()`'
+  desc: 按 dtype.itemsize 计算字节数，非量化类型的通用接口
+- concept: '`QuantizedDataType.elements_to_bytes()`'
+  desc: 按 block_size 整除计算字节数，量化类型的接口
+- concept: '`QuantizedDataType.quantize()`'
+  desc: 量化抽象方法，由 Q8_0QuantizedDataType 用 NumPy 实现分块量化
+- concept: '`Q8_0QuantizedDataType.quantize()`'
+  desc: Python 端 Mini Q8_0 量化，block_size=32，用 NumPy 实现分块量化
+- concept: '`GGMLFileType`'
+  desc: AllF32/MostlyF16/MostlyQ8_0 三种输出精度，1D 张量统一强制为 F32
+- concept: '`bounded_parallel_map`'
+  desc: 限流并发，每线程最多缓冲 1 结果，Q8_0 时切换 ProcessPoolExecutor 利用多核
+- concept: '`convert_model_names`'
+  desc: HF→GGUF 命名规范化，MoE expert 打包为 3D，W_pack 拆分 Q/K/V，QKV permute
+- concept: '`OutputFile`'
+  desc: GGUF 打包机，add_meta_model/arch/vocab → write_meta → write_tensor_info → write_tensor_data
+- concept: '`OutputFile.write_all()`'
+  desc: 完整流水线入口，串联 add_meta_* + add_tensor_info + write_meta + write_tensor_info +
+    write_tensor_data
+- concept: '`convert_image_encoder_to_gguf.py`'
+  desc: CLIP/SigLIP 视觉编码器转换，支持 text-only/vision-only/mmproj 三种输出形态
+- concept: '`get_tensor_name()`'
+  desc: HF→GGUF 命名翻译表：text_model→t, vision_model→v, encoder.layers→blk, self_attn→attn_
+- concept: '`get_non_negative_vision_feature_layers()`'
+  desc: 负数视觉特征层索引转正数（-1→num_layers+1），用于 LLaVA-Next 特征层选择
+- concept: '`has_llava_projector block`'
+  desc: convert_image_encoder_to_gguf.py 中的代码块：加载独立 projector 并合并写入 mmproj GGUF
+- concept: '`has_glm_projector block`'
+  desc: glmedge-convert 中的代码块：加载 glm.projector 并按 vision.adapter.* 重命名写入
+- concept: '`has_minicpmv_projector block`'
+  desc: minicpmv-convert 中的代码块：投影器写入 + projector_type=resampler
+- concept: '`glmedge-surgery.py main()`'
+  desc: GLM-Edge 第一阶段入口：从原 LLM 中物理分离 vision.adapter.* 投影器与 SigLIP 视觉塔
+- concept: '`glmedge-surgery.py mm_tensors extraction`'
+  desc: GLM-Edge 提取 vision.adapter.* → glm.projector 的核心逻辑
+- concept: '`glmedge-convert-image-encoder-to_gguf.py SiglipVisionModel loader`'
+  desc: 重新构造 SiglipVisionModel 加载分离出来的权重，projector_type 固定为 adapter
+- concept: '`glmedge-convert-image-encoder-to_gguf.py k()`'
+  desc: 模板字符串格式化工具（TEXT/VISION 注入）
+- concept: '`glmedge-convert-image-encoder-to_gguf.py bytes_to_unicode()`'
+  desc: BPE 字节↔Unicode 映射表（来自 GPT-2 实现）
+- concept: '`glmedge-convert-image-encoder-to_gguf.py get_tensor_name()`'
+  desc: HF→GGUF 命名翻译，多了 vision. 前缀剥离
+- concept: '`glmedge-convert-image-encoder-to_gguf.py should_skip_tensor()`'
+  desc: 多了 vision_model.head.* 过滤（SigLIP 探测头）
+- concept: '`glmedge-convert-image-encoder-to_gguf.py main()`'
+  desc: argparse 入口与流程编排（projector_type 固定为 adapter）
+- concept: '`llava_surgery.py main()`'
+  desc: LLaVA v1.5 投影器提取（一刀切），只读取最后一个 pytorch_model*.bin 分片
+- concept: '`llava_surgery.py mm_tensors extraction`'
+  desc: LLaVA v1.5 提取 model.mm_projector → llava.projector 的核心逻辑
+- concept: '`llava_surgery_v2.py`'
+  desc: LLaVA v1.6+ 投影器提取（多文件侦探），支持 .bin/.safetensors 双格式跨分片搜索
+- concept: '`clean_vision_tower_from_checkpoint()`'
+  desc: 从所有分片中剥离 vision tower 并合并写入 llava.clip，避免重复提取
+- concept: '`minicpmv-surgery.py main()`'
+  desc: MiniCPM-V 投影器提取入口，resampler.proj 按 scale_emb 缩放，vpm.* 视觉预处理器映射提取
+- concept: '`minicpmv-surgery.py resampler.proj scale fix`'
+  desc: 按 model.llm.config.scale_emb 缩放 resampler.proj 的特殊处理
+- concept: '`minicpmv_version`'
+  desc: 七种版本自动检测（1/2/3/4/5/6/100045），对应 MiniCPM-V-2/2.5/2.6/o-2.6/4.0/o-4.0/o-4.5
+- concept: '`_replace_name_resampler()`'
+  desc: Resampler 张量重塑：proj 拆分为 proj.weight+pos_embed_k，in_proj_* 按 chunk(3) 拆分为 q/k/v
+- concept: '`get_2d_sincos_pos_embed()`'
+  desc: 70×70 网格的 2D sin-cos 位置嵌入，补全 MiniCPM-V Resampler 的 pos_embed_k
+- concept: '`check_vocab_size()`'
+  desc: vocab 完整性校验，支持 --pad-vocab 自动补全 dummy token
+- concept: '`VocabFactory`'
+  desc: SPM/BPE/HFFT 词表工厂，按优先级尝试多种分词器格式
+- concept: '`default_convention_outfile()`'
+  desc: 输出文件命名规范：name-basename-finetune-version-size_label-output_type.gguf
+- concept: '`SiglipVisionTransformer`'
+  desc: MiniCPM-V 转换器内嵌的 SigLIP 纯 NumPy 复刻定义，含初始化（trunc_normal_/lecun_normal_）与位置嵌入
+- concept: '`SiglipVisionConfig`'
+  desc: MiniCPM-V 转换器使用的 SigLIP 配置类，独立于 transformers 库
+- concept: '`OutputFile.do_item`'
+  desc: 静态流水线节点：从 LazyTensor 中真正加载并解包为 ndarray
+- concept: '`OutputFile.maybe_do_quantize`'
+  desc: 静态流水线节点：按 dt 类型决定是否调用量化函数
+- concept: '`lazy_load_file`'
+  desc: 格式自动识别：PK→zip/torch，前 8 字节小→safetensors；含 lru_cache
+- concept: '`__main__` (convert_legacy_llama.py)'
+  desc: 命令行入口与流程编排，处理所有参数解析、模型加载、转换流水线触发
+- concept: '`minicpmv-convert-image-encoder-to_gguf.py minicpmv_version config switch`'
+  desc: 七种 minicpmv_version 与 config.json 双驱动的硬编码默认值切换逻辑
+- concept: '`convert_image_encoder_to_gguf.py main()`'
+  desc: 完整流程编排：argparse → 加载 encoder → 写入元数据 → 加载 projector → 写出张量
+units:
+- codes:
+  - file: examples/convert_legacy_llama.py
+    line: 142-178
+    method_or_func: Params.guessed()
+  - file: examples/convert_legacy_llama.py
+    line: 180-236
+    method_or_func: Params.loadHFTransformerJson()
+  - file: examples/convert_legacy_llama.py
+    line: 238-296
+    method_or_func: Params.loadOriginalParamsJson()
+  - file: examples/convert_legacy_llama.py
+    line: 298-310
+    method_or_func: Params.load()
+  - file: examples/convert_legacy_llama.py
+    line: 95-111
+    method_or_func: Q8_0QuantizedDataType.quantize()
+  - file: examples/convert_legacy_llama.py
+    line: 75-78
+    method_or_func: QuantizedDataType.quantize()
+  - file: examples/convert_legacy_llama.py
+    line: 48-49
+    method_or_func: DataType.elements_to_bytes()
+  - file: examples/convert_legacy_llama.py
+    line: 80-83
+    method_or_func: QuantizedDataType.elements_to_bytes()
+  - file: examples/convert_legacy_llama.py
+    line: 120-126
+    method_or_func: GGMLFileType.type_for_tensor()
+  - file: examples/convert_legacy_llama.py
+    line: 316-325
+    method_or_func: Tensor.*
+  - file: examples/convert_legacy_llama.py
+    line: 350-358
+    method_or_func: UnquantizedTensor.astype()
+  - file: examples/convert_legacy_llama.py
+    line: 337-340
+    method_or_func: bf16_to_fp32()
+  - file: examples/convert_legacy_llama.py
+    line: 1099-1233
+    method_or_func: main()
+  - file: examples/convert_legacy_llama.py
+    line: 1235-1236
+    method_or_func: __main__
+  name: convert_legacy_llama.py：旧 LLaMA 转换器 —— 解剖「远古时代」的转换手术刀
+  'no': 1
+  points:
+  - '**为什么需要这个脚本？**'
+  - '- 它是 llama.cpp 最早期的转换器，专门处理 Meta LLaMA v1/v2、CodeLlama、Mixtral 等「老前辈」模型的 PyTorch
+    checkpoint'
+  - '- 即使有了 convert_hf_to_gguf.py，这些早期格式仍需要专门工具来兼容'
+  - '**Params：超参数的「猜猜乐游戏」**'
+  - '- `Params.guessed()` 像侦探一样通过 tensor 名称（embed_tokens/W_pack/layers）反推 n_layer、n_head'
+  - '- `loadHFTransformerJson()` 与 `loadOriginalParamsJson()` 分别处理现代 HF config.json
+    与 LLaMA v2 时代的 params.json'
+  - '- 通过 norm_eps 与 rope_theta 等启发式判断 LLaMA v1/v2/CodeLlama/Mixtral 版本'
+  - '- `Params.load()` 实现三级回退：HF→Original→Guessed'
+  - '**核心数据类型：DataType 与 Q8_0QuantizedDataType**'
+  - '- `UnquantizedDataType`（F16/F32/I32/BF16）负责原始数组'
+  - '- `QuantizedDataType` 引入 block_size 概念，`Q8_0QuantizedDataType` 用 NumPy 实现了简易
+    Q8_0 量化'
+  - '- `DataType.elements_to_bytes()` 与 `QuantizedDataType.elements_to_bytes()` 分别处理非量化与量化类型的字节数计算'
+  - '- `QuantizedDataType.quantize()` 是量化抽象方法，由 Q8_0 子类实现'
+  - '**GGMLFileType：旧版文件格式枚举**'
+  - '- `AllF32 / MostlyF16 / MostlyQ8_0` 三种输出精度选择'
+  - '- 通过 `type_for_tensor()` 自动将 1D 张量统一为 F32（兼容老旧算子）'
+  - '**Tensor 抽象与 BF16/FP32 转换**'
+  - '- `Tensor` 抽象基类定义了 astype/permute/permute_part/part/to_ggml 五个钩子'
+  - '- `UnquantizedTensor` 实现具体行为，并在 astype 时自动调用 `bf16_to_fp32` 还原位模式'
+  - '**顶层 main 入口与命令行参数**'
+  - '- `main()` 是 argparse 入口与全流程编排入口'
+- codes:
+  - file: examples/convert_legacy_llama.py
+    line: 328-337
+    method_or_func: LazyTensor.load()
+  - file: examples/convert_legacy_llama.py
+    line: 339-346
+    method_or_func: LazyTensor.astype()
+  - file: examples/convert_legacy_llama.py
+    line: 348-350
+    method_or_func: LazyTensor.validate_conversion_to()
+  - file: examples/convert_legacy_llama.py
+    line: 475-503
+    method_or_func: LazyUnpickler.persistent_load()
+  - file: examples/convert_legacy_llama.py
+    line: 505-512
+    method_or_func: LazyUnpickler.lazy_rebuild_tensor_v2()
+  - file: examples/convert_legacy_llama.py
+    line: 514-516
+    method_or_func: LazyUnpickler.rebuild_from_type_v2()
+  - file: examples/convert_legacy_llama.py
+    line: 527-529
+    method_or_func: LazyUnpickler.find_class()
+  - file: examples/convert_legacy_llama.py
+    line: 535-545
+    method_or_func: lazy_load_torch_file()
+  - file: examples/convert_legacy_llama.py
+    line: 548-575
+    method_or_func: lazy_load_safetensors_file()
+  - file: examples/convert_legacy_llama.py
+    line: 577-582
+    method_or_func: must_read()
+  - file: examples/convert_legacy_llama.py
+    line: 585-595
+    method_or_func: lazy_load_file()
+  - file: examples/convert_legacy_llama.py
+    line: 300-307
+    method_or_func: permute()
+  - file: examples/convert_legacy_llama.py
+    line: 455-458
+    method_or_func: permute_lazy()
+  - file: examples/convert_legacy_llama.py
+    line: 461-466
+    method_or_func: permute_part_lazy()
+  - file: examples/convert_legacy_llama.py
+    line: 469-473
+    method_or_func: part_lazy()
+  - file: examples/convert_legacy_llama.py
+    line: 441-446
+    method_or_func: pack_experts_lazy()
+  - file: examples/convert_legacy_llama.py
+    line: 364-365
+    method_or_func: UnquantizedTensor.permute()
+  - file: examples/convert_legacy_llama.py
+    line: 360-362
+    method_or_func: UnquantizedTensor.permute_part()
+  - file: examples/convert_legacy_llama.py
+    line: 362-363
+    method_or_func: UnquantizedTensor.part()
+  - file: examples/convert_legacy_llama.py
+    line: 367-368
+    method_or_func: UnquantizedTensor.to_ggml()
+  - file: examples/convert_legacy_llama.py
+    line: 371-383
+    method_or_func: load_unquantized()
+  - file: examples/convert_legacy_llama.py
+    line: 395-438
+    method_or_func: merge_sharded()
+  - file: examples/convert_legacy_llama.py
+    line: 448-466
+    method_or_func: merge_multifile_models()
+  - file: examples/convert_legacy_llama.py
+    line: 961-975
+    method_or_func: nth_multifile_path()
+  - file: examples/convert_legacy_llama.py
+    line: 978-993
+    method_or_func: find_multifile_paths()
+  - file: examples/convert_legacy_llama.py
+    line: 996-1019
+    method_or_func: load_some_model()
+  name: LazyStorage 与 LazyTensor：按需加载的「记忆宫殿」
+  'no': 2
+  points:
+  - '**为什么需要惰性加载？**'
+  - '- 70B 模型可能上百 GB，无法一次性装入内存'
+  - '- `LazyTensor` 只在真正需要时才从磁盘读取特定张量'
+  - '**permute 与 part：拆分 QKV 的「手术刀」**'
+  - '- LLaMA 的 QKV 与 HF 命名布局不同，需要通过 `permute` 调整 head 维度顺序'
+  - '- Baichuan 等模型的 W_pack 把 QKV 打包在一起，需要 `permute_part` / `part` 拆分'
+  - '- 三个 `*_lazy` 包装函数让 permute/part 操作也保持惰性'
+  - '**LazyStorage + LazyUnpickler：模拟 torch.load 的「伪装者」**'
+  - '- 通过 pickle 反序列化拦截 storage 类，按需读取 zip 内的 .pkl 文件'
+  - '- `persistent_load` 根据 (module, name) 路由到对应的 LazyStorageKind'
+  - '- `lazy_rebuild_tensor_v2` 进一步包装为 LazyTensor，附 description 描述'
+  - '- `find_class` 通过 CLASSES 表替换 torch.* 类，零依赖完成反序列化'
+  - '**safetensors mmap 加载：零拷贝读取**'
+  - '- `lazy_load_safetensors_file` 用 mmap 将数据区映射到内存'
+  - '- 通过 data_offsets 直接切片，无需分配中间缓冲'
+  - '**格式自动识别与多文件加载**'
+  - '- `lazy_load_file` 用 `@lru_cache` 缓存读取结果'
+  - '- 前两字节 `PK` 判定 zip，否则按前 8 字节大小判定 safetensors'
+  - '- `find_multifile_paths` 支持 `.00.pth`、`-00001-of-N.bin`、`x.bin.1` 三种命名模式'
+  - '**merge_sharded：分片模型的「拼图师」**'
+  - '- tok_embeddings / wo / w2 按列拼接，其他按行拼接（遵循原 LLaMA 分片策略）'
+  - '- 自动识别「跨文件重复的 1D 张量」并直接复用第一份'
+  - '- `merge_multifile_models` 同时处理 HF 与 LLaMA 分片两种策略'
+- codes:
+  - file: examples/convert_legacy_llama.py
+    line: 659-707
+    method_or_func: OutputFile.add_meta_model()
+  - file: examples/convert_legacy_llama.py
+    line: 736-783
+    method_or_func: OutputFile.add_meta_arch()
+  - file: examples/convert_legacy_llama.py
+    line: 785-799
+    method_or_func: OutputFile.extract_vocabulary_from_model()
+  - file: examples/convert_legacy_llama.py
+    line: 801-809
+    method_or_func: OutputFile.add_meta_vocab()
+  - file: examples/convert_legacy_llama.py
+    line: 811-812
+    method_or_func: OutputFile.add_meta_special_vocab()
+  - file: examples/convert_legacy_llama.py
+    line: 814-819
+    method_or_func: OutputFile.add_tensor_info()
+  - file: examples/convert_legacy_llama.py
+    line: 821-823
+    method_or_func: OutputFile.write_meta()
+  - file: examples/convert_legacy_llama.py
+    line: 825-826
+    method_or_func: OutputFile.write_tensor_info()
+  - file: examples/convert_legacy_llama.py
+    line: 828-851
+    method_or_func: OutputFile.write_tensor_data()
+  - file: examples/convert_legacy_llama.py
+    line: 869-872
+    method_or_func: OutputFile.do_item()
+  - file: examples/convert_legacy_llama.py
+    line: 874-878
+    method_or_func: OutputFile.maybe_do_quantize()
+  - file: examples/convert_legacy_llama.py
+    line: 853-867
+    method_or_func: OutputFile.write_vocab_only()
+  - file: examples/convert_legacy_llama.py
+    line: 881-912
+    method_or_func: OutputFile.write_all()
+  - file: examples/convert_legacy_llama.py
+    line: 828-828
+    method_or_func: OutputFile.close()
+  - file: examples/convert_legacy_llama.py
+    line: 600-632
+    method_or_func: bounded_parallel_map()
+  - file: examples/convert_legacy_llama.py
+    line: 634-657
+    method_or_func: check_vocab_size()
+  - file: examples/convert_legacy_llama.py
+    line: 915-929
+    method_or_func: pick_output_type()
+  - file: examples/convert_legacy_llama.py
+    line: 932-954
+    method_or_func: per_model_weight_count_estimation()
+  - file: examples/convert_legacy_llama.py
+    line: 957-959
+    method_or_func: convert_to_output_type()
+  - file: examples/convert_legacy_llama.py
+    line: 961-975
+    method_or_func: convert_model_names()
+  - file: examples/convert_legacy_llama.py
+    line: 1057-1075
+    method_or_func: default_convention_outfile()
+  - file: examples/convert_legacy_llama.py
+    line: 1078-1088
+    method_or_func: default_outfile()
+  - file: examples/convert_legacy_llama.py
+    line: 1091-1096
+    method_or_func: do_dump_model()
+  - file: examples/convert_legacy_llama.py
+    line: 1043-1054
+    method_or_func: VocabFactory.load_vocab()
+  - file: examples/convert_legacy_llama.py
+    line: 1021-1027
+    method_or_func: VocabFactory._create_special_vocab()
+  - file: examples/convert_legacy_llama.py
+    line: 1029-1041
+    method_or_func: VocabFactory._create_vocab_by_path()
+  name: OutputFile 与 bounded_parallel_map：写入 GGUF 的「流水线工厂」
+  'no': 3
+  points:
+  - '**OutputFile：GGUF 文件的「打包机」**'
+  - '- `add_meta_model()` 通过启发式（4096→LLaMA v2）+ metadata 决定模型名'
+  - '- `add_meta_arch()` 写入 vocab_size、n_layer、n_head、RoPE 等架构元数据'
+  - '- `add_meta_vocab()` 与 `add_meta_special_vocab()` 抽取词表与特殊 token'
+  - '- `extract_vocabulary_from_model()` 统一从 vocab.all_tokens() 取三元组'
+  - '- `add_tensor_info()` 注册张量形状/类型信息到 GGUF'
+  - '- `write_meta()` / `write_tensor_info()` 分阶段刷新文件'
+  - '**OutputFile 静态流水线节点**'
+  - '- `OutputFile.do_item` 从 LazyTensor 中真正加载并解包为 ndarray'
+  - '- `OutputFile.maybe_do_quantize` 按 dt 类型决定是否调用量化函数'
+  - '- `write_tensor_data()` 用 bounded_parallel_map 串接两步处理'
+  - '**bounded_parallel_map：限流并发的「交通警察」**'
+  - '- 同时启动 N 个线程，但每个线程最多缓冲 1 个结果，避免内存堆积'
+  - '- Q8_0 量化时切换为 ProcessPoolExecutor 真正利用多核'
+  - '**convert_model_names：张量重命名的「翻译官」**'
+  - '- 对 MoE 模型的 expert 0/1/2 张量打包为单一 3D experts 权重'
+  - '- 对 HF Q_proj/K_proj 进行 permute，对 Baichuan W_pack 拆分 Q/K/V'
+  - '- 使用 `gguf.TensorNameMap` 完成 HF→GGUF 的命名规范化'
+  - '- 通过 `skip_unknown` 兼容 LLaVA 等非主流架构'
+  - '**精度选择与权重统计**'
+  - '- `pick_output_type()` 根据 wq 张量类型自动选择 F16/F32'
+  - '- `convert_to_output_type()` 调用 `type_for_tensor()` 决定每个张量的输出精度'
+  - '- `per_model_weight_count_estimation()` 估算总参/共享参/expert 参数量'
+  - '- `default_convention_outfile` / `default_outfile` 实现 GGUF 标准命名规范'
+  - '**vocab 兼容处理**'
+  - '- `check_vocab_size()` 校验 vocab 完整性，支持 `--pad-vocab` 自动补全'
+  - '- `VocabFactory` 提供 SPM/BPE/HFFT 词表的统一加载入口'
+  - '**顶层入口与 dump 模式**'
+  - '- `OutputFile.write_vocab_only()` 仅写词表（适合 tokenizer-only 转换）'
+  - '- `OutputFile.write_all()` 是完整流水线入口'
+  - '- `do_dump_model` 支持 `--dump` / `--dump-single` 模式打印模型结构'
+- codes:
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 20-43
+    method_or_func: should_skip_tensor()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 46-78
+    method_or_func: get_tensor_name()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 168-194
+    method_or_func: get_non_negative_vision_feature_layers()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 16-17
+    method_or_func: k()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 82-109
+    method_or_func: bytes_to_unicode()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 111-330
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 111-330
+    method_or_func: __main__
+  - file: tools/mtmd/legacy-models/convert_image_encoder_to_gguf.py
+    line: 281-313
+    method_or_func: has_llava_projector block
+  name: convert_image_encoder_to_gguf.py：CLIP/SigLIP 视觉编码器 —— 图像理解的「视觉神经」转换器
+  'no': 4
+  points:
+  - '**三种 CLIP 形态：text-only / vision-only / mmproj**'
+  - '- 通过 `--text-only` / `--vision-only` / `--llava-projector` 控制输出形态'
+  - '- `has_text_encoder` / `has_vision_encoder` / `has_llava_projector` 三个 bool 决定张量写入范围'
+  - '- argparse 互斥组选择 encoder 类型（CLIP / CLIPVision / Siglip / openclip）'
+  - '**辅助工具**'
+  - '- `k()` 是模板字符串格式化工具（TEXT / VISION 注入）'
+  - '- `bytes_to_unicode()` 是 BPE 字节↔Unicode 映射表（来自 GPT-2 实现）'
+  - '**张量命名规范：HF → GGUF 的「翻译表」**'
+  - '- `get_tensor_name()` 把 `vision_model.encoder.layers` → `v.blk`，`text_model`
+    → `t`'
+  - '- 特殊处理 LLaVA-Next 的 `image_newline` 与 `multi_modal_projector` 命名'
+  - '- `mm.mlp.mlp` / `mm.peg.peg` 通过正则简化为 `mm.model.mlp/peg`'
+  - '**LLaVA projector 集成**'
+  - '- 通过 `--llava-projector` 加载独立 projector 文件，与 vision encoder 合并写入 mmproj GGUF'
+  - '- 支持 mlp / ldp / ldpv2 三种 projector 类型'
+  - '- 4D 卷积权重固定 F16，2D 线性权重按 ftype 切换 F16/F32'
+  - '**vision feature layer 处理**'
+  - '- `get_non_negative_vision_feature_layers()` 把负数索引转换为正数（-1→num_layers+1）'
+  - '- 根据 feature_layers 裁剪 vision encoder 层数（pop or truncate）'
+  - '**数据精度：自动按维度选择 F16/F32**'
+  - '- 4D 卷积权重固定为 F16（GGML conv 算子约束）'
+  - '- 2D 线性层按 `ftype` 选择 F16/F32'
+  - '**vision 元数据写入**'
+  - '- 写入 image_size/patch_size/hidden_size/intermediate_size/heads/layer_norm_eps/block_count'
+  - '- 写入 image_grid_pinpoints / image_crop_resolution / image_aspect_ratio / image_split_resolution'
+  - '- 写入 mm_patch_merge_type / mm_projector_type / feature_layer / image_mean / image_std'
+  - '**__main__ 入口（main 函数）**'
+  - '- argparse 解析 + 加载 CLIPModel / CLIPVisionModel / SiglipVisionModel'
+  - '- 根据 fname_middle 决定输出文件名前缀（text-/vision-/mmproj-/空）'
+  - '- 第 111-330 行是完整流程编排：argparse 解析 → 模型加载 → 元数据写入 → projector 加载 → 张量写入'
+- codes:
+  - file: tools/mtmd/legacy-models/glmedge-surgery.py
+    line: 18-21
+    method_or_func: mm_tensors extraction
+  - file: tools/mtmd/legacy-models/glmedge-surgery.py
+    line: 11-35
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/glmedge-surgery.py
+    line: 11-35
+    method_or_func: __main__
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 120-124
+    method_or_func: SiglipVisionModel loader
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 238-263
+    method_or_func: has_glm_projector block
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 26-27
+    method_or_func: k()
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 73-100
+    method_or_func: bytes_to_unicode()
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 40-51
+    method_or_func: get_tensor_name()
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 30-60
+    method_or_func: should_skip_tensor()
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 103-281
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/glmedge-convert-image-encoder-to-gguf.py
+    line: 103-281
+    method_or_func: __main__
+  name: GLM-Edge 多模态：双文件协作的「分身术」
+  'no': 5
+  points:
+  - '**glmedge-surgery.py：从大模型中切出「手术切片」**'
+  - '- `main()` 是 argparse 入口（第 11-35 行）'
+  - '- `mm_tensors extraction` 提取 `vision.adapter.*` 投影器权重 → `glm.projector`（第 18-21
+    行）'
+  - '- 提取 `vision.vit.model.vision_model.*` SigLIP 权重 → `glm.clip`'
+  - '- 清空 `added_tokens.json` 以兼容 Mistral tokenizer'
+  - '**glmedge-convert-image-encoder-to_gguf.py：合并视觉编码器**'
+  - '- `SiglipVisionModel loader` 重新构造 SiglipVisionModel 加载 glm.clip（第 120-124 行）'
+  - '- `k()` 与 `bytes_to_unicode()` 是模板格式化与 BPE 字节映射表'
+  - '- `should_skip_tensor()` 多了一组 `vision_model.head.*` 过滤（SigLIP 探测头）'
+  - '- `get_tensor_name()` 额外处理 `vision.` 前缀剥离'
+  - '- `has_glm_projector block` 加载 glm.projector 后按 `vision.adapter.*` 重命名写入 GGUF（第
+    238-263 行）'
+  - '- projector_type 固定为 `adapter`（GLM 的视觉适配器风格）'
+  - '- `main()` 是 argparse 入口与流程编排（第 103-281 行）'
+  - '**与通用 convert_image_encoder_to_gguf.py 的差异**'
+  - '- 不再使用 CLIPModel.from_pretrained，而是手工构造 SiglipVisionModel'
+  - '**为什么需要两个脚本？**'
+  - '- 第一阶段：把视觉部分从原 LLM 中物理分离'
+  - '- 第二阶段：把分离出来的视觉部分封装为可被 mtmd 加载的 mmproj GGUF'
+- codes:
+  - file: tools/mtmd/legacy-models/llava_surgery.py
+    line: 11-37
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/llava_surgery.py
+    line: 16-19
+    method_or_func: mm_tensors extraction
+  - file: tools/mtmd/legacy-models/llava_surgery.py
+    line: 11-37
+    method_or_func: __main__
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 13-26
+    method_or_func: load_model()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 29-35
+    method_or_func: save_model()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 10-11
+    method_or_func: is_safetensor_file()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 38-44
+    method_or_func: is_vision_tower()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 46-51
+    method_or_func: is_newline()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 53-58
+    method_or_func: is_mm_projector()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 60-61
+    method_or_func: newline_criteria()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 63-64
+    method_or_func: proj_criteria()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 63-95
+    method_or_func: clean_vision_tower_from_checkpoint()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 97-113
+    method_or_func: find_relevant_checkpoints()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 116-186
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/llava_surgery_v2.py
+    line: 116-186
+    method_or_func: __main__
+  name: llava_surgery.py 与 v2：旧版 LLaVA 投影器提取 —— 「拆弹专家」的两种武器
+  'no': 6
+  points:
+  - '**v1（llava_surgery.py）：简单直接的「一刀切」**'
+  - '- `main()` / `__main__` 是 argparse 入口（第 11-37 行）'
+  - '- `mm_tensors extraction` 只读取 `pytorch_model*.bin` 中的最后一个分片（早期 LLaVA 1.5，第 16-19
+    行）'
+  - '- 提取 `model.mm_projector` → `llava.projector`'
+  - '- 如果是 BakLLaVA 还要提取 CLIP tower 并重写 added_tokens.json'
+  - '**v2（llava_surgery_v2.py）：支持 SafeTensors 的「多文件侦探」**'
+  - '- `is_safetensor_file` 通过后缀判断文件格式'
+  - '- `load_model` / `save_model` 统一处理 `.bin` 与 `.safetensors` 双格式'
+  - '- `is_vision_tower` / `is_newline` / `is_mm_projector` 是三个权重名前缀匹配函数'
+  - '- `newline_criteria` / `proj_criteria` 是基于上述谓词的分片查找函数'
+  - '- `clean_vision_tower_from_checkpoint()` 从所有分片中剥离 vision tower → `llava.clip`'
+  - '- `find_relevant_checkpoints()` 跨文件寻找 projector 与 newline 所在分片'
+  - '- `main()` 是 argparse 入口（第 116-186 行）'
+  - '**命名规范化**'
+  - '- 把 `vision_tower.vision_tower.xxx` → `xxx`'
+  - '- 把 `model.image_newline` 正确归类到 projector 中'
+  - '**v2 的工程优势**'
+  - '- 同时处理 PyTorch 与 SafeTensors 双格式'
+  - '- 通过 mtime 排序并按需更新，避免重复提取'
+  - '- `existing_clip` 合并逻辑防止多文件重复提取'
+- codes:
+  - file: tools/mtmd/legacy-models/minicpmv-surgery.py
+    line: 9-44
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/minicpmv-surgery.py
+    line: 20-22
+    method_or_func: resampler.proj scale fix
+  - file: tools/mtmd/legacy-models/minicpmv-surgery.py
+    line: 9-44
+    method_or_func: __main__
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 358-388
+    method_or_func: minicpmv_version config switch
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 470-490
+    method_or_func: _replace_name_resampler()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 436-468
+    method_or_func: get_2d_sincos_pos_embed()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 415-433
+    method_or_func: get_1d_sincos_pos_embed_from_grid()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 436-452
+    method_or_func: get_2d_sincos_pos_embed_from_grid()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 492-532
+    method_or_func: has_minicpmv_projector block
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 357-358
+    method_or_func: add_key_str()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 395-422
+    method_or_func: bytes_to_unicode()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+    line: 361-376
+    method_or_func: should_skip_tensor()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 379-393
+    method_or_func: get_tensor_name()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 535-541
+    method_or_func: _replace_name()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 161-188
+    method_or_func: SiglipVisionConfig.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 277-295
+    method_or_func: SiglipVisionEmbeddings.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 297-315
+    method_or_func: SiglipAttention.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 319-324
+    method_or_func: SiglipMLP.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 328-335
+    method_or_func: SiglipEncoderLayer.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 364-371
+    method_or_func: SiglipEncoder.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 374-386
+    method_or_func: SiglipVisionTransformer.__init__()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 388-389
+    method_or_func: SiglipVisionTransformer.get_input_embeddings()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 337-361
+    method_or_func: SiglipPreTrainedModel._init_weights()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 201-227
+    method_or_func: _trunc_normal_()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 230-259
+    method_or_func: trunc_normal_tf_()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 262-275
+    method_or_func: variance_scaling_()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 277-279
+    method_or_func: lecun_normal_()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 281-282
+    method_or_func: default_flax_embed_init()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 191-198
+    method_or_func: _get_unpad_data()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 281-585
+    method_or_func: main()
+  - file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to_gguf.py
+    line: 281-585
+    method_or_func: __main__
+  name: minicpmv-surgery.py 与转换器：MiniCPM-V 视觉模型 —— 「多版本兼容」的拼装工厂
+  'no': 7
+  points:
+  - '**minicpmv-surgery.py：把 Resampler 投影器「肢解」**'
+  - '- `main()` / `__main__` 是 argparse 入口（第 9-44 行）'
+  - '- `resampler.proj scale fix` 按 `model.llm.config.scale_emb` 缩放 `resampler.proj`（MiniCPM-V
+    2 的特殊处理，第 20-22 行）'
+  - '- 提取 `vpm.*`（视觉预处理器映射）→ `minicpmv.clip`'
+  - '- 保存 LLM 部分到 `model/` 子目录供后续转换（重写 auto_map）'
+  - '- 保存 tokenizer 到 `model/` 子目录'
+  - '**多版本架构检测**'
+  - '- `minicpmv_version config switch` 支持 1/2/3/4/5/6/100045 七种版本自动检测（第 358-388 行）'
+  - '- 同时支持 config.json 覆盖默认硬编码值'
+  - '- `minicpmv_version=1`→MiniCPM-V-2（Idefics2 风格）'
+  - '- `minicpmv_version=2/5/6/100045`→MiniCPM-V-2.5/4.0/o 系列（Siglip 风格）'
+  - '**内嵌 SigLIP 模型定义（来自 HuggingFace）**'
+  - '- `SiglipVisionConfig.__init__()` 是配置类，独立于 transformers 库'
+  - '- `SiglipVisionEmbeddings.__init__()` 实现 patch 嵌入 + 位置嵌入'
+  - '- `SiglipAttention.__init__()` / `SiglipMLP.__init__()` 是 QKV 投影与 MLP 实现'
+  - '- `SiglipEncoderLayer.__init__()` / `SiglipEncoder.__init__()` 堆叠多层'
+  - '- `SiglipVisionTransformer.__init__()` 完整 ViT 主干（含 post_layernorm）'
+  - '- `SiglipVisionTransformer.get_input_embeddings()` 获取 patch 嵌入'
+  - '- `SiglipPreTrainedModel._init_weights()` 提供完整初始化策略'
+  - '- `_get_unpad_data()` 是 FlashAttention 风格的 unpad 工具'
+  - '- `_trunc_normal_()` / `trunc_normal_tf_()` 是截断正态采样实现'
+  - '- `variance_scaling_()` / `lecun_normal_()` / `default_flax_embed_init()` 是初始化家族'
+  - '**Idefics2VisionTransformer / Config**'
+  - '- 由 transformers 提供（注释导入）'
+  - '**辅助工具**'
+  - '- `add_key_str()` 是模板字符串格式化工具'
+  - '- `bytes_to_unicode()` 是 BPE 字节映射表'
+  - '- `should_skip_tensor()` 跳过 position_ids / projection'
+  - '- `get_tensor_name()` 是 HF→GGUF 命名翻译'
+  - '**Resampler 张量重塑与位置编码**'
+  - '- `_replace_name_resampler()` 把 `resampler.proj` 拆分为 proj.weight + pos_embed_k'
+  - '- 把 `attn.in_proj_*` 按 chunk(3) 拆分为 q/k/v'
+  - '- `get_2d_sincos_pos_embed()` 用 70×70 网格的 2D sin-cos 位置嵌入补全 pos_embed_k'
+  - '- `get_1d_sincos_pos_embed_from_grid()` / `get_2d_sincos_pos_embed_from_grid()`
+    是子函数'
+  - '**vision_model 张量重映射**'
+  - '- `_replace_name()` 在所有 key 前加上 `vision_model.` 前缀'
+  - '- `embeddings.position_embedding` 升维为 4D 兼容 GGUF 视图'
+  - '**has_minicpmv_projector block**'
+  - '- 加载独立 projector 文件后按上述规则重塑（第 492-532 行）'
+  - '- 按维度选择 F16/F32，4D 卷积固定 F16'
+  - '**main() 入口**'
+  - '- argparse 解析 + 加载 Idefics2VisionTransformer 或 SiglipVisionTransformer（第 281-585
+    行）'
+  - '- 处理 minicpmv_version 的 config 切换与覆盖逻辑'

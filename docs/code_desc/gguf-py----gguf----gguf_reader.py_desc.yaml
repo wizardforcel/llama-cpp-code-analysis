@@ -1,0 +1,348 @@
+classes:
+- desc: 一个命名元组，用于表示 GGUF 文件中的一个字段（键值对），包含字段的偏移量、名称、数据分片、数据索引和类型信息。
+  methods:
+  - code:
+    - 'def contents(self, index_or_slice: int | slice = slice(None)) -> Any:'
+    - '    if self.types:'
+    - '        to_string = lambda x: str(x.tobytes(), encoding=''utf-8'') # noqa:
+      E731'
+    - '        main_type = self.types[0]'
+    - ''
+    - '        if main_type == GGUFValueType.ARRAY:'
+    - '            sub_type = self.types[-1]'
+    - ''
+    - '            if sub_type == GGUFValueType.STRING:'
+    - '                indices = self.data[index_or_slice]'
+    - ''
+    - '                if isinstance(index_or_slice, int):'
+    - '                    return to_string(self.parts[indices]) # type: ignore'
+    - '                else:'
+    - '                    return [to_string(self.parts[idx]) for idx in indices]
+      # type: ignore'
+    - '            else:'
+    - '                # FIXME: When/if _get_field_parts() support multi-dimensional
+      arrays, this must do so too'
+    - ''
+    - '                # Check if it''s unsafe to perform slice optimization on data'
+    - '                # if any(True for idx in self.data if len(self.parts[idx])
+      != 1):'
+    - '                #     optim_slice = slice(None)'
+    - '                # else:'
+    - '                #     optim_slice = index_or_slice'
+    - '                #     index_or_slice = slice(None)'
+    - ''
+    - '                # if isinstance(optim_slice, int):'
+    - '                #     return self.parts[self.data[optim_slice]].tolist()[0]'
+    - '                # else:'
+    - '                #     return [pv for idx in self.data[optim_slice] for pv in
+      self.parts[idx].tolist()][index_or_slice]'
+    - ''
+    - '                if isinstance(index_or_slice, int):'
+    - '                    return self.parts[self.data[index_or_slice]].tolist()[0]'
+    - '                else:'
+    - '                    return [pv for idx in self.data[index_or_slice] for pv
+      in self.parts[idx].tolist()]'
+    - ''
+    - '        if main_type == GGUFValueType.STRING:'
+    - '            return to_string(self.parts[-1])'
+    - '        else:'
+    - '            return self.parts[-1].tolist()[0]'
+    - ''
+    - '    return None'
+    desc: 根据传入的索引或切片，从字段中提取并返回实际的数据内容。支持字符串、数组等类型的解码。
+    line: 71-111
+    name: contents
+  name: ReaderField
+- desc: 一个命名元组，用于表示 GGUF 文件中的一个张量，包含名称、量化类型、形状、元素数量、字节数、数据偏移量、数据内容及其对应的字段信息。
+  methods: []
+  name: ReaderTensor
+- desc: GGUF 文件读取器，负责解析 GGUF 文件的头部信息、元数据字段和张量数据。支持不同的字节序和量化类型，并提供字段和张量的查询接口。
+  methods:
+  - code:
+    - 'def __init__(self, path: os.PathLike[str] | str, mode: Literal[''r'', ''r+'',
+      ''c''] = ''r''):'
+    - '    self.data = np.memmap(path, mode = mode)'
+    - '    offs = 0'
+    - ''
+    - '    # Check for GGUF magic'
+    - '    if self._get(offs, np.uint32, override_order = ''<'')[0] != GGUF_MAGIC:'
+    - '        raise ValueError(''GGUF magic invalid'')'
+    - '    offs += 4'
+    - ''
+    - '    # Check GGUF version'
+    - '    temp_version = self._get(offs, np.uint32)'
+    - '    if temp_version[0] & 65535 == 0:'
+    - '        # If we get 0 here that means it''s (probably) a GGUF file created
+      for'
+    - '        # the opposite byte order of the machine this script is running on.'
+    - '        self.byte_order = ''S'''
+    - '        temp_version = temp_version.view(temp_version.dtype.newbyteorder(self.byte_order))'
+    - '    version = temp_version[0]'
+    - '    if version not in READER_SUPPORTED_VERSIONS:'
+    - '        raise ValueError(f''Sorry, file appears to be version {version} which
+      we cannot handle'')'
+    - '    if sys.byteorder == "little":'
+    - '        # Host is little endian'
+    - '        host_endian = GGUFEndian.LITTLE'
+    - '        swapped_endian = GGUFEndian.BIG'
+    - '    else:'
+    - '        # Sorry PDP or other weird systems that don''t use BE or LE.'
+    - '        host_endian = GGUFEndian.BIG'
+    - '        swapped_endian = GGUFEndian.LITTLE'
+    - '    self.endianess = swapped_endian if self.byte_order == "S" else host_endian'
+    - '    self.fields: OrderedDict[str, ReaderField] = OrderedDict()'
+    - '    self.tensors: list[ReaderTensor] = []'
+    - '    offs += self._push_field(ReaderField(offs, ''GGUF.version'', [temp_version],
+      [0], [GGUFValueType.UINT32]))'
+    - ''
+    - '    # Check tensor count and kv count'
+    - '    temp_counts = self._get(offs, np.uint64, 2)'
+    - '    offs += self._push_field(ReaderField(offs, ''GGUF.tensor_count'', [temp_counts[:1]],
+      [0], [GGUFValueType.UINT64]))'
+    - '    offs += self._push_field(ReaderField(offs, ''GGUF.kv_count'', [temp_counts[1:]],
+      [0], [GGUFValueType.UINT64]))'
+    - '    tensor_count, kv_count = temp_counts'
+    - '    offs = self._build_fields(offs, kv_count)'
+    - ''
+    - '    # Build Tensor Info Fields'
+    - '    offs, tensors_fields = self._build_tensor_info(offs, tensor_count)'
+    - '    new_align = self.fields.get(''general.alignment'')'
+    - '    if new_align is not None:'
+    - '        if new_align.types != [GGUFValueType.UINT32]:'
+    - '            raise ValueError(''Bad type for general.alignment field'')'
+    - '        self.alignment = new_align.parts[-1][0]'
+    - '        # Ensure alignment is a non-zero power of two'
+    - '        if self.alignment == 0 or (self.alignment & (self.alignment - 1)) !=
+      0:'
+    - '            raise ValueError(''Invalid alignment: must be a non-zero power
+      of two'')'
+    - '    padding = offs % self.alignment'
+    - '    if padding != 0:'
+    - '        offs += self.alignment - padding'
+    - '    self.data_offset = offs'
+    - '    self._build_tensors(offs, tensors_fields)'
+    desc: 构造函数，读取 GGUF 文件并解析其头部信息、字段和张量数据。
+    line: 129-177
+    name: __init__
+  - code:
+    - 'def get_field(self, key: str) -> Union[ReaderField, None]:'
+    - '    return self.fields.get(key, None)'
+    desc: 根据键名获取元数据字段，返回 ReaderField 对象或 None。
+    line: 181-182
+    name: get_field
+  - code:
+    - 'def get_tensor(self, idx: int) -> ReaderTensor:'
+    - '    return self.tensors[idx]'
+    desc: 根据索引获取张量对象。
+    line: 185-186
+    name: get_tensor
+  - code:
+    - def _get(
+    - '    self, offset: int, dtype: npt.DTypeLike, count: int = 1, override_order:
+      None | Literal[''I'', ''S'', ''<''] = None,'
+    - ') -> npt.NDArray[Any]:'
+    - '    count = int(count)'
+    - '    itemsize = int(np.empty([], dtype = dtype).itemsize)'
+    - '    end_offs = offset + itemsize * count'
+    - '    arr = self.data[offset:end_offs].view(dtype=dtype)[:count]'
+    - '    return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order
+      is None else override_order))'
+    desc: 内部方法，从指定偏移量读取指定类型的数据，并考虑字节序。
+    line: 189-194
+    name: _get
+  - code:
+    - 'def _push_field(self, field: ReaderField, skip_sum: bool = False) -> int:'
+    - '    if field.name in self.fields:'
+    - '        # TODO: add option to make this a warning and accept duplicate keys
+      like below'
+    - '        raise KeyError(f''Duplicate {field.name} already in list at offset
+      {field.offset}'')'
+    - ''
+    - '        # logger.warning(f''Duplicate key {field.name} at offset {field.offset}'')'
+    - '        # self.fields[field.name + ''_{}''.format(field.offset)] = field'
+    - '    else:'
+    - '        self.fields[field.name] = field'
+    - '    return 0 if skip_sum else sum(int(part.nbytes) for part in field.parts)'
+    desc: 内部方法，将字段添加到字段字典中，并返回字段数据的总字节数。
+    line: 197-203
+    name: _push_field
+  - code:
+    - 'def _get_str(self, offset: int) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint8]]:'
+    - '    slen = self._get(offset, np.uint64)'
+    - '    return slen, self._get(offset + 8, np.uint8, slen[0])'
+    desc: 内部方法，从指定偏移量读取一个字符串，返回长度和数据。
+    line: 205-206
+    name: _get_str
+  - code:
+    - def _get_field_parts(
+    - '    self, orig_offs: int, raw_type: int,'
+    - ') -> tuple[int, list[npt.NDArray[Any]], list[int], list[GGUFValueType]]:'
+    - '    offs = orig_offs'
+    - '    types: list[GGUFValueType] = []'
+    - '    gtype = GGUFValueType(raw_type)'
+    - '    types.append(gtype)'
+    - '    # Handle strings.'
+    - '    if gtype == GGUFValueType.STRING:'
+    - '        sparts: list[npt.NDArray[Any]] = list(self._get_str(offs))'
+    - '        size = sum(int(part.nbytes) for part in sparts)'
+    - '        return size, sparts, [1], types'
+    - '    # Check if it''s a simple scalar type.'
+    - '    nptype = self.gguf_scalar_to_np.get(gtype)'
+    - '    if nptype is not None:'
+    - '        val = self._get(offs, nptype)'
+    - '        return int(val.nbytes), [val], [0], types'
+    - '    # Handle arrays.'
+    - '    if gtype == GGUFValueType.ARRAY:'
+    - '        raw_itype = self._get(offs, np.uint32)'
+    - '        offs += int(raw_itype.nbytes)'
+    - '        alen = self._get(offs, np.uint64)'
+    - '        offs += int(alen.nbytes)'
+    - '        aparts: list[npt.NDArray[Any]] = [raw_itype, alen]'
+    - '        data_idxs: list[int] = []'
+    - '        # FIXME: Handle multi-dimensional arrays properly instead of flattening'
+    - '        for idx in range(alen[0]):'
+    - '            curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs,
+      raw_itype[0])'
+    - '            if idx == 0:'
+    - '                types += curr_types'
+    - '            idxs_offs = len(aparts)'
+    - '            aparts += curr_parts'
+    - '            data_idxs += (idx + idxs_offs for idx in curr_idxs)'
+    - '            offs += curr_size'
+    - '        return offs - orig_offs, aparts, data_idxs, types'
+    - '    # We can''t deal with this one.'
+    - '    raise ValueError(f''Unknown/unhandled field type {gtype}'')'
+    desc: 内部方法，递归解析字段数据，处理字符串、标量和数组类型，返回数据大小、分片、索引和类型。
+    line: 208-229
+    name: _get_field_parts
+  - code:
+    - 'def _get_tensor_info_field(self, orig_offs: int) -> ReaderField:'
+    - '    offs = orig_offs'
+    - ''
+    - '    # Get Tensor Name'
+    - '    name_len, name_data = self._get_str(offs)'
+    - '    offs += int(name_len.nbytes + name_data.nbytes)'
+    - ''
+    - '    # Get Tensor Dimensions Count'
+    - '    n_dims = self._get(offs, np.uint32)'
+    - '    offs += int(n_dims.nbytes)'
+    - ''
+    - '    # Get Tensor Dimension Array'
+    - '    dims = self._get(offs, np.uint64, n_dims[0])'
+    - '    offs += int(dims.nbytes)'
+    - ''
+    - '    # Get Tensor Encoding Scheme Type'
+    - '    raw_dtype = self._get(offs, np.uint32)'
+    - '    offs += int(raw_dtype.nbytes)'
+    - ''
+    - '    # Get Tensor Offset'
+    - '    offset_tensor = self._get(offs, np.uint64)'
+    - '    offs += int(offset_tensor.nbytes)'
+    - ''
+    - '    return ReaderField('
+    - '        orig_offs,'
+    - '        str(bytes(name_data), encoding = ''utf-8''),'
+    - '        [name_len, name_data, n_dims, dims, raw_dtype, offset_tensor],'
+    - '        [1, 3, 4, 5],'
+    - '    )'
+    desc: 内部方法，解析单个张量的信息字段，包括名称、维度、类型和偏移量。
+    line: 231-251
+    name: _get_tensor_info_field
+  - code:
+    - 'def _build_fields(self, offs: int, count: int) -> int:'
+    - '    for _ in range(count):'
+    - '        orig_offs = offs'
+    - '        kv_klen, kv_kdata = self._get_str(offs)'
+    - '        offs += int(kv_klen.nbytes + kv_kdata.nbytes)'
+    - '        raw_kv_type = self._get(offs, np.uint32)'
+    - '        offs += int(raw_kv_type.nbytes)'
+    - '        parts: list[npt.NDArray[Any]] = [kv_klen, kv_kdata, raw_kv_type]'
+    - '        idxs_offs = len(parts)'
+    - '        field_size, field_parts, field_idxs, field_types = self._get_field_parts(offs,
+      raw_kv_type[0])'
+    - '        parts += field_parts'
+    - '        self._push_field(ReaderField('
+    - '            orig_offs,'
+    - '            str(bytes(kv_kdata), encoding = ''utf-8''),'
+    - '            parts,'
+    - '            [idx + idxs_offs for idx in field_idxs],'
+    - '            field_types,'
+    - '        ), skip_sum = True)'
+    - '        offs += field_size'
+    - '    return offs'
+    desc: 内部方法，解析所有元数据字段。
+    line: 253-268
+    name: _build_fields
+  - code:
+    - 'def _build_tensor_info(self, offs: int, count: int) -> tuple[int, list[ReaderField]]:'
+    - '    tensor_fields = []'
+    - '    for _ in range(count):'
+    - '        field = self._get_tensor_info_field(offs)'
+    - '        offs += sum(int(part.nbytes) for part in field.parts)'
+    - '        tensor_fields.append(field)'
+    - '    return offs, tensor_fields'
+    desc: 内部方法，解析所有张量的信息字段。
+    line: 270-275
+    name: _build_tensor_info
+  - code:
+    - 'def _build_tensors(self, start_offs: int, fields: list[ReaderField]) -> None:'
+    - '    tensors = []'
+    - '    tensor_names = set() # keep track of name to prevent duplicated tensors'
+    - '    for field in fields:'
+    - '        _name_len, name_data, _n_dims, dims, raw_dtype, offset_tensor = field.parts'
+    - '        # check if there''s any tensor having same name already in the list'
+    - '        tensor_name = str(bytes(name_data), encoding = ''utf-8'')'
+    - '        if tensor_name in tensor_names:'
+    - '            raise ValueError(f''Found duplicated tensor with name {tensor_name}'')'
+    - '        tensor_names.add(tensor_name)'
+    - '        ggml_type = GGMLQuantizationType(raw_dtype[0])'
+    - '        n_elems = int(np.prod(dims))'
+    - '        np_dims = tuple(reversed(dims.tolist()))'
+    - '        block_size, type_size = GGML_QUANT_SIZES[ggml_type]'
+    - '        n_bytes = n_elems * type_size // block_size'
+    - '        data_offs = int(start_offs + offset_tensor[0])'
+    - '        item_type: npt.DTypeLike'
+    - '        if ggml_type == GGMLQuantizationType.F16:'
+    - '            item_count = n_elems'
+    - '            item_type = np.float16'
+    - '        elif ggml_type == GGMLQuantizationType.F32:'
+    - '            item_count = n_elems'
+    - '            item_type = np.float32'
+    - '        elif ggml_type == GGMLQuantizationType.F64:'
+    - '            item_count = n_elems'
+    - '            item_type = np.float64'
+    - '        elif ggml_type == GGMLQuantizationType.I8:'
+    - '            item_count = n_elems'
+    - '            item_type = np.int8'
+    - '        elif ggml_type == GGMLQuantizationType.I16:'
+    - '            item_count = n_elems'
+    - '            item_type = np.int16'
+    - '        elif ggml_type == GGMLQuantizationType.I32:'
+    - '            item_count = n_elems'
+    - '            item_type = np.int32'
+    - '        elif ggml_type == GGMLQuantizationType.I64:'
+    - '            item_count = n_elems'
+    - '            item_type = np.int64'
+    - '        else:'
+    - '            item_count = n_bytes'
+    - '            item_type = np.uint8'
+    - '            np_dims = quant_shape_to_byte_shape(np_dims, ggml_type)'
+    - '        tensors.append(ReaderTensor('
+    - '            name = tensor_name,'
+    - '            tensor_type = ggml_type,'
+    - '            shape = dims,'
+    - '            n_elements = n_elems,'
+    - '            n_bytes = n_bytes,'
+    - '            data_offset = data_offs,'
+    - '            data = self._get(data_offs, item_type, item_count).reshape(np_dims),'
+    - '            field = field,'
+    - '        ))'
+    - '    self.tensors = tensors'
+    desc: 内部方法，构建张量列表，处理不同量化类型的数据解析。
+    line: 277-325
+    name: _build_tensors
+  name: GGUFReader
+desc: 该文件实现了 GGUF 模型的读取和解析功能。它定义了 GGUFReader 类，用于读取 GGUF 格式的文件，解析其头部信息、元数据字段和模型张量，支持不同字节序和量化类型。同时定义了
+  ReaderField 和 ReaderTensor 两个数据结构，分别用于存储字段和张量的解析结果。
+file: gguf-py/gguf/gguf_reader.py
+funcs: []

@@ -1,0 +1,960 @@
+classes:
+- desc: 继承自 ggml::cpu::tensor_traits 的类，为 KleidiAI 后端提供张量运算的工作区大小计算和计算前向传播功能。
+  methods:
+  - code:
+    - bool work_size(int /* n_threads */, const struct ggml_tensor * op, size_t &
+      size) override {
+    - '    if (op->op != GGML_OP_MUL_MAT) {'
+    - '        return false;'
+    - '    }'
+    - '    std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> kernel_chain;'
+    - '    const int slot_count = kleidiai_collect_kernel_chain(op, kernel_chain);'
+    - '    if (slot_count == 0) {'
+    - '        return false;'
+    - '    }'
+    - '    const bool is_gemv = op->src[1]->ne[1] == 1;'
+    - '    const size_t k = op->src[0]->ne[0];'
+    - '    const size_t n = op->src[0]->ne[1];'
+    - '    const size_t m = op->src[1]->ne[1];'
+    - '    if (op->src[0]->type == GGML_TYPE_Q4_0 || op->src[0]->type == GGML_TYPE_Q8_0)
+      {'
+    - '        const size_t qk = (op->src[0]->type == GGML_TYPE_Q4_0) ? QK4_0 : QK8_0;'
+    - '        size_t cursor = 0;'
+    - '        bool any_slot = false;'
+    - '        for (int slot = 0; slot < slot_count; ++slot) {'
+    - '            ggml_kleidiai_kernels * kernels = kernel_chain[slot];'
+    - '            lhs_packing_info * lhs_info = is_gemv ? &kernels->gemv_lhs_info
+      : &kernels->gemm_lhs_info;'
+    - '            kernel_info * kernel        = is_gemv ? &kernels->gemv : &kernels->gemm;'
+    - '            if (!lhs_info || !lhs_info->packed_size_ex || !kernel) {'
+    - '                return false;'
+    - '            }'
+    - '            const size_t mr = kernel->get_mr();'
+    - '            const size_t kr = kernel->get_kr();'
+    - '            const size_t sr = kernel->get_sr();'
+    - '            const size_t packed = lhs_info->packed_size_ex(m, k, qk, mr, kr,
+      sr);'
+    - '            cursor = align_up(cursor, GGML_KLEIDIAI_PACK_ALIGN);'
+    - '            cursor += packed;'
+    - '            any_slot = true;'
+    - '        }'
+    - '        if (!any_slot) {'
+    - '            return false;'
+    - '        }'
+    - '        size = cursor;'
+    - '        return true;'
+    - '    }'
+    - '    if (op->src[0]->type == GGML_TYPE_F16) {'
+    - '        const int64_t lhs_batch_size0 = op->src[1]->ne[2];'
+    - '        const int64_t rhs_batch_size0 = op->src[0]->ne[2];'
+    - '        GGML_ASSERT(rhs_batch_size0 > 0);'
+    - '        const int64_t r = lhs_batch_size0 / rhs_batch_size0;'
+    - '        size_t cursor = 0;'
+    - '        bool any_slot = false;'
+    - '        for (int slot = 0; slot < slot_count; ++slot) {'
+    - '            ggml_kleidiai_kernels * kernels = kernel_chain[slot];'
+    - '            lhs_packing_info * lhs_info = is_gemv ? &kernels->gemv_lhs_info
+      : &kernels->gemm_lhs_info;'
+    - '            kernel_info * kernel        = is_gemv ? &kernels->gemv : &kernels->gemm;'
+    - '            if (!lhs_info || !lhs_info->packed_size_ex || !kernels->rhs_info.packed_size_ex
+      || !kernel) {'
+    - '                return false;'
+    - '            }'
+    - '            const size_t mr = kernel->get_mr();'
+    - '            const size_t kr = kernel->get_kr();'
+    - '            const size_t sr = kernel->get_sr();'
+    - '            cursor  = align_up(cursor, GGML_KLEIDIAI_PACK_ALIGN);'
+    - '            cursor += lhs_info->packed_size_ex(m * r, k, 0, mr, kr, sr);'
+    - '            any_slot = true;'
+    - '        }'
+    - '        for (int slot = 0; slot < slot_count; ++slot) {'
+    - '            ggml_kleidiai_kernels * kernels = kernel_chain[slot];'
+    - '            kernel_info * kernel = is_gemv ? &kernels->gemv : &kernels->gemm;'
+    - '            if (!kernel || !kernels->rhs_info.packed_size_ex) {'
+    - '                return false;'
+    - '            }'
+    - '            cursor  = align_up(cursor, GGML_KLEIDIAI_PACK_ALIGN);'
+    - '            cursor += kernels->rhs_info.packed_size_ex(n, k, kernel->get_nr(),
+      kernel->get_kr(), 0);'
+    - '        }'
+    - '        cursor  = align_up(cursor, GGML_KLEIDIAI_PACK_ALIGN);'
+    - '        cursor += k * n * sizeof(float);'
+    - '        cursor  = align_up(cursor, GGML_KLEIDIAI_PACK_ALIGN);'
+    - '        cursor += n * sizeof(float);'
+    - '        if (!any_slot) {'
+    - '            return false;'
+    - '        }'
+    - '        size = cursor;'
+    - '        return true;'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 计算给定的 MUL_MAT 张量运算所需的临时工作区大小，支持量化（Q4/Q8）和 F16 两种数据类型。
+    line: 421-503
+    name: work_size
+  - code:
+    - bool compute_forward(struct ggml_compute_params * params, struct ggml_tensor
+      * dst) override {
+    - '    if (dst->op == GGML_OP_MUL_MAT) {'
+    - '        if (dst->src[0]->type == GGML_TYPE_Q4_0 || dst->src[0]->type == GGML_TYPE_Q8_0)
+      {'
+    - '            return compute_forward_qx(params, dst);'
+    - '        } else if (dst->src[0]->type == GGML_TYPE_F16) {'
+    - '            return compute_forward_fp16(params, dst);'
+    - '        }'
+    - '    } else if (dst->op == GGML_OP_GET_ROWS) {'
+    - '        if (dst->src[0]->type == GGML_TYPE_Q4_0 || dst->src[0]->type == GGML_TYPE_Q8_0)
+      {'
+    - '            return compute_forward_get_rows(params, dst);'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 前向计算调度函数，根据运算类型（MUL_MAT 或 GET_ROWS）和数据类型（Q4/Q8 或 F16）将计算分发给对应的专门函数。
+    line: 505-519
+    name: compute_forward
+  - code:
+    - bool compute_forward_fp16(ggml_compute_params * params, struct ggml_tensor *
+      dst) {
+    - '    const ggml_tensor * src0 = dst->src[0];'
+    - '    const ggml_tensor * src1 = dst->src[1];'
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - '    ggml_kleidiai_kernels *kernels = ggml_kleidiai_select_kernels(ctx.features,
+      dst);'
+    - '    if (!kernels) {'
+    - '        return false;'
+    - '    }'
+    - '    const bool is_gemv = src1->ne[1] == 1;'
+    - '    kernel_info * kernel = is_gemv ? &kernels->gemv : &kernels->gemm;'
+    - '    lhs_packing_info * lhs_info = is_gemv ? &kernels->gemv_lhs_info : &kernels->gemm_lhs_info;'
+    - '    GGML_ASSERT(kernel);'
+    - '    if (!kernels->rhs_info.pack_func_ex ||'
+    - '        !kernel->get_lhs_offset_ex || !kernel->get_rhs_packed_offset_ex ||
+      !kernel->run_kernel_ex) {'
+    - '        return false;'
+    - '    }'
+    - '    const int nth = params->nth;'
+    - '    const int ith = params->ith;'
+    - '    const int64_t lhs_batch_size0 = ne12;'
+    - '    const int64_t rhs_batch_size0 = ne02;'
+    - '    const int64_t batch_size      = lhs_batch_size0;'
+    - '    GGML_ASSERT(rhs_batch_size0 > 0);'
+    - '    GGML_ASSERT(lhs_batch_size0 % rhs_batch_size0 == 0);'
+    - '    const int64_t r = lhs_batch_size0 / rhs_batch_size0;'
+    - '    const int64_t m_group = ne11;'
+    - '    const int64_t m       = m_group;'
+    - '    const int64_t n       = ne01;'
+    - '    const int64_t k       = ne00;'
+    - '    const size_t lhs_stride = src1->nb[1];'
+    - '    const size_t rhs_stride = src0->nb[1];'
+    - '    const size_t dst_stride = dst->nb[1];'
+    - '    const int64_t mr = (int64_t) kernel->get_mr();'
+    - '    const int64_t nr = (int64_t) kernel->get_nr();'
+    - '    const int64_t kr = (int64_t) kernel->get_kr();'
+    - '    const int64_t sr = (int64_t) kernel->get_sr();'
+    - '    const size_t lhs_packed_size = lhs_info->packed_size_ex(m, k, 0, mr, kr,
+      sr);'
+    - '    const size_t rhs_packed_size = kernels->rhs_info.packed_size_ex(n, k, nr,
+      kr, 0);'
+    - '    const size_t kxn_size        = k * n * sizeof(float);'
+    - '    const size_t bias_size       = n * sizeof(float);'
+    - '    const size_t wsize_required = lhs_packed_size + rhs_packed_size + kxn_size
+      + bias_size;'
+    - '    GGML_ASSERT(wsize_required <= params->wsize);'
+    - '    uint8_t * lhs_packed = static_cast<uint8_t *>(params->wdata);'
+    - '    uint8_t * rhs_packed = lhs_packed + lhs_packed_size;'
+    - '    uint8_t * rhs_kxn    = rhs_packed + rhs_packed_size;'
+    - '    uint8_t * bias       = rhs_kxn + kxn_size;'
+    - '    for (int64_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {'
+    - '        const int64_t rhs_batch_idx = batch_idx / r;'
+    - '        const uint8_t * rhs_batch_base = static_cast<const uint8_t *>(src0->data)
+      + rhs_batch_idx * src0->nb[2];'
+    - '        uint8_t * dst_batch_base = static_cast<uint8_t *>(dst->data) + batch_idx
+      * dst->nb[2];'
+    - '        {'
+    - '            const int64_t m_roundup_mr = kai_roundup(m, mr);'
+    - '            const int64_t num_threads  = KAI_MIN(m_roundup_mr / mr, nth);'
+    - '            if (ith < num_threads) {'
+    - '                const int64_t num_m_per_thread0   = round_down((size_t)(m_roundup_mr
+      / num_threads), (size_t)mr);'
+    - '                const int64_t num_m_per_threadN_1 = m - (num_threads - 1) *
+      num_m_per_thread0;'
+    - '                const int64_t m_start = ith * num_m_per_thread0;'
+    - '                const int64_t m_count = (ith == num_threads - 1) ? num_m_per_threadN_1
+      : num_m_per_thread0;'
+    - '                const size_t base_packed_off  = lhs_info->get_packed_offset_ex(m_start,
+      k, 0, mr, kr, sr);'
+    - '                const size_t next_block_off   = lhs_info->get_packed_offset_ex(m_start
+      + mr, k, 0, mr, kr, sr);'
+    - '                const size_t row_stride_bytes = (next_block_off - base_packed_off)
+      / (size_t)mr;'
+    - '                int64_t remaining = m_count;'
+    - '                int64_t cur       = m_start;'
+    - '                while (remaining > 0) {'
+    - '                    const int64_t row_in_group = cur;'
+    - '                    const int64_t avail        = m_group - row_in_group;'
+    - '                    const int64_t take         = std::min(avail, remaining);'
+    - '                    const uint8_t * lhs_batch_base = static_cast<const uint8_t
+      *>(src1->data) + batch_idx * src1->nb[2];'
+    - '                    const void * src_ptr = lhs_batch_base + (size_t)row_in_group
+      * lhs_stride;'
+    - '                    const size_t dst_off = base_packed_off + (size_t)(cur -
+      m_start) * row_stride_bytes;'
+    - '                    void * dst_ptr       = lhs_packed + dst_off;'
+    - '                    lhs_info->pack_func_ex(take, k, 0, mr, kr, sr, 0, src_ptr,
+      lhs_stride, dst_ptr);'
+    - '                    cur       += take;'
+    - '                    remaining -= take;'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        if (ith == 0) {'
+    - '            memset(bias, 0, (size_t)n * sizeof(float));'
+    - '            transpose_f32kxn_f16nxk((size_t)n, (size_t)k,'
+    - '                                    reinterpret_cast<float *>(rhs_kxn),'
+    - '                                    reinterpret_cast<const uint16_t *>(rhs_batch_base),'
+    - '                                    rhs_stride);'
+    - '            kernels->rhs_info.pack_func_ex(1, n, k, nr, kr, sr, 0, n * sizeof(float),'
+    - '                         rhs_kxn, bias, nullptr, rhs_packed, 0, nullptr);'
+    - '        }'
+    - '        ggml_barrier(params->threadpool);'
+    - '        {'
+    - '            const int64_t n_step  = (int64_t) kernel->get_n_step();'
+    - '            int64_t num_threads_n = KAI_MIN(n / n_step, nth);'
+    - '            if (num_threads_n <= 0) {'
+    - '                num_threads_n = 1;'
+    - '            }'
+    - '            if (ith < num_threads_n) {'
+    - '                const int64_t num_n_per_thread0   = round_down((size_t)(n /
+      num_threads_n), (size_t)n_step);'
+    - '                const int64_t num_n_per_threadN_1 = n - (num_threads_n - 1)
+      * num_n_per_thread0;'
+    - '                const int64_t n_start      = ith * num_n_per_thread0;'
+    - '                const int64_t n_to_process = (ith == num_threads_n - 1) ? num_n_per_threadN_1
+      : num_n_per_thread0;'
+    - '                const size_t lhs_packed_offset0 = lhs_info->get_packed_offset_ex(0,
+      k, 0, mr, kr, sr);'
+    - '                const size_t rhs_packed_offset  = kernel->get_rhs_packed_offset_ex(n_start,
+      k, 0);'
+    - '                const size_t dst_offset         = kernel->get_dst_offset((size_t)0,
+      (size_t)n_start, dst_stride);'
+    - '                const void * lhs_ptr = lhs_packed + lhs_packed_offset0;'
+    - '                const void * rhs_ptr = rhs_packed + rhs_packed_offset;'
+    - '                float * dst_ptr      = reinterpret_cast<float *>(dst_batch_base
+      + dst_offset);'
+    - '                kernel->run_kernel_ex(m, n_to_process, k, 0, lhs_ptr, rhs_ptr,
+      dst_ptr, dst_stride, sizeof(float), -FLT_MAX, FLT_MAX);'
+    - '            }'
+    - '        }'
+    - '        if (batch_idx != batch_size - 1) {'
+    - '            ggml_barrier(params->threadpool);'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 执行 F16 类型的矩阵乘法前向计算，包括 LHS/RHS 的打包、变换和并行矩阵乘法运算。
+    line: 521-648
+    name: compute_forward_fp16
+  - code:
+    - bool compute_forward_qx(struct ggml_compute_params * params, struct ggml_tensor
+      * dst) {
+    - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_Q4_0 || dst->src[0]->type ==
+      GGML_TYPE_Q8_0);'
+    - '    const ggml_tensor * src0 = dst->src[0];'
+    - '    const ggml_tensor * src1 = dst->src[1];'
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - '    const kleidiai_weight_header * header = kleidiai_weight_header_from_ptr(src0->data);'
+    - '    const bool has_header = kleidiai_is_weight_header_valid(header);'
+    - '    const bool is_gemv = src1->ne[1] == 1;'
+    - '    std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> kernel_chain;'
+    - '    const int slot_total = kleidiai_collect_kernel_chain(dst, kernel_chain);'
+    - '    auto weight_for_slot = [&](int slot_index, size_t & size_out) -> const
+      uint8_t * {'
+    - '        if (slot_index < 0 || slot_index >= slot_total) {'
+    - '            return nullptr;'
+    - '        }'
+    - '        if (has_header) {'
+    - '            if (slot_index < header->slot_count) {'
+    - '                size_out = static_cast<size_t>(header->sizes[slot_index]);'
+    - '                return kleidiai_weight_slot_ptr(header, slot_index);'
+    - '            }'
+    - '            return nullptr;'
+    - '        }'
+    - '        if (slot_index == 0) {'
+    - '            size_out = ggml_nbytes(src0);'
+    - '            return static_cast<const uint8_t *>(src0->data);'
+    - '        }'
+    - '        return nullptr;'
+    - '    };'
+    - '    struct runtime_slot {'
+    - '        int slot_index;'
+    - '        ggml_kleidiai_kernels * kernels;'
+    - '        kernel_info * kernel;'
+    - '        lhs_packing_info * lhs_info;'
+    - '        size_t mr;'
+    - '        size_t nr;'
+    - '        size_t kr;'
+    - '        size_t sr;'
+    - '        size_t n_step;'
+    - '        size_t lhs_packed_size;'
+    - '        size_t lhs_offset;'
+    - '        size_t n_offset;'
+    - '        size_t n_cols;'
+    - '        int assigned_threads;'
+    - '        int thread_begin;'
+    - '        int thread_end;'
+    - '        const uint8_t * rhs_base;'
+    - '    };'
+    - '    std::array<runtime_slot, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> runtime{};'
+    - '    int runtime_count = 0;'
+    - '    for (int slot = 0; slot < slot_total && runtime_count < GGML_KLEIDIAI_MAX_KERNEL_SLOTS;
+      ++slot) {'
+    - '        ggml_kleidiai_kernels * kernels = kernel_chain[slot];'
+    - '        kernel_info * kinfo      = is_gemv ? &kernels->gemv : &kernels->gemm;'
+    - '        lhs_packing_info * linfo = is_gemv ? &kernels->gemv_lhs_info : &kernels->gemm_lhs_info;'
+    - '        if (!kinfo || !linfo || !linfo->packed_size_ex || !linfo->pack_func_ex
+      || !linfo->get_offset ||'
+    - '            !kinfo->get_rhs_packed_offset_ex || !kinfo->run_kernel_ex || !kinfo->get_dst_offset)
+      {'
+    - '            continue;'
+    - '        }'
+    - '        size_t rhs_size = 0;'
+    - '        const uint8_t * rhs_ptr = weight_for_slot(slot, rhs_size);'
+    - '        if (!rhs_ptr || rhs_size == 0) {'
+    - '            continue;'
+    - '        }'
+    - '        runtime[runtime_count] = {'
+    - '            slot,'
+    - '            kernels,'
+    - '            kinfo,'
+    - '            linfo,'
+    - '            kinfo->get_mr(),'
+    - '            kinfo->get_nr(),'
+    - '            kinfo->get_kr(),'
+    - '            kinfo->get_sr(),'
+    - '            kinfo->get_n_step(),'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            rhs_ptr'
+    - '        };'
+    - '        ++runtime_count;'
+    - '    }'
+    - '    if (runtime_count == 0) {'
+    - '        ggml_kleidiai_kernels * fallback = ggml_kleidiai_select_kernels(ctx.features,
+      dst);'
+    - '        if (!fallback) {'
+    - '            return false;'
+    - '        }'
+    - '        kernel_info * kinfo      = is_gemv ? &fallback->gemv : &fallback->gemm;'
+    - '        lhs_packing_info * linfo = is_gemv ? &fallback->gemv_lhs_info : &fallback->gemm_lhs_info;'
+    - '        rhs_packing_info * rinfo = &fallback->rhs_info;'
+    - '        if (!kinfo || !linfo || !linfo->packed_size_ex || !linfo->pack_func_ex
+      ||'
+    - '            !kinfo->get_rhs_packed_offset_ex || !kinfo->run_kernel_ex || !kinfo->get_dst_offset
+      ||'
+    - '            !rinfo || !rinfo->pack_func_ex || !rinfo->packed_size_ex) {'
+    - '            return false;'
+    - '        }'
+    - '        kernel_chain[0] = fallback;'
+    - '        runtime[0] = {'
+    - '            0,'
+    - '            fallback,'
+    - '            kinfo,'
+    - '            linfo,'
+    - '            kinfo->get_mr(),'
+    - '            kinfo->get_nr(),'
+    - '            kinfo->get_kr(),'
+    - '            kinfo->get_sr(),'
+    - '            kinfo->get_n_step(),'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            0,'
+    - '            nullptr'
+    - '        };'
+    - '        size_t rhs_size_fallback = 0;'
+    - '        const uint8_t * rhs_base = weight_for_slot(0, rhs_size_fallback);'
+    - '        if (!rhs_base) {'
+    - '            rhs_base = static_cast<const uint8_t *>(src0->data);'
+    - '        }'
+    - '        runtime[0].rhs_base = rhs_base;'
+    - '        runtime_count = 1;'
+    - '    }'
+    - '    const int nth_total = params->nth > 0 ? params->nth : 1;'
+    - '    const int ith_total = params->ith;'
+    - '    int sme_slot = -1;'
+    - '    for (int i = 0; i < runtime_count; ++i) {'
+    - '        if ((runtime[i].kernels->required_cpu & CPU_FEATURE_SME) == CPU_FEATURE_SME)
+      {'
+    - '            sme_slot = i;'
+    - '            break;'
+    - '        }'
+    - '    }'
+    - '    const int sme_cap_limit = ctx.sme_thread_cap;'
+    - '    const bool use_hybrid = sme_cap_limit > 0 &&'
+    - '                             runtime_count > 1 &&'
+    - '                             nth_total > sme_cap_limit;'
+    - '    size_t min_cols_per_thread = 0;'
+    - '    if (runtime_count > 0 && nth_total > 0) {'
+    - '        min_cols_per_thread = (size_t) std::max<int64_t>(1, (int64_t)ne01 /
+      (int64_t)nth_total);'
+    - '    }'
+    - '    const bool too_small_for_hybrid = (min_cols_per_thread < 2) || (ne11 <
+      128);'
+    - '    const bool hybrid_enabled = use_hybrid && !too_small_for_hybrid;'
+    - '    if (!hybrid_enabled) {'
+    - '        int chosen_slot = 0;'
+    - '        if (too_small_for_hybrid && sme_slot != -1) {'
+    - '            chosen_slot = sme_slot;'
+    - '        } else if (runtime_count > 1 && ctx.sme_thread_cap > 0 && nth_total
+      > ctx.sme_thread_cap) {'
+    - '            chosen_slot = 1;'
+    - '        }'
+    - '        if (chosen_slot != 0 && chosen_slot < runtime_count) {'
+    - '            runtime[0] = runtime[chosen_slot];'
+    - '        }'
+    - '        runtime_count = runtime_count > 0 ? 1 : 0;'
+    - '        sme_slot = -1;'
+    - '        if (runtime_count > 0 &&'
+    - '            (runtime[0].kernels->required_cpu & CPU_FEATURE_SME) == CPU_FEATURE_SME)
+      {'
+    - '            sme_slot = 0;'
+    - '        }'
+    - '    }'
+    - '    int sme_cap = kleidiai_sme_thread_cap();'
+    - '    if (sme_cap < 0) {'
+    - '        sme_cap = nth_total;'
+    - '    }'
+    - '    sme_cap = std::min(sme_cap, nth_total);'
+    - '    int threads_remaining = nth_total;'
+    - '    if (sme_slot != -1) {'
+    - '        int sme_threads = std::min(std::max(sme_cap, 0), threads_remaining);'
+    - '        runtime[sme_slot].assigned_threads = sme_threads;'
+    - '        threads_remaining -= sme_threads;'
+    - '    }'
+    - '    int fallback_indices[GGML_KLEIDIAI_MAX_KERNEL_SLOTS];'
+    - '    int fallback_count = 0;'
+    - '    for (int i = 0; i < runtime_count; ++i) {'
+    - '        if (i == sme_slot) {'
+    - '            continue;'
+    - '        }'
+    - '        fallback_indices[fallback_count++] = i;'
+    - '    }'
+    - '    for (int fi = 0; fi < fallback_count; ++fi) {'
+    - '        if (threads_remaining <= 0) {'
+    - '            break;'
+    - '        }'
+    - '        const int slot_index = fallback_indices[fi];'
+    - '        const int slots_left = fallback_count - fi;'
+    - '        int share = (threads_remaining + slots_left - 1) / slots_left;'
+    - '        share     = std::min(share, threads_remaining);'
+    - '        runtime[slot_index].assigned_threads = share;'
+    - '        threads_remaining -= share;'
+    - '    }'
+    - '    if (threads_remaining > 0) {'
+    - '        const int fallback_slot = (sme_slot != -1) ? sme_slot : 0;'
+    - '        runtime[fallback_slot].assigned_threads += threads_remaining;'
+    - '        threads_remaining = 0;'
+    - '    }'
+    - '    int thread_cursor = 0;'
+    - '    for (int i = 0; i < runtime_count; ++i) {'
+    - '        runtime[i].thread_begin = thread_cursor;'
+    - '        thread_cursor += runtime[i].assigned_threads;'
+    - '        runtime[i].thread_end = thread_cursor;'
+    - '    }'
+    - '    if (thread_cursor < nth_total && runtime_count > 0) {'
+    - '        runtime[runtime_count - 1].assigned_threads += nth_total - thread_cursor;'
+    - '        runtime[runtime_count - 1].thread_end = nth_total;'
+    desc: 执行 Q4_0/Q8_0 量化矩阵乘法的前向计算，支持多内核链的混合调度（SME 和非 SME 内核），并处理权重数据的解包和回退逻辑。
+    line: 650-881
+    name: compute_forward_qx
+  - code:
+    - bool compute_forward_get_rows(struct ggml_compute_params * params, struct ggml_tensor
+      * dst) {
+    - '    // 函数实现被截断'
+    desc: 执行 Q4_0/Q8_0 权重矩阵的 get_rows 操作，实现权重行的提取。
+    line: 883-885
+    name: compute_forward_get_rows
+  name: tensor_traits
+- desc: 为 CPU 后端定义张量特征，管理量化张量的缓冲区并支持张量数据压缩。
+  methods:
+  - code:
+    - bool compute_forward_mul_mat(struct ggml_compute_params * params, struct ggml_tensor
+      * dst) {
+    - '    ...'
+    - '    return true;'
+    - '}'
+    desc: 使用 KleidiAI 内核在 CPU 上执行量化矩阵乘法，支持多线程和分批次处理。
+    line: 934-1195
+    name: compute_forward_mul_mat
+  - code:
+    - bool compute_forward_get_rows(struct ggml_compute_params * params, struct ggml_tensor
+      * dst) {
+    - '    ...'
+    - '    return true;'
+    - '}'
+    desc: 从量化张量中按索引提取行，将数据解码后复制到输出。
+    line: 1196-1288
+    name: compute_forward_get_rows
+  - code:
+    - int repack(struct ggml_tensor * tensor, const void * data, size_t data_size)
+      {
+    - '    ...'
+    - '    return 0;'
+    - '}'
+    desc: 将输入张量数据重新打包为 KleidiAI 格式，并写入张量缓冲区以优化内核执行。
+    line: 1290-1433
+    name: repack
+  name: tensor_traits
+- desc: 实现 ggml 的额外缓冲区类型接口，用于判断是否支持特定操作并提供张量特征。
+  methods:
+  - code:
+    - bool supports_op(ggml_backend_dev_t, const struct ggml_tensor * op) override
+      {
+    - '    ...'
+    - '    return false;'
+    - '}'
+    desc: 检查给定操作（如矩阵乘法或行提取）是否支持使用 KleidiAI 优化。
+    line: 1494-1525
+    name: supports_op
+  - code:
+    - ggml::cpu::tensor_traits * get_tensor_traits(const struct ggml_tensor * op)
+      override {
+    - '    ...'
+    - '    return nullptr;'
+    - '}'
+    desc: 决定给定操作应使用的张量特征，若支持则返回 tensor_traits 指针。
+    line: 1527-1544
+    name: get_tensor_traits
+  name: extra_buffer_type
+desc: 该文件是 ggml 项目中 KleidiAI 后端的核心实现，负责在 ARM CPU 上为 Q4_0、Q8_0 量化矩阵乘法和 F16 乘法提供高性能内核调度。它检测
+  CPU 特性（SME/SVE/I8MM/DOTPROD），选择合适的内核，并实现了多线程混合调度策略，以在有 SME 和无 SME 的线程间分配工作。该文件实现了
+  ggml CPU 后端中 KleidiAI 的集成，提供了量化张量（Q4_0/Q8_0）的自定义张量类型和缓冲区类型，利用 KleidiAI 的 kernl 库进行高效的矩阵乘法和行查找操作。它包含张量数据的重组（repack）、缓冲区分配、以及针对特定硬件能力的调度逻辑，最大化了运算性能。
+file: ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
+funcs:
+- code:
+  - static const char* cpu_feature_to_string(cpu_feature f) {
+  - '    if (f == CPU_FEATURE_NONE) {'
+  - '        return "NONE";'
+  - '    } else if ((f & CPU_FEATURE_SME) == CPU_FEATURE_SME) {'
+  - '        return "SME";'
+  - '    } else if ((f & CPU_FEATURE_SVE) == CPU_FEATURE_SVE) {'
+  - '        return "SVE";'
+  - '    }'
+  - '    else if ((f & CPU_FEATURE_I8MM) == CPU_FEATURE_I8MM) {'
+  - '        return "I8MM";'
+  - '    } else if ((f & CPU_FEATURE_DOTPROD) == CPU_FEATURE_DOTPROD) {'
+  - '        return "DOTPROD";'
+  - '    }'
+  - '    else {'
+  - '        return "UNKNOWN";'
+  - '    }'
+  - '}'
+  desc: 将 CPU 特性枚举值转换为对应的字符串表示。
+  line: 57-75
+  name: cpu_feature_to_string
+- code:
+  - static size_t detect_num_smcus() {
+  - '    if (!ggml_cpu_has_sme()) {'
+  - '        return 0;'
+  - '    }'
+  - '#if defined(__linux__) && defined(__aarch64__)'
+  - '    size_t num_private = 0;'
+  - '    std::set<uint32_t> shared_ids;'
+  - '    for (size_t cpu = 0;; ++cpu) {'
+  - '        const std::string path ='
+  - '            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +'
+  - '            "/regs/identification/smidr_el1";'
+  - '        std::ifstream file(path);'
+  - '        if (!file.is_open()) {'
+  - '            break;'
+  - '        }'
+  - '        uint64_t smidr = 0;'
+  - '        if (!(file >> std::hex >> smidr)) {'
+  - '            continue;'
+  - '        }'
+  - '        const uint32_t sh = (uint32_t)((smidr >> 13) & 0x3);'
+  - '        const uint32_t id = (uint32_t)((smidr & 0xFFFu) | ((smidr >> 20) & 0xFFFFF000u));'
+  - '        switch (sh) {'
+  - '            case 0b10:'
+  - '                ++num_private;'
+  - '                break;'
+  - '            case 0b11:'
+  - '                shared_ids.emplace(id);'
+  - '                break;'
+  - '            case 0b00:'
+  - '                if (id == 0) ++num_private;'
+  - '                else shared_ids.emplace(id);'
+  - '                break;'
+  - '            default:'
+  - '                break;'
+  - '        }'
+  - '    }'
+  - '    return num_private + shared_ids.size();'
+  - '#elif defined(__APPLE__) && defined(__aarch64__)'
+  - '    char chip_name[256] = {};'
+  - '    size_t size = sizeof(chip_name);'
+  - '    if (sysctlbyname("machdep.cpu.brand_string", chip_name, &size, nullptr, 0)
+    == 0) {'
+  - '        const std::string brand(chip_name);'
+  - '        struct ModelSMCU { const char *match; size_t smcus; };'
+  - '        static const ModelSMCU table[] = {'
+  - '            { "M4 Ultra", 2 },'
+  - '            { "M4 Max",   2 },'
+  - '            { "M4 Pro",   2 },'
+  - '            { "M4",       1 },'
+  - '        };'
+  - '        for (const auto &e : table) {'
+  - '            if (brand.find(e.match) != std::string::npos) {'
+  - '                return e.smcus;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return 1;'
+  - '#else'
+  - '    return 1;'
+  - '#endif'
+  - '}'
+  desc: 检测 CPU 上 SME 模式计算单元（SMCU）的数量，支持 Linux、macOS 和默认回退逻辑。
+  line: 77-152
+  name: detect_num_smcus
+- code:
+  - static int parse_uint_env(const char *s, const char *name, bool *ok) {
+  - '    if (!s) { *ok = false; return 0; }'
+  - '    char *end = nullptr;'
+  - '    long v = strtol(s, &end, 10);'
+  - '    if (end == s || *end != ''\0'') {'
+  - '        GGML_LOG_WARN("kleidiai: invalid %s=''%s'' (expected integer)\n", name,
+    s);'
+  - '        *ok = false;'
+  - '        return 0;'
+  - '    }'
+  - '    if (v < 0 || v > INT_MAX) {'
+  - '        GGML_LOG_WARN("kleidiai: out-of-range %s=''%s''\n", name, s);'
+  - '        *ok = false;'
+  - '        return 0;'
+  - '    }'
+  - '    *ok = true;'
+  - '    return (int)v;'
+  - '}'
+  desc: 解析环境变量字符串为无符号整数，并在解析失败或超出范围时记录警告。
+  line: 154-173
+  name: parse_uint_env
+- code:
+  - static void init_kleidiai_context(void) {
+  - '    ggml_critical_section_start();'
+  - '    static bool initialized = false;'
+  - '    if (!initialized) {'
+  - '        initialized = true;'
+  - '        const char *env_sme     = getenv("GGML_KLEIDIAI_SME");'
+  - '        const char *env_threads = getenv("GGML_TOTAL_THREADS");'
+  - '        const bool cpu_has_sme = ggml_cpu_has_sme();'
+  - '        size_t detected_smcus = 0;'
+  - '        ctx.features  = (ggml_cpu_has_dotprod()     ? CPU_FEATURE_DOTPROD : CPU_FEATURE_NONE)
+    |'
+  - '                        (ggml_cpu_has_matmul_int8() ? CPU_FEATURE_I8MM    : CPU_FEATURE_NONE)
+    |'
+  - '                        ((ggml_cpu_has_sve() && ggml_cpu_get_sve_cnt() == QK8_0)
+    ? CPU_FEATURE_SVE : CPU_FEATURE_NONE);'
+  - '        if (env_threads) {'
+  - '            bool ok = false;'
+  - '            int hint = parse_uint_env(env_threads, "GGML_TOTAL_THREADS", &ok);'
+  - '            if (ok && hint > 0) {'
+  - '                ctx.thread_hint = hint;'
+  - '            }'
+  - '        }'
+  - '        int sme_cores = 0;'
+  - '        bool sme_env_ok = false;'
+  - '        bool sme_env_set = (env_sme != nullptr);'
+  - '        if (!cpu_has_sme) {'
+  - '            if (sme_env_set) {'
+  - '                bool ok = false;'
+  - '                int req = parse_uint_env(env_sme, "GGML_KLEIDIAI_SME", &ok);'
+  - '                if (ok && req > 0) {'
+  - '                    GGML_LOG_WARN("kleidiai: GGML_KLEIDIAI_SME=%d but SME is
+    not supported on this CPU; disabling SME\n", req);'
+  - '                }'
+  - '            }'
+  - '            sme_cores = 0;'
+  - '        } else {'
+  - '            if (sme_env_set) {'
+  - '                bool ok = false;'
+  - '                int v = parse_uint_env(env_sme, "GGML_KLEIDIAI_SME", &ok);'
+  - '                sme_env_ok = ok;'
+  - '                if (!ok) {'
+  - '                    GGML_LOG_WARN("kleidiai: GGML_KLEIDIAI_SME set but parsing
+    failed; falling back to runtime SME-core detection\n");'
+  - '                    detected_smcus = detect_num_smcus();'
+  - '                    sme_cores = detected_smcus > 0 ? (int)detected_smcus : 0;'
+  - '                } else if (v == 0) {'
+  - '                    sme_cores = 0;'
+  - '                } else {'
+  - '                    sme_cores = v;'
+  - '                }'
+  - '            } else {'
+  - '                detected_smcus = detect_num_smcus();'
+  - '                sme_cores = detected_smcus > 0 ? (int)detected_smcus : 0;'
+  - '            }'
+  - '            if (!sme_env_set && sme_cores == 0) {'
+  - '                GGML_LOG_WARN("kleidiai: SME supported but runtime SME-core detection
+    returned 0; falling back to NEON\n");'
+  - '            }'
+  - '            if (sme_cores > 0) {'
+  - '                ctx.features |= CPU_FEATURE_SME;'
+  - '            }'
+  - '        }'
+  - '        ctx.kernels_q4 = ggml_kleidiai_select_kernels_q4_0(ctx.features);'
+  - '        ctx.kernels_q8 = ggml_kleidiai_select_kernels_q8_0(ctx.features);'
+  - '        if (!ctx.kernels_q4) {'
+  - '            GGML_LOG_INFO("kleidiai: no compatible q4 kernels found for CPU features
+    mask %d\n", (int)ctx.features);'
+  - '        } else {'
+  - '            GGML_LOG_INFO("kleidiai: primary q4 kernel feature %s\n", cpu_feature_to_string(ctx.kernels_q4->required_cpu));'
+  - '        }'
+  - '        if (!ctx.kernels_q8) {'
+  - '            GGML_LOG_INFO("kleidiai: no compatible q8 kernels found for CPU features
+    mask %d\n", (int)ctx.features);'
+  - '        } else {'
+  - '            GGML_LOG_INFO("kleidiai: primary q8 kernel feature %s\n", cpu_feature_to_string(ctx.kernels_q8->required_cpu));'
+  - '        }'
+  - '        ctx.sme_thread_cap = (ctx.features & CPU_FEATURE_SME) ? sme_cores : 0;'
+  - '        if (ctx.features & CPU_FEATURE_SME) {'
+  - '            if (sme_env_set && sme_env_ok && sme_cores > 0) {'
+  - '                GGML_LOG_INFO("kleidiai: SME enabled (GGML_KLEIDIAI_SME=%d override)\n",
+    sme_cores);'
+  - '            } else {'
+  - '                GGML_LOG_INFO("kleidiai: SME enabled (runtime-detected SME cores=%d)\n",
+    sme_cores);'
+  - '            }'
+  - '        } else {'
+  - '            GGML_LOG_INFO("kleidiai: SME disabled\n");'
+  - '        }'
+  - '    }'
+  - '    ggml_critical_section_end();'
+  - '}'
+  desc: 初始化 KleidiAI 上下文，包括检测 CPU 特性、选择内核、处理 SME 配置和环境变量，并设置线程提示。
+  line: 175-267
+  name: init_kleidiai_context
+- code:
+  - static inline int kleidiai_sme_thread_cap() {
+  - '    return ctx.sme_thread_cap;'
+  - '}'
+  desc: 返回 SME 线程上限的静态内联函数。
+  line: 269-271
+  name: kleidiai_sme_thread_cap
+- code:
+  - static inline size_t align_up(size_t value, size_t alignment) {
+  - '    if (alignment == 0) {'
+  - '        return value;'
+  - '    }'
+  - '    const size_t remainder = value % alignment;'
+  - '    return remainder == 0 ? value : value + (alignment - remainder);'
+  - '}'
+  desc: 将给定值向上对齐到指定的对齐边界。
+  line: 273-280
+  name: align_up
+- code:
+  - static inline bool kleidiai_pack_fallback_allowed() {
+  - '    if (ctx.sme_thread_cap <= 0) {'
+  - '        return false;'
+  - '    }'
+  - '    if (ctx.thread_hint <= 0) {'
+  - '        return true;'
+  - '    }'
+  - '    return ctx.thread_hint > ctx.sme_thread_cap;'
+  - '}'
+  desc: 检查是否允许使用回退打包策略，基于 SME 线程上限和线程提示。
+  line: 282-290
+  name: kleidiai_pack_fallback_allowed
+- code:
+  - static inline kleidiai_weight_header * kleidiai_weight_header_from_ptr(void *
+    data) {
+  - '    return reinterpret_cast<kleidiai_weight_header *>(data);'
+  - '}'
+  - static inline const kleidiai_weight_header * kleidiai_weight_header_from_ptr(const
+    void * data) {
+  - '    return reinterpret_cast<const kleidiai_weight_header *>(data);'
+  - '}'
+  desc: 从 void 指针创建权重头指针（两个重载版本）。
+  line: 303-306
+  name: kleidiai_weight_header_from_ptr
+- code:
+  - static inline bool kleidiai_is_weight_header_valid(const kleidiai_weight_header
+    * header) {
+  - '    if (!header) {'
+  - '        return false;'
+  - '    }'
+  - '    if (header->magic != GGML_KLEIDIAI_PACK_MAGIC || header->version != GGML_KLEIDIAI_PACK_VERSION)
+    {'
+  - '        return false;'
+  - '    }'
+  - '    if (header->slot_count == 0 || header->slot_count > GGML_KLEIDIAI_MAX_KERNEL_SLOTS)
+    {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查权重头是否有效，验证 magic、版本和槽位数。
+  line: 308-319
+  name: kleidiai_is_weight_header_valid
+- code:
+  - static inline uint8_t * kleidiai_weight_slot_ptr(kleidiai_weight_header * header,
+    int slot) {
+  - '    if (!kleidiai_is_weight_header_valid(header)) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (slot < 0 || slot >= header->slot_count) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return reinterpret_cast<uint8_t *>(header) + header->offsets[slot];'
+  - '}'
+  - static inline const uint8_t * kleidiai_weight_slot_ptr(const kleidiai_weight_header
+    * header, int slot) {
+  - '    if (!kleidiai_is_weight_header_valid(header)) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (slot < 0 || slot >= header->slot_count) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return reinterpret_cast<const uint8_t *>(header) + header->offsets[slot];'
+  - '}'
+  desc: 获取指定槽位权重数据的指针，有两个重载（可变和常量版本），并在验证失败时返回 nullptr。
+  line: 321-336
+  name: kleidiai_weight_slot_ptr
+- code:
+  - static inline ggml_kleidiai_kernels * kleidiai_primary_kernel_q4() {
+  - '    return ctx.kernels_q4;'
+  - '}'
+  desc: 返回主要的 q4 量化内核指针。
+  line: 338-340
+  name: kleidiai_primary_kernel_q4
+- code:
+  - static inline ggml_kleidiai_kernels * kleidiai_primary_kernel_q8() {
+  - '    return ctx.kernels_q8;'
+  - '}'
+  desc: 返回主要的 q8 量化内核指针。
+  line: 342-344
+  name: kleidiai_primary_kernel_q8
+- code:
+  - template <typename SelectFallback>
+  - static int kleidiai_collect_kernel_chain_common(
+  - '        ggml_kleidiai_kernels * primary,'
+  - '        cpu_feature features,'
+  - '        std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> &
+    out,'
+  - '        SelectFallback select_fallback) {'
+  - '    int count = 0;'
+  - '    if (!primary) {'
+  - '        return 0;'
+  - '    }'
+  - '    out[count++] = primary;'
+  - '    if ((primary->required_cpu & CPU_FEATURE_SME) == CPU_FEATURE_SME) {'
+  - '        const cpu_feature fallback_mask = static_cast<cpu_feature>(features &
+    ~CPU_FEATURE_SME);'
+  - '        if (fallback_mask != CPU_FEATURE_NONE) {'
+  - '            ggml_kleidiai_kernels * fallback = select_fallback(fallback_mask);'
+  - '            if (fallback && fallback != primary &&'
+  - '                fallback->lhs_type == primary->lhs_type &&'
+  - '                fallback->rhs_type == primary->rhs_type &&'
+  - '                fallback->op_type  == primary->op_type) {'
+  - '                out[count++] = fallback;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return count;'
+  - '}'
+  desc: 收集内核链的通用模板函数，将主内核和可能的回退内核放入输出数组，并返回内核数量。
+  line: 346-371
+  name: kleidiai_collect_kernel_chain_common
+- code:
+  - static int kleidiai_collect_kernel_chain(const struct ggml_tensor * op,
+  - '        std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> &
+    out) {'
+  - '    ggml_kleidiai_kernels * primary = ggml_kleidiai_select_kernels(ctx.features,
+    op);'
+  - '    return kleidiai_collect_kernel_chain_common(primary, ctx.features, out,'
+  - '        [&](cpu_feature mask) { return ggml_kleidiai_select_kernels(mask, op);
+    });'
+  - '}'
+  desc: 为给定张量运算收集内核链，根据当前 CPU 特性选择主内核和可能的回退内核。
+  line: 373-377
+  name: kleidiai_collect_kernel_chain
+- code:
+  - static int kleidiai_collect_q4_chain(std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS>
+    & out) {
+  - '    ggml_kleidiai_kernels * primary = kleidiai_primary_kernel_q4();'
+  - '    return kleidiai_collect_kernel_chain_common(primary, ctx.features, out,'
+  - '        [&](cpu_feature mask) { return ggml_kleidiai_select_kernels_q4_0(mask);
+    });'
+  - '}'
+  desc: 为 q4 量化权重收集内核链。
+  line: 379-383
+  name: kleidiai_collect_q4_chain
+- code:
+  - static int kleidiai_collect_q8_chain(std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS>
+    & out) {
+  - '    ggml_kleidiai_kernels * primary = kleidiai_primary_kernel_q8();'
+  - '    return kleidiai_collect_kernel_chain_common(primary, ctx.features, out,'
+  - '        [&](cpu_feature mask) { return ggml_kleidiai_select_kernels_q8_0(mask);
+    });'
+  - '}'
+  desc: 为 q8 量化权重收集内核链。
+  line: 385-389
+  name: kleidiai_collect_q8_chain
+- code:
+  - static inline int64_t ggml_ne(const ggml_tensor * tensor, int dim) {
+  - '    GGML_ASSERT(dim >= 0 && dim < GGML_MAX_DIMS);'
+  - '    return tensor->ne[dim];'
+  - '}'
+  desc: 获取张量指定维度的元素个数（ne），并进行边界断言。
+  line: 391-394
+  name: ggml_ne
+- code:
+  - static size_t round_down(size_t x, size_t y) {
+  - '    return y == 0 ? x : x - (x % y);'
+  - '}'
+  desc: 将给定值向下舍入到指定粒度的倍数，位于命名空间 ggml::cpu::kleidiai 内。
+  line: 399-401
+  name: round_down
+- code:
+  - static void transpose_f32kxn_f16nxk(size_t n, size_t k, float * dst, const uint16_t
+    * src, size_t rhs_stride) {
+  - '    size_t src_stride = rhs_stride / sizeof(uint16_t);'
+  - '    size_t dst_stride = n;'
+  - '    for (size_t k_idx = 0; k_idx < k; ++k_idx) {'
+  - '        for (size_t n_idx = 0; n_idx < n; ++n_idx) {'
+  - '            uint16_t v = *(src + k_idx + n_idx * src_stride);'
+  - '            *(dst + n_idx + k_idx * dst_stride) = kai_cast_f32_f16(v);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将 F16 数据从 k x n 布局转置并转换为 F32 浮点数据的 n x k 布局，位于命名空间 ggml::cpu::kleidiai 内。
+  line: 403-412
+  name: transpose_f32kxn_f16nxk
+- code:
+  - static ggml::cpu::tensor_traits * get_tensor_traits(ggml_backend_buffer_t, struct
+    ggml_tensor *) {
+  - '    static tensor_traits traits;'
+  - '    return &traits;'
+  - '}'
+  - '...'
+  - ggml_backend_buffer_type_t ggml_backend_cpu_kleidiai_buffer_type(void) {
+  - '    static ggml::cpu::kleidiai::extra_buffer_type ctx;'
+  - '    static struct ggml_backend_buffer_type ggml_backend_cpu_buffer_type_kleidiai
+    = {'
+  - '        ...'
+  - '    };'
+  - '    init_kleidiai_context();'
+  - '    return &ggml_backend_cpu_buffer_type_kleidiai;'
+  - '}'
+  desc: 提供静态全局函数和初始化逻辑，管理 KleidiAI 缓冲区类型的生命周期。
+  line: 1435-1584
+  name: __main__

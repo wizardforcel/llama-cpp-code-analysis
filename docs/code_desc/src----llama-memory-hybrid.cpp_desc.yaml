@@ -1,0 +1,373 @@
+classes:
+- desc: 混合内存管理器类，同时管理注意力KV缓存和递归内存，提供统一的接口用于初始化、序列操作、状态读写等操作。
+  methods:
+  - code:
+    - llama_memory_hybrid::llama_memory_hybrid(
+    - '        const llama_model & model,'
+    - '                            /* attn */'
+    - '                ggml_type   type_k,'
+    - '                ggml_type   type_v,'
+    - '                     bool   v_trans,'
+    - '                 uint32_t   kv_size,'
+    - '                 uint32_t   n_pad,'
+    - '                 uint32_t   n_swa,'
+    - '           llama_swa_type   swa_type,'
+    - '                            /* recurrent */'
+    - '                ggml_type   type_r,'
+    - '                ggml_type   type_s,'
+    - '                 uint32_t   rs_size,'
+    - '                            /* common */'
+    - '                 uint32_t   n_seq_max,'
+    - '                     bool   offload,'
+    - '                     bool   unified,'
+    - '                            /* layer filters */'
+    - '    const layer_filter_cb & filter_attn,'
+    - '    const layer_filter_cb & filter_recr) :'
+    - '    hparams(model.hparams),'
+    - '    mem_attn(new llama_kv_cache('
+    - '        model,'
+    - '        type_k,'
+    - '        type_v,'
+    - '        v_trans,'
+    - '        offload,'
+    - '        unified,'
+    - '        kv_size,'
+    - '        n_seq_max,'
+    - '        n_pad,'
+    - '        n_swa,'
+    - '        swa_type,'
+    - '        filter_attn == nullptr ?'
+    - '            [&](int32_t il) { return !hparams.is_recurrent(il); }'
+    - '            : filter_attn,'
+    - '        nullptr'
+    - '    )),'
+    - '    mem_recr(new llama_memory_recurrent('
+    - '        model,'
+    - '        type_r,'
+    - '        type_s,'
+    - '        offload,'
+    - '        rs_size,'
+    - '        n_seq_max,'
+    - '        filter_recr == nullptr ?'
+    - '            [&](int32_t il) { return hparams.is_recurrent(il); }'
+    - '            : filter_recr'
+    - '    )) {}'
+    desc: 构造函数，初始化注意力KV缓存和递归内存，根据层过滤器分别分配对应的内存资源。
+    line: 11-61
+    name: llama_memory_hybrid
+  - code:
+    - llama_memory_context_ptr llama_memory_hybrid::init_batch(llama_batch_allocr
+      & balloc, uint32_t n_ubatch, bool embd_all) {
+    - '    do {'
+    - '        balloc.split_reset();'
+    - ''
+    - '        // follow the recurrent pattern for creating the ubatch splits'
+    - '        std::vector<llama_ubatch> ubatches;'
+    - ''
+    - '        while (true) {'
+    - '            llama_ubatch ubatch;'
+    - ''
+    - '            if (embd_all) {'
+    - '                // if all tokens are output, split by sequence'
+    - '                ubatch = balloc.split_seq(n_ubatch);'
+    - '            } else {'
+    - '                // Use non-sequential split when KV cache is unified (needed
+      for hellaswag/winogrande/multiple-choice)'
+    - '                const bool unified = (mem_attn->get_n_stream() == 1);'
+    - '                ubatch = balloc.split_equal(n_ubatch, !unified);'
+    - '            }'
+    - ''
+    - '            if (ubatch.n_tokens == 0) {'
+    - '                break;'
+    - '            }'
+    - ''
+    - '            ubatches.push_back(std::move(ubatch)); // NOLINT'
+    - '        }'
+    - ''
+    - '        if (balloc.get_n_used() < balloc.get_n_tokens()) {'
+    - '            // failed to find a suitable split'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        // prepare the recurrent batches first'
+    - '        if (!mem_recr->prepare(ubatches)) {'
+    - '            // TODO: will the recurrent cache be in an undefined context at
+      this point?'
+    - '            LLAMA_LOG_ERROR("%s: failed to prepare recurrent ubatches\n", __func__);'
+    - '            return std::make_unique<llama_memory_hybrid_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);'
+    - '        }'
+    - ''
+    - '        // prepare the attention cache'
+    - '        auto heads_attn = mem_attn->prepare(ubatches);'
+    - '        if (heads_attn.empty()) {'
+    - '            LLAMA_LOG_ERROR("%s: failed to prepare attention ubatches\n", __func__);'
+    - '            return std::make_unique<llama_memory_hybrid_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);'
+    - '        }'
+    - ''
+    - '        return std::make_unique<llama_memory_hybrid_context>('
+    - '                this, std::move(heads_attn), std::move(ubatches));'
+    - '    } while(false);'
+    - ''
+    - '    return std::make_unique<llama_memory_hybrid_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);'
+    - '}'
+    desc: 初始化批次处理，根据统一内存模式选择合适的分割方式，并准备递归内存和注意力缓存的批次数据。
+    line: 64-104
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr llama_memory_hybrid::init_full() {
+    - '    return std::make_unique<llama_memory_hybrid_context>(this);'
+    - '}'
+    desc: 初始化完整的内存上下文，创建新的混合内存上下文对象。
+    line: 106-108
+    name: init_full
+  - code:
+    - llama_memory_context_ptr llama_memory_hybrid::init_update(llama_context * lctx,
+      bool optimize) {
+    - '    return std::make_unique<llama_memory_hybrid_context>(this, lctx, optimize);'
+    - '}'
+    desc: 初始化更新内存上下文，用于推理过程中的内存更新操作。
+    line: 110-112
+    name: init_update
+  - code:
+    - bool llama_memory_hybrid::get_can_shift() const {
+    - '    // Shifting is trivially supported for recurrent'
+    - '    return mem_attn->get_can_shift();'
+    - '}'
+    desc: 获取是否可以移位操作的能力，递归内存总是支持移位，因此返回注意力缓存的移位能力。
+    line: 114-118
+    name: get_can_shift
+  - code:
+    - void llama_memory_hybrid::clear(bool data) {
+    - '    mem_attn->clear(data);'
+    - '    mem_recr->clear(data);'
+    - '}'
+    desc: 清除所有内存数据，同时清空注意力缓存和递归内存。
+    line: 120-124
+    name: clear
+  - code:
+    - bool llama_memory_hybrid::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1) {
+    - '    // Try removing from the recurrent cache first since it may fail. If it
+      does'
+    - '    // fail, the cache will not have been mutated.'
+    - '    if (!mem_recr->seq_rm(seq_id, p0, p1)) {'
+    - '        return false;'
+    - '    }'
+    - '    return mem_attn->seq_rm(seq_id, p0, p1);'
+    - '}'
+    desc: 从序列中移除指定范围的数据，先尝试操作递归内存（可能失败），再操作注意力缓存。
+    line: 126-135
+    name: seq_rm
+  - code:
+    - void llama_memory_hybrid::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst,
+      llama_pos p0, llama_pos p1) {
+    - '    mem_attn->seq_cp(seq_id_src, seq_id_dst, p0, p1);'
+    - '    mem_recr->seq_cp(seq_id_src, seq_id_dst, p0, p1);'
+    - '}'
+    desc: 将源序列的数据复制到目标序列，同时操作注意力和递归内存。
+    line: 137-141
+    name: seq_cp
+  - code:
+    - void llama_memory_hybrid::seq_keep(llama_seq_id seq_id) {
+    - '    mem_attn->seq_keep(seq_id);'
+    - '    mem_recr->seq_keep(seq_id);'
+    - '}'
+    desc: 仅保留指定序列，移除其他序列的数据，同时操作注意力和递归内存。
+    line: 143-147
+    name: seq_keep
+  - code:
+    - void llama_memory_hybrid::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1, llama_pos shift) {
+    - '    mem_attn->seq_add(seq_id, p0, p1, shift);'
+    - '    mem_recr->seq_add(seq_id, p0, p1, shift);'
+    - '}'
+    desc: 对指定范围的数据进行位置偏移操作，同时操作注意力和递归内存。
+    line: 149-153
+    name: seq_add
+  - code:
+    - void llama_memory_hybrid::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1, int d) {
+    - '    mem_attn->seq_div(seq_id, p0, p1, d);'
+    - '    mem_recr->seq_div(seq_id, p0, p1, d);'
+    - '}'
+    desc: 对指定范围的位置进行除法操作，同时操作注意力和递归内存。
+    line: 155-159
+    name: seq_div
+  - code:
+    - llama_pos llama_memory_hybrid::seq_pos_min(llama_seq_id seq_id) const {
+    - '    // the min of the total cache is the max of the two caches'' min values'
+    - '    return std::max(mem_attn->seq_pos_min(seq_id), mem_recr->seq_pos_min(seq_id));'
+    - '}'
+    desc: 获取指定序列的最小位置，结果为两个缓存最小值的最大值。
+    line: 161-165
+    name: seq_pos_min
+  - code:
+    - llama_pos llama_memory_hybrid::seq_pos_max(llama_seq_id seq_id) const {
+    - '    // the max of the total cache is the min of the two caches'' max values'
+    - '    return std::min(mem_attn->seq_pos_max(seq_id), mem_recr->seq_pos_max(seq_id));'
+    - '}'
+    desc: 获取指定序列的最大位置，结果为两个缓存最大值的最小值。
+    line: 167-171
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid::memory_breakdown()
+      const {
+    - '    std::map<ggml_backend_buffer_type_t, size_t> mb = mem_attn->memory_breakdown();'
+    - '    for (const auto & buft_size : mem_recr->memory_breakdown()) {'
+    - '        mb[buft_size.first] += buft_size.second;'
+    - '    }'
+    - '    return mb;'
+    - '}'
+    desc: 返回内存使用情况分析，合并了注意力和递归内存的使用统计信息。
+    line: 173-180
+    name: memory_breakdown
+  - code:
+    - void llama_memory_hybrid::state_write(llama_io_write_i & io, llama_seq_id seq_id,
+      llama_state_seq_flags flags) const {
+    - '    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {'
+    - '        mem_attn->state_write(io, seq_id, flags);'
+    - '    }'
+    - '    mem_recr->state_write(io, seq_id, flags);'
+    - '}'
+    desc: 将指定序列的状态写入IO，注意仅在非部分模式下才写入注意力缓存。
+    line: 182-189
+    name: state_write
+  - code:
+    - void llama_memory_hybrid::state_read(llama_io_read_i & io, llama_seq_id seq_id,
+      llama_state_seq_flags flags) {
+    - '    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {'
+    - '        mem_attn->state_read(io, seq_id, flags);'
+    - '    }'
+    - '    mem_recr->state_read(io, seq_id, flags);'
+    - '}'
+    desc: 从IO中读取指定序列的状态，注意仅在非部分模式下才读取注意力缓存。
+    line: 191-198
+    name: state_read
+  - code:
+    - llama_kv_cache * llama_memory_hybrid::get_mem_attn() const {
+    - '    return mem_attn.get();'
+    - '}'
+    desc: 获取注意力缓存对象的指针。
+    line: 200-203
+    name: get_mem_attn
+  - code:
+    - llama_memory_recurrent * llama_memory_hybrid::get_mem_recr() const {
+    - '    return mem_recr.get();'
+    - '}'
+    desc: 获取递归内存对象的指针。
+    line: 205-208
+    name: get_mem_recr
+  name: llama_memory_hybrid
+- desc: 混合内存上下文类，管理推理过程中的批次数据、注意力和递归内存的上下文实例，协调两者的生命周期和状态。
+  methods:
+  - code:
+    - 'llama_memory_hybrid_context::llama_memory_hybrid_context(llama_memory_status
+      status) : status(status) {}'
+    desc: 根据状态码构造上下文对象。
+    line: 210-210
+    name: llama_memory_hybrid_context
+  - code:
+    - 'llama_memory_hybrid_context::llama_memory_hybrid_context(llama_memory_hybrid
+      * mem) :'
+    - '    ctx_attn(mem->get_mem_attn()->init_full()),'
+    - '    ctx_recr(mem->get_mem_recr()->init_full()),'
+    - '    status(llama_memory_status_combine(ctx_attn->get_status(), ctx_recr->get_status()))
+      {'
+    - '}'
+    desc: 基于混合内存管理器构造完整上下文，创建两者的完整初始化上下文。
+    line: 212-216
+    name: llama_memory_hybrid_context
+  - code:
+    - llama_memory_hybrid_context::llama_memory_hybrid_context(
+    - '        llama_memory_hybrid * mem,'
+    - '              llama_context * lctx,'
+    - '                       bool   optimize) :'
+    - '    ctx_attn(mem->get_mem_attn()->init_update(lctx, optimize)),'
+    - '    ctx_recr(mem->get_mem_recr()->init_update(lctx, optimize)),'
+    - '    status(llama_memory_status_combine(ctx_attn->get_status(), ctx_recr->get_status()))
+      {'
+    - '}'
+    desc: 基于混合内存管理器、上下文和优化标志构造更新上下文。
+    line: 218-225
+    name: llama_memory_hybrid_context
+  - code:
+    - llama_memory_hybrid_context::llama_memory_hybrid_context(
+    - '              llama_memory_hybrid * mem,'
+    - '                  slot_info_vec_t   sinfos_attn,'
+    - '        std::vector<llama_ubatch>   ubatches) :'
+    - '    ubatches(std::move(ubatches)),'
+    - '    // note: here we copy the ubatches. not sure if this is ideal'
+    - '    ctx_attn(new llama_kv_cache_context(mem->get_mem_attn(), std::move(sinfos_attn),
+      this->ubatches)),'
+    - '    ctx_recr(new llama_memory_recurrent_context(mem->get_mem_recr(), this->ubatches)),'
+    - '    status(llama_memory_status_combine(ctx_attn->get_status(), ctx_recr->get_status()))
+      {'
+    - '}'
+    desc: 基于混合内存管理器、注意力槽信息和批次数据构造上下文，用于批次处理场景。
+    line: 227-235
+    name: llama_memory_hybrid_context
+  - code:
+    - bool llama_memory_hybrid_context::next() {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - ''
+    - '    ctx_attn->next();'
+    - '    ctx_recr->next();'
+    - ''
+    - '    if (++i_next >= ubatches.size()) {'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    return true;'
+    - '}'
+    desc: 将上下文推进到下一个微批次，同时更新注意力和递归内存的上下文。
+    line: 237-249
+    name: next
+  - code:
+    - bool llama_memory_hybrid_context::apply() {
+    - '    assert(!llama_memory_status_is_fail(status));'
+    - ''
+    - '    bool res = true;'
+    - ''
+    - '    res = res & ctx_attn->apply();'
+    - '    res = res & ctx_recr->apply();'
+    - ''
+    - '    return res;'
+    - '}'
+    desc: 应用所有内存更新操作，确保注意力和递归内存都正确应用。
+    line: 251-263
+    name: apply
+  - code:
+    - llama_memory_status llama_memory_hybrid_context::get_status() const {
+    - '    return status;'
+    - '}'
+    desc: 获取当前上下文的状态。
+    line: 265-268
+    name: get_status
+  - code:
+    - const llama_ubatch & llama_memory_hybrid_context::get_ubatch() const {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - '    return ubatches[i_next];'
+    - '}'
+    desc: 获取当前正在处理的微批次数据。
+    line: 270-274
+    name: get_ubatch
+  - code:
+    - const llama_kv_cache_context * llama_memory_hybrid_context::get_attn() const
+      {
+    - '    return static_cast<const llama_kv_cache_context *>(ctx_attn.get());'
+    - '}'
+    desc: 获取注意力缓存上下文的指针。
+    line: 276-279
+    name: get_attn
+  - code:
+    - const llama_memory_recurrent_context * llama_memory_hybrid_context::get_recr()
+      const {
+    - '    return static_cast<const llama_memory_recurrent_context *>(ctx_recr.get());'
+    - '}'
+    desc: 获取递归内存上下文的指针。
+    line: 281-284
+    name: get_recr
+  name: llama_memory_hybrid_context
+desc: 该文件实现了llama_memory_hybrid类及其上下文类，它提供了一种混合内存管理机制，将传统的注意力KV缓存（llama_kv_cache）和递归内存（llama_memory_recurrent）结合起来，用于支持同时具有注意力层和递归层的混合架构模型（如RWKV等）。该类负责统一管理两种内存的初始化、批次准备、序列操作、状态读写等功能，确保两种内存能够协同工作以支持模型的推理过程。
+file: src/llama-memory-hybrid.cpp
+funcs: []

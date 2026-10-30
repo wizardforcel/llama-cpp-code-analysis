@@ -1,0 +1,609 @@
+classes:
+- desc: ZenDNN后端的上下文结构体，保存线程数配置和工作缓冲区数据，用于矩阵乘法运算中的类型转换和数据处理。
+  methods:
+  - code:
+    - struct ggml_backend_zendnn_context {
+    - '    int n_threads = GGML_DEFAULT_N_THREADS;'
+    - '    std::unique_ptr<char[]> work_data;'
+    - '    size_t work_size = 0;'
+    - '};'
+    desc: 由std::unique_ptr管理的自动构造与析构，用于安全地管理工作缓冲区生命周期。
+    line: 15-19
+    name: 构造与析构（隐式）
+  name: ggml_backend_zendnn_context
+- desc: MoE（专家混合）行映射辅助结构体，记录每个输出行对应的输入索引和批次索引，用于矩阵乘前的数据汇集和乘后的结果散射。
+  methods:
+  - code:
+    - struct mmid_row_mapping {
+    - '    int32_t i1;'
+    - '    int32_t i2;'
+    - '};'
+    desc: 定义输入批次索引(i1)和样本索引(i2)两个成员变量。
+    line: 262-265
+    name: 结构体定义
+  name: mmid_row_mapping
+desc: 该文件是GGML框架中AMD ZenDNN后端的实现，利用ZenDNN优化库（针对AMD CPU优化的深度学习性能计算库）来加速矩阵乘法（MUL_MAT）和MoE专家混合矩阵乘法（MUL_MAT_ID）等运算。文件定义了后端上下文结构体、矩阵乘法核心模板函数、两种矩阵乘的前向计算实现（支持BF16与FP32类型转换），以及完整的后端接口层（包含backend、driver、reg三个层级的注册，使GGML能够动态加载并使用该AMD
+  CPU加速后端）。
+file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+funcs:
+- code:
+  - template<typename T>
+  - zendnnl::common::data_type_t ggml_to_zendnn_type() {
+  - '    if constexpr (std::is_same_v<T, float>) {'
+  - '        return zendnnl::common::data_type_t::f32;'
+  - '    } else if constexpr (std::is_same_v<T, ggml_bf16_t>) {'
+  - '        return zendnnl::common::data_type_t::bf16;'
+  - '    } else {'
+  - '        return zendnnl::common::data_type_t::none;'
+  - '    }'
+  - '}'
+  desc: 模板辅助函数，将GGML的数据类型（float和ggml_bf16_t）转换为对应的ZenDNN数据类型，用于配置矩阵乘参数。
+  line: 21-28
+  name: ggml_to_zendnn_type
+- code:
+  - template <typename TA, typename TB, typename TC>
+  - static bool ggml_zendnn_matmul(ggml_backend_zendnn_context * ctx, int64_t m, int64_t
+    n, int64_t k,
+  - '                               const TA * A, int64_t lda, const TB * B, int64_t
+    ldb, TC * C,'
+  - '                               int64_t ldc) {'
+  - '    zendnnl::lowoha::matmul::matmul_params params;'
+  - '    params.dtypes.src = ggml_to_zendnn_type<TB>();'
+  - '    params.dtypes.wei = ggml_to_zendnn_type<TA>();'
+  - '    params.dtypes.dst = ggml_to_zendnn_type<TC>();'
+  - '    params.num_threads = ctx->n_threads;'
+  - '    zendnnl::error_handling::status_t status = zendnnl::lowoha::matmul::matmul_direct('
+  - '        ''r'', false, true,'
+  - '        n,'
+  - '        m,'
+  - '        k,'
+  - '        1.0f,'
+  - '        B, ldb,'
+  - '        A, lda,'
+  - '        nullptr,'
+  - '        0.0f,'
+  - '        C, ldc,'
+  - '        true,'
+  - '        {},'
+  - '        params'
+  - '    );'
+  - '    if (status != zendnnl::error_handling::status_t::success) {'
+  - '        GGML_LOG_ERROR("%s, ZenDNN matmul failed: status=%d\n", __func__, static_cast<int>(status));'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 核心模板函数，封装ZenDNN的matmul_direct API，执行C=Alpha*(op(A)*op(B))+Beta*C的矩阵乘法，支持多种数据类型组合（float和bf16）。
+  line: 37-66
+  name: ggml_zendnn_matmul
+- code:
+  - static bool ggml_zendnn_sgemm(ggml_backend_zendnn_context * ctx, int64_t m, int64_t
+    n, int64_t k,
+  - '                              const void * A, int64_t lda, const void * B, int64_t
+    ldb, void * C,'
+  - '                              int64_t ldc, int Atype, int Btype, int Ctype) {'
+  - '    assert(m >= 0);'
+  - '    assert(n >= 0);'
+  - '    assert(k >= 0);'
+  - '    assert(lda >= k);'
+  - '    assert(ldb >= k);'
+  - '    assert(ldc >= m);'
+  - '    switch (Atype) {'
+  - '        case GGML_TYPE_F32:'
+  - '            if (Btype != GGML_TYPE_F32 || Ctype != GGML_TYPE_F32)'
+  - '                return false;'
+  - '            return ggml_zendnn_matmul<float, float, float>('
+  - '                ctx, m, n, k,'
+  - '                (const float *)A, lda,'
+  - '                (const float *)B, ldb,'
+  - '                (float *)C, ldc);'
+  - '        case GGML_TYPE_BF16:'
+  - '            if (Btype != GGML_TYPE_BF16)'
+  - '                return false;'
+  - '            if (Ctype == GGML_TYPE_BF16)'
+  - '                return ggml_zendnn_matmul<ggml_bf16_t, ggml_bf16_t, ggml_bf16_t>('
+  - '                    ctx, m, n, k,'
+  - '                    (const ggml_bf16_t *)A, lda,'
+  - '                    (const ggml_bf16_t *)B, ldb,'
+  - '                    (ggml_bf16_t *)C, ldc);'
+  - '            if (Ctype == GGML_TYPE_F32)'
+  - '                return ggml_zendnn_matmul<ggml_bf16_t, ggml_bf16_t, float>('
+  - '                    ctx, m, n, k,'
+  - '                    (const ggml_bf16_t *)A, lda,'
+  - '                    (const ggml_bf16_t *)B, ldb,'
+  - '                    (float *)C, ldc);'
+  - '            return false;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 矩阵乘法的类型分发函数，根据输入输出数据类型的组合选择合适的模板实例（支持FP32和BF16）来执行矩阵乘法运算。
+  line: 68-97
+  name: ggml_zendnn_sgemm
+- code:
+  - static void ggml_zendnn_compute_forward_mul_mat(
+  - '    ggml_backend_zendnn_context * ctx,'
+  - '    ggml_tensor * dst) {'
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    const ggml_tensor * src1 = dst->src[1];'
+  - '    GGML_TENSOR_BINARY_OP_LOCALS'
+  - '    ggml_type         const vec_dot_type = src0->type;'
+  - '    ggml_from_float_t const from_float = ggml_get_type_traits(vec_dot_type)->from_float_ref;'
+  - '    GGML_ASSERT(ne0 == ne01);'
+  - '    GGML_ASSERT(ne1 == ne11);'
+  - '    GGML_ASSERT(ne2 == ne12);'
+  - '    GGML_ASSERT(ne3 == ne13);'
+  - '    GGML_ASSERT(nb00 == ggml_type_size(src0->type));'
+  - '    GGML_ASSERT(nb10 == ggml_type_size(src1->type));'
+  - '    GGML_ASSERT(nb0 == sizeof(float));'
+  - '    GGML_ASSERT(nb0 <= nb1);'
+  - '    GGML_ASSERT(nb1 <= nb2);'
+  - '    GGML_ASSERT(nb2 <= nb3);'
+  - '    const int64_t r2 = ne12/ne02;'
+  - '    const int64_t r3 = ne13/ne03;'
+  - '    void * work_data = ctx->work_data.get();'
+  - '    if (src1->type != vec_dot_type) {'
+  - '        const size_t nbw1 = ggml_row_size(vec_dot_type, ne10);'
+  - '        const size_t nbw2 = nbw1 * ne11;'
+  - '        const size_t nbw3 = nbw2 * ne12;'
+  - '        const size_t desired_wsize = ne13 * nbw3;'
+  - '        if (ctx->work_size < desired_wsize) {'
+  - '            ctx->work_data.reset(new char[desired_wsize]);'
+  - '            ctx->work_size = desired_wsize;'
+  - '        }'
+  - '        work_data = ctx->work_data.get();'
+  - '        #pragma omp parallel for collapse(3) num_threads(ctx->n_threads) schedule(static)'
+  - '        for (int64_t i13 = 0; i13 < ne13; ++i13) {'
+  - '            for (int64_t i12 = 0; i12 < ne12; ++i12) {'
+  - '                for (int64_t i11 = 0; i11 < ne11; ++i11) {'
+  - '                    const float * src1_f32 = (float *)((char *)src1->data + i11*nb11
+    + i12*nb12 + i13*nb13);'
+  - '                    void * src1_conv = (char *)work_data + i11*nbw1 + i12*nbw2
+    + i13*nbw3;'
+  - '                    from_float(src1_f32, src1_conv, ne10);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    for (int64_t i13 = 0; i13 < ne13; i13++) {'
+  - '        for (int64_t i12 = 0; i12 < ne12; i12++) {'
+  - '            const void* wdata = src1->type == vec_dot_type ? src1->data : work_data;'
+  - '            const size_t row_size = ggml_row_size(vec_dot_type, ne10);'
+  - '            if (!ggml_zendnn_sgemm(ctx,'
+  - '                                  ne01,'
+  - '                                  ne11,'
+  - '                                  ne10,'
+  - '                                  static_cast<const char *>(src0->data) + (i12/r2)*nb02
+    + (i13/r3)*nb03,'
+  - '                                  ne00,'
+  - '                                  static_cast<const char *>(wdata) + (i12*ne11
+    + i13*ne12*ne11)*row_size,'
+  - '                                  ne10,'
+  - '                                  static_cast<char *>(dst->data) + i12*nb2 +
+    i13*nb3,'
+  - '                                  ne01,'
+  - '                                  src0->type,'
+  - '                                  vec_dot_type,'
+  - '                                  dst->type))'
+  - '                GGML_ABORT("%s: ZenDNN sgemm failed\n", __func__);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 标准矩阵乘法（GGML_OP_MUL_MAT）的前向计算函数，处理输入数据的类型转换（如有需要，将FP32转换为BF16），并迭代所有批次维度调用ZenDNN
+    sgemm执行矩阵乘法。
+  line: 100-181
+  name: ggml_zendnn_compute_forward_mul_mat
+- code:
+  - static void ggml_zendnn_compute_forward_mul_mat_id(
+  - '    ggml_backend_zendnn_context * ctx,'
+  - '    ggml_tensor * dst) {'
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    const ggml_tensor * src1 = dst->src[1];'
+  - '    const ggml_tensor * ids  = dst->src[2];'
+  - '    GGML_TENSOR_BINARY_OP_LOCALS'
+  - '    if (ne2 == 0 || ne11 == 0) {'
+  - '        return;'
+  - '    }'
+  - '    ggml_type         const vec_dot_type = src0->type;'
+  - '    ggml_from_float_t const from_float = ggml_get_type_traits(vec_dot_type)->from_float_ref;'
+  - '    GGML_ASSERT(nb00 == ggml_type_size(src0->type));'
+  - '    GGML_ASSERT(nb10 == ggml_type_size(src1->type));'
+  - '    GGML_ASSERT(nb0 == sizeof(float));'
+  - '    GGML_ASSERT(nb0 <= nb1);'
+  - '    GGML_ASSERT(nb1 <= nb2);'
+  - '    GGML_ASSERT(nb2 <= nb3);'
+  - '    GGML_ASSERT(ne03 == 1);'
+  - '    GGML_ASSERT(ne13 == 1);'
+  - '    GGML_ASSERT(ne3  == 1);'
+  - '    const int n_ids = ids->ne[0];'
+  - '    const int n_as  = ne02;'
+  - '    std::vector<int64_t> matrix_row_counts(n_as, 0);'
+  - '    std::vector<std::vector<mmid_row_mapping>> matrix_rows(n_as);'
+  - '    int64_t max_rows = 0;'
+  - '    for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {'
+  - '        for (int id = 0; id < n_ids; ++id) {'
+  - '            const int32_t i02 = *(const int32_t *)((const char *)ids->data +
+    iid1*ids->nb[1] + id*ids->nb[0]);'
+  - '            GGML_ASSERT(i02 >= 0 && i02 < n_as);'
+  - '            matrix_rows[i02].push_back({id, iid1});'
+  - '            matrix_row_counts[i02]++;'
+  - '            if (matrix_row_counts[i02] > max_rows) {'
+  - '                max_rows = matrix_row_counts[i02];'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    if (max_rows == 0) {'
+  - '        return;'
+  - '    }'
+  - '    const size_t row_size = ggml_row_size(vec_dot_type, ne10);'
+  - '    const size_t nbw1 = row_size;'
+  - '    const size_t nbw2 = nbw1 * ne11;'
+  - '    const size_t nbw3 = nbw2 * ne12;'
+  - '    const size_t src1_conv_size = (src1->type != vec_dot_type) ? ne13 * nbw3
+    : 0;'
+  - '    const size_t wdata_cur_size = max_rows * row_size;'
+  - '    const size_t dst_cur_size = max_rows * ggml_row_size(dst->type, ne01);'
+  - '    const size_t total_size = src1_conv_size + wdata_cur_size + dst_cur_size;'
+  - '    if (ctx->work_size < total_size) {'
+  - '        ctx->work_data.reset(new char[total_size]);'
+  - '        ctx->work_size = total_size;'
+  - '    }'
+  - '    char * work_data = ctx->work_data.get();'
+  - '    char * wdata_cur = work_data + src1_conv_size;'
+  - '    char * dst_cur = wdata_cur + wdata_cur_size;'
+  - '    if (src1->type != vec_dot_type) {'
+  - '        GGML_ASSERT(src1->type == GGML_TYPE_F32);'
+  - '        #pragma omp parallel for collapse(3) num_threads(ctx->n_threads) schedule(static)'
+  - '        for (int64_t i13 = 0; i13 < ne13; ++i13) {'
+  - '            for (int64_t i12 = 0; i12 < ne12; ++i12) {'
+  - '                for (int64_t i11 = 0; i11 < ne11; ++i11) {'
+  - '                    const float * src1_f32 = (float *)((char *)src1->data + i11*nb11
+    + i12*nb12 + i13*nb13);'
+  - '                    void * src1_conv = (char *)work_data + i11*nbw1 + i12*nbw2
+    + i13*nbw3;'
+  - '                    from_float(src1_f32, src1_conv, ne10);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    const void * wdata = src1->type == vec_dot_type ? src1->data : work_data;'
+  - '    for (int64_t cur_a = 0; cur_a < n_as; ++cur_a) {'
+  - '        const int64_t cne1 = matrix_row_counts[cur_a];'
+  - '        if (cne1 == 0) {'
+  - '            continue;'
+  - '        }'
+  - '        const char * src0_cur = (const char *) src0->data + cur_a*nb02;'
+  - '        #pragma omp parallel for num_threads(ctx->n_threads) schedule(static)'
+  - '        for (int64_t ir1 = 0; ir1 < cne1; ++ir1) {'
+  - '            const mmid_row_mapping & row_mapping = matrix_rows[cur_a][ir1];'
+  - '            const int64_t id = row_mapping.i1;'
+  - '            const int64_t i11 = id % ne11;'
+  - '            const int64_t i12 = row_mapping.i2;'
+  - '            std::memcpy('
+  - '                wdata_cur + ir1 * row_size,'
+  - '                (const char *) wdata + (i11 + i12*ne11) * row_size,'
+  - '                row_size'
+  - '            );'
+  - '        }'
+  - '        if (!ggml_zendnn_sgemm(ctx,'
+  - '                              ne01,'
+  - '                              cne1,'
+  - '                              ne10,'
+  - '                              src0_cur,'
+  - '                              ne00,'
+  - '                              wdata_cur,'
+  - '                              ne10,'
+  - '                              dst_cur,'
+  - '                              ne01,'
+  - '                              src0->type,'
+  - '                              vec_dot_type,'
+  - '                              dst->type)) {'
+  - '            GGML_ABORT("%s: ZenDNN sgemm failed\n", __func__);'
+  - '        }'
+  - '        #pragma omp parallel for num_threads(ctx->n_threads) schedule(static)'
+  - '        for (int64_t ir1 = 0; ir1 < cne1; ++ir1) {'
+  - '            const mmid_row_mapping & row_mapping = matrix_rows[cur_a][ir1];'
+  - '            const int64_t id = row_mapping.i1;'
+  - '            const int64_t i1 = id;'
+  - '            const int64_t i2 = row_mapping.i2;'
+  - '            std::memcpy('
+  - '                (char *) dst->data + i1*nb1 + i2*nb2,'
+  - '                dst_cur + ir1 * ggml_row_size(dst->type, ne01),'
+  - '                ggml_row_size(dst->type, ne01)'
+  - '            );'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: MoE（专家混合）矩阵乘法（GGML_OP_MUL_MAT_ID）前向计算函数，根据专家ID将输入行分组到对应专家，执行数据中心化的gather->batched
+    matmul->scatter流程，支持多个专家并行计算。
+  line: 267-379
+  name: ggml_zendnn_compute_forward_mul_mat_id
+- code:
+  - static const char * ggml_backend_zendnn_get_name(ggml_backend_t backend) {
+  - '    return "ZenDNN";'
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  desc: 后端接口函数，返回后端名称字符串。
+  line: 383-387
+  name: ggml_backend_zendnn_get_name
+- code:
+  - static void ggml_backend_zendnn_free(ggml_backend_t backend) {
+  - '    ggml_backend_zendnn_context * ctx = (ggml_backend_zendnn_context *)backend->context;'
+  - '    delete ctx;'
+  - '    delete backend;'
+  - '}'
+  desc: 后端接口函数，释放后端上下文和backend对象占用的内存。
+  line: 389-393
+  name: ggml_backend_zendnn_free
+- code:
+  - static ggml_status ggml_backend_zendnn_graph_compute(ggml_backend_t backend, ggml_cgraph
+    * cgraph) {
+  - '    ggml_backend_zendnn_context * ctx = (ggml_backend_zendnn_context *)backend->context;'
+  - '    for (int i = 0; i < cgraph->n_nodes; i++) {'
+  - '        struct ggml_tensor * node = cgraph->nodes[i];'
+  - '        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {'
+  - '            continue;'
+  - '        }'
+  - '        switch (node->op) {'
+  - '            case GGML_OP_MUL_MAT:'
+  - '                ggml_zendnn_compute_forward_mul_mat(ctx, node);'
+  - '                break;'
+  - '            case GGML_OP_MUL_MAT_ID:'
+  - '                ggml_zendnn_compute_forward_mul_mat_id(ctx, node);'
+  - '                break;'
+  - '            case GGML_OP_NONE:'
+  - '            case GGML_OP_RESHAPE:'
+  - '            case GGML_OP_VIEW:'
+  - '            case GGML_OP_PERMUTE:'
+  - '            case GGML_OP_TRANSPOSE:'
+  - '                break;'
+  - '            default:'
+  - '                GGML_ABORT("%s: unsupported op %s\n", __func__, ggml_op_desc(node));'
+  - '        }'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  desc: 后端接口函数，遍历计算图中的节点，针对MUL_MAT和MUL_MAT_ID操作调用对应的前向计算函数，并处理不支持的算子异常。
+  line: 395-424
+  name: ggml_backend_zendnn_graph_compute
+- code:
+  - static ggml_guid_t ggml_backend_zendnn_guid(void) {
+  - '    static const char * guid_str = "AMD-ZENDNN-ACCEL";'
+  - '    return reinterpret_cast<ggml_guid_t>(const_cast<char*>(guid_str));'
+  - '}'
+  desc: 返回后端唯一标识GUID，用于后端类型识别。
+  line: 436-440
+  name: ggml_backend_zendnn_guid
+- code:
+  - ggml_backend_t ggml_backend_zendnn_init(void) {
+  - '    ggml_backend_zendnn_context * ctx = new ggml_backend_zendnn_context;'
+  - '    ggml_backend_t backend = new ggml_backend {'
+  - '        /* .guid    = */ ggml_backend_zendnn_guid(),'
+  - '        /* .iface   = */ ggml_backend_zendnn_i,'
+  - '        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_zendnn_reg(),
+    0),'
+  - '        /* .context = */ ctx,'
+  - '    };'
+  - '    return backend;'
+  - '}'
+  desc: 后端初始化函数，创建后端上下文和后端对象，注册回调和设备信息。
+  line: 442-451
+  name: ggml_backend_zendnn_init
+- code:
+  - bool ggml_backend_is_zendnn(ggml_backend_t backend) {
+  - '    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_zendnn_guid());'
+  - '}'
+  desc: 检查给定backend是否为ZenDNN后端，通过比较GUID实现。
+  line: 453-456
+  name: ggml_backend_is_zendnn
+- code:
+  - void ggml_backend_zendnn_set_n_threads(ggml_backend_t backend_zendnn, int n_threads)
+    {
+  - '    GGML_ASSERT(ggml_backend_is_zendnn(backend_zendnn));'
+  - '    ggml_backend_zendnn_context * ctx = (ggml_backend_zendnn_context *)backend_zendnn->context;'
+  - '    ctx->n_threads = n_threads;'
+  - '}'
+  desc: 设置ZenDNN后端使用的线程数，更新上下文中的线程配置。
+  line: 458-464
+  name: ggml_backend_zendnn_set_n_threads
+- code:
+  - static const char * ggml_backend_zendnn_device_get_name(ggml_backend_dev_t dev)
+    {
+  - '    return "ZenDNN";'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，返回设备名称字符串。
+  line: 467-471
+  name: ggml_backend_zendnn_device_get_name
+- code:
+  - static const char * ggml_backend_zendnn_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    return "ZenDNN: AMD optimized primitives backend for GGML (optimized for
+    AMD CPUs)";'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，返回设备功能描述文本。
+  line: 478-482
+  name: ggml_backend_zendnn_device_get_description
+- code:
+  - static void ggml_backend_zendnn_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '    *free  = 0;'
+  - '    *total = 0;'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，返回设备内存使用情况（当前无特殊实现，返回0）。
+  line: 484-489
+  name: ggml_backend_zendnn_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_zendnn_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    return GGML_BACKEND_DEVICE_TYPE_ACCEL;'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，返回设备类型（加速器类型）。
+  line: 491-495
+  name: ggml_backend_zendnn_device_get_type
+- code:
+  - static void ggml_backend_zendnn_device_get_props(ggml_backend_dev_t dev, struct
+    ggml_backend_dev_props * props) {
+  - '    props->name        = ggml_backend_zendnn_device_get_name(dev);'
+  - '    props->description = ggml_backend_zendnn_device_get_description(dev);'
+  - '    props->type        = ggml_backend_zendnn_device_get_type(dev);'
+  - '    ggml_backend_zendnn_device_get_memory(dev, &props->memory_free, &props->memory_total);'
+  - '    props->caps = {'
+  - '        false,'
+  - '        false,'
+  - '        true,'
+  - '        false'
+  - '    };'
+  - '}'
+  desc: 设备接口函数，填充设备属性结构体，包括名称、描述、类型、内存容量和计算能力标志。
+  line: 497-509
+  name: ggml_backend_zendnn_device_get_props
+- code:
+  - static ggml_backend_t ggml_backend_zendnn_device_init_backend(ggml_backend_dev_t
+    dev, const char * params) {
+  - '    ggml_backend_t backend = ggml_backend_zendnn_init();'
+  - '    if (backend == NULL) {'
+  - '        GGML_LOG_ERROR("%s: error: failed to initialize ZenDNN backend\n", __func__);'
+  - '        return NULL;'
+  - '    }'
+  - '    return backend;'
+  - '    GGML_UNUSED(dev);'
+  - '    GGML_UNUSED(params);'
+  - '}'
+  desc: 设备接口函数，创建设备对应的后端实例。
+  line: 511-522
+  name: ggml_backend_zendnn_device_init_backend
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_zendnn_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    return ggml_backend_cpu_buffer_type();'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，返回缓冲区类型，这里直接返回CPU缓冲区类型。
+  line: 524-528
+  name: ggml_backend_zendnn_device_get_buffer_type
+- code:
+  - static ggml_backend_buffer_t ggml_backend_zendnn_device_buffer_from_host_ptr(ggml_backend_dev_t
+    dev, void * ptr, size_t size, size_t max_tensor_size) {
+  - '    return ggml_backend_cpu_buffer_from_ptr(ptr, size);'
+  - '    GGML_UNUSED(dev);'
+  - '    GGML_UNUSED(max_tensor_size);'
+  - '}'
+  desc: 设备接口函数，根据主机指针创建CPU缓冲区。
+  line: 530-535
+  name: ggml_backend_zendnn_device_buffer_from_host_ptr
+- code:
+  - static bool ggml_backend_zendnn_device_supports_op(ggml_backend_dev_t dev, const
+    struct ggml_tensor * op) {
+  - '    switch (op->op) {'
+  - '        case GGML_OP_NONE:'
+  - '        case GGML_OP_RESHAPE:'
+  - '        case GGML_OP_VIEW:'
+  - '        case GGML_OP_PERMUTE:'
+  - '        case GGML_OP_TRANSPOSE:'
+  - '            return true;'
+  - '        case GGML_OP_MUL_MAT:'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '        {'
+  - '            const ggml_tensor * weights = op->src[0];'
+  - '            const ggml_tensor * inputs = op->src[1];'
+  - '            const int64_t ne10 = inputs->ne[0];'
+  - '            const int64_t ne0 = op->ne[0];'
+  - '            const int64_t ne1 = op->ne[1];'
+  - '            const int64_t min_batch = 1;'
+  - '            if (!ggml_is_contiguous(weights) || !ggml_is_contiguous(inputs) ||'
+  - '                ne0 < min_batch || ne1 < min_batch || ne10 < min_batch) {'
+  - '                return false;'
+  - '            }'
+  - '            if (op->op == GGML_OP_MUL_MAT_ID) {'
+  - '                const int64_t n_experts = weights->ne[2];'
+  - '                const int64_t max_experts = 32;'
+  - '                if (n_experts > max_experts) {'
+  - '                    return false;'
+  - '                }'
+  - '            }'
+  - '            switch (weights->type) {'
+  - '                case GGML_TYPE_F32:'
+  - '                case GGML_TYPE_BF16:'
+  - '                    return true;'
+  - '                default:'
+  - '                    return false;'
+  - '            }'
+  - '        }'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，判断设备是否支持给定的计算操作，支持MUL_MAT和MUL_MAT_ID（带专家数量限制），以及若干内存操作类算子。
+  line: 537-585
+  name: ggml_backend_zendnn_device_supports_op
+- code:
+  - static bool ggml_backend_zendnn_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t
+    buft) {
+  - '    return ggml_backend_buft_is_host(buft);'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 设备接口函数，判断设备是否支持给定的缓冲区类型（仅支持主机缓冲区）。
+  line: 587-590
+  name: ggml_backend_zendnn_device_supports_buft
+- code:
+  - static const char * ggml_backend_zendnn_reg_get_name(ggml_backend_reg_t reg) {
+  - '    return "ZenDNN";'
+  - '    GGML_UNUSED(reg);'
+  - '}'
+  desc: 注册器接口函数，返回注册器名称。
+  line: 606-610
+  name: ggml_backend_zendnn_reg_get_name
+- code:
+  - static size_t ggml_backend_zendnn_reg_get_device_count(ggml_backend_reg_t reg)
+    {
+  - '    return 1;'
+  - '    GGML_UNUSED(reg);'
+  - '}'
+  desc: 注册器接口函数，返回设备数量。
+  line: 612-616
+  name: ggml_backend_zendnn_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_zendnn_reg_get_device(ggml_backend_reg_t
+    reg, size_t index) {
+  - '    GGML_ASSERT(index == 0);'
+  - '    static ggml_backend_device ggml_backend_zendnn_device = {'
+  - '        /* .iface   = */ ggml_backend_zendnn_device_i,'
+  - '        /* .reg     = */ reg,'
+  - '        /* .context = */ nullptr,'
+  - '    };'
+  - '    return &ggml_backend_zendnn_device;'
+  - '}'
+  desc: 注册器接口函数，根据索引返回对应的设备对象。
+  line: 618-628
+  name: ggml_backend_zendnn_reg_get_device
+- code:
+  - static void * ggml_backend_zendnn_get_proc_address(ggml_backend_reg_t reg, const
+    char * name) {
+  - '    if (std::strcmp(name, "ggml_backend_set_n_threads") == 0) {'
+  - '        return (void *) ggml_backend_zendnn_set_n_threads;'
+  - '    }'
+  - '    return NULL;'
+  - '    GGML_UNUSED(reg);'
+  - '    GGML_UNUSED(name);'
+  - '}'
+  desc: 注册器接口函数，根据函数名返回对应的函数地址，目前支持设置线程数的函数。
+  line: 630-638
+  name: ggml_backend_zendnn_get_proc_address
+- code:
+  - ggml_backend_reg_t ggml_backend_zendnn_reg(void) {
+  - '    static struct ggml_backend_reg ggml_backend_zendnn_reg = {'
+  - '        /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '        /* .iface       = */ ggml_backend_zendnn_reg_i,'
+  - '        /* .context     = */ NULL,'
+  - '    };'
+  - '    return &ggml_backend_zendnn_reg;'
+  - '}'
+  desc: 注册器入口函数，返回后端注册对象，由GGML动态加载机制调用。
+  line: 649-657
+  name: ggml_backend_zendnn_reg

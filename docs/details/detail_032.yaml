@@ -1,0 +1,356 @@
+code_map:
+- src/models/chameleon.cpp
+- '├── llm_build_chameleon::llm_build_chameleon()  # 抑制图像 token logits 的多模态模型'
+- '│   ├── build_inp_embd()                          # 嵌入层输入（含视觉 token）'
+- '│   ├── build_norm() 循环                         # attn_norm / ffn_norm'
+- '│   ├── Q/K/V 独立投影 + 可选 Q/K 归一化           # attn_q_norm / attn_k_norm'
+- '│   ├── ggml_rope_ext()                           # 标准 RoPE（非 multi）'
+- '│   ├── swin_norm 分支                            # 滑动窗口归一化切换'
+- '│   ├── build_ffn()  SiLU + 并行                  # LLM_FFN_SILU, LLM_FFN_PAR'
+- '│   ├── ggml_get_rows() 最后层输出过滤              # inp_out_ids'
+- '│   ├── ★ggml_new_tensor_1d()                     # 创建图像 logits 张量'
+- '│   ├── ★ggml_clamp()                             # 钳制为 -FLT_MAX'
+- '│   └── ★ggml_set_1d()                            # 注入图像 token 位置'
+- ''
+- src/models/cogvlm.cpp
+- '├── llm_build_cogvlm::llm_build_cogvlm()          # 视觉专家分支架构'
+- '│   ├── ubatch.token 判断                         # is_text 输入分流'
+- '│   ├── 文本路径 vs 视觉专家路径                  # wqkv vs visexp_attn_wqkv'
+- '│   ├── ★ggml_view_3d() 拆分合并 QKV              # 三视图切片'
+- '│   ├── ggml_rope()                               # 简化的 RoPE（非 ext）'
+- '│   └── build_ffn() 文本/视觉并行                 # 视觉专家 ffn_up/gate/down'
+- ''
+- src/models/qwen2vl.cpp
+- '├── llm_build_qwen2vl::llm_build_qwen2vl()        # Qwen2-VL 多模态'
+- '│   ├── ★rope_sections 数组                       # MRoPE 4 段维度定义'
+- '│   ├── Q/K/V 独立投影 + bq/bk/bv 偏置            # Qwen 系列特色'
+- '│   ├── ★ggml_rope_multi()                        # 多段旋转位置编码'
+- '│   ├── bo 偏置到 wo                              # 输出投影偏置'
+- '│   └── inp_out_ids 最后层提取                    # 忽略视觉 token'
+- ''
+- src/models/qwen3vl.cpp
+- '├── llm_build_qwen3vl::llm_build_qwen3vl()        # Qwen3-VL + DeepStack'
+- '│   ├── n_deepstack_layers 循环判断               # 仅前 N 层融合'
+- '│   ├── build_norm() 在 RoPE 之前                 # attn_q_norm / attn_k_norm'
+- '│   ├── ggml_rope_multi()                         # 4 段 MRoPE'
+- '│   ├── bo 输出投影偏置                           # 与 Qwen2-VL 一致'
+- '│   ├── ★ggml_view_2d() 切片嵌入层                # 取出第 il+1 层嵌入'
+- '│   └── ★ggml_add() 注入 DeepStack 特征          # 视觉 token 跨层增强'
+- ''
+- src/models/qwen3vl-moe.cpp
+- '├── llm_build_qwen3vlmoe::llm_build_qwen3vlmoe()  # Qwen3-VL-MoE + DeepStack'
+- '│   ├── build_norm() 在 RoPE 之前                 # 与 Qwen3-VL 一致'
+- '│   ├── ★build_moe_ffn()                          # MoE 替代标准 FFN'
+- '│   ├── LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX    # softmax 门控'
+- '│   └── DeepStack 注入                            # ggml_view_2d + ggml_add'
+- ''
+- src/models/llada.cpp
+- '├── llm_build_llada::llm_build_llada()            # 扩散语言模型'
+- '│   ├── ★build_attn_inp_no_cache()                # 非因果注意力输入'
+- '│   ├── 双向注意力掩码                            # 无需 KV 缓存'
+- '│   ├── 整体结构类似 LLaMA                        # RMSNorm + RoPE + SwiGLU'
+- '│   └── 并行生成所有 token                        # 扩散过程核心'
+- ''
+- src/models/lfm2.cpp
+- '├── llm_build_lfm2<bool iswa>::llm_build_lfm2()   # 混合记忆架构（模板化）'
+- '│   ├── 模板参数 iswa 控制内存类型                # llama_memory_hybrid vs hybrid_iswa'
+- '│   ├── build_dense_feed_forward() lambda         # 密集 FFN 构造器'
+- '│   ├── build_moe_feed_forward() lambda           # MoE FFN 构造器'
+- '│   ├── build_attn_block() lambda                 # 含 Q/K norm 与 RoPE'
+- '│   ├── ★build_shortconv_block() lambda            # 短卷积 + ssm_conv 算子'
+- '│   │   ├── ggml_view_3d() 拆分 B/C/X            # 3 段卷积输入'
+- '│   │   ├── build_rs() 读取 R 状态                # 循环状态缓存'
+- '│   │   ├── ggml_concat() 拼接新状态              # 滑动窗口状态扩展'
+- '│   │   ├── ggml_cpy() 写回新状态                 # KV head 偏移'
+- '│   │   └── ggml_ssm_conv()                       # SSM 卷积算子'
+- '│   ├── build_inp_mem_hybrid_iswa()               # ISWA 混合内存输入'
+- '│   ├── is_recurrent(il) 分支                     # 选择 attn 或 shortconv'
+- '│   └── n_layer_dense_lead 分层                   # 前 N 层密集，后续 MoE'
+- '├── 模板显式实例化                                # lfm2<true> / lfm2<false>'
+- ''
+- src/models/mimo2-iswa.cpp
+- '├── llm_build_mimo2_iswa::llm_build_mimo2_iswa()  # MIMO2-ISWA 多模态'
+- '│   ├── ★build_attn_inp_kv_iswa()                 # ISWA 滑动窗口 KV 输入'
+- '│   ├── n_head(il) / n_head_kv(il) 每层头数        # per-layer GQA 配置'
+- '│   ├── ★freq_base_l / freq_scale_l 每层 RoPE     # per-layer 频率基准'
+- '│   ├── model.get_rope_freq_base()                 # per-layer RoPE 参数'
+- '│   ├── ★attn_sinks 张量                          # 注意力 sinks 稳定长序列'
+- '│   ├── ★ffn_gate_inp 是否为 nullptr             # 密集 vs MoE 分支判断'
+- '│   ├── ★LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID   # sigmoid 门控（多模态特色）'
+- '│   └── ggml_get_rows() 最后层提取                # inp_out_ids'
+- ''
+- src/models/rnd1.cpp
+- '├── llm_build_rnd1::llm_build_rnd1()              # Qwen3MoE 转扩散'
+- '│   ├── ★build_attn_inp_no_cache()                 # 非因果注意力'
+- '│   ├── build_norm() 在 RoPE 之前                 # 与 Qwen3-VL 一致'
+- '│   ├── ggml_rope_ext()                           # 标准 RoPE（非 multi）'
+- '│   ├── bo 输出投影偏置                           # Qwen 系列风格'
+- '│   ├── ★build_moe_ffn()                          # MoE FFN 继承 Qwen3MoE'
+- '│   └── LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX    # softmax 门控'
+- ''
+- src/llama-memory-hybrid.h / llama-memory-hybrid.cpp
+- '├── llama_memory_hybrid                           # 混合内存（attention + recurrent）'
+- '├── llama_memory_hybrid_context                   # 上下文（含 R/S 状态）'
+- ''
+- src/llama-memory-hybrid-iswa.h / .cpp
+- '├── llama_memory_hybrid_iswa                      # ISWA + 循环混合内存'
+- '├── llama_memory_hybrid_iswa_context              # ISWA + R/S 上下文'
+exercises:
+- contents:
+  - 阅读 `src/models/chameleon.cpp` 第 1-100 行（llm_build_chameleon 构造函数）：
+  - 1. 找出 `img_token_start_idx` 和 `img_token_end_idx` 的取值
+  - 2. 跟踪 `img_logits` 张量的创建流程：
+  - '   - 使用了哪个 ggml 函数创建 1D 张量？'
+  - '   - 使用了哪个 ggml 函数钳制数值范围？'
+  - '   - 最终通过哪个函数注入到 `cur` logits 中？'
+  - 3. 对比 RoPE 调用：Chameleon 用的是 `ggml_rope_ext` 还是 `ggml_rope`？Qwen2-VL 用的是哪个？
+  - 回答问题：
+  - '- Chameleon 的 logits 抑制与通常的 mask 操作有什么本质区别？'
+  - '- 如果 `img_token_start_idx = 4`、`img_token_end_idx = 8196`、`vocab_size = 32000`，被抑制的
+    token 占词表多大比例？'
+  - '- 这种方法能否扩展到「抑制特定 text token」？如果要实现「禁止模型输出某个敏感词」，代码需要怎么改？'
+  'no': 1
+  title: 阅读 Chameleon 的 logits 抑制实现
+- contents:
+  - 阅读 `src/models/cogvlm.cpp` 第 1-50 行，理解输入判断逻辑：
+  - 1. `is_text` 变量是如何判断的？依据是什么？
+  - 2. 文本路径和图像路径分别使用哪些权重张量？
+  - 3. 对比 Chameleon（只抑制 logits）和 CogVLM（切换整套权重）的设计思路。
+  - 回答问题：
+  - '- 为什么 CogVLM 选择「两套权重」而非「一套权重 + mask」？'
+  - '- 如果在 `is_text=false`（图像输入）时使用了 `wqkv` 而非 `visexp_attn_wqkv`，会发生什么？'
+  - '- 在工程实现上，「切换权重指针」与「运行时重组计算图」相比，各自的优缺点是什么？'
+  'no': 2
+  title: 对比 CogVLM 与 Chameleon 的输入分流
+- contents:
+  - 阅读 `src/models/qwen3vl.cpp` 第 1-100 行，定位 DeepStack 注入代码：
+  - 1. `n_deepstack_layers` 从哪里获取？
+  - 2. `ggml_view_2d(ctx0, res->t_inp_embd, n_embd, n_tokens, res->t_inp_embd->nb[1],
+    (il + 1) * n_embd * sizeof(float))` 这一行的参数含义：
+  - '   - `n_embd`、`n_tokens` 是输出形状的哪两个维度？'
+  - '   - `res->t_inp_embd->nb[1]` 是源张量的哪个 stride？'
+  - '   - `(il + 1) * n_embd * sizeof(float)` 这个偏移如何对应「第 il 层」？'
+  - 3. 对比 Qwen2-VL（无 DeepStack）和 Qwen3-VL（有 DeepStack）的图结构差异。
+  - 回答问题：
+  - '- DeepStack 注入发生在「主路径之后」（cur + ffn_inp 之后）还是「FFN 之前」？'
+  - '- 为什么只在 `il < n_deepstack_layers` 的层做注入，而不是所有层？'
+  - '- 假设 `t_inp_embd` 总共有 4 层堆叠（n_deepstack_layers=3），最后一层堆叠有什么用途？'
+  'no': 3
+  title: 追踪 Qwen3-VL 的 DeepStack 注入路径
+- contents:
+  - 阅读 `src/models/llada.cpp` 与 `src/models/rnd1.cpp` 第 1-50 行：
+  - 1. 两个模型都使用 `build_attn_inp_no_cache()`，这与 `build_attn_inp_kv()` 有何本质区别？
+  - 2. 找出 LLaDA 和 RND1 在图构建上的所有差异：
+  - '   - 是否使用 Q/K 归一化？'
+  - '   - RoPE 调用是 ext 还是 multi？'
+  - '   - FFN 是 dense 还是 MoE？'
+  - '   - 输出层是否有 bo 偏置？'
+  - 3. 对比 LLaDA 与 Qwen2-VL 的 RoPE 调用差异。
+  - 回答问题：
+  - '- 为什么扩散模型不需要 KV 缓存？数学上的解释是什么？'
+  - '- RND1 是「Qwen3MoE 转扩散」，为什么 MoE 结构能在扩散范式下工作？'
+  - '- 如果一个扩散模型的注意力错误地使用了因果掩码（causal mask），生成结果会出什么问题？'
+  'no': 4
+  title: 理解 LLaDA 与 RND1 的扩散注意力
+- contents:
+  - 阅读 `src/models/lfm2.cpp` 第 1-150 行：
+  - 1. 模板参数 `iswa` 控制哪些类型的变化？
+  - 2. `build_shortconv_block` 中：
+  - '   - `n_chunks = 3` 的含义是什么？B/C/X 各代表什么？'
+  - '   - `ggml_concat(conv, bx, 0)` 在哪个维度拼接？'
+  - '   - `ggml_cpy(new_conv, ...)` 的目标偏移如何计算？'
+  - 3. 主循环中：
+  - '   - `is_recurrent(il)` 为 true 时调用哪个 block？'
+  - '   - `n_layer_dense_lead` 控制 FFN 选择的规则是什么？'
+  - 回答问题：
+  - '- LFM2 模板的显式实例化 `template struct llm_build_lfm2<true>` 与 `template struct llm_build_lfm2<false>`
+    起什么作用？'
+  - '- 为什么短卷积需要单独维护 R 状态，而不能像注意力那样直接使用 KV 缓存？'
+  - '- 如果在 dense FFN 的层错误地调用了 MoE FFN（或反之），会发生什么？代码会 panic 还是静默错误？'
+  'no': 5
+  title: 剖析 LFM2 的混合记忆与短卷积
+learning_targets:
+- 理解多模态模型中图像/视觉 token 抑制的实现机制（Chameleon）
+- 掌握视觉-语言双权重架构的设计原理（CogVLM）
+- 深入学习多段旋转位置编码 MRoPE 在视觉 token 上的应用（Qwen2-VL/Qwen3-VL）
+- 理解 DeepStack 跨层特征融合在视觉-语言模型中的作用机制
+- 掌握扩散语言模型使用非因果注意力的实现原理（LLaDA、RND1）
+- 理解 ISWA 滑动窗口注意力在多模态长序列中的应用（MIMO2-ISWA）
+- 掌握混合记忆架构中注意力与短卷积的协同方式（LFM2）
+- 能区分图像 token logits 抑制、视觉专家分支、DeepStack 注入、扩散掩码、sinks 注意力等高级特性
+life_analogy:
+- 想象多模态模型是一座**翻译官 + 画家 + 秘书的复合办公室**：
+- '- **Chameleon = 双重身份员工**——既能看懂图片，也能写文字。'
+- '  为避免「不小心吐出乱码图片」，在打字阶段把图片对应位置的格子用「极低分」封死（-FLT_MAX），确保文字永远胜出。'
+- '- **CogVLM = 两套衣服的员工**——处理文字穿「西装」（wqkv/wo），处理图像换「工装」（visexp_attn_wqkv）。'
+- '  通过判断「这次来的是文字还是图像」自动换装，专业能力互不干扰。'
+- '- **Qwen2-VL / Qwen3-VL = 三维坐标的导游**——MRoPE 把位置信息分成 4 段（时间、高度、宽度、其他），'
+- '  让模型同时知道「这是视频的第几秒、像素的第几行、第几列」。DeepStack 则是让低层视觉特征能跨越多层注入，类似「透视眼镜」层层叠加。'
+- '- **LLaDA / RND1 = 并行雕刻家**——传统 AI 是一个字一个字写（自回归），'
+- '  它们则同时雕刻所有位置（扩散），所以不需要 KV 缓存这种「记忆便签」，所有位置一起改。'
+- '- **LFM2 = 双技能工人**——既会用锤子（注意力），也会用扳手（短卷积）。'
+- '  通过判断「这活儿是精细活还是批量活」自动选工具，工具之间还能配合。'
+- '- **MIMO2-ISWA = 带缓冲的流水线**——滑动窗口让近期信息进「快速通道」，远期信息进「档案室」，'
+- '  sinks 则是「重要便签」，防止长序列生成时模型跑题。'
+- 就像现代办公室需要专业的多面手和精密的协作机制，多模态模型也需要在同一套硬件上协调图像、文本、扩散、循环等多种推理范式。
+'no': 31
+summary:
+- concept: Chameleon
+  desc: 早期多模态，用 ggml_set_1d 将图像 token logits 钳为 -FLT_MAX 实现纯文本输出
+- concept: CogVLM
+  desc: 视觉专家分支，根据 ubatch.token 是否存在选择文本/视觉两套权重
+- concept: Qwen2-VL
+  desc: MRoPE 多段旋转位置编码，4 段 sections 处理视频时空维度
+- concept: Qwen3-VL
+  desc: DeepStack 跨层注入，Q/K norm 在 RoPE 之前
+- concept: Qwen3-VL-MoE
+  desc: DeepStack + MoE FFN，softmax 门控
+- concept: LLaDA
+  desc: 扩散语言模型，非因果注意力（build_attn_inp_no_cache）
+- concept: LFM2
+  desc: 模板化混合记忆，注意力 + 短卷积（ssm_conv），前 N 层密集后续 MoE
+- concept: MIMO2-ISWA
+  desc: ISWA 滑动窗口 + 注意力 sinks + per-layer RoPE + sigmoid 门控 MoE
+- concept: RND1
+  desc: Qwen3MoE 转扩散，非因果注意力 + softmax 门控
+- concept: ggml_rope_multi
+  desc: 多段旋转位置编码，按 sections 数组分配不同维度的旋转
+- concept: ggml_set_1d
+  desc: 将 1D 张量写入 logits 指定偏移，Chameleon 抑制图像 token
+- concept: ggml_view_2d/3d
+  desc: 零拷贝视图切片，用于 DeepStack 嵌入提取与 QKV 拆分
+- concept: build_attn_inp_no_cache
+  desc: 非因果注意力输入，扩散模型专用，无 KV 缓存
+- concept: build_attn_inp_kv_iswa
+  desc: ISWA 滑动窗口 KV 输入，配合注意力 sinks 稳定长序列
+- concept: build_inp_mem_hybrid[_iswa]
+  desc: 混合内存输入，同时管理注意力 KV 与循环 R/S 状态
+- concept: attn_sinks
+  desc: 注意力 sink 向量，可学习的额外 logits 偏置
+- concept: ssm_conv
+  desc: 短卷积算子，LFM2 循环层核心
+- concept: n_deepstack_layers
+  desc: DeepStack 注入层数，前 N 层融合视觉嵌入
+- concept: n_layer_dense_lead
+  desc: 前导密集层数，LFM2 用其切换密集/MoE FFN
+- concept: is_recurrent(il)
+  desc: 判断某层是循环层（短卷积）还是注意力层
+- concept: rope_sections
+  desc: MRoPE 各段维度配置，从超参数复制
+units:
+- codes:
+  - file: src/models/chameleon.cpp
+    line: 1-100
+    method_or_func: llm_build_chameleon.llm_build_chameleon
+  - file: src/models/chameleon.cpp
+    line: 1-100
+    method_or_func: __main__
+  name: Chameleon：早期多模态实践
+  'no': 1
+  points:
+  - '**Chameleon 如何抑制图像 token 输出？**'
+  - '- 使用 `ggml_set_1d` 将图像 token 位置的 logits 设置为 `-FLT_MAX`'
+  - '- 确保文本 token 的值始终大于图像 token，从而实现纯文本输出'
+  - '- 图像 token 的索引范围是 4 到 8196，通过 `ggml_clamp` 初始化为 `-FLT_MAX`'
+  - '- 支持滑动窗口归一化（`swin_norm`）和 Q/K 归一化（`attn_q_norm`/`attn_k_norm`）'
+  - '- 整体结构与标准 LLaMA 解码器类似，但增加了图像 token 抑制机制'
+- codes:
+  - file: src/models/cogvlm.cpp
+    line: 1-80
+    method_or_func: llm_build_cogvlm.llm_build_cogvlm
+  name: CogVLM：视觉语言融合
+  'no': 2
+  points:
+  - '**CogVLM 如何区分文本与图像输入？**'
+  - '- 通过 `ubatch.token` 是否存在来判断输入类型：文本或图像嵌入向量'
+  - '- 文本输入使用标准权重（`wqkv`、`wo`、`ffn_*`）'
+  - '- 图像输入使用视觉专家权重（`visexp_attn_wqkv`、`visexp_attn_wo`、`visexp_ffn_*`）'
+  - '- 使用合并的 QKV 张量 `wqkv`，通过 `ggml_view_3d` 拆分为 Q、K、V'
+  - '- RoPE 使用 `ggml_rope`（非 ext 版本），简化了位置编码流程'
+- codes:
+  - file: src/models/qwen2vl.cpp
+    line: 1-80
+    method_or_func: llm_build_qwen2vl.llm_build_qwen2vl
+  name: Qwen2-VL：视觉位置的 MRoPE
+  'no': 3
+  points:
+  - '**Qwen2-VL 如何实现多段旋转位置编码（MRoPE）？**'
+  - '- 使用 `ggml_rope_multi` 替代标准 RoPE，传入 `rope_sections` 数组定义不同段的维度'
+  - '- Q、K、V 投影后添加偏置（`bq`、`bk`、`bv`），这是 Qwen 系列的特色'
+  - '- `rope_sections` 从超参数中复制，用于处理视觉 token 的二维位置信息'
+  - '- 最后一层通过 `inp_out_ids` 提取文本 token 的输出，忽略视觉 token'
+- codes:
+  - file: src/models/qwen3vl.cpp
+    line: 1-100
+    method_or_func: llm_build_qwen3vl.llm_build_qwen3vl
+  - file: src/models/qwen3vl.cpp
+    line: 1-100
+    method_or_func: __main__
+  - file: src/models/qwen3vl-moe.cpp
+    line: 1-100
+    method_or_func: llm_build_qwen3vlmoe.llm_build_qwen3vlmoe
+  - file: src/models/qwen3vl-moe.cpp
+    line: 1-100
+    method_or_func: __main__
+  name: Qwen3-VL 与 Qwen3-VL-MoE：DeepStack 融合
+  'no': 4
+  points:
+  - '**Qwen3-VL 的 DeepStack 特征融合是如何工作的？**'
+  - '- 在 `n_deepstack_layers` 以下的层，将当前层输出添加到 `res->t_inp_embd` 的对应层嵌入中'
+  - '- 通过 `ggml_view_2d` 从输入嵌入张量中切片出对应层的嵌入，与当前层输出相加'
+  - '- Q/K 归一化在 RoPE 之前应用（`attn_q_norm`/`attn_k_norm`），提升训练稳定性'
+  - '- Qwen3-VL-MoE 使用 MoE FFN（`build_moe_ffn`）替代标准 FFN，支持专家路由'
+  - '- 两者都使用 `ggml_rope_multi` 实现 MRoPE'
+- codes:
+  - file: src/models/llada.cpp
+    line: 1-80
+    method_or_func: llm_build_llada.llm_build_llada
+  - file: src/models/llada.cpp
+    line: 1-80
+    method_or_func: __main__
+  name: LLaDA：扩散语言模型
+  'no': 5
+  points:
+  - '**LLaDA 作为扩散语言模型，与自回归模型有何不同？**'
+  - '- 使用非因果注意力（`build_attn_inp_no_cache`），无需 KV 缓存'
+  - '- 扩散过程是并行的，所有 token 同时生成，因此不需要缓存历史状态'
+  - '- 整体结构与 LLaMA 类似：包含 RMSNorm、RoPE、SwiGLU FFN'
+  - '- 注意力掩码是双向的（非因果），允许每个 token 关注所有其他 token'
+- codes:
+  - file: src/models/lfm2.cpp
+    line: 1-150
+    method_or_func: llm_build_lfm2<iswa>.llm_build_lfm2
+  name: LFM2：混合记忆架构
+  'no': 6
+  points:
+  - '**LFM2 如何融合注意力和短卷积？**'
+  - '- 使用模板参数 `iswa` 切换 ISWA（滑动窗口）和非 ISWA 模式'
+  - '- 混合内存（`llm_graph_input_mem_hybrid`）同时管理 KV 缓存和循环状态（R/S）'
+  - '- 短卷积块（`build_shortconv_block`）处理循环状态，使用 `ssm_conv` 算子'
+  - '- 注意力块中 Q/K 归一化在 RoPE 之后应用（与 Qwen3 不同）'
+  - '- MoE 层通过 `n_layer_dense_lead` 判断，前几层为密集 FFN，后续为 MoE'
+- codes:
+  - file: src/models/mimo2-iswa.cpp
+    line: 1-100
+    method_or_func: llm_build_mimo2_iswa.llm_build_mimo2_iswa
+  name: MIMO2-ISWA：多模态滑动窗口
+  'no': 7
+  points:
+  - '**MIMO2-ISWA 的滑动窗口注意力是如何实现的？**'
+  - '- 使用 `build_attn_inp_kv_iswa()` 构建 ISWA 注意力输入'
+  - '- 支持注意力 sinks（`attn_sinks`），用于稳定长序列生成'
+  - '- 支持 per-layer 的 RoPE 频率基准和缩放（`freq_base_l`、`freq_scale_l`）'
+  - '- FFN 可以是密集或 MoE：通过 `ffn_gate_inp` 是否为 nullptr 判断'
+  - '- MoE 门控函数使用 sigmoid（而非 softmax），适合多模态场景'
+- codes:
+  - file: src/models/rnd1.cpp
+    line: 1-100
+    method_or_func: llm_build_rnd1.llm_build_rnd1
+  name: RND1：扩散 MoE
+  'no': 8
+  points:
+  - '**RND1 如何将自回归模型转换为扩散模型？**'
+  - '- 基于 Qwen3-MoE 架构，但使用非因果注意力（`build_attn_inp_no_cache`）'
+  - '- 包含 Q/K 归一化和 MoE FFN，与 Qwen3-VL-MoE 类似'
+  - '- 扩散过程中所有 token 并行生成，无需自回归解码'
+  - '- 门控函数使用 softmax，与标准 MoE 一致'

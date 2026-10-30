@@ -1,0 +1,69 @@
+classes:
+- desc: GPT-2模型图构建器类，继承自llm_graph_context，负责根据模型参数构建GPT-2架构的计算图。
+  methods:
+  - code:
+    - 'llm_build_gpt2::llm_build_gpt2(const llama_model & model, const llm_graph_params
+      & params) : llm_graph_context(params) {'
+    - '    // 获取嵌入维度参数'
+    - '    const int64_t n_embd_head = hparams.n_embd_head_v();'
+    - '    const int64_t n_embd_gqa  = hparams.n_embd_v_gqa();'
+    - '    GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());'
+    - '    '
+    - '    // 构建输入嵌入'
+    - '    inpL = build_inp_embd(model.tok_embd);'
+    - '    '
+    - '    // 构建位置编码'
+    - '    ggml_tensor * inp_pos = build_inp_pos();'
+    - '    auto * inp_attn = build_attn_inp_kv();'
+    - '    pos = ggml_get_rows(ctx0, model.pos_embd, inp_pos);'
+    - '    inpL = ggml_add(ctx0, inpL, pos);'
+    - '    '
+    - '    // 遍历所有Transformer层'
+    - '    for (int il = 0; il < n_layer; ++il) {'
+    - '        // 层归一化'
+    - '        cur = build_norm(inpL, model.layers[il].attn_norm, model.layers[il].attn_norm_b,
+      LLM_NORM, il);'
+    - '        '
+    - '        // 自注意力机制'
+    - '        cur = build_lora_mm(model.layers[il].wqkv, cur);'
+    - '        cur = ggml_add(ctx0, cur, model.layers[il].bqkv);'
+    - '        '
+    - '        // 拆分Q、K、V'
+    - '        Qcur = ggml_view_3d(ctx0, cur, n_embd_head, n_head, n_tokens, ...);'
+    - '        Kcur = ggml_view_3d(ctx0, cur, n_embd_head, n_head_kv, n_tokens, ...);'
+    - '        Vcur = ggml_view_3d(ctx0, cur, n_embd_head, n_head_kv, n_tokens, ...);'
+    - '        '
+    - '        // 执行注意力计算'
+    - '        cur = build_attn(inp_attn, model.layers[il].wo, model.layers[il].bo,
+      Qcur, Kcur, Vcur, ...);'
+    - '        '
+    - '        // 残差连接'
+    - '        ffn_inp = ggml_add(ctx0, cur, inpL);'
+    - '        '
+    - '        // 前馈网络'
+    - '        cur = build_norm(ffn_inp, model.layers[il].ffn_norm, model.layers[il].ffn_norm_b,
+      LLM_NORM, il);'
+    - '        cur = build_ffn(cur, model.layers[il].ffn_up, ..., model.layers[il].ffn_down,
+      ..., LLM_FFN_GELU, LLM_FFN_SEQ, il);'
+    - '        '
+    - '        // 残差连接并处理下一层输入'
+    - '        cur = ggml_add(ctx0, cur, ffn_inp);'
+    - '        cur = build_cvec(cur, il);'
+    - '        inpL = cur;'
+    - '    }'
+    - '    '
+    - '    // 最终输出层'
+    - '    cur = build_norm(inpL, model.output_norm, model.output_norm_b, LLM_NORM,
+      -1);'
+    - '    res->t_embd = cur;'
+    - '    cur = build_lora_mm(model.output, cur);'
+    - '    res->t_logits = cur;'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构造函数，接收模型和图参数，构建GPT-2模型的完整计算图，包括输入嵌入、位置嵌入、多层Transformer块（包含注意力机制和前馈网络）以及最终输出层。
+    line: 5-68
+    name: llm_build_gpt2
+  name: llm_build_gpt2
+desc: 该代码实现了GPT-2模型的图构建过程。核心功能是通过遍历模型层，依次执行输入嵌入、位置编码添加、自注意力机制、前馈神经网络和层归一化等操作，最终生成模型的输出logits。这是llm_build_gpt2类的构造函数实现，负责将模型的权重参数与计算图结构结合起来。
+file: src/models/gpt2.cpp
+funcs: []

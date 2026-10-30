@@ -1,0 +1,252 @@
+classes: []
+desc: 该文件是 ggml 项目中的 SIMD 映射头文件，为不同 CPU 架构（ARM NEON、ARM SVE、x86 AVX/AVX512、Power9、RISC-V、WASM
+  等）提供统一的 SIMD 操作宏定义和 FP16/FP32 转换函数，抽象出 GGML_F32_VEC 和 GGML_F16_VEC 系列宏，使上层计算代码可以无差别地调用向量加载、存储、加法、乘法、FMA
+  和归约操作。该文件是 ggml 库中 CPU 后端 SIMD 指令映射头文件，通过条件编译为不同架构（WASM、SSE3、LASX、LSX、s390x、RISC-V）提供统一的向量运算宏接口，涵盖
+  F32、F16 及部分 BF16 数据类型的加载、存储、乘加（FMA）、加法、乘法和归约操作，以简化跨平台 SIMD 代码的编写。
+file: ggml/src/ggml-cpu/simd-mappings.h
+funcs:
+- code:
+  - static inline float neon_compute_fp16_to_fp32(ggml_fp16_t h) {
+  - '    __fp16 tmp;'
+  - '    memcpy(&tmp, &h, sizeof(ggml_fp16_t));'
+  - '    return (float)tmp;'
+  - '}'
+  desc: 在 ARM NEON 架构上，将 16 位浮点数转换为 32 位浮点数。
+  line: 49-54
+  name: neon_compute_fp16_to_fp32
+- code:
+  - static inline ggml_fp16_t neon_compute_fp32_to_fp16(float f) {
+  - '    ggml_fp16_t res;'
+  - '    __fp16 tmp = f;'
+  - '    memcpy(&res, &tmp, sizeof(ggml_fp16_t));'
+  - '    return res;'
+  - '}'
+  desc: 在 ARM NEON 架构上，将 32 位浮点数转换为 16 位浮点数。
+  line: 56-61
+  name: neon_compute_fp32_to_fp16
+- code:
+  - static inline float power_compute_fp16_to_fp32(ggml_fp16_t h) {
+  - '    float f;'
+  - '    double d;'
+  - '    __asm__('
+  - '        "mtfprd %0,%2\n"'
+  - '        "xscvhpdp %0,%0\n"'
+  - '        "frsp %1,%0\n" :'
+  - '        /* temp */ "=d"(d),'
+  - '        /* out */  "=f"(f):'
+  - '        /* in */   "r"(h));'
+  - '    return f;'
+  - '}'
+  desc: 在 Power9 架构上，通过内联汇编将 16 位浮点数转换为 32 位浮点数。
+  line: 91-102
+  name: power_compute_fp16_to_fp32
+- code:
+  - static inline ggml_fp16_t power_compute_fp32_to_fp16(float f) {
+  - '    double d;'
+  - '    ggml_fp16_t r;'
+  - '    __asm__( /* xscvdphp can work on double or single precision */'
+  - '        "xscvdphp %0,%2\n"'
+  - '        "mffprd %1,%0\n" :'
+  - '        /* temp */ "=d"(d),'
+  - '        /* out */  "=r"(r):'
+  - '        /* in */   "f"(f));'
+  - '    return r;'
+  - '}'
+  desc: 在 Power9 架构上，通过内联汇编将 32 位浮点数转换为 16 位浮点数。
+  line: 104-113
+  name: power_compute_fp32_to_fp16
+- code:
+  - static inline float riscv_compute_fp16_to_fp32(ggml_fp16_t h) {
+  - '    _Float16 hf;'
+  - '    memcpy(&hf, &h, sizeof(ggml_fp16_t));'
+  - '    return hf;'
+  - '}'
+  desc: 在 RISC-V 架构上，将 16 位浮点数转换为 32 位浮点数。
+  line: 118-123
+  name: riscv_compute_fp16_to_fp32
+- code:
+  - static inline ggml_fp16_t riscv_compute_fp32_to_fp16(float f) {
+  - '    ggml_fp16_t res;'
+  - '    _Float16 hf = (_Float16)f;'
+  - '    memcpy(&res, &hf, sizeof(ggml_fp16_t));'
+  - '    return res;'
+  - '}'
+  desc: 在 RISC-V 架构上，将 32 位浮点数转换为 16 位浮点数。
+  line: 125-131
+  name: riscv_compute_fp32_to_fp16
+- code:
+  - inline static float ggml_lookup_fp16_to_fp32(ggml_fp16_t f) {
+  - '    uint16_t s;'
+  - '    memcpy(&s, &f, sizeof(uint16_t));'
+  - '    return ggml_table_f32_f16[s];'
+  - '}'
+  desc: 使用预计算的查找表将 16 位浮点数转换为 32 位浮点数（适用于非 NEON 和非 Power9 架构）。
+  line: 181-186
+  name: ggml_lookup_fp16_to_fp32
+- code:
+  - static inline __m256 __avx_f32cx8_load(const ggml_fp16_t * x) {
+  - '    float tmp[8];'
+  - ''
+  - '    for (int i = 0; i < 8; i++) {'
+  - '        tmp[i] = GGML_CPU_FP16_TO_FP32(x[i]);'
+  - '    }'
+  - ''
+  - '    return _mm256_loadu_ps(tmp);'
+  - '}'
+  desc: 在没有 F16C 指令集的 AVX 架构上，通过逐个转换 FP16 元素来加载 8 个 FP32 向量。
+  line: 570-579
+  name: __avx_f32cx8_load
+- code:
+  - static inline void __avx_f32cx8_store(ggml_fp16_t *x, __m256 y) {
+  - '    float arr[8];'
+  - ''
+  - '    _mm256_storeu_ps(arr, y);'
+  - ''
+  - '    for (int i = 0; i < 8; i++)'
+  - '        x[i] = GGML_CPU_FP32_TO_FP16(arr[i]);'
+  - '}'
+  desc: 在没有 F16C 指令集的 AVX 架构上，将 8 个 FP32 向量逐元素转换为 FP16 并存储。
+  line: 581-590
+  name: __avx_f32cx8_store
+- code:
+  - static inline unsigned char ggml_endian_byte(int i) {
+  - '       uint16_t tmp_val = 1;'
+  - '       return ((unsigned char *)&tmp_val)[i];'
+  - '}'
+  desc: 辅助函数，用于判断当前系统是大小端字节序。
+  line: 766-769
+  name: ggml_endian_byte
+- code:
+  - inline static v128_t __wasm_f16x4_load(const ggml_fp16_t * p) {
+  - '    float tmp[4];'
+  - '    tmp[0] = GGML_CPU_FP16_TO_FP32(p[0]);'
+  - '    tmp[1] = GGML_CPU_FP16_TO_FP32(p[1]);'
+  - '    tmp[2] = GGML_CPU_FP16_TO_FP32(p[2]);'
+  - '    tmp[3] = GGML_CPU_FP16_TO_FP32(p[3]);'
+  - '    return wasm_v128_load(tmp);'
+  - '}'
+  desc: WASM 平台辅助函数，从 ggml_fp16_t 指针加载 4 个 F16 值并转为 F32 向量，用于 F16x4 类型加载操作。
+  line: 815-825
+  name: __wasm_f16x4_load
+- code:
+  - inline static void __wasm_f16x4_store(ggml_fp16_t * p, v128_t x) {
+  - '    float tmp[4];'
+  - '    wasm_v128_store(tmp, x);'
+  - '    p[0] = GGML_CPU_FP32_TO_FP16(tmp[0]);'
+  - '    p[1] = GGML_CPU_FP32_TO_FP16(tmp[1]);'
+  - '    p[2] = GGML_CPU_FP32_TO_FP16(tmp[2]);'
+  - '    p[3] = GGML_CPU_FP32_TO_FP16(tmp[3]);'
+  - '}'
+  desc: WASM 平台辅助函数，将 F32 向量存储并转为 4 个 F16 值写入 ggml_fp16_t 指针，用于 F16x4 类型存储操作。
+  line: 827-838
+  name: __wasm_f16x4_store
+- code:
+  - static inline __m128 __sse_f16x4_load(const ggml_fp16_t * x) {
+  - '    float tmp[4];'
+  - '    tmp[0] = GGML_CPU_FP16_TO_FP32(x[0]);'
+  - '    tmp[1] = GGML_CPU_FP16_TO_FP32(x[1]);'
+  - '    tmp[2] = GGML_CPU_FP16_TO_FP32(x[2]);'
+  - '    tmp[3] = GGML_CPU_FP16_TO_FP32(x[3]);'
+  - '    return _mm_loadu_ps(tmp);'
+  - '}'
+  desc: SSE3 平台辅助函数，从 ggml_fp16_t 指针加载 4 个 F16 值并转为 F32 向量，用于 F32Cx4 类型加载操作。
+  line: 896-905
+  name: __sse_f16x4_load
+- code:
+  - static inline void __sse_f16x4_store(ggml_fp16_t * x, __m128 y) {
+  - '    float arr[4];'
+  - '    _mm_storeu_ps(arr, y);'
+  - '    x[0] = GGML_CPU_FP32_TO_FP16(arr[0]);'
+  - '    x[1] = GGML_CPU_FP32_TO_FP16(arr[1]);'
+  - '    x[2] = GGML_CPU_FP32_TO_FP16(arr[2]);'
+  - '    x[3] = GGML_CPU_FP32_TO_FP16(arr[3]);'
+  - '}'
+  desc: SSE3 平台辅助函数，将 F32 向量存储并转为 4 个 F16 值写入 ggml_fp16_t 指针，用于 F32Cx4 类型存储操作。
+  line: 907-916
+  name: __sse_f16x4_store
+- code:
+  - static inline __m256 __lasx_f32cx8_load(const ggml_fp16_t * x) {
+  - '    __m256i a;'
+  - '    memcpy(&a, x, sizeof(ggml_fp16_t) * 8);'
+  - '    a = __lasx_xvpermi_d(a, 0 | (1 << 4));'
+  - '    return __lasx_xvfcvtl_s_h(a);'
+  - '}'
+  desc: LASX 平台辅助函数，从 ggml_fp16_t 指针加载 8 个 F16 值并转为 F32 向量，用于 F32Cx8 类型加载操作。
+  line: 997-1002
+  name: __lasx_f32cx8_load
+- code:
+  - static inline void __lasx_f32cx8_store(ggml_fp16_t * x, __m256 y) {
+  - '    __m256i a = __lasx_xvfcvt_h_s(y, y);'
+  - '    a = __lasx_xvpermi_d(a, 0 | (2 << 2));'
+  - '    memcpy(x, &a, sizeof(ggml_fp16_t) * 8);'
+  - '}'
+  desc: LASX 平台辅助函数，将 F32 向量存储并转为 8 个 F16 值写入 ggml_fp16_t 指针，用于 F32Cx8 类型存储操作。
+  line: 1004-1009
+  name: __lasx_f32cx8_store
+- code:
+  - static inline __m128 __lsx_f16x4_load(const ggml_fp16_t * x) {
+  - '    float tmp[4];'
+  - '    tmp[0] = GGML_CPU_FP16_TO_FP32(x[0]);'
+  - '    tmp[1] = GGML_CPU_FP16_TO_FP32(x[1]);'
+  - '    tmp[2] = GGML_CPU_FP16_TO_FP32(x[2]);'
+  - '    tmp[3] = GGML_CPU_FP16_TO_FP32(x[3]);'
+  - '    return (__m128)__lsx_vld(tmp, 0);'
+  - '}'
+  desc: LSX 平台辅助函数，从 ggml_fp16_t 指针加载 4 个 F16 值并转为 F32 向量，用于 F32Cx4 类型加载操作。
+  line: 1070-1079
+  name: __lsx_f16x4_load
+- code:
+  - static inline void __lsx_f16x4_store(ggml_fp16_t * x, __m128 y) {
+  - '    float arr[4];'
+  - '    __lsx_vst(y, arr, 0);'
+  - '    x[0] = GGML_CPU_FP32_TO_FP16(arr[0]);'
+  - '    x[1] = GGML_CPU_FP32_TO_FP16(arr[1]);'
+  - '    x[2] = GGML_CPU_FP32_TO_FP16(arr[2]);'
+  - '    x[3] = GGML_CPU_FP32_TO_FP16(arr[3]);'
+  - '}'
+  desc: LSX 平台辅助函数，将 F32 向量存储并转为 4 个 F16 值写入 ggml_fp16_t 指针，用于 F32Cx4 类型存储操作。
+  line: 1081-1090
+  name: __lsx_f16x4_store
+- code:
+  - static inline float32x4_t __lzs_f16cx4_load(const ggml_fp16_t * x) {
+  - '    float tmp[4];'
+  - '    for (int i = 0; i < 4; i++) {'
+  - '        tmp[i] = GGML_CPU_FP16_TO_FP32(x[i]);'
+  - '    }'
+  - '    // note: keep type-cast here to prevent compiler bugs'
+  - '    // see: https://github.com/ggml-org/llama.cpp/issues/12846'
+  - '    return vec_xl(0, (const float *)(tmp));'
+  - '}'
+  desc: s390x 平台辅助函数，从 ggml_fp16_t 指针加载 4 个 F16 值并转为 F32 向量，用于 F16_VEC 类型加载操作。
+  line: 1195-1203
+  name: __lzs_f16cx4_load
+- code:
+  - static inline void __lzs_f16cx4_store(ggml_fp16_t * x, float32x4_t v_y) {
+  - '    float arr[4];'
+  - '    // note: keep type-cast here to prevent compiler bugs'
+  - '    // see: https://github.com/ggml-org/llama.cpp/issues/12846'
+  - '    vec_xst(v_y, 0, (float *)(arr));'
+  - '    for (int i = 0; i < 4; i++) {'
+  - '        x[i] = GGML_CPU_FP32_TO_FP16(arr[i]);'
+  - '    }'
+  - '}'
+  desc: s390x 平台辅助函数，将 F32 向量存储并转为 4 个 F16 值写入 ggml_fp16_t 指针，用于 F16_VEC 类型存储操作。
+  line: 1205-1216
+  name: __lzs_f16cx4_store
+- code:
+  - '#if defined(__WASM_SIMD128__)  // 开头部分（宏定义开始）'
+  - '    // (宏定义及 GGML_F32x4 等系列定义）'
+  - '    // ...（从最开始的 WASM 部分到最后的 #endif）'
+  - '    // ...（包含所有架构的条件编译代码和通用宏定义）'
+  - // GGML_F32_ARR / GGML_F16_ARR
+  - '#ifdef GGML_SIMD'
+  - '#define GGML_F32_ARR (GGML_F32_STEP/GGML_F32_EPR)'
+  - '#define GGML_F16_ARR (GGML_F16_STEP/GGML_F16_EPR)'
+  - '#endif'
+  - '#ifdef __cplusplus'
+  - '}'
+  - '#endif'
+  desc: 该文件的主体为一系列条件编译的宏定义，为不同 SIMD 架构（WASM、SSE3、LASX、LSX、s390x、RISC-V）提供统一的 F32 和
+    F16 向量运算接口，并定义 GGML_F32_ARR、GGML_F16_ARR 等常量，以及 BF16 相关的辅助宏（仅在 s390x 部分）。
+  line: 815-1234
+  name: __main__

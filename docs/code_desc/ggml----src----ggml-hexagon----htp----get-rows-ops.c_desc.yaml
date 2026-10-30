@@ -1,0 +1,100 @@
+classes:
+- desc: A context structure that holds the operation context pointer, computed division
+    values for index mapping, and thread count information needed during parallel
+    execution.
+  methods:
+  - code:
+    - static void get_rows_thread_f32_f32(unsigned int nth, unsigned int ith, void
+      *data) {
+    - '    struct get_rows_context * grctx = (struct get_rows_context *)data;'
+    - '    struct htp_ops_context * octx = grctx->octx;'
+    - '    get_rows_preamble;'
+    - ''
+    - '    // parallelize by src1 elements (which correspond to dst rows)'
+    - '    const uint32_t dr  = grctx->src1_nrows_per_thread;'
+    - '    const uint32_t ir0 = dr * ith;'
+    - '    const uint32_t ir1 = (ir0 + dr < nr) ? (ir0 + dr) : nr;'
+    - ''
+    - '    const bool is_i32 = (octx->src1.type == HTP_TYPE_I32);'
+    - ''
+    - '    for (uint32_t i = ir0; i < ir1; ++i) {'
+    - '        const uint32_t i12 = fastdiv(i, &grctx->get_rows_div_ne10_ne11);'
+    - '        const uint32_t rem = i - i12 * ne11 * ne10;'
+    - '        const uint32_t i11 = fastdiv(rem, &grctx->get_rows_div_ne10);'
+    - '        const uint32_t i10 = rem - i11 * ne10;'
+    - ''
+    - '        const uintptr_t src1_addr = octx->src1.data + i10*nb10 + i11*nb11 +
+      i12*nb12;'
+    - ''
+    - '        uint32_t i01 = is_i32 ? *(int32_t *)src1_addr : *(int64_t *)src1_addr;'
+    - ''
+    - '        if (i01 >= ne01) {'
+    - '            // invalid index, skip for now to avoid crash'
+    - '            continue;'
+    - '        }'
+    - ''
+    - '        const uintptr_t src0_ptr = octx->src0.data + i01*nb01 + i11*nb02 +
+      i12*nb03;'
+    - '        const uintptr_t dst_ptr  = octx->dst.data  + i10*nb1  + i11*nb2  +
+      i12*nb3;'
+    - '        hvx_copy_f32_uu((uint8_t *)dst_ptr, (const uint8_t *)src0_ptr, ne00);'
+    - '    }'
+    - '}'
+    desc: Thread worker function that processes a slice of the output rows in parallel.
+      It extracts the destination row index from source1 tensor (handling both int32
+      and int64 indices), copies the corresponding row from source0 to the destination
+      tensor using HVX-optimized copy routines, and skips invalid indices to avoid
+      memory access crashes.
+    line: 67-103
+    name: get_rows_thread_f32_f32
+  name: get_rows_context
+desc: The file implements the get-rows operation for Hexagon's HVX (Hexagon Vector
+  eXtension) capabilities, providing a parallel implementation that retrieves rows
+  from a source tensor based on indices provided in a second tensor. The primary function
+  `op_get_rows` orchestrates the operation by validating tensor types, setting up
+  parallel context, and dispatching to the worker pool, while the thread function
+  `get_rows_thread_f32_f32` performs the actual row-copying work. The implementation
+  focuses on performance-critical paths for float32 data with int32/int64 index tensors,
+  using fast division to map flattened row indices to multi-dimensional coordinates,
+  and handles boundary conditions by skipping invalid indices.
+file: ggml/src/ggml-hexagon/htp/get-rows-ops.c
+funcs:
+- code:
+  - int op_get_rows(struct htp_ops_context * octx) {
+  - '    get_rows_preamble;'
+  - ''
+  - '    const uint32_t n_threads = MIN(nr, octx->n_threads);'
+  - ''
+  - '    if (octx->src0.type != HTP_TYPE_F32) {'
+  - '        return HTP_STATUS_NO_SUPPORT;'
+  - '    }'
+  - ''
+  - '    if (octx->dst.type != HTP_TYPE_F32) {'
+  - '        return HTP_STATUS_NO_SUPPORT;'
+  - '    }'
+  - ''
+  - '    if (octx->src1.type != HTP_TYPE_I32 && octx->src1.type != HTP_TYPE_I64) {'
+  - '        return HTP_STATUS_NO_SUPPORT;'
+  - '    }'
+  - ''
+  - '    if (octx->flags & HTP_OPFLAGS_SKIP_COMPUTE) {'
+  - '        return HTP_STATUS_OK;'
+  - '    }'
+  - ''
+  - '    struct get_rows_context grctx;'
+  - '    grctx.octx = octx;'
+  - '    grctx.get_rows_div_ne10      = init_fastdiv_values(octx->src1.ne[0]);'
+  - '    grctx.get_rows_div_ne10_ne11 = init_fastdiv_values(octx->src1.ne[0] * octx->src1.ne[1]);'
+  - ''
+  - '    grctx.src1_nrows_per_thread = (nr + n_threads - 1) / n_threads;'
+  - ''
+  - '    worker_pool_run_func(octx->ctx->worker_pool, get_rows_thread_f32_f32, &grctx,
+    n_threads);'
+  - '    return HTP_STATUS_OK;'
+  - '}'
+  desc: The main entry point for the get-rows operation. It performs type validation
+    for sources and destination tensors, checks for skip-compute flags, initializes
+    the parallel context with fast division values, calculates the work distribution
+    per thread, and launches the worker pool to execute the operation in parallel.
+  line: 105-129
+  name: op_get_rows

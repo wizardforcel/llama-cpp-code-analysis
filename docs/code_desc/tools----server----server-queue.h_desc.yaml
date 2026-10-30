@@ -1,0 +1,216 @@
+classes:
+- desc: 管理服务器任务的队列调度、延迟任务处理、回调注册和主循环运行。
+  methods:
+  - code:
+    - int post(server_task && task, bool front = false);
+    desc: 将单个任务添加到任务队列。
+    line: 48-48
+    name: post
+  - code:
+    - int post(std::vector<server_task> && tasks, bool front = false);
+    desc: 将多个任务同时添加到任务队列。
+    line: 51-51
+    name: post
+  - code:
+    - void defer(server_task && task);
+    desc: 延迟添加任务，直到有空闲槽位。
+    line: 54-54
+    name: defer
+  - code:
+    - int get_new_id();
+    desc: 获取新任务的下一个 ID。
+    line: 57-57
+    name: get_new_id
+  - code:
+    - void pop_deferred_task(int id_slot);
+    desc: 当槽位状态变化时，将延迟任务移至主队列，优先处理指定槽位的任务。
+    line: 62-62
+    name: pop_deferred_task
+  - code:
+    - void wait_until_no_sleep();
+    desc: 若处于睡眠状态则请求退出睡眠并等待完成。
+    line: 68-68
+    name: wait_until_no_sleep
+  - code:
+    - bool is_sleeping() {
+    - '    std::unique_lock<std::mutex> lock(mutex_tasks);'
+    - '    return sleeping;'
+    - '}'
+    desc: 检查队列是否处于睡眠状态。
+    line: 70-73
+    name: is_sleeping
+  - code:
+    - void terminate();
+    desc: 结束 start_loop 循环。
+    line: 76-76
+    name: terminate
+  - code:
+    - void start_loop(int64_t idle_sleep_ms = -1);
+    desc: 主循环，等待任务、处理任务、更新槽位，并支持睡眠机制。
+    line: 88-88
+    name: start_loop
+  - code:
+    - size_t queue_tasks_deferred_size() {
+    - '    std::unique_lock<std::mutex> lock(mutex_tasks);'
+    - '    return queue_tasks_deferred.size();'
+    - '}'
+    desc: 获取延迟任务队列的大小。
+    line: 94-97
+    name: queue_tasks_deferred_size
+  - code:
+    - void on_new_task(std::function<void(server_task &&)> callback) {
+    - '    callback_new_task = std::move(callback);'
+    - '}'
+    desc: 注册处理新任务的回调函数。
+    line: 102-104
+    name: on_new_task
+  - code:
+    - void on_update_slots(std::function<void(void)> callback) {
+    - '    callback_update_slots = std::move(callback);'
+    - '}'
+    desc: 注册更新槽位数据的回调函数。
+    line: 107-109
+    name: on_update_slots
+  - code:
+    - void on_sleeping_state(std::function<void(bool)> callback) {
+    - '    if (callback_sleeping_state) {'
+    - '        auto prev_callback = std::move(callback_sleeping_state);'
+    - '        callback_sleeping_state = [prev_callback, callback](bool sleeping)
+      {'
+    - '            prev_callback(sleeping);'
+    - '            callback(sleeping);'
+    - '        };'
+    - '    } else {'
+    - '        callback_sleeping_state = std::move(callback);'
+    - '    }'
+    - '}'
+    desc: 注册睡眠状态变化回调，支持多个回调函数。
+    line: 114-123
+    name: on_sleeping_state
+  - code:
+    - void cleanup_pending_task(int id_target);
+    desc: 清理指定任务 ID 的待处理任务。
+    line: 126-126
+    name: cleanup_pending_task
+  name: server_queue
+- desc: 管理服务器响应结果、跟踪等待任务，并提供结果接收和发送功能。
+  methods:
+  - code:
+    - void add_waiting_task_id(int id_task);
+    desc: 将单个任务 ID 添加到等待响应列表。
+    line: 139-139
+    name: add_waiting_task_id
+  - code:
+    - void add_waiting_task_ids(const std::unordered_set<int> & id_tasks);
+    desc: 将多个任务 ID 添加到等待响应列表。
+    line: 141-141
+    name: add_waiting_task_ids
+  - code:
+    - void remove_waiting_task_id(int id_task);
+    desc: 从等待列表移除指定的任务 ID。
+    line: 144-144
+    name: remove_waiting_task_id
+  - code:
+    - void remove_waiting_task_ids(const std::unordered_set<int> & id_tasks);
+    desc: 从等待列表移除多个任务 ID。
+    line: 147-147
+    name: remove_waiting_task_ids
+  - code:
+    - server_task_result_ptr recv(const std::unordered_set<int> & id_tasks);
+    desc: 阻塞线程直到收到指定任务列表中的一个响应。
+    line: 150-150
+    name: recv
+  - code:
+    - server_task_result_ptr recv_with_timeout(const std::unordered_set<int> & id_tasks,
+      int timeout);
+    desc: 带超时限制的响应接收，超时返回 nullptr。
+    line: 154-154
+    name: recv_with_timeout
+  - code:
+    - server_task_result_ptr recv(int id_task);
+    desc: 单任务版本的响应接收。
+    line: 157-157
+    name: recv
+  - code:
+    - void send(server_task_result_ptr && result);
+    desc: 向等待的任务发送新结果。
+    line: 160-160
+    name: send
+  - code:
+    - void terminate();
+    desc: 终止等待循环。
+    line: 163-163
+    name: terminate
+  name: server_response
+- desc: 提供生成器风格的 API 简化任务响应处理，支持批量聚合和流式处理。
+  methods:
+  - code:
+    - server_response_reader(server_queue & queue_tasks, server_response & queue_results,
+      int polling_interval_seconds)
+    - '    : queue_tasks(queue_tasks), queue_results(queue_results), polling_interval_seconds(polling_interval_seconds)
+      {}'
+    desc: 构造函数，初始化任务队列、结果队列和轮询间隔。
+    line: 184-185
+    name: server_response_reader
+  - code:
+    - ~server_response_reader() {
+    - '    stop();'
+    - '}'
+    desc: 析构函数，调用 stop() 停止处理。
+    line: 186-188
+    name: ~server_response_reader
+  - code:
+    - int get_new_id() {
+    - '    return queue_tasks.get_new_id();'
+    - '}'
+    desc: 获取新任务 ID。
+    line: 190-192
+    name: get_new_id
+  - code:
+    - void post_task(server_task && task, bool front = false);
+    desc: 提交单个任务到队列。
+    line: 196-196
+    name: post_task
+  - code:
+    - void post_tasks(std::vector<server_task> && tasks, bool front = false);
+    desc: 提交多个任务到队列。
+    line: 197-197
+    name: post_tasks
+  - code:
+    - bool has_next() const;
+    desc: 检查是否还有未处理的结果。
+    line: 198-198
+    name: has_next
+  - code:
+    - server_task_result_ptr next(const std::function<bool()> & should_stop);
+    desc: 获取下一个结果，若 should_stop() 在收到结果前为真则返回 nullptr。
+    line: 201-201
+    name: next
+  - code:
+    - batch_response wait_for_all(const std::function<bool()> & should_stop);
+    desc: 等待并聚合所有结果，返回批量响应。
+    line: 213-213
+    name: wait_for_all
+  - code:
+    - void stop();
+    desc: 停止处理并清理状态。
+    line: 215-215
+    name: stop
+  name: server_response_reader
+desc: 该代码定义了三个关键结构体，用于管理服务器任务的调度与响应。server_queue 负责任务队列管理、延迟任务处理及运行循环，server_response
+  负责管理任务请求的结果，server_response_reader 则提供生成器风格的 API，封装了任务提交、结果获取、流式处理等操作。
+file: tools/server/server-queue.h
+funcs:
+- code:
+  - '#pragma once'
+  - ''
+  - '#include "server-task.h"'
+  - ''
+  - '#include <condition_variable>'
+  - '#include <deque>'
+  - '#include <mutex>'
+  - '#include <vector>'
+  - '#include <unordered_set>'
+  desc: 包含全局头文件、命名空间使用以及三个结构体的定义。
+  line: 1-9
+  name: __main__

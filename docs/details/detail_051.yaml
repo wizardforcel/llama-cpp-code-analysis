@@ -1,0 +1,668 @@
+code_map:
+- common/speculative.h
+- '├── common_speculative_type           # 八种投机策略枚举（NONE/DRAFT/EAGLE3/NGRAM_*）'
+- '├── common_speculative_type_name_str() # 类型名称列表（行9）'
+- '├── common_speculative_type_from_name() # 名称转枚举（行12）'
+- '├── common_speculative_type_to_str()  # 枚举转字符串（行15）'
+- '├── common_speculative_is_compat()    # 上下文兼容性检查（行19）'
+- '├── common_speculative_init()         # 工厂函数：初始化与配置解析（行21-24）'
+- '├── common_speculative_free()         # 资源释放（行26）'
+- '├── common_speculative_begin()        # 统一入口：begin 阶段（行29）'
+- '├── common_speculative_draft()        # 主调度：生成候选 token（行32-36）'
+- '├── common_speculative_accept()       # 接受 token 并更新统计（行39）'
+- '└── common_speculative_print_stats()  # 打印性能统计（行42）'
+- ''
+- common/speculative.cpp
+- ├── 全局数据与工具函数
+- '│   ├── common_speculative_types[]    # 全局类型数组与名称映射表（行53-71）'
+- '│   ├── common_speculative_type_name_str() # 类型名称字符串拼接（行589-597）'
+- '│   ├── common_speculative_type_to_str()   # 枚举转字符串（行599-610）'
+- '│   ├── common_speculative_type_from_name() # 名称转枚举（行612-618）'
+- '│   └── common_speculative_is_compat() # 目标上下文兼容性检查（行620-643）'
+- '├── common_speculative_config         # 配置类：构造函数（行76-79）'
+- '├── common_speculative_are_compatible() # 词汇表兼容性检查（行83-125）'
+- '├── common_speculative_state          # 抽象基类（行148-165）'
+- '│   ├── common_speculative_state()    # 构造函数：类型初始化（行148-149）'
+- '│   ├── ~common_speculative_state()   # 虚析构函数（行151-152）'
+- '│   ├── begin()                       # 纯虚函数：开始阶段（行154-155）'
+- '│   ├── draft()                       # 纯虚函数：生成候选（行157-162）'
+- '│   └── accept()                      # 纯虚函数：接受反馈（行164-165）'
+- '├── common_speculative_state_draft    # 草稿模型实现类（行174-351）'
+- '│   ├── common_speculative_state_draft() # 构造函数：ctx_dft、Top-K采样器、batch管理（行174-208）'
+- '│   ├── ~common_speculative_state_draft() # 析构函数：资源释放（行210-216）'
+- '│   ├── begin()                       # 空实现（行218-220）'
+- '│   ├── draft()                       # KV 缓存复用 → 批量解码 → 自回归采样（行222-322）'
+- '│   ├── accept()                      # 空实现（行324-327）'
+- '│   ├── replace_to_dft()              # 词表翻译：目标→草稿（行329-339）'
+- '│   └── replace_to_tgt()              # 词表翻译：草稿→目标（行341-351）'
+- '├── common_speculative_state_eagle3   # EAGLE-3 占位实现（行353-373）'
+- '│   ├── common_speculative_state_eagle3() # 构造函数（行353-354）'
+- '│   ├── begin() / draft() / accept()  # 空实现框架（行356-373）'
+- '├── common_speculative_state_ngram_simple  # 简单 n-gram（行376-396）'
+- '│   ├── common_speculative_state_ngram_simple() # 构造函数（行376-379）'
+- '│   ├── begin()                       # 空实现（行381-383）'
+- '│   ├── draft()                       # 包装 common_ngram_simple_draft（行385-391）'
+- '│   └── accept()                      # 空实现（行393-396）'
+- '├── common_speculative_state_ngram_map_k   # 映射表包装（行399-418）'
+- '│   ├── common_speculative_state_ngram_map_k() # 构造函数（行399-402）'
+- '│   ├── begin()                       # 调用 common_ngram_map_begin 清理过期条目（行404-406）'
+- '│   ├── draft()                       # 调用 common_ngram_map_draft（行408-414）'
+- '│   └── accept()                      # 调用 common_ngram_map_accept 更新统计（行416-418）'
+- '├── common_speculative_state_ngram_mod     # 动态哈希表（行421-498）'
+- '│   ├── common_speculative_state_ngram_mod() # 构造：初始化 ngram_mod 与 LLAMA_TRACE（行421-425）'
+- '│   ├── begin()                       # 预热 n-gram 表，监控占用率（>25% 重置）（行427-442）'
+- '│   ├── draft()                       # 哈希查找生成候选（支持 n_min 强制长度）（行444-480）'
+- '│   └── accept()                      # 接受率 <50% 连续 3 次触发重置（行482-498）'
+- '├── common_speculative_state_ngram_cache   # 缓存策略（行501-561）'
+- '│   ├── common_speculative_state_ngram_cache() # 构造：加载 static/dynamic 缓存文件（行501-522）'
+- '│   ├── begin()                       # 空实现（行524-526）'
+- '│   ├── draft()                       # 增量更新 context 缓存 → 调用 common_ngram_cache_draft（行528-556）'
+- '│   └── accept()                      # 空实现（行558-561）'
+- '├── get_common_ngram_map()            # 辅助：创建 n-gram 映射对象（行571-577）'
+- '├── create_state_ngram_cache()        # 辅助：创建 ngram_cache 状态实例（行579-587）'
+- '├── common_speculative_init()         # 策略组装：按类型创建状态实例（行650-741）'
+- '├── common_speculative                # 主调度类（行1020-1110）'
+- '│   ├── common_speculative_begin()    # 遍历所有 impl 执行 begin（行1020-1032）'
+- '│   ├── common_speculative_draft()    # 轮询 impls 直到生成非空草稿（行1034-1060）'
+- '│   ├── common_speculative_accept()   # 调用当前 impl 的 accept（行1062-1080）'
+- '│   └── common_speculative_print_stats() # 打印调用次数、生成/接受 token 数与耗时（行1082-1110）'
+- '├── common_speculative_free()         # 释放资源（行1012-1018）'
+- '└── __main__                          # 全局常量与类型映射表（行1-52）'
+- ''
+- common/ngram-cache.h
+- ├── 常量与类型定义（__main__）
+- '│   ├── LLAMA_NGRAM_MIN/MAX/STATIC    # 常量：1/4/2（行9-11）'
+- '│   ├── common_ngram_cache_part       # typedef：token→count 的 unordered_map'
+- '│   └── common_ngram_cache            # typedef：ngram→part 的 unordered_map'
+- '├── common_ngram                      # 固定长度 4 的 token 数组（行19-39）'
+- '│   ├── common_ngram()                # 默认构造：填充 LLAMA_TOKEN_NULL（行19-23）'
+- '│   ├── common_ngram(const llama_token*, int) # 带参构造（行25-29）'
+- '│   └── operator==()                  # 相等比较（行31-39）'
+- '├── common_token_hash_function        # Fibonacci 哈希（行43-46）'
+- '│   └── operator()                    # 单 token 哈希计算（行43-46）'
+- '├── common_ngram_hash_function        # N-gram 组合哈希（行50-56）'
+- '│   └── operator()                    # 多 token 哈希合并（行50-56）'
+- '├── common_ngram_cache_update()       # 更新统计（行70-72）'
+- '├── common_ngram_cache_draft()        # 三级缓存草稿生成（行82-85）'
+- '├── common_ngram_cache_save()         # 二进制持久化（行91）'
+- '├── common_ngram_cache_load()         # 二进制加载（行97）'
+- '└── common_ngram_cache_merge()        # 缓存合并（行103）'
+- ''
+- common/ngram-cache.cpp
+- ├── 全局常量（__main__）
+- '│   ├── draft_min_sample_size_lax/strict  # 阈值数组（行14-17）'
+- '│   └── draft_min_percent_lax/strict      # 主导比例：66%/50% vs 75%/66%（行18-19）'
+- '├── common_ngram_cache_update()       # 滑动窗口统计 n-gram 频率（行5-48）'
+- '├── get_token() (static)              # 辅助：从 inp/draft 逻辑序列取 token（行51-53）'
+- '├── try_draft() (static)              # 静态缓存：最低样本 + 主导比例检查（行62-94）'
+- '├── try_draft() (primary+static)      # 联合验证：count_primary * count_static 加权（行97-139）'
+- '├── common_ngram_cache_draft()        # 主流程：context(lax) → dynamic(strict) → static（行142-190）'
+- '├── common_ngram_cache_save()         # 二进制序列化（行193-214）'
+- '├── common_ngram_cache_load()         # 二进制反序列化（行217-256）'
+- '└── common_ngram_cache_merge()        # 缓存合并（行259-286）'
+- ''
+- common/ngram-map.h
+- '├── common_ngram_simple_config        # 简单 n-gram 配置（行23-25）'
+- '├── common_ngram_map_value            # 候选值统计：索引、出现次数、接受数'
+- '├── common_ngram_map_key              # 键统计：位置、计数、候选值数组'
+- '├── common_ngram_map                  # 映射表主类'
+- '│   └── common_ngram_map()            # 构造函数（行53-58）'
+- '├── common_ngram_simple_draft()       # 简单模式匹配（行23-25）'
+- '├── common_ngram_map_begin()          # 初始化/清理（行78-80）'
+- '├── common_ngram_map_draft()          # 生成草稿（行87-90）'
+- '└── common_ngram_map_accept()         # 接受反馈（行94）'
+- ''
+- common/ngram-map.cpp
+- '├── common_ngram_map_hash()           # LCG 哈希：hash * 6364136223846793005ULL +
+  token（行17-24）'
+- '├── common_tokens_to_str()            # 调试辅助：token 序列转字符串（行27-37）'
+- '├── common_ngram_simple_draft()       # 线性扫描查找 n-gram 模式（行48-100）'
+- '├── common_ngram_map_begin()          # 清理过期 key/value（基于 size_last_begin）（行110-191）'
+- '├── common_ngram_map_draft()          # 核心逻辑（行196-405）'
+- │   ├── 哈希表快速定位 match_pos
+- │   ├── 更新 keys/values 统计（最多 4 个候选值）
+- │   ├── 主导检查：max_occur >= 2 * sum_occur
+- │   └── min_hits 验证后才生成草稿
+- '└── common_ngram_map_accept()         # 更新接受统计（行407-420）'
+- ''
+- common/ngram-mod.h
+- '└── common_ngram_mod                  # 固定容量哈希表类声明'
+- '    ├── common_ngram_mod()            # 构造（行17）'
+- '    ├── idx() / add() / get()         # 哈希定位/写入/查询（行19-21）'
+- '    ├── reset()                       # 清空（行23）'
+- '    └── get_n() / get_used() / size() / size_bytes() # 状态查询（行25-29)'
+- ''
+- common/ngram-mod.cpp
+- └── common_ngram_mod 实现
+- '    ├── common_ngram_mod()            # 构造函数：初始化 entries 数组（行7-12）'
+- '    ├── idx()                         # 组合哈希取模定位槽位（行14-26）'
+- '    ├── add()                         # 写入 token 并更新 used 计数（行28-36）'
+- '    ├── get()                         # O(1) 查询，EMPTY(-1) 表示未命中（行38-43）'
+- '    ├── reset()                       # 清空表（行45-48）'
+- '    ├── get_n() / get_used()          # 状态查询（行50-56）'
+- '    └── size() / size_bytes()         # 容量与内存统计（行58-64）'
+exercises:
+- contents:
+  - 阅读 `common/speculative.cpp` 第 222-322 行（common_speculative_state_draft.draft()）。
+  - 回答问题：
+  - 1. `reuse_i` 和 `reuse_n` 是如何计算的？它们如何帮助避免重复解码？
+  - 2. 当 `reuse_n == 0` 与 `reuse_n > 0` 时，代码分别如何处理 `llama_memory`？
+  - 3. 为什么要检查 `cur >= 256 || n_ctx >= prompt_cur.size()` 这个条件？
+  'no': 1
+  title: 分析草稿模型的 KV 缓存复用策略
+- contents:
+  - 阅读 `common/ngram-cache.cpp` 第 62-139 行（两个 try_draft 函数）。
+  - 分析以下常量的作用：
+  - '- `draft_min_sample_size_lax` = {2, 2, 1, 1}'
+  - '- `draft_min_percent_lax` = {66, 50, 50, 50}'
+  - '- `draft_min_percent_strict` = {75, 66, 66, 66}'
+  - 回答问题：
+  - 1. 为什么静态缓存（static）使用 `lax`（宽松）阈值，而动态缓存（dynamic）使用 `strict`（严格）阈值？
+  - 2. 在联合验证版本（第 97-139 行）中，为什么要计算 `count_primary * count_static` 的乘积？这解决了什么问题？
+  'no': 2
+  title: 推导 n-gram 缓存的置信度阈值逻辑
+- contents:
+  - 阅读 `common/ngram-map.cpp` 第 196-405 行（common_ngram_map_draft）。
+  - 构造一个测试场景：
+  - '- 输入历史 tokens: [A, B, C, A, B, C, A, B, D]（其中 A/B/C/D 为 token ID）'
+  - '- 设置 n=3, m=2'
+  - 回答问题：
+  - 1. 当处理到最后一个 token D 时，key「A, B」的 values 会记录哪些候选？各自的 value_num 是多少？
+  - 2. 根据 `max_occur < 2 * sum_occur` 的检查逻辑，此时会生成草稿吗？为什么？
+  - 3. 如果要让系统接受「C」作为「A, B」的候选，需要什么样的历史模式？
+  'no': 3
+  title: 设计实验验证 n-gram 映射的统计显著性
+- contents:
+  - 阅读 `common/speculative.cpp` 第 421-498 行（common_speculative_state_ngram_mod）。
+  - 回答问题：
+  - 1. `begin()` 方法中，为什么要检查 `f > 0.25`（占用率阈值）？过高占用率会导致什么问题？
+  - 2. `accept()` 方法中，连续 3 次接受率低于 50% 触发重置的逻辑，是为了解决什么实际场景？
+  - 3. 如果要调整重置策略为「接受率低于 30% 连续 5 次」，需要修改哪些变量和逻辑？
+  'no': 4
+  title: 研究 NGRAM_MOD 的自动重置机制
+- contents:
+  - 基于 `common/speculative.cpp` 第 1020-1110 行的 `common_speculative` 类接口。
+  - 编写一段伪代码或描述逻辑：
+  - 1. 同时初始化 `NGRAM_SIMPLE` 和 `NGRAM_MOD` 两种策略。
+  - 2. 在生成 100 个 token 后，统计两种策略的：平均草稿长度、接受率（n_acc_tokens/n_gen_tokens）、调用耗时（t_draft_us）。
+  - 3. 根据统计结果，设计一个动态切换策略：当某种策略连续 10 次接受率低于 30% 时，自动切换到另一种。
+  'no': 5
+  title: 实现一个简单的投机解码策略比较器
+learning_targets:
+- 理解投机解码的统一接口与调度机制（begin/draft/accept 三阶段）及类型注册系统
+- 掌握草稿模型投机解码的实现：上下文初始化、词汇表兼容性检查、KV 缓存复用与概率阈值控制
+- 精通 n-gram 缓存算法：三级缓存架构（context/dynamic/static）、主导比例验证与持久化/合并机制
+- 熟悉 n-gram 映射与哈希结构：LCG 哈希、Fibonacci 哈希、固定容量表与统计决策逻辑
+- 掌握多种投机策略的状态机实现及其性能监控、统计收集与自动重置机制
+life_analogy:
+- 想象投机解码是一家**餐厅的预测备菜系统**：
+- '- **统一接口（common_speculative_state）** = 餐厅经理的标准工作流程：开市准备（begin）→ 预估菜品（draft）→ 确认订单（accept）'
+- '- **草稿模型（Draft Model）** = 经验丰富的学徒厨师：快速猜测主厨（目标模型）会做什么菜，提前备好食材（token），主厨只需确认或微调'
+- '- **n-gram 缓存** = 历史订单统计本：记录「顾客点了宫保鸡丁后，80% 会点米饭」的模式，根据置信度阈值决定是否提前煮饭'
+- '- **n-gram 映射/哈希** = 餐厅的快速检索便签墙：把常见菜品组合（key）和推荐配菜（value）贴在墙上，用编号（哈希）快速查找，而不是翻遍整本账本'
+- '- **动态重置机制** = 如果连续几桌客人都不点预测的菜（接受率 <50%），经理会撕掉旧的预测便签，重新观察新趋势'
+- '- **词汇表翻译（replace_to_dft/tgt）** = 学徒和主厨用不同的菜谱术语，需要实时翻译确保理解一致'
+'no': 50
+summary:
+- concept: common_speculative_state
+  desc: 抽象基类，定义 begin/draft/accept 三阶段生命周期，支持多态策略
+- concept: common_speculative_type
+  desc: 八种策略枚举：NONE、DRAFT（草稿模型）、EAGLE3、NGRAM_SIMPLE、NGRAM_MAP_K、NGRAM_MAP_K4V、NGRAM_MOD、NGRAM_CACHE
+- concept: common_speculative_are_compatible
+  desc: 检查目标与草稿模型的词表类型、特殊 Token（BOS/EOS）及内容一致性，确保可协同工作
+- concept: common_speculative_state_draft
+  desc: 草稿模型实现：通过独立 ctx_dft 生成候选词，支持 KV 缓存复用（reuse_n）和概率早停（p_min）
+- concept: replace_to_dft / replace_to_tgt
+  desc: 词表不兼容时的字符串级双向翻译机制，基于 replacements 映射表
+- concept: common_ngram_cache
+  desc: 三级缓存系统：context（当前会话）、dynamic（动态历史）、static（静态语料库），支持持久化
+- concept: try_draft 双重验证
+  desc: 草稿生成需满足最小样本数（min_sample_size）和主导比例（dominance percentage，如 66% 或 50%）
+- concept: common_ngram_map
+  desc: 键值对映射结构：key 为 n-gram，value 为候选 m-gram 及其统计信息，支持哈希加速（LCG）与 min_hits 验证
+- concept: max_occur < 2 * sum_occur
+  desc: 统计显著性检查：最高频候选必须显著高于其他候选总和才采纳
+- concept: common_ngram_mod
+  desc: 固定容量（4MB）哈希表，O(1) 查找， EMPTY 标记空槽，高占用率（>25%）或低接受率自动重置
+- concept: common_speculative_init
+  desc: 工厂函数：根据参数类型组装多个策略实例到 impls 数组，实现策略链式调度
+- concept: common_speculative_draft
+  desc: 主调度器：按优先级轮询 impls，取第一个非空草稿结果，并统计生成 token 数
+- concept: min_hits / dominance
+  desc: 置信度控制：键出现次数需达阈值，且最高频值占比需超过 50-75%（视缓存级别而定）
+- concept: common_ngram_cache_merge
+  desc: 多个 n-gram 缓存合并，累加相同 n-gram 的 token 计数，用于分布式统计汇总
+units:
+- codes:
+  - file: common/speculative.h
+    line: '9'
+    method_or_func: common_speculative_type_name_str()
+  - file: common/speculative.h
+    line: '12'
+    method_or_func: common_speculative_type_from_name()
+  - file: common/speculative.h
+    line: '15'
+    method_or_func: common_speculative_type_to_str()
+  - file: common/speculative.h
+    line: '19'
+    method_or_func: common_speculative_is_compat()
+  - file: common/speculative.h
+    line: 21-24
+    method_or_func: common_speculative_init()
+  - file: common/speculative.h
+    line: '26'
+    method_or_func: common_speculative_free()
+  - file: common/speculative.h
+    line: '29'
+    method_or_func: common_speculative_begin()
+  - file: common/speculative.h
+    line: 32-36
+    method_or_func: common_speculative_draft()
+  - file: common/speculative.h
+    line: '39'
+    method_or_func: common_speculative_accept()
+  - file: common/speculative.h
+    line: '42'
+    method_or_func: common_speculative_print_stats()
+  - file: common/speculative.cpp
+    line: 148-165
+    method_or_func: common_speculative_state
+  - file: common/speculative.cpp
+    line: 148-149
+    method_or_func: common_speculative_state.common_speculative_state()
+  - file: common/speculative.cpp
+    line: 151-152
+    method_or_func: common_speculative_state.~common_speculative_state()
+  - file: common/speculative.cpp
+    line: 154-155
+    method_or_func: common_speculative_state.begin()
+  - file: common/speculative.cpp
+    line: 157-162
+    method_or_func: common_speculative_state.draft()
+  - file: common/speculative.cpp
+    line: 164-165
+    method_or_func: common_speculative_state.accept()
+  - file: common/speculative.cpp
+    line: 589-597
+    method_or_func: common_speculative_type_name_str()
+  - file: common/speculative.cpp
+    line: 599-610
+    method_or_func: common_speculative_type_to_str()
+  - file: common/speculative.cpp
+    line: 612-618
+    method_or_func: common_speculative_type_from_name()
+  - file: common/speculative.cpp
+    line: 620-643
+    method_or_func: common_speculative_is_compat()
+  - file: common/speculative.cpp
+    line: 76-79
+    method_or_func: common_speculative_config.common_speculative_config()
+  - file: common/speculative.cpp
+    line: 650-741
+    method_or_func: common_speculative_init()
+  - file: common/speculative.cpp
+    line: 1020-1110
+    method_or_func: common_speculative
+  - file: common/speculative.cpp
+    line: 1020-1032
+    method_or_func: common_speculative.common_speculative_begin()
+  - file: common/speculative.cpp
+    line: 1034-1060
+    method_or_func: common_speculative.common_speculative_draft()
+  - file: common/speculative.cpp
+    line: 1062-1080
+    method_or_func: common_speculative.common_speculative_accept()
+  - file: common/speculative.cpp
+    line: 1082-1110
+    method_or_func: common_speculative.common_speculative_print_stats()
+  - file: common/speculative.cpp
+    line: 1012-1018
+    method_or_func: common_speculative_free()
+  - file: common/speculative.cpp
+    line: 53-71
+    method_or_func: __main__
+  name: 投机解码核心接口 —— 统一调度多种「预言术」引擎
+  'no': 1
+  points:
+  - '**为什么需要统一的 `common_speculative` 接口？**'
+  - '- 投机解码有多种实现策略（草稿模型、n-gram、哈希缓存等），需要统一的抽象层'
+  - '- `common_speculative_state` 基类定义了三个核心生命周期方法：`begin()` 初始化、`draft()` 生成候选、`accept()`
+    确认结果'
+  - '- 通过枚举 `common_speculative_type` 支持 NONE、DRAFT、EAGLE3、NGRAM_SIMPLE、NGRAM_MAP_K、NGRAM_MAP_K4V、NGRAM_MOD、NGRAM_CACHE
+    八种策略'
+  - '- `common_speculative` 主类作为调度器，通过 `impls` 数组管理多个实现实例，实现策略的灵活组合与优先级选择'
+  - '- 类型系统支持字符串与枚举的双向转换（`common_speculative_type_to_str`/`from_name`），便于配置解析'
+  - '- `common_speculative_is_compat()` 在初始化前检查目标上下文是否支持必要的内存操作（部分序列删除）'
+  - '- `common_speculative_config` 作为配置载体，将类型与参数打包传递给具体的策略构造函数'
+- codes:
+  - file: common/speculative.cpp
+    line: 174-216
+    method_or_func: common_speculative_state_draft
+  - file: common/speculative.cpp
+    line: 174-208
+    method_or_func: common_speculative_state_draft.common_speculative_state_draft()
+  - file: common/speculative.cpp
+    line: 210-216
+    method_or_func: common_speculative_state_draft.~common_speculative_state_draft()
+  - file: common/speculative.cpp
+    line: 218-220
+    method_or_func: common_speculative_state_draft.begin()
+  - file: common/speculative.cpp
+    line: 222-322
+    method_or_func: common_speculative_state_draft.draft()
+  - file: common/speculative.cpp
+    line: 324-327
+    method_or_func: common_speculative_state_draft.accept()
+  - file: common/speculative.cpp
+    line: 329-339
+    method_or_func: common_speculative_state_draft.replace_to_dft()
+  - file: common/speculative.cpp
+    line: 341-351
+    method_or_func: common_speculative_state_draft.replace_to_tgt()
+  - file: common/speculative.cpp
+    line: 83-125
+    method_or_func: common_speculative_are_compatible()
+  name: 草稿模型投机解码 —— 「小模型猜大模型」的协作艺术
+  'no': 2
+  points:
+  - '**草稿模型（Draft Model）的核心思想是什么？**'
+  - '- 使用一个小型、快速的语言模型（ctx_dft）作为「预言家」，预测目标大模型（ctx_tgt）的输出'
+  - '- 通过 `llama_init_from_model()` 创建独立的草稿上下文，并配置独立的采样器（仅使用 Top-K 策略）'
+  - '- 兼容性检查是关键：`common_speculative_are_compatible()` 确保两个模型使用相同的词汇表类型、特殊 token（BOS/EOS）且
+    token 内容一致'
+  - '- 词汇表不匹配时启动「翻译机制」：通过 `replace_to_dft()` 和 `replace_to_tgt()` 在字符串层面进行双向映射'
+  - '- 构造函数中初始化 `batch` 和 `smpl`（采样器），并检测词表兼容性（`vocab_cmpt`）'
+  - '- 析构函数负责释放 `ctx_dft`、`smpl` 和 `batch` 资源'
+  - '- 草稿生成流程：复用 KV 缓存（reuse_n 计算）→ 批量解码新 prompt → 自回归采样生成 n_max 个候选 token'
+  - '- 概率阈值控制：当草稿模型对候选 token 的置信度低于 `params.p_min` 时提前停止生成'
+- codes:
+  - file: common/ngram-cache.h
+    line: 9-15
+    method_or_func: __main__
+  - file: common/ngram-cache.h
+    line: 19-39
+    method_or_func: common_ngram
+  - file: common/ngram-cache.h
+    line: 19-29
+    method_or_func: common_ngram.common_ngram()
+  - file: common/ngram-cache.h
+    line: 31-39
+    method_or_func: common_ngram.operator==()
+  - file: common/ngram-cache.h
+    line: 43-46
+    method_or_func: common_token_hash_function
+  - file: common/ngram-cache.h
+    line: 43-46
+    method_or_func: common_token_hash_function.operator()
+  - file: common/ngram-cache.h
+    line: 50-56
+    method_or_func: common_ngram_hash_function
+  - file: common/ngram-cache.h
+    line: 50-56
+    method_or_func: common_ngram_hash_function.operator()
+  - file: common/ngram-cache.h
+    line: 70-72
+    method_or_func: common_ngram_cache_update()
+  - file: common/ngram-cache.h
+    line: 82-85
+    method_or_func: common_ngram_cache_draft()
+  - file: common/ngram-cache.h
+    line: '91'
+    method_or_func: common_ngram_cache_save()
+  - file: common/ngram-cache.h
+    line: '97'
+    method_or_func: common_ngram_cache_load()
+  - file: common/ngram-cache.h
+    line: '103'
+    method_or_func: common_ngram_cache_merge()
+  - file: common/ngram-cache.cpp
+    line: 14-19
+    method_or_func: __main__
+  - file: common/ngram-cache.cpp
+    line: 5-48
+    method_or_func: common_ngram_cache_update()
+  - file: common/ngram-cache.cpp
+    line: 51-53
+    method_or_func: get_token()
+  - file: common/ngram-cache.cpp
+    line: 62-94
+    method_or_func: try_draft()
+  - file: common/ngram-cache.cpp
+    line: 97-139
+    method_or_func: try_draft()
+  - file: common/ngram-cache.cpp
+    line: 142-190
+    method_or_func: common_ngram_cache_draft()
+  - file: common/ngram-cache.cpp
+    line: 193-214
+    method_or_func: common_ngram_cache_save()
+  - file: common/ngram-cache.cpp
+    line: 217-256
+    method_or_func: common_ngram_cache_load()
+  - file: common/ngram-cache.cpp
+    line: 259-286
+    method_or_func: common_ngram_cache_merge()
+  name: n-gram 缓存算法 —— 基于统计的「历史复读机」
+  'no': 3
+  points:
+  - '**n-gram 缓存如何利用历史重复模式？**'
+  - '- 将 token 序列视为 n-gram（1-4 个 token 的连续序列），统计每个 n-gram 后续出现的 token 及其频率'
+  - '- 三级缓存架构：context（当前上下文）、dynamic（动态历史）、static（静态语料库），按置信度阈值逐级尝试'
+  - '- `common_ngram_cache_update()`：滑动窗口统计新增 token 的 n-gram 分布，支持进度显示用于大规模语料处理'
+  - '- `try_draft()` 两级验证：主缓存在「宽松」阈值（lax）下尝试，动态缓存在「严格」阈值（strict）下尝试，静态缓存在最低样本数下尝试'
+  - '- 主导比例（dominance）检查：只有当最高频 token 占比超过特定百分比（如 66%、50%）时才采纳，避免低置信度预测'
+  - '- 持久化支持：`common_ngram_cache_save()` 和 `common_ngram_cache_load()` 实现缓存的二进制序列化与反序列化'
+  - '- 缓存合并：`common_ngram_cache_merge()` 支持将多个缓存统计信息累加合并'
+- codes:
+  - file: common/ngram-map.h
+    line: 23-25
+    method_or_func: common_ngram_simple_config
+  - file: common/ngram-map.h
+    line: 31-40
+    method_or_func: common_ngram_map_value
+  - file: common/ngram-map.h
+    line: 42-51
+    method_or_func: common_ngram_map_key
+  - file: common/ngram-map.h
+    line: 53-77
+    method_or_func: common_ngram_map
+  - file: common/ngram-map.h
+    line: 53-58
+    method_or_func: common_ngram_map.common_ngram_map()
+  - file: common/ngram-map.h
+    line: 23-25
+    method_or_func: common_ngram_simple_draft()
+  - file: common/ngram-map.h
+    line: 78-80
+    method_or_func: common_ngram_map_begin()
+  - file: common/ngram-map.h
+    line: 87-90
+    method_or_func: common_ngram_map_draft()
+  - file: common/ngram-map.h
+    line: '94'
+    method_or_func: common_ngram_map_accept()
+  - file: common/ngram-map.cpp
+    line: 17-24
+    method_or_func: common_ngram_map_hash()
+  - file: common/ngram-map.cpp
+    line: 27-37
+    method_or_func: common_tokens_to_str()
+  - file: common/ngram-map.cpp
+    line: 48-100
+    method_or_func: common_ngram_simple_draft()
+  - file: common/ngram-map.cpp
+    line: 110-191
+    method_or_func: common_ngram_map_begin()
+  - file: common/ngram-map.cpp
+    line: 196-405
+    method_or_func: common_ngram_map_draft()
+  - file: common/ngram-map.cpp
+    line: 407-420
+    method_or_func: common_ngram_map_accept()
+  - file: common/ngram-mod.h
+    line: 9-31
+    method_or_func: common_ngram_mod
+  - file: common/ngram-mod.h
+    line: '17'
+    method_or_func: common_ngram_mod.common_ngram_mod()
+  - file: common/ngram-mod.h
+    line: '19'
+    method_or_func: common_ngram_mod.idx()
+  - file: common/ngram-mod.h
+    line: '20'
+    method_or_func: common_ngram_mod.add()
+  - file: common/ngram-mod.h
+    line: '21'
+    method_or_func: common_ngram_mod.get()
+  - file: common/ngram-mod.h
+    line: '23'
+    method_or_func: common_ngram_mod.reset()
+  - file: common/ngram-mod.h
+    line: '25'
+    method_or_func: common_ngram_mod.get_n()
+  - file: common/ngram-mod.h
+    line: '26'
+    method_or_func: common_ngram_mod.get_used()
+  - file: common/ngram-mod.h
+    line: '28'
+    method_or_func: common_ngram_mod.size()
+  - file: common/ngram-mod.h
+    line: '29'
+    method_or_func: common_ngram_mod.size_bytes()
+  - file: common/ngram-mod.cpp
+    line: 7-12
+    method_or_func: common_ngram_mod.common_ngram_mod()
+  - file: common/ngram-mod.cpp
+    line: 14-26
+    method_or_func: common_ngram_mod.idx()
+  - file: common/ngram-mod.cpp
+    line: 28-36
+    method_or_func: common_ngram_mod.add()
+  - file: common/ngram-mod.cpp
+    line: 38-43
+    method_or_func: common_ngram_mod.get()
+  - file: common/ngram-mod.cpp
+    line: 45-48
+    method_or_func: common_ngram_mod.reset()
+  - file: common/ngram-mod.cpp
+    line: 50-52
+    method_or_func: common_ngram_mod.get_n()
+  - file: common/ngram-mod.cpp
+    line: 54-56
+    method_or_func: common_ngram_mod.get_used()
+  - file: common/ngram-mod.cpp
+    line: 58-60
+    method_or_func: common_ngram_mod.size()
+  - file: common/ngram-mod.cpp
+    line: 62-64
+    method_or_func: common_ngram_mod.size_bytes()
+  name: n-gram 映射与哈希 —— 「键值对」结构的模式速查
+  'no': 4
+  points:
+  - '**为什么需要 n-gram 映射（Map）而非简单缓存？**'
+  - '- `common_ngram_simple_draft()` 是线性扫描历史，时间复杂度 O(n²)，适用于短序列'
+  - '- `common_ngram_map` 建立键（key n-gram）到值（value m-gram）的显式映射，支持统计多次出现的候选值'
+  - '- 哈希加速：使用 LCG（线性同余生成器）哈希函数将 token 序列映射到固定大小的哈希表（key_map），实现近似 O(1) 查找'
+  - '- `common_ngram_map_draft()` 的统计决策：计算候选值的出现次数（occur），只有当最大值显著大于总和的 2 倍时才采纳（`max_occur
+    < 2 * sum_occur`）'
+  - '- 最小命中数（min_hits）：仅当键在 history 中出现次数达到阈值才信任该模式'
+  - '- `common_ngram_mod` 使用固定容量哈希表与模运算索引：通过组合哈希 `res*6364136223846793005ULL + token`
+    计算槽位，解决冲突并监控占用率（occupancy）'
+  - '- 接受反馈机制：`common_ngram_map_accept()` 根据实际接受数量更新候选值的统计信息'
+- codes:
+  - file: common/speculative.cpp
+    line: 376-396
+    method_or_func: common_speculative_state_ngram_simple
+  - file: common/speculative.cpp
+    line: 376-379
+    method_or_func: common_speculative_state_ngram_simple.common_speculative_state_ngram_simple()
+  - file: common/speculative.cpp
+    line: 381-383
+    method_or_func: common_speculative_state_ngram_simple.begin()
+  - file: common/speculative.cpp
+    line: 385-391
+    method_or_func: common_speculative_state_ngram_simple.draft()
+  - file: common/speculative.cpp
+    line: 393-396
+    method_or_func: common_speculative_state_ngram_simple.accept()
+  - file: common/speculative.cpp
+    line: 399-418
+    method_or_func: common_speculative_state_ngram_map_k
+  - file: common/speculative.cpp
+    line: 399-402
+    method_or_func: common_speculative_state_ngram_map_k.common_speculative_state_ngram_map_k()
+  - file: common/speculative.cpp
+    line: 404-406
+    method_or_func: common_speculative_state_ngram_map_k.begin()
+  - file: common/speculative.cpp
+    line: 408-414
+    method_or_func: common_speculative_state_ngram_map_k.draft()
+  - file: common/speculative.cpp
+    line: 416-418
+    method_or_func: common_speculative_state_ngram_map_k.accept()
+  - file: common/speculative.cpp
+    line: 421-498
+    method_or_func: common_speculative_state_ngram_mod
+  - file: common/speculative.cpp
+    line: 421-425
+    method_or_func: common_speculative_state_ngram_mod.common_speculative_state_ngram_mod()
+  - file: common/speculative.cpp
+    line: 427-442
+    method_or_func: common_speculative_state_ngram_mod.begin()
+  - file: common/speculative.cpp
+    line: 444-480
+    method_or_func: common_speculative_state_ngram_mod.draft()
+  - file: common/speculative.cpp
+    line: 482-498
+    method_or_func: common_speculative_state_ngram_mod.accept()
+  - file: common/speculative.cpp
+    line: 501-561
+    method_or_func: common_speculative_state_ngram_cache
+  - file: common/speculative.cpp
+    line: 501-522
+    method_or_func: common_speculative_state_ngram_cache.common_speculative_state_ngram_cache()
+  - file: common/speculative.cpp
+    line: 524-526
+    method_or_func: common_speculative_state_ngram_cache.begin()
+  - file: common/speculative.cpp
+    line: 528-556
+    method_or_func: common_speculative_state_ngram_cache.draft()
+  - file: common/speculative.cpp
+    line: 558-561
+    method_or_func: common_speculative_state_ngram_cache.accept()
+  - file: common/speculative.cpp
+    line: 353-373
+    method_or_func: common_speculative_state_eagle3
+  - file: common/speculative.cpp
+    line: 353-354
+    method_or_func: common_speculative_state_eagle3.common_speculative_state_eagle3()
+  - file: common/speculative.cpp
+    line: 356-358
+    method_or_func: common_speculative_state_eagle3.begin()
+  - file: common/speculative.cpp
+    line: 360-368
+    method_or_func: common_speculative_state_eagle3.draft()
+  - file: common/speculative.cpp
+    line: 370-373
+    method_or_func: common_speculative_state_eagle3.accept()
+  - file: common/speculative.cpp
+    line: 571-577
+    method_or_func: get_common_ngram_map()
+  - file: common/speculative.cpp
+    line: 579-587
+    method_or_func: create_state_ngram_cache()
+  name: 多种策略状态机实现 —— 「预言家」的七十二变
+  'no': 5
+  points:
+  - '**不同投机策略的状态类如何实现统一接口？**'
+  - '- `common_speculative_state_ngram_simple`：包装简单 n-gram 匹配，配置仅包含 n-gram 和 m-gram
+    尺寸，构造函数仅保存配置'
+  - '- `common_speculative_state_ngram_map_k`：包装映射表版本，支持仅键模式（key_only）和完整键值统计，构造函数接收
+    `common_ngram_map` 对象，通过 `begin/draft/accept` 三回调联动更新统计'
+  - '- `common_speculative_state_ngram_mod`：动态维护 n-gram 容器，构造函数初始化 `common_ngram_mod`
+    并检查 `LLAMA_TRACE` 环境变量，使用 `LLAMA_TRACE` 控制详细日志，接受率低于 50% 且连续 3 次时自动重置容器'
+  - '- `common_speculative_state_ngram_cache`：构造函数加载静态与动态缓存文件，整合静态与动态缓存文件，支持从磁盘加载预训练的
+    n-gram 统计'
+  - '- `common_speculative_state_eagle3`：EAGLE-3 策略预留接口，构造函数仅初始化基类，当前为占位符实现（TODO）'
+  - '- 所有状态类都实现 `begin()`/`draft()`/`accept()` 三阶段生命周期，便于 `common_speculative` 类进行统一调度与统计收集'
+  - '- `get_common_ngram_map()` 和 `create_state_ngram_cache()` 作为工厂辅助函数，完成从配置到具体状态的实例化'

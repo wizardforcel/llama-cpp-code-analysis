@@ -1,0 +1,180 @@
+classes:
+- desc: 聊天服务类，提供与 llama.cpp 服务器通信的完整功能，包括发送聊天补全请求、处理流式/非流式响应、转换数据库消息格式、合并工具调用增量以及解析错误响应等核心能力。
+  methods:
+  - code:
+    - static async sendMessage(
+    - "\tmessages: ApiChatMessageData[] | (DatabaseMessage & { extra?: DatabaseMessageExtra[]\
+      \ })[],"
+    - "\toptions: SettingsChatServiceOptions = {},"
+    - "\tconversationId?: string,"
+    - "\tsignal?: AbortSignal"
+    - '): Promise<string | void> {'
+    - "\tconst { stream, onChunk, onComplete, onError, onReasoningChunk, onToolCallChunk,\
+      \ onModel, onTimings, tools, temperature, max_tokens, ... } = options;"
+    - "\t// Normalize messages: convert DB messages to API format, filter empty system\
+      \ messages"
+    - "\tconst normalizedMessages: ApiChatMessageData[] = messages.map(...).filter(...);"
+    - "\t// Filter out image attachments if model doesn't support vision"
+    - "\tif (options.model && !modelsStore.modelSupportsVision(options.model)) { ...\
+      \ }"
+    - "\t// Build request body with all parameters"
+    - "\tconst requestBody: ApiChatCompletionRequest = { ... };"
+    - "\t// Set optional parameters (temperature, max_tokens, sampling, penalties,\
+      \ etc.)"
+    - "\t// Send fetch request to ./v1/chat/completions"
+    - "\tconst response = await fetch('./v1/chat/completions', { ... });"
+    - "\t// Handle errors, stream or non-stream response"
+    - "\tif (stream) { await ChatService.handleStreamResponse(...); } else { return\
+      \ ChatService.handleNonStreamResponse(...); }"
+    - "\t// Catch and classify errors (network, timeout, etc.)"
+    - '}'
+    desc: 发送聊天补全请求到 llama.cpp 服务器，支持流式和非流式响应，自动将数据库消息（含附件）转换为 API 格式，并根据配置选项构建请求参数。
+    line: 41-226
+    name: sendMessage
+  - code:
+    - private static async handleStreamResponse(
+    - "\tresponse: Response,"
+    - "\tonChunk?: (chunk: string) => void,"
+    - "\tonComplete?: (response: string, reasoningContent?: string, timings?: ChatMessageTimings,\
+      \ toolCalls?: string) => void,"
+    - "\tonError?: (error: Error) => void,"
+    - "\tonReasoningChunk?: (chunk: string) => void,"
+    - "\tonToolCallChunk?: (chunk: string) => void,"
+    - "\tonModel?: (model: string) => void,"
+    - "\tonTimings?: (timings?: ChatMessageTimings, promptProgress?: ChatMessagePromptProgress)\
+      \ => void,"
+    - "\tconversationId?: string,"
+    - "\tabortSignal?: AbortSignal"
+    - '): Promise<void> {'
+    - "\tconst reader = response.body?.getReader();"
+    - "\t// Initialize aggregation state (content, reasoning, toolCalls, timings)"
+    - "\t// Define finalizeOpenToolCallBatch and processToolCallDelta helpers"
+    - "\t// Read stream chunks, parse SSE lines, extract content/reasoning/toolCalls/timings"
+    - "\t// On stream finished, call onComplete with aggregated results"
+    - "\t// Handle errors and release reader lock"
+    - '}'
+    desc: 处理来自聊天补全 API 的流式响应，逐行读取 SSE 数据流，聚合内容片段、推理内容和工具调用增量，并通过回调函数通知调用方。
+    line: 246-441
+    name: handleStreamResponse
+  - code:
+    - private static async handleNonStreamResponse(
+    - "\tresponse: Response,"
+    - "\tonComplete?: (response: string, reasoningContent?: string, timings?: ChatMessageTimings,\
+      \ toolCalls?: string) => void,"
+    - "\tonError?: (error: Error) => void,"
+    - "\tonToolCallChunk?: (chunk: string) => void,"
+    - "\tonModel?: (model: string) => void"
+    - '): Promise<string> {'
+    - "\tconst responseText = await response.text();"
+    - "\tconst data: ApiChatCompletionResponse = JSON.parse(responseText);"
+    - "\t// Extract model name, content, reasoning content, and tool calls"
+    - "\t// Merge and serialize tool calls if present"
+    - "\t// Call onComplete and return content"
+    - '}'
+    desc: 处理非流式聊天补全响应，解析 JSON 响应体，提取生成的内容、推理内容和工具调用，通过回调通知并返回内容字符串。
+    line: 456-521
+    name: handleNonStreamResponse
+  - code:
+    - private static mergeToolCallDeltas(
+    - "\texisting: ApiChatCompletionToolCall[],"
+    - "\tdeltas: ApiChatCompletionToolCallDelta[],"
+    - "\tindexOffset = 0"
+    - '): ApiChatCompletionToolCall[] {'
+    - "\tconst result = existing.map((call) => ({ ...call, function: call.function\
+      \ ? { ...call.function } : undefined }));"
+    - "\tfor (const delta of deltas) {"
+    - "\t\t// Determine target index, pad array if needed"
+    - "\t\t// Update id, type, function name and arguments"
+    - "\t}"
+    - "\treturn result;"
+    - '}'
+    desc: 将工具调用增量（deltas）合并到已有的工具调用数组中，支持按索引更新现有调用或添加新调用，拼接函数参数。
+    line: 534-582
+    name: mergeToolCallDeltas
+  - code:
+    - static convertDbMessageToApiChatMessageData(
+    - "\tmessage: DatabaseMessage & { extra?: DatabaseMessageExtra[] }"
+    - '): ApiChatMessageData {'
+    - "\t// Handle tool result messages (role: 'tool')"
+    - "\t// Parse tool calls from JSON string"
+    - "\t// Return simple message if no extra attachments"
+    - "\t// Build contentParts array from text content and various attachment types:"
+    - "\t// - images, text files, legacy context, audio, PDFs, MCP prompts, MCP resources"
+    - "\treturn { role, content: contentParts, reasoning_content?, tool_calls? };"
+    - '}'
+    desc: 将数据库消息（含附件）转换为 API 聊天消息格式，处理工具结果消息、解析工具调用，并将图片、文本文件、PDF、音频、MCP 提示和资源等附件转换为相应的
+      API 内容部分。
+    line: 605-789
+    name: convertDbMessageToApiChatMessageData
+  - code:
+    - private static async parseErrorResponse(
+    - "\tresponse: Response"
+    - '): Promise<Error & { contextInfo?: { n_prompt_tokens: number; n_ctx: number
+      } }> {'
+    - "\ttry {"
+    - "\t\tconst errorData: ApiErrorResponse = JSON.parse(await response.text());"
+    - "\t\t// Create error with message, name (ServerError/HttpError), and context\
+      \ info"
+    - "\t} catch {"
+    - "\t\t// Return fallback error with status info"
+    - "\t}"
+    - '}'
+    desc: 解析 HTTP 错误响应，提取错误消息和上下文信息（如 token 数量），创建带有适当名称和上下文信息的 Error 对象。
+    line: 803-835
+    name: parseErrorResponse
+  - code:
+    - 'private static extractModelName(data: unknown): string | undefined {'
+    - "\t// Helper: asRecord, getTrimmedString"
+    - "\tconst root = asRecord(data);"
+    - "\tif (!root) return undefined;"
+    - "\t// 1) Check root level model"
+    - "\tconst rootModel = getTrimmedString(root.model);"
+    - "\tif (rootModel) return rootModel;"
+    - "\t// 2) Check choices[0].delta.model then choices[0].message.model"
+    - "\tconst firstChoice = Array.isArray(root.choices) ? asRecord(root.choices[0])\
+      \ : undefined;"
+    - "\tif (!firstChoice) return undefined;"
+    - "\tconst deltaModel = getTrimmedString(asRecord(firstChoice.delta)?.model);"
+    - "\tif (deltaModel) return deltaModel;"
+    - "\tconst messageModel = getTrimmedString(asRecord(firstChoice.message)?.model);"
+    - "\tif (messageModel) return messageModel;"
+    - "\treturn undefined;"
+    - '}'
+    desc: 从聊天补全 API 响应数据中提取模型名称，支持从根级别、流式 delta 或最终消息中提取，避免从非标准位置猜测。
+    line: 851-895
+    name: extractModelName
+  - code:
+    - private static notifyTimings(
+    - "\ttimings: ChatMessageTimings | undefined,"
+    - "\tpromptProgress: ChatMessagePromptProgress | undefined,"
+    - "\tonTimingsCallback: ((timings?: ChatMessageTimings, promptProgress?: ChatMessagePromptProgress)\
+      \ => void) | undefined"
+    - '): void {'
+    - "\tif (!onTimingsCallback || (!timings && !promptProgress)) return;"
+    - "\tonTimingsCallback(timings, promptProgress);"
+    - '}'
+    desc: 调用 onTimings 回调函数，传递流式响应中的时间统计信息和提示处理进度数据。
+    line: 906-916
+    name: notifyTimings
+  name: ChatService
+desc: 该文件定义了 ChatService 类，作为前端与 llama.cpp 服务器之间的聊天服务层，负责发送聊天补全请求（支持流式和非流式两种模式）、处理流式响应中的内容/推理/工具调用增量、合并工具调用增量、将数据库消息（含附件）转换为
+  API 消息格式，以及解析错误响应和提取模型名称等工具功能。
+file: tools/server/webui/src/lib/services/chat.service.ts
+funcs:
+- code:
+  - import { getJsonHeaders } from '$lib/utils/api-headers';
+  - import { formatAttachmentText } from '$lib/utils/formatters';
+  - import { isAbortError } from '$lib/utils/abort';
+  - import { ATTACHMENT_LABEL_PDF_FILE, ATTACHMENT_LABEL_MCP_PROMPT, ATTACHMENT_LABEL_MCP_RESOURCE
+    } from '$lib/constants';
+  - import { AttachmentType, ContentPartType, MessageRole, ReasoningFormat, UrlProtocol
+    } from '$lib/enums';
+  - import type { ApiChatMessageContentPart, ApiChatCompletionToolCall } from '$lib/types/api';
+  - import type { DatabaseMessageExtraMcpPrompt, DatabaseMessageExtraMcpResource }
+    from '$lib/types';
+  - import { modelsStore } from '$lib/stores/models.svelte';
+  - ''
+  - export class ChatService { ... }
+  desc: 模块级代码，包含导入语句和 ChatService 类的导出声明。
+  line: 1-917
+  name: __main__

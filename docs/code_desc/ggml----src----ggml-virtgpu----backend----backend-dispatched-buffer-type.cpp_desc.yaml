@@ -1,0 +1,125 @@
+classes: []
+desc: 该文件实现了经过虚拟GPU（virtgpu）后端的分散式缓冲区类型的后端处理函数，包括缓冲区类型的名称、对齐、最大大小、是否为主机端、分配缓冲区和获取分配大小的远程过程调用（APIR）分发处理。
+file: ggml/src/ggml-virtgpu/backend/backend-dispatched-buffer-type.cpp
+funcs:
+- code:
+  - uint32_t backend_buffer_type_get_name(apir_encoder * enc, apir_decoder * dec,
+    virgl_apir_context * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    ggml_backend_buffer_type_t buft;'
+  - '    buft = apir_decode_ggml_buffer_type(dec);'
+  - ''
+  - '    const char * string = buft->iface.get_name(buft);'
+  - ''
+  - '    const size_t string_size = strlen(string) + 1;'
+  - '    apir_encode_array_size(enc, string_size);'
+  - '    apir_encode_char_array(enc, string, string_size);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解码缓冲区类型并编码其名称到编码器中，以响应远程序列化请求。
+  line: 10-22
+  name: backend_buffer_type_get_name
+- code:
+  - uint32_t backend_buffer_type_get_alignment(apir_encoder * enc, apir_decoder *
+    dec, virgl_apir_context * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    ggml_backend_buffer_type_t buft;'
+  - '    buft = apir_decode_ggml_buffer_type(dec);'
+  - ''
+  - '    size_t value = buft->iface.get_alignment(buft);'
+  - '    apir_encode_size_t(enc, &value);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解码缓冲区类型并编码其对齐值到编码器中。
+  line: 24-33
+  name: backend_buffer_type_get_alignment
+- code:
+  - uint32_t backend_buffer_type_get_max_size(apir_encoder * enc, apir_decoder * dec,
+    virgl_apir_context * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    ggml_backend_buffer_type_t buft;'
+  - '    buft = apir_decode_ggml_buffer_type(dec);'
+  - ''
+  - '    size_t value = SIZE_MAX;'
+  - '    if (buft->iface.get_max_size) {'
+  - '        value = buft->iface.get_max_size(buft);'
+  - '    }'
+  - ''
+  - '    apir_encode_size_t(enc, &value);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解码缓冲区类型并编码其最大大小，若未定义则使用默认值SIZE_MAX。
+  line: 35-48
+  name: backend_buffer_type_get_max_size
+- code:
+  - uint32_t backend_buffer_type_is_host(apir_encoder * enc, apir_decoder * dec, virgl_apir_context
+    * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    GGML_UNUSED(dec);'
+  - '    const bool is_host = false;'
+  - ''
+  - '    apir_encode_bool_t(enc, &is_host);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 编码布尔值false以响应已废弃的缓冲区类型是否主机端命令。
+  line: 50-60
+  name: backend_buffer_type_is_host
+- code:
+  - uint32_t backend_buffer_type_alloc_buffer(apir_encoder * enc, apir_decoder * dec,
+    virgl_apir_context * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    ggml_backend_buffer_type_t buft;'
+  - '    buft = apir_decode_ggml_buffer_type(dec);'
+  - ''
+  - '    size_t size;'
+  - '    apir_decode_size_t(dec, &size);'
+  - ''
+  - '    ggml_backend_buffer_t buffer;'
+  - ''
+  - '    buffer = buft->iface.alloc_buffer(buft, size);'
+  - ''
+  - '    apir_encode_ggml_buffer(enc, buffer);'
+  - ''
+  - '    if (buffer) {'
+  - '        apir_track_backend_buffer(buffer);'
+  - '    }'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解码缓冲区类型和大小，分配缓冲区，并编码结果和跟踪后端缓冲区。
+  line: 62-80
+  name: backend_buffer_type_alloc_buffer
+- code:
+  - uint32_t backend_buffer_type_get_alloc_size(apir_encoder * enc, apir_decoder *
+    dec, virgl_apir_context * ctx) {
+  - '    GGML_UNUSED(ctx);'
+  - '    ggml_backend_buffer_type_t buft;'
+  - '    buft = apir_decode_ggml_buffer_type(dec);'
+  - ''
+  - '    const ggml_tensor * op = apir_decode_ggml_tensor_inplace(dec);'
+  - ''
+  - '    // Check for decode error'
+  - '    if (op == nullptr) {'
+  - '        GGML_LOG_ERROR(GGML_VIRTGPU_BCK "%s: Failed to decode tensor\n", __func__);'
+  - '        apir_decoder_set_fatal(dec);'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    size_t value;'
+  - '    if (buft->iface.get_alloc_size) {'
+  - '        value = buft->iface.get_alloc_size(buft, op);'
+  - '    } else {'
+  - '        value = ggml_nbytes(op);  // Default fallback'
+  - '    }'
+  - ''
+  - '    apir_encode_size_t(enc, &value);'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 解码缓冲区类型和张量，计算并编码分配大小，处理解码错误和默认回退。
+  line: 82-111
+  name: backend_buffer_type_get_alloc_size

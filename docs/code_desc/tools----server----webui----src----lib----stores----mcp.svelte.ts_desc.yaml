@@ -1,0 +1,1861 @@
+classes:
+- desc: MCP 架构中的 Host 角色类，使用 Svelte 5 Runes 实现响应式状态管理，协调多个 MCP 服务器连接，提供工具执行、自动重连、健康检查及
+    OpenAI 兼容工具定义生成功能。
+  methods:
+  - code:
+    - "\tconstructor() {"
+    - "\t\tif (browser) {"
+    - "\t\t\tthis.probeProxy();"
+    - "\t\t}"
+    - "\t}"
+    desc: 构造函数，在浏览器环境下自动探测 CORS 代理可用性。
+    line: 86-90
+    name: constructor
+  - code:
+    - "\tasync probeProxy(): Promise<void> {"
+    - "\t\ttry {"
+    - "\t\t\tconst response = await fetch(`${base}${CORS_PROXY_ENDPOINT}`, { method:\
+      \ 'HEAD' });"
+    - "\t\t\tthis._proxyAvailable = response.status !== 404;"
+    - "\t\t} catch {"
+    - "\t\t\tthis._proxyAvailable = false;"
+    - "\t\t}"
+    - "\t}"
+    desc: 异步探测 CORS 代理端点可用性，通过 HEAD 请求检查 llama-server 是否启用 --webui-mcp-proxy。
+    line: 96-103
+    name: probeProxy
+  - code:
+    - "\t#generateServerId(id: unknown, index: number): string {"
+    - "\t\tif (typeof id === 'string' && id.trim()) {"
+    - "\t\t\treturn id.trim();"
+    - "\t\t}"
+    - ''
+    - "\t\treturn `${MCP_SERVER_ID_PREFIX}-${index + 1}`;"
+    - "\t}"
+    desc: 私有方法，根据可选 ID 字符串或索引生成唯一服务器 ID。
+    line: 112-118
+    name: '#generateServerId'
+  - code:
+    - "\t#parseServerSettings(rawServers: unknown): MCPServerSettingsEntry[] {"
+    - "\t\tif (!rawServers) {"
+    - "\t\t\treturn [];"
+    - "\t\t}"
+    - ''
+    - "\t\tlet parsed: unknown;"
+    - "\t\tif (typeof rawServers === 'string') {"
+    - "\t\t\tconst trimmed = rawServers.trim();"
+    - "\t\t\tif (!trimmed) {"
+    - "\t\t\t\treturn [];"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\ttry {"
+    - "\t\t\t\tparsed = JSON.parse(trimmed);"
+    - "\t\t\t} catch (error) {"
+    - "\t\t\t\tconsole.warn('[MCP] Failed to parse mcpServers JSON:', error);"
+    - ''
+    - "\t\t\t\treturn [];"
+    - "\t\t\t}"
+    - "\t\t} else {"
+    - "\t\t\tparsed = rawServers;"
+    - "\t\t}"
+    - "\t\tif (!Array.isArray(parsed)) {"
+    - "\t\t\treturn [];"
+    - "\t\t}"
+    - ''
+    - "\t\treturn parsed.map((entry, index) => {"
+    - "\t\t\tconst url = typeof entry?.url === 'string' ? entry.url.trim() : '';"
+    - "\t\t\tconst headers = typeof entry?.headers === 'string' ? entry.headers.trim()\
+      \ : undefined;"
+    - ''
+    - "\t\t\treturn {"
+    - "\t\t\t\tid: this.#generateServerId((entry as { id?: unknown })?.id, index),"
+    - "\t\t\t\tenabled: Boolean((entry as { enabled?: unknown })?.enabled),"
+    - "\t\t\t\turl,"
+    - "\t\t\t\tname: (entry as { name?: string })?.name,"
+    - "\t\t\t\trequestTimeoutSeconds: DEFAULT_MCP_CONFIG.requestTimeoutSeconds,"
+    - "\t\t\t\theaders: headers || undefined,"
+    - "\t\t\t\tuseProxy: Boolean((entry as { useProxy?: unknown })?.useProxy)"
+    - "\t\t\t} satisfies MCPServerSettingsEntry;"
+    - "\t\t});"
+    - "\t}"
+    desc: 私有方法，解析原始服务器设置（JSON 字符串或对象数组）为标准化的 MCPServerSettingsEntry 数组。
+    line: 123-158
+    name: '#parseServerSettings'
+  - code:
+    - "\t#buildServerConfig("
+    - "\t\tentry: MCPServerSettingsEntry,"
+    - "\t\tconnectionTimeoutMs = DEFAULT_MCP_CONFIG.connectionTimeoutMs"
+    - "\t): MCPServerConfig | undefined {"
+    - "\t\tif (!entry?.url) {"
+    - "\t\t\treturn undefined;"
+    - "\t\t}"
+    - ''
+    - "\t\tlet headers: Record<string, string> | undefined;"
+    - "\t\tif (entry.headers) {"
+    - "\t\t\ttry {"
+    - "\t\t\t\tconst parsed = JSON.parse(entry.headers);"
+    - "\t\t\t\tif (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))"
+    - "\t\t\t\t\theaders = parsed as Record<string, string>;"
+    - "\t\t\t} catch {"
+    - "\t\t\t\tconsole.warn('[MCP] Failed to parse custom headers JSON:', entry.headers);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn {"
+    - "\t\t\turl: entry.url,"
+    - "\t\t\ttransport: detectMcpTransportFromUrl(entry.url),"
+    - "\t\t\thandshakeTimeoutMs: connectionTimeoutMs,"
+    - "\t\t\trequestTimeoutMs: Math.round(entry.requestTimeoutSeconds * 1000),"
+    - "\t\t\theaders,"
+    - "\t\t\tuseProxy: entry.useProxy"
+    - "\t\t};"
+    - "\t}"
+    desc: 私有方法，根据设置条目构建服务器配置对象，包含传输方式、超时和头信息。
+    line: 163-190
+    name: '#buildServerConfig'
+  - code:
+    - "\t#checkServerEnabled("
+    - "\t\tserver: MCPServerSettingsEntry,"
+    - "\t\tperChatOverrides?: McpServerOverride[]"
+    - "\t): boolean {"
+    - "\t\tconst override = perChatOverrides?.find((o) => o.serverId === server.id);"
+    - "\t\treturn override?.enabled ?? false;"
+    - "\t}"
+    desc: 私有方法，检查指定服务器在给定聊天（通过 per-chat overrides）中是否启用。
+    line: 197-203
+    name: '#checkServerEnabled'
+  - code:
+    - "\t#buildMcpClientConfig("
+    - "\t\tcfg: SettingsConfigType,"
+    - "\t\tperChatOverrides?: McpServerOverride[]"
+    - "\t): MCPClientConfig | undefined {"
+    - "\t\tconst rawServers = this.#parseServerSettings(cfg.mcpServers);"
+    - "\t\tif (!rawServers.length) {"
+    - "\t\t\treturn undefined;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst servers: Record<string, MCPServerConfig> = {};"
+    - ''
+    - "\t\tfor (const [index, entry] of rawServers.entries()) {"
+    - "\t\t\tif (!this.#checkServerEnabled(entry, perChatOverrides)) continue;"
+    - "\t\t\tconst normalized = this.#buildServerConfig(entry);"
+    - "\t\t\tif (normalized) servers[this.#generateServerId(entry.id, index)] = normalized;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (Object.keys(servers).length === 0) {"
+    - "\t\t\treturn undefined;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn {"
+    - "\t\t\tprotocolVersion: DEFAULT_MCP_CONFIG.protocolVersion,"
+    - "\t\t\tcapabilities: DEFAULT_MCP_CONFIG.capabilities,"
+    - "\t\t\tclientInfo: DEFAULT_MCP_CONFIG.clientInfo,"
+    - "\t\t\trequestTimeoutMs: Math.round(DEFAULT_MCP_CONFIG.requestTimeoutSeconds\
+      \ * 1000),"
+    - "\t\t\tservers"
+    - "\t\t};"
+    - "\t}"
+    desc: 私有方法，从全局设置和 per-chat 覆盖构建 MCP 客户端配置对象。
+    line: 208-236
+    name: '#buildMcpClientConfig'
+  - code:
+    - "\t#buildCapabilitiesInfo("
+    - "\t\tserverCaps?: ServerCapabilities,"
+    - "\t\tclientCaps?: ClientCapabilities"
+    - "\t): MCPCapabilitiesInfo {"
+    - "\t\treturn {"
+    - "\t\t\tserver: {"
+    - "\t\t\t\ttools: serverCaps?.tools ? { listChanged: serverCaps.tools.listChanged\
+      \ } : undefined,"
+    - "\t\t\t\tprompts: serverCaps?.prompts ? { listChanged: serverCaps.prompts.listChanged\
+      \ } : undefined,"
+    - "\t\t\t\tresources: serverCaps?.resources"
+    - "\t\t\t\t\t? {"
+    - "\t\t\t\t\t\t\tsubscribe: serverCaps.resources.subscribe,"
+    - "\t\t\t\t\t\t\tlistChanged: serverCaps.resources.listChanged"
+    - "\t\t\t\t\t\t}"
+    - "\t\t\t\t\t: undefined,"
+    - "\t\t\t\tlogging: !!serverCaps?.logging,"
+    - "\t\t\t\tcompletions: !!serverCaps?.completions,"
+    - "\t\t\t\ttasks: !!serverCaps?.tasks"
+    - "\t\t\t},"
+    - "\t\t\tclient: {"
+    - "\t\t\t\troots: clientCaps?.roots ? { listChanged: clientCaps.roots.listChanged\
+      \ } : undefined,"
+    - "\t\t\t\tsampling: !!clientCaps?.sampling,"
+    - "\t\t\t\telicitation: clientCaps?.elicitation"
+    - "\t\t\t\t\t? { form: !!clientCaps.elicitation.form, url: !!clientCaps.elicitation.url\
+      \ }"
+    - "\t\t\t\t\t: undefined,"
+    - "\t\t\t\ttasks: !!clientCaps?.tasks"
+    - "\t\t\t}"
+    - "\t\t};"
+    - "\t}"
+    desc: 私有方法，从服务器和客户端能力对象构建能力信息摘要。
+    line: 241-270
+    name: '#buildCapabilitiesInfo'
+  - code:
+    - "\tprivate updateState(state: {"
+    - "\t\tisInitializing?: boolean;"
+    - "\t\terror?: string | null;"
+    - "\t\ttoolCount?: number;"
+    - "\t\tconnectedServers?: string[];"
+    - "\t}): void {"
+    - "\t\tif (state.isInitializing !== undefined) {"
+    - "\t\t\tthis._isInitializing = state.isInitializing;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (state.error !== undefined) {"
+    - "\t\t\tthis._error = state.error;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (state.toolCount !== undefined) {"
+    - "\t\t\tthis._toolCount = state.toolCount;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (state.connectedServers !== undefined) {"
+    - "\t\t\tthis._connectedServers = state.connectedServers;"
+    - "\t\t}"
+    - "\t}"
+    desc: 私有辅助方法，批量更新内部响应式状态（初始化标志、错误信息、工具数量、已连接服务器列表）。
+    line: 306-327
+    name: updateState
+  - code:
+    - "\tupdateHealthCheck(serverId: string, state: HealthCheckState): void {"
+    - "\t\tthis._healthChecks = { ...this._healthChecks, [serverId]: state };"
+    - "\t}"
+    desc: 更新指定服务器的健康检查状态。
+    line: 329-331
+    name: updateHealthCheck
+  - code:
+    - "\tgetHealthCheckState(serverId: string): HealthCheckState {"
+    - "\t\treturn this._healthChecks[serverId] ?? { status: HealthCheckStatus.IDLE\
+      \ };"
+    - "\t}"
+    desc: 获取指定服务器的健康检查状态，若不存在则返回 IDLE 状态。
+    line: 333-335
+    name: getHealthCheckState
+  - code:
+    - "\thasHealthCheck(serverId: string): boolean {"
+    - "\t\treturn ("
+    - "\t\t\tserverId in this._healthChecks &&"
+    - "\t\t\tthis._healthChecks[serverId].status !== HealthCheckStatus.IDLE"
+    - "\t\t);"
+    - "\t}"
+    desc: 检查指定服务器是否有非 IDLE 的健康检查记录。
+    line: 337-342
+    name: hasHealthCheck
+  - code:
+    - "\tclearHealthCheck(serverId: string): void {"
+    - "\t\t// eslint-disable-next-line @typescript-eslint/no-unused-vars"
+    - "\t\tconst { [serverId]: _removed, ...rest } = this._healthChecks;"
+    - "\t\tthis._healthChecks = rest;"
+    - "\t}"
+    desc: 清除指定服务器的健康检查状态。
+    line: 344-348
+    name: clearHealthCheck
+  - code:
+    - "\tclearAllHealthChecks(): void {"
+    - "\t\tthis._healthChecks = {};"
+    - "\t}"
+    desc: 清除所有服务器的健康检查状态。
+    line: 350-352
+    name: clearAllHealthChecks
+  - code:
+    - "\tclearError(): void {"
+    - "\t\tthis._error = null;"
+    - "\t}"
+    desc: 清除当前错误状态。
+    line: 354-356
+    name: clearError
+  - code:
+    - "\tgetServers(): MCPServerSettingsEntry[] {"
+    - "\t\treturn parseMcpServerSettings(config().mcpServers);"
+    - "\t}"
+    desc: 获取当前配置的所有 MCP 服务器设置列表。
+    line: 358-360
+    name: getServers
+  - code:
+    - "\tgetConnections(): Map<string, MCPConnection> {"
+    - "\t\treturn this.connections;"
+    - "\t}"
+    desc: 获取所有活跃的 MCP 连接映射表。
+    line: 366-368
+    name: getConnections
+  - code:
+    - "\tgetServerLabel(server: MCPServerSettingsEntry): string {"
+    - "\t\tconst healthState = this.getHealthCheckState(server.id);"
+    - ''
+    - "\t\tif (healthState?.status === HealthCheckStatus.SUCCESS)"
+    - "\t\t\treturn ("
+    - "\t\t\t\thealthState.serverInfo?.title || healthState.serverInfo?.name || server.name\
+      \ || server.url"
+    - "\t\t\t);"
+    - "\t\treturn server.url;"
+    - "\t}"
+    desc: 获取服务器显示标签，优先使用健康检查成功后的服务器信息，否则返回 URL。
+    line: 370-378
+    name: getServerLabel
+  - code:
+    - "\tgetServerById(serverId: string): MCPServerSettingsEntry | undefined {"
+    - "\t\treturn this.getServers().find((s) => s.id === serverId);"
+    - "\t}"
+    desc: 根据服务器 ID 查找服务器设置。
+    line: 380-382
+    name: getServerById
+  - code:
+    - "\tgetServerDisplayName(serverId: string): string {"
+    - "\t\tconst server = this.getServerById(serverId);"
+    - "\t\treturn server ? this.getServerLabel(server) : serverId;"
+    - "\t}"
+    desc: 根据服务器 ID 获取显示名称，若找不到则返回 ID 本身。
+    line: 388-391
+    name: getServerDisplayName
+  - code:
+    - "\t#isValidIconUri(src: string): boolean {"
+    - "\t\ttry {"
+    - "\t\t\tif (src.startsWith(UrlProtocol.DATA)) return true;"
+    - "\t\t\tconst url = new URL(src);"
+    - "\t\t\treturn url.protocol === UrlProtocol.HTTPS;"
+    - "\t\t} catch {"
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - "\t}"
+    desc: 私有方法，验证图标 URI 是否使用安全协议（HTTPS 或 Data URI）。
+    line: 396-404
+    name: '#isValidIconUri'
+  - code:
+    - "\t#getMcpIconUrl(icons: MCPResourceIcon[] | undefined, isDark = false): string\
+      \ | null {"
+    - "\t\tif (!icons?.length) return null;"
+    - ''
+    - "\t\tconst validIcons = icons.filter((icon) => {"
+    - "\t\t\tif (!icon.src || !this.#isValidIconUri(icon.src)) return false;"
+    - "\t\t\tif (icon.mimeType && !MCP_ALLOWED_ICON_MIME_TYPES.has(icon.mimeType))\
+      \ return false;"
+    - "\t\t\treturn true;"
+    - "\t\t});"
+    - ''
+    - "\t\tif (validIcons.length === 0) return null;"
+    - ''
+    - "\t\tconst preferredTheme = isDark ? ColorMode.DARK : ColorMode.LIGHT;"
+    - ''
+    - "\t\t// 1. Prefer icon explicitly matching the current color scheme"
+    - "\t\tconst themedIcon = validIcons.find((icon) => icon.theme === preferredTheme);"
+    - "\t\tif (themedIcon) return this.#proxyIconSrc(themedIcon.src);"
+    - ''
+    - "\t\t// 2. Handle universal icons (no theme specified)"
+    - "\t\tconst universalIcons = validIcons.filter((icon) => !icon.theme);"
+    - ''
+    - "\t\tif (universalIcons.length === EXPECTED_THEMED_ICON_PAIR_COUNT) {"
+    - "\t\t\t// Heuristic: two theme-less icons → assume [0] = light, [1] = dark"
+    - "\t\t\treturn this.#proxyIconSrc(universalIcons[isDark ? 1 : 0].src);"
+    - "\t\t}"
+    - ''
+    - "\t\tif (universalIcons.length > 0) {"
+    - "\t\t\treturn this.#proxyIconSrc(universalIcons[0].src);"
+    - "\t\t}"
+    - ''
+    - "\t\t// 3. Last resort: use opposite-theme icon"
+    - "\t\treturn this.#proxyIconSrc(validIcons[0].src);"
+    - "\t}"
+    desc: 私有方法，从 MCP 图标数组中选择最佳图标 URL，考虑当前主题（暗色/亮色）和 MIME 类型，并应用代理。
+    line: 420-449
+    name: '#getMcpIconUrl'
+  - code:
+    - "\t#proxyIconSrc(src: string): string {"
+    - "\t\tif (src.startsWith('data:')) return src;"
+    - "\t\tif (!this._proxyAvailable) return src;"
+    - ''
+    - "\t\treturn getProxiedUrlString(src);"
+    - "\t}"
+    desc: 私有方法，如果代理可用且为 HTTPS URL，则将图标源路由通过 CORS 代理。
+    line: 455-460
+    name: '#proxyIconSrc'
+  - code:
+    - "\tgetServerFavicon(serverId: string): string | null {"
+    - "\t\tconst server = this.getServerById(serverId);"
+    - "\t\tif (!server) {"
+    - "\t\t\treturn null;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst isDark = mode.current === ColorMode.DARK;"
+    - "\t\tconst healthState = this.getHealthCheckState(serverId);"
+    - "\t\tif (healthState.status === HealthCheckStatus.SUCCESS && healthState.serverInfo?.icons)\
+      \ {"
+    - "\t\t\tconst mcpIconUrl = this.#getMcpIconUrl(healthState.serverInfo.icons,\
+      \ isDark);"
+    - ''
+    - "\t\t\tif (mcpIconUrl) {"
+    - "\t\t\t\treturn mcpIconUrl;"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn getFaviconUrl(server.url, this._proxyAvailable);"
+    - "\t}"
+    desc: 获取指定服务器的图标 URL，优先使用 MCP 规范提供的图标，否则使用 Google favicon 服务。
+    line: 468-484
+    name: getServerFavicon
+  - code:
+    - "\tisAnyServerLoading(): boolean {"
+    - "\t\treturn this.getServers().some((s) => {"
+    - "\t\t\tconst state = this.getHealthCheckState(s.id);"
+    - ''
+    - "\t\t\treturn ("
+    - "\t\t\t\tstate.status === HealthCheckStatus.IDLE || state.status === HealthCheckStatus.CONNECTING"
+    - "\t\t\t);"
+    - "\t\t});"
+    - "\t}"
+    desc: 检查是否有任何服务器处于正在连接或空闲状态。
+    line: 486-494
+    name: isAnyServerLoading
+  - code:
+    - "\tgetServersSorted(): MCPServerSettingsEntry[] {"
+    - "\t\tconst servers = this.getServers();"
+    - "\t\tif (this.isAnyServerLoading()) {"
+    - "\t\t\treturn servers;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn [...servers].sort((a, b) =>"
+    - "\t\t\tthis.getServerLabel(a).localeCompare(this.getServerLabel(b))"
+    - "\t\t);"
+    - "\t}"
+    desc: 获取排序后的服务器列表，若正在加载则按原顺序返回，否则按标签字母排序。
+    line: 496-505
+    name: getServersSorted
+  - code:
+    - "\taddServer("
+    - "\t\tserverData: Omit<MCPServerSettingsEntry, 'id' | 'requestTimeoutSeconds'>\
+      \ & { id?: string }"
+    - "\t): void {"
+    - "\t\tconst servers = this.getServers();"
+    - "\t\tconst newServer: MCPServerSettingsEntry = {"
+    - "\t\t\tid: serverData.id || (uuid() ?? `server-${Date.now()}`),"
+    - "\t\t\tenabled: serverData.enabled,"
+    - "\t\t\turl: serverData.url.trim(),"
+    - "\t\t\tname: serverData.name,"
+    - "\t\t\theaders: serverData.headers?.trim() || undefined,"
+    - "\t\t\trequestTimeoutSeconds: DEFAULT_MCP_CONFIG.requestTimeoutSeconds,"
+    - "\t\t\tuseProxy: serverData.useProxy"
+    - "\t\t};"
+    - "\t\tsettingsStore.updateConfig('mcpServers', JSON.stringify([...servers, newServer]));"
+    - "\t}"
+    desc: 添加新的 MCP 服务器配置到设置中。
+    line: 507-521
+    name: addServer
+  - code:
+    - "\tupdateServer(id: string, updates: Partial<MCPServerSettingsEntry>): void\
+      \ {"
+    - "\t\tconst servers = this.getServers();"
+    - "\t\tsettingsStore.updateConfig("
+    - "\t\t\t'mcpServers',"
+    - "\t\t\tJSON.stringify("
+    - "\t\t\t\tservers.map((server) => (server.id === id ? { ...server, ...updates\
+      \ } : server))"
+    - "\t\t\t)"
+    - "\t\t);"
+    - "\t}"
+    desc: 更新指定 ID 的服务器配置。
+    line: 523-532
+    name: updateServer
+  - code:
+    - "\tremoveServer(id: string): void {"
+    - "\t\tconst servers = this.getServers();"
+    - "\t\tsettingsStore.updateConfig('mcpServers', JSON.stringify(servers.filter((s)\
+      \ => s.id !== id)));"
+    - "\t\tthis.clearHealthCheck(id);"
+    - "\t}"
+    desc: 移除指定 ID 的服务器并清除其健康检查状态。
+    line: 534-538
+    name: removeServer
+  - code:
+    - "\thasAvailableServers(): boolean {"
+    - "\t\treturn parseMcpServerSettings(config().mcpServers).some((s) => s.enabled\
+      \ && s.url.trim());"
+    - "\t}"
+    desc: 检查是否有已启用且配置了 URL 的可用服务器。
+    line: 540-542
+    name: hasAvailableServers
+  - code:
+    - "\thasEnabledServers(perChatOverrides?: McpServerOverride[]): boolean {"
+    - "\t\treturn Boolean(this.#buildMcpClientConfig(config(), perChatOverrides));"
+    - "\t}"
+    desc: 检查在当前配置和 per-chat 覆盖下是否有启用的服务器。
+    line: 543-545
+    name: hasEnabledServers
+  - code:
+    - "\tgetEnabledServersForConversation("
+    - "\t\tperChatOverrides?: McpServerOverride[]"
+    - "\t): MCPServerSettingsEntry[] {"
+    - "\t\treturn this.getServers().filter((server) => {"
+    - "\t\t\treturn this.#checkServerEnabled(server, perChatOverrides);"
+    - "\t\t});"
+    - "\t}"
+    desc: 获取当前对话中启用的服务器列表。
+    line: 547-553
+    name: getEnabledServersForConversation
+  - code:
+    - "\tasync ensureInitialized(perChatOverrides?: McpServerOverride[]): Promise<boolean>\
+      \ {"
+    - "\t\tif (!browser) {"
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst mcpConfig = this.#buildMcpClientConfig(config(), perChatOverrides);"
+    - "\t\tconst signature = mcpConfig ? JSON.stringify(mcpConfig) : null;"
+    - "\t\tif (!signature) {"
+    - "\t\t\tawait this.shutdown();"
+    - ''
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - "\t\tif (this.isInitialized && this.configSignature === signature) {"
+    - "\t\t\treturn true;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (this.initPromise && this.configSignature === signature) {"
+    - "\t\t\treturn this.initPromise;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (this.connections.size > 0 || this.initPromise) await this.shutdown();"
+    - "\t\treturn this.initialize(signature, mcpConfig!);"
+    - "\t}"
+    desc: 确保 MCP 客户端已根据当前配置初始化，处理配置变更和并发初始化去重。
+    line: 555-576
+    name: ensureInitialized
+  - code:
+    - "\tprivate async initialize(signature: string, mcpConfig: MCPClientConfig):\
+      \ Promise<boolean> {"
+    - "\t\tthis.updateState({ isInitializing: true, error: null });"
+    - "\t\tthis.configSignature = signature;"
+    - ''
+    - "\t\tconst serverEntries = Object.entries(mcpConfig.servers);"
+    - ''
+    - "\t\tif (serverEntries.length === 0) {"
+    - "\t\t\tthis.updateState({ isInitializing: false, toolCount: 0, connectedServers:\
+      \ [] });"
+    - ''
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - "\t\tthis.initPromise = this.doInitialize(signature, mcpConfig, serverEntries);"
+    - ''
+    - "\t\treturn this.initPromise;"
+    - "\t}"
+    desc: 私有方法，初始化 MCP 连接流程，设置初始化状态和签名。
+    line: 578-594
+    name: initialize
+  - code:
+    - "\tprivate async doInitialize("
+    - "\t\tsignature: string,"
+    - "\t\tmcpConfig: MCPClientConfig,"
+    - "\t\tserverEntries: [string, MCPClientConfig['servers'][string]][]"
+    - "\t): Promise<boolean> {"
+    - "\t\tconst clientInfo = mcpConfig.clientInfo ?? DEFAULT_MCP_CONFIG.clientInfo;"
+    - "\t\tconst capabilities = mcpConfig.capabilities ?? DEFAULT_MCP_CONFIG.capabilities;"
+    - "\t\tconst results = await Promise.allSettled("
+    - "\t\t\tserverEntries.map(async ([name, serverConfig]) => {"
+    - "\t\t\t\t// Store config for reconnection"
+    - "\t\t\t\tthis.serverConfigs.set(name, serverConfig);"
+    - ''
+    - "\t\t\t\tconst listChangedHandlers = this.createListChangedHandlers(name);"
+    - "\t\t\t\tconst connection = await MCPService.connect("
+    - "\t\t\t\t\tname,"
+    - "\t\t\t\t\tserverConfig,"
+    - "\t\t\t\t\tclientInfo,"
+    - "\t\t\t\t\tcapabilities,"
+    - "\t\t\t\t\t(phase) => {"
+    - "\t\t\t\t\t\t// Handle WebSocket disconnection"
+    - "\t\t\t\t\t\tif (phase === MCPConnectionPhase.DISCONNECTED) {"
+    - "\t\t\t\t\t\t\tconsole.log(`[MCPStore][${name}] Connection lost, starting auto-reconnect`);"
+    - "\t\t\t\t\t\t\tthis.autoReconnect(name);"
+    - "\t\t\t\t\t\t}"
+    - "\t\t\t\t\t},"
+    - "\t\t\t\t\tlistChangedHandlers"
+    - "\t\t\t\t);"
+    - ''
+    - "\t\t\t\treturn { name, connection };"
+    - "\t\t\t})"
+    - "\t\t);"
+    - "\t\tif (this.configSignature !== signature) {"
+    - "\t\t\tfor (const result of results) {"
+    - "\t\t\t\tif (result.status === 'fulfilled')"
+    - "\t\t\t\t\tawait MCPService.disconnect(result.value.connection).catch(console.warn);"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - "\t\tfor (const result of results) {"
+    - "\t\t\tif (result.status === 'fulfilled') {"
+    - "\t\t\t\tconst { name, connection } = result.value;"
+    - ''
+    - "\t\t\t\tthis.connections.set(name, connection);"
+    - ''
+    - "\t\t\t\tfor (const tool of connection.tools) {"
+    - "\t\t\t\t\tif (this.toolsIndex.has(tool.name))"
+    - "\t\t\t\t\t\tconsole.warn("
+    - "\t\t\t\t\t\t\t`[MCPStore] Tool name conflict: \"${tool.name}\" exists in \"\
+      ${this.toolsIndex.get(tool.name)}\" and \"${name}\". Using tool from \"${name}\"\
+      .`"
+    - "\t\t\t\t\t\t);"
+    - "\t\t\t\t\tthis.toolsIndex.set(tool.name, name);"
+    - "\t\t\t\t}"
+    - "\t\t\t} else {"
+    - "\t\t\t\tconsole.error(`[MCPStore] Failed to connect:`, result.reason);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tconst successCount = this.connections.size;"
+    - "\t\tif (successCount === 0 && serverEntries.length > 0) {"
+    - "\t\t\tthis.updateState({"
+    - "\t\t\t\tisInitializing: false,"
+    - "\t\t\t\terror: 'All MCP server connections failed',"
+    - "\t\t\t\ttoolCount: 0,"
+    - "\t\t\t\tconnectedServers: []"
+    - "\t\t\t});"
+    - "\t\t\tthis.initPromise = null;"
+    - ''
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - ''
+    - "\t\tthis.updateState({"
+    - "\t\t\tisInitializing: false,"
+    - "\t\t\terror: null,"
+    - "\t\t\ttoolCount: this.toolsIndex.size,"
+    - "\t\t\tconnectedServers: Array.from(this.connections.keys())"
+    - "\t\t});"
+    - "\t\tthis.initPromise = null;"
+    - ''
+    - "\t\treturn true;"
+    - "\t}"
+    desc: 私有方法，执行实际的初始化逻辑，并行连接所有服务器，处理工具冲突和状态更新。
+    line: 596-667
+    name: doInitialize
+  - code:
+    - "\tprivate createListChangedHandlers(serverName: string): ListChangedHandlers\
+      \ {"
+    - "\t\treturn {"
+    - "\t\t\ttools: {"
+    - "\t\t\t\tonChanged: (error: Error | null, tools: Tool[] | null) => {"
+    - "\t\t\t\t\tif (error) {"
+    - "\t\t\t\t\t\tconsole.warn(`[MCPStore][${serverName}] Tools list changed error:`,\
+      \ error);"
+    - "\t\t\t\t\t\treturn;"
+    - "\t\t\t\t\t}"
+    - "\t\t\t\t\tthis.handleToolsListChanged(serverName, tools ?? []);"
+    - "\t\t\t\t}"
+    - "\t\t\t},"
+    - "\t\t\tprompts: {"
+    - "\t\t\t\tonChanged: (error: Error | null) => {"
+    - "\t\t\t\t\tif (error) {"
+    - "\t\t\t\t\t\tconsole.warn(`[MCPStore][${serverName}] Prompts list changed error:`,\
+      \ error);"
+    - "\t\t\t\t\t\treturn;"
+    - "\t\t\t\t\t}"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - "\t\t};"
+    - "\t}"
+    desc: 私有方法，创建 MCP 列表变更处理器（工具列表和提示列表变更回调）。
+    line: 669-688
+    name: createListChangedHandlers
+  - code:
+    - "\tprivate handleToolsListChanged(serverName: string, tools: Tool[]): void {"
+    - "\t\tconst connection = this.connections.get(serverName);"
+    - "\t\tif (!connection) {"
+    - "\t\t\treturn;"
+    - "\t\t}"
+    - ''
+    - "\t\tfor (const [toolName, ownerServer] of this.toolsIndex.entries()) {"
+    - "\t\t\tif (ownerServer === serverName) this.toolsIndex.delete(toolName);"
+    - "\t\t}"
+    - ''
+    - "\t\tconnection.tools = tools;"
+    - ''
+    - "\t\tfor (const tool of tools) {"
+    - "\t\t\tif (this.toolsIndex.has(tool.name))"
+    - "\t\t\t\tconsole.warn("
+    - "\t\t\t\t\t`[MCPStore] Tool name conflict after list change: \"${tool.name}\"\
+      \ exists in \"${this.toolsIndex.get(tool.name)}\" and \"${serverName}\". Using\
+      \ tool from \"${serverName}\".`"
+    - "\t\t\t\t);"
+    - "\t\t\tthis.toolsIndex.set(tool.name, serverName);"
+    - "\t\t}"
+    - "\t\tthis.updateState({ toolCount: this.toolsIndex.size });"
+    - "\t}"
+    desc: 私有方法，处理服务器工具列表变更事件，更新本地工具索引。
+    line: 690-712
+    name: handleToolsListChanged
+  - code:
+    - "\tacquireConnection(): void {"
+    - "\t\tthis.activeFlowCount++;"
+    - "\t}"
+    desc: 增加活跃连接流计数器。
+    line: 714-716
+    name: acquireConnection
+  - code:
+    - "\tasync releaseConnection(shutdownIfUnused = false): Promise<void> {"
+    - "\t\tthis.activeFlowCount = Math.max(0, this.activeFlowCount - 1);"
+    - "\t\tif (shutdownIfUnused && this.activeFlowCount === 0) {"
+    - "\t\t\tawait this.shutdown();"
+    - "\t\t}"
+    - "\t}"
+    desc: 释放连接引用，可选地在无活跃流时关闭连接（默认保持长连接）。
+    line: 723-728
+    name: releaseConnection
+  - code:
+    - "\tgetActiveFlowCount(): number {"
+    - "\t\treturn this.activeFlowCount;"
+    - "\t}"
+    desc: 获取当前活跃连接流数量。
+    line: 730-732
+    name: getActiveFlowCount
+  - code:
+    - "\tasync shutdown(): Promise<void> {"
+    - "\t\tif (this.initPromise) {"
+    - "\t\t\tawait this.initPromise.catch(() => {});"
+    - "\t\t\tthis.initPromise = null;"
+    - "\t\t}"
+    - ''
+    - "\t\tif (this.connections.size === 0) {"
+    - "\t\t\treturn;"
+    - "\t\t}"
+    - ''
+    - "\t\tawait Promise.all("
+    - "\t\t\tArray.from(this.connections.values()).map((conn) =>"
+    - "\t\t\t\tMCPService.disconnect(conn).catch((error) =>"
+    - "\t\t\t\t\tconsole.warn(`[MCPStore] Error disconnecting ${conn.serverName}:`,\
+      \ error)"
+    - "\t\t\t\t)"
+    - "\t\t\t)"
+    - "\t\t);"
+    - ''
+    - "\t\tthis.connections.clear();"
+    - "\t\tthis.toolsIndex.clear();"
+    - "\t\tthis.serverConfigs.clear();"
+    - "\t\tthis.configSignature = null;"
+    - "\t\tthis.updateState({ isInitializing: false, error: null, toolCount: 0, connectedServers:\
+      \ [] });"
+    - "\t}"
+    desc: 关闭所有 MCP 连接，清理状态、配置和工具索引。
+    line: 734-757
+    name: shutdown
+  - code:
+    - "\tprivate async reconnectServer(serverName: string): Promise<void> {"
+    - "\t\tconst serverConfig = this.serverConfigs.get(serverName);"
+    - "\t\tif (!serverConfig) {"
+    - "\t\t\tthrow new Error(`[MCPStore] No config found for ${serverName}, cannot\
+      \ reconnect`);"
+    - "\t\t}"
+    - ''
+    - "\t\t// Disconnect stale connection (clears old transport + session ID)"
+    - "\t\tconst oldConnection = this.connections.get(serverName);"
+    - "\t\tif (oldConnection) {"
+    - "\t\t\tawait MCPService.disconnect(oldConnection).catch(console.warn);"
+    - "\t\t\tthis.connections.delete(serverName);"
+    - "\t\t}"
+    - ''
+    - "\t\tconsole.log(`[MCPStore][${serverName}] Session expired, reconnecting with\
+      \ fresh session...`);"
+    - ''
+    - "\t\tconst listChangedHandlers = this.createListChangedHandlers(serverName);"
+    - "\t\tconst connection = await MCPService.connect("
+    - "\t\t\tserverName,"
+    - "\t\t\tserverConfig,"
+    - "\t\t\tDEFAULT_MCP_CONFIG.clientInfo,"
+    - "\t\t\tDEFAULT_MCP_CONFIG.capabilities,"
+    - "\t\t\t(phase) => {"
+    - "\t\t\t\tif (phase === MCPConnectionPhase.DISCONNECTED) {"
+    - "\t\t\t\t\tconsole.log(`[MCPStore][${serverName}] Connection lost, starting\
+      \ auto-reconnect`);"
+    - "\t\t\t\t\tthis.autoReconnect(serverName);"
+    - "\t\t\t\t}"
+    - "\t\t\t},"
+    - "\t\t\tlistChangedHandlers"
+    - "\t\t);"
+    - ''
+    - "\t\t// Replace connection and rebuild tool index for this server"
+    - "\t\tthis.connections.set(serverName, connection);"
+    - "\t\tfor (const tool of connection.tools) {"
+    - "\t\t\tthis.toolsIndex.set(tool.name, serverName);"
+    - "\t\t}"
+    - ''
+    - "\t\tconsole.log(`[MCPStore][${serverName}] Session recovered successfully`);"
+    - "\t}"
+    desc: 私有方法，在会话过期（HTTP 404）时立即重新连接服务器，创建全新传输和会话。
+    line: 769-805
+    name: reconnectServer
+  - code:
+    - "\tprivate async autoReconnect(serverName: string): Promise<void> {"
+    - "\t\t// Guard against concurrent reconnections"
+    - "\t\tif (this.reconnectingServers.has(serverName)) {"
+    - "\t\t\tconsole.log(`[MCPStore][${serverName}] Reconnection already in progress,\
+      \ skipping`);"
+    - ''
+    - "\t\t\treturn;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst serverConfig = this.serverConfigs.get(serverName);"
+    - "\t\tif (!serverConfig) {"
+    - "\t\t\tconsole.error(`[MCPStore] No config found for ${serverName}, cannot reconnect`);"
+    - ''
+    - "\t\t\treturn;"
+    - "\t\t}"
+    - ''
+    - "\t\tthis.reconnectingServers.add(serverName);"
+    - "\t\tlet backoff = MCP_RECONNECT_INITIAL_DELAY;"
+    - "\t\t// Flag set by the phase callback when a DISCONNECTED event fires while"
+    - "\t\t// reconnectingServers still holds this server (see JSDoc above)."
+    - "\t\tlet needsReconnect = false;"
+    - ''
+    - "\t\ttry {"
+    - "\t\t\twhile (true) {"
+    - "\t\t\t\tawait new Promise((resolve) => setTimeout(resolve, backoff));"
+    - ''
+    - "\t\t\t\tconsole.log(`[MCPStore][${serverName}] Auto-reconnecting...`);"
+    - ''
+    - "\t\t\t\ttry {"
+    - "\t\t\t\t\t// Per-attempt timeout: reject if the server doesn't respond in time,"
+    - "\t\t\t\t\t// then fall through to backoff logic as with any other failure."
+    - "\t\t\t\t\tconst timeoutPromise = new Promise<never>((_, reject) =>"
+    - "\t\t\t\t\t\tsetTimeout("
+    - "\t\t\t\t\t\t\t() =>"
+    - "\t\t\t\t\t\t\t\treject("
+    - "\t\t\t\t\t\t\t\t\tnew Error("
+    - "\t\t\t\t\t\t\t\t\t\t`Reconnect attempt timed out after ${MCP_RECONNECT_ATTEMPT_TIMEOUT_MS}ms`"
+    - "\t\t\t\t\t\t\t\t\t)"
+    - "\t\t\t\t\t\t\t\t),"
+    - "\t\t\t\t\t\t\tMCP_RECONNECT_ATTEMPT_TIMEOUT_MS"
+    - "\t\t\t\t\t\t)"
+    - "\t\t\t\t\t);"
+    - ''
+    - "\t\t\t\t\tneedsReconnect = false;"
+    - "\t\t\t\t\tconst listChangedHandlers = this.createListChangedHandlers(serverName);"
+    - "\t\t\t\t\tconst connectPromise = MCPService.connect("
+    - "\t\t\t\t\t\tserverName,"
+    - "\t\t\t\t\t\tserverConfig,"
+    - "\t\t\t\t\t\tDEFAULT_MCP_CONFIG.clientInfo,"
+    - "\t\t\t\t\t\tDEFAULT_MCP_CONFIG.capabilities,"
+    - "\t\t\t\t\t\t(phase) => {"
+    - "\t\t\t\t\t\t\tif (phase === MCPConnectionPhase.DISCONNECTED) {"
+    - "\t\t\t\t\t\t\t\tif (this.reconnectingServers.has(serverName)) {"
+    - "\t\t\t\t\t\t\t\t\t// Reconnect loop is active; defer to after it exits."
+    - "\t\t\t\t\t\t\t\t\tneedsReconnect = true;"
+    - "\t\t\t\t\t\t\t\t} else {"
+    - "\t\t\t\t\t\t\t\t\tconsole.log("
+    - "\t\t\t\t\t\t\t\t\t\t`[MCPStore][${serverName}] Connection lost, restarting\
+      \ auto-reconnect`"
+    - "\t\t\t\t\t\t\t\t\t);"
+    - "\t\t\t\t\t\t\t\t\tthis.autoReconnect(serverName);"
+    - "\t\t\t\t\t\t\t\t}"
+    - "\t\t\t\t\t\t\t}"
+    - "\t\t\t\t\t\t},"
+    - "\t\t\t\t\t\tlistChangedHandlers"
+    - "\t\t\t\t\t);"
+    - ''
+    - "\t\t\t\t\tconst connection = await Promise.race([connectPromise, timeoutPromise]);"
+    - ''
+    - "\t\t\t\t\t// Replace old connection with new one"
+    - "\t\t\t\t\tthis.connections.set(serverName, connection);"
+    - ''
+    - "\t\t\t\t\t// Rebuild tool index for this server"
+    - "\t\t\t\t\tfor (const tool of connection.tools) {"
+    - "\t\t\t\t\t\tthis.toolsIndex.set(tool.name, serverName);"
+    - "\t\t\t\t\t}"
+    - ''
+    - "\t\t\t\t\tconsole.log(`[MCPStore][${serverName}] Reconnected successfully`);"
+    - "\t\t\t\t\tbreak;"
+    - "\t\t\t\t} catch (error) {"
+    - "\t\t\t\t\tconsole.warn(`[MCPStore][${serverName}] Reconnection failed:`, error);"
+    - "\t\t\t\t\tbackoff = Math.min(backoff * MCP_RECONNECT_BACKOFF_MULTIPLIER, MCP_RECONNECT_MAX_DELAY);"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - "\t\t} finally {"
+    - "\t\t\tthis.reconnectingServers.delete(serverName);"
+    - "\t\t\t// If the phase callback signalled a disconnect while this function held"
+    - "\t\t\t// the guard, kick off a fresh reconnect now that the guard is released."
+    - "\t\t\tif (needsReconnect) {"
+    - "\t\t\t\tconsole.log("
+    - "\t\t\t\t\t`[MCPStore][${serverName}] Deferred disconnect detected, restarting\
+      \ auto-reconnect`"
+    - "\t\t\t\t);"
+    - "\t\t\t\tthis.autoReconnect(serverName);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - "\t}"
+    desc: 私有方法，使用指数退避算法自动重连服务器，处理并发重连防护和延迟断开标志。
+    line: 822-907
+    name: autoReconnect
+  - code:
+    - "\tgetToolDefinitionsForLLM(): OpenAIToolDefinition[] {"
+    - "\t\tconst tools: OpenAIToolDefinition[] = [];"
+    - ''
+    - "\t\tfor (const connection of this.connections.values()) {"
+    - "\t\t\tfor (const tool of connection.tools) {"
+    - "\t\t\t\tconst rawSchema = (tool.inputSchema as Record<string, unknown>) ??\
+      \ {"
+    - "\t\t\t\t\ttype: JsonSchemaType.OBJECT,"
+    - "\t\t\t\t\tproperties: {},"
+    - "\t\t\t\t\trequired: []"
+    - "\t\t\t\t};"
+    - ''
+    - "\t\t\t\ttools.push({"
+    - "\t\t\t\t\ttype: ToolCallType.FUNCTION as const,"
+    - "\t\t\t\t\tfunction: {"
+    - "\t\t\t\t\t\tname: tool.name,"
+    - "\t\t\t\t\t\tdescription: tool.description,"
+    - "\t\t\t\t\t\tparameters: this.normalizeSchemaProperties(rawSchema)"
+    - "\t\t\t\t\t}"
+    - "\t\t\t\t});"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn tools;"
+    - "\t}"
+    desc: 生成 OpenAI 兼容的工具定义数组，用于 LLM 的 function calling。
+    line: 909-931
+    name: getToolDefinitionsForLLM
+  - code:
+    - "\tprivate normalizeSchemaProperties(schema: Record<string, unknown>): Record<string,\
+      \ unknown> {"
+    - "\t\tif (!schema || typeof schema !== 'object') {"
+    - "\t\t\treturn schema;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst normalized = { ...schema };"
+    - "\t\tif (normalized.properties && typeof normalized.properties === 'object')\
+      \ {"
+    - "\t\t\tconst props = normalized.properties as Record<string, Record<string,\
+      \ unknown>>;"
+    - "\t\t\tconst normalizedProps: Record<string, Record<string, unknown>> = {};"
+    - "\t\t\tfor (const [key, prop] of Object.entries(props)) {"
+    - "\t\t\t\tif (!prop || typeof prop !== 'object') {"
+    - "\t\t\t\t\tnormalizedProps[key] = prop;"
+    - "\t\t\t\t\tcontinue;"
+    - "\t\t\t\t}"
+    - "\t\t\t\tconst normalizedProp = { ...prop };"
+    - "\t\t\t\tif (!normalizedProp.type && normalizedProp.default !== undefined) {"
+    - "\t\t\t\t\tconst defaultVal = normalizedProp.default;"
+    - "\t\t\t\t\tif (typeof defaultVal === 'string') normalizedProp.type = 'string';"
+    - "\t\t\t\t\telse if (typeof defaultVal === 'number')"
+    - "\t\t\t\t\t\tnormalizedProp.type = Number.isInteger(defaultVal) ? 'integer'\
+      \ : 'number';"
+    - "\t\t\t\t\telse if (typeof defaultVal === 'boolean') normalizedProp.type = 'boolean';"
+    - "\t\t\t\t\telse if (Array.isArray(defaultVal)) normalizedProp.type = 'array';"
+    - "\t\t\t\t\telse if (typeof defaultVal === 'object' && defaultVal !== null)"
+    - "\t\t\t\t\t\tnormalizedProp.type = 'object';"
+    - "\t\t\t\t}"
+    - "\t\t\t\tif (normalizedProp.properties)"
+    - "\t\t\t\t\tObject.assign("
+    - "\t\t\t\t\t\tnormalizedProp,"
+    - "\t\t\t\t\t\tthis.normalizeSchemaProperties(normalizedProp as Record<string,\
+      \ unknown>)"
+    - "\t\t\t\t\t);"
+    - "\t\t\t\tif (normalizedProp.items && typeof normalizedProp.items === 'object')"
+    - "\t\t\t\t\tnormalizedProp.items = this.normalizeSchemaProperties("
+    - "\t\t\t\t\t\tnormalizedProp.items as Record<string, unknown>"
+    - "\t\t\t\t\t);"
+    - "\t\t\t\tnormalizedProps[key] = normalizedProp;"
+    - "\t\t\t}"
+    - "\t\t\tnormalized.properties = normalizedProps;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn normalized;"
+    - "\t}"
+    desc: 私有方法，递归规范化 JSON Schema 属性，为缺失类型但具有默认值的属性推断类型。
+    line: 933-972
+    name: normalizeSchemaProperties
+  - code:
+    - "\tgetToolNames(): string[] {"
+    - "\t\treturn Array.from(this.toolsIndex.keys());"
+    - "\t}"
+    desc: 获取所有可用工具的名称列表。
+    line: 974-976
+    name: getToolNames
+  - code:
+    - "\thasTool(toolName: string): boolean {"
+    - "\t\treturn this.toolsIndex.has(toolName);"
+    - "\t}"
+    desc: 检查指定名称的工具是否存在。
+    line: 978-980
+    name: hasTool
+  - code:
+    - "\tgetToolServer(toolName: string): string | undefined {"
+    - "\t\treturn this.toolsIndex.get(toolName);"
+    - "\t}"
+    desc: 获取指定工具所属的服务器名称。
+    line: 982-984
+    name: getToolServer
+  - code:
+    - "\thasPromptsSupport(): boolean {"
+    - "\t\tfor (const connection of this.connections.values()) {"
+    - "\t\t\tif (connection.serverCapabilities?.prompts) {"
+    - "\t\t\t\treturn true;"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn false;"
+    - "\t}"
+    desc: 检查任何已连接服务器是否支持提示（prompts）功能。
+    line: 986-994
+    name: hasPromptsSupport
+  - code:
+    - "\thasPromptsCapability(perChatOverrides?: McpServerOverride[]): boolean {"
+    - "\t\t// If perChatOverrides is provided (even empty array), filter by enabled\
+      \ servers"
+    - "\t\tif (perChatOverrides !== undefined) {"
+    - "\t\t\tconst enabledServerIds = new Set("
+    - "\t\t\t\tperChatOverrides.filter((o) => o.enabled).map((o) => o.serverId)"
+    - "\t\t\t);"
+    - ''
+    - "\t\t\t// No enabled servers = no capability"
+    - "\t\t\tif (enabledServerIds.size === 0) {"
+    - "\t\t\t\treturn false;"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\t// Check health check states for enabled servers with prompts capability"
+    - "\t\t\tfor (const [serverId, state] of Object.entries(this._healthChecks)) {"
+    - "\t\t\t\tif (!enabledServerIds.has(serverId)) continue;"
+    - "\t\t\t\tif ("
+    - "\t\t\t\t\tstate.status === HealthCheckStatus.SUCCESS &&"
+    - "\t\t\t\t\tstate.capabilities?.server?.prompts !== undefined"
+    - "\t\t\t\t) {"
+    - "\t\t\t\t\treturn true;"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\t// Also check active connections as fallback"
+    - "\t\t\tfor (const [serverName, connection] of this.connections) {"
+    - "\t\t\t\tif (!enabledServerIds.has(serverName)) continue;"
+    - "\t\t\t\tif (connection.serverCapabilities?.prompts) {"
+    - "\t\t\t\t\treturn true;"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - ''
+    - "\t\t// No overrides provided - check all servers (global mode)"
+    - "\t\tfor (const state of Object.values(this._healthChecks)) {"
+    - "\t\t\tif ("
+    - "\t\t\t\tstate.status === HealthCheckStatus.SUCCESS &&"
+    - "\t\t\t\tstate.capabilities?.server?.prompts !== undefined"
+    - "\t\t\t) {"
+    - "\t\t\t\treturn true;"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tfor (const connection of this.connections.values()) {"
+    - "\t\t\tif (connection.serverCapabilities?.prompts) {"
+    - "\t\t\t\treturn true;"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn false;"
+    - "\t}"
+    desc: 检查指定条件下（考虑 per-chat 覆盖）是否有支持 prompts 的服务器，结合健康检查状态和活跃连接。
+    line: 1005-1051
+    name: hasPromptsCapability
+  - code:
+    - "\tasync getAllPrompts(): Promise<MCPPromptInfo[]> {"
+    - "\t\tconst results: MCPPromptInfo[] = [];"
+    - ''
+    - "\t\tfor (const [serverName, connection] of this.connections) {"
+    - "\t\t\tif (!connection.serverCapabilities?.prompts) continue;"
+    - ''
+    - "\t\t\tconst prompts = await MCPService.listPrompts(connection);"
+    - ''
+    - "\t\t\tfor (const prompt of prompts) {"
+    - "\t\t\t\tresults.push({"
+    - "\t\t\t\t\tname: prompt.name,"
+    - "\t\t\t\t\tdescription: prompt.description,"
+    - "\t\t\t\t\ttitle: prompt.title,"
+    - "\t\t\t\t\tserverName,"
+    - "\t\t\t\t\targuments: prompt.arguments?.map((arg) => ({"
+    - "\t\t\t\t\t\tname: arg.name,"
+    - "\t\t\t\t\t\tdescription: arg.description,"
+    - "\t\t\t\t\t\trequired: arg.required"
+    - "\t\t\t\t\t}))"
+    - "\t\t\t\t});"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\treturn results;"
+    - "\t}"
+    desc: 异步获取所有支持 prompts 的服务器提供的提示列表。
+    line: 1053-1074
+    name: getAllPrompts
+  - code:
+    - "\tasync getPrompt("
+    - "\t\tserverName: string,"
+    - "\t\tpromptName: string,"
+    - "\t\targs?: Record<string, string>"
+    - "\t): Promise<GetPromptResult> {"
+    - "\t\tconst connection = this.connections.get(serverName);"
+    - "\t\tif (!connection) throw new Error(`Server \"${serverName}\" not found for\
+      \ prompt \"${promptName}\"`);"
+    - ''
+    - "\t\treturn MCPService.getPrompt(connection, promptName, args);"
+    - "\t}"
+    desc: 异步获取指定服务器的特定提示内容。
+    line: 1076-1084
+    name: getPrompt
+  - code:
+    - "\tasync executeTool(toolCall: MCPToolCall, signal?: AbortSignal): Promise<ToolExecutionResult>\
+      \ {"
+    - "\t\tconst toolName = toolCall.function.name;"
+    - ''
+    - "\t\tconst serverName = this.toolsIndex.get(toolName);"
+    - "\t\tif (!serverName) throw new Error(`Unknown tool: ${toolName}`);"
+    - ''
+    - "\t\tconst connection = this.connections.get(serverName);"
+    - "\t\tif (!connection) throw new Error(`Server \"${serverName}\" is not connected`);"
+    - ''
+    - "\t\tconst args = this.parseToolArguments(toolCall.function.arguments);"
+    - ''
+    - "\t\ttry {"
+    - "\t\t\treturn await MCPService.callTool(connection, { name: toolName, arguments:\
+      \ args }, signal);"
+    - "\t\t} catch (error) {"
+    - "\t\t\t// Session expired (server restarted) - reconnect and retry once"
+    - "\t\t\tif (MCPService.isSessionExpiredError(error)) {"
+    - "\t\t\t\tawait this.reconnectServer(serverName);"
+    - ''
+    - "\t\t\t\tconst newConnection = this.connections.get(serverName);"
+    - "\t\t\t\tif (!newConnection) throw new Error(`Failed to reconnect to \"${serverName}\"\
+      `);"
+    - ''
+    - "\t\t\t\treturn MCPService.callTool(newConnection, { name: toolName, arguments:\
+      \ args }, signal);"
+    - "\t\t\t}"
+    - ''
+    - "\t\t\tthrow error;"
+    - "\t\t}"
+    - "\t}"
+    desc: 异步执行 MCP 工具调用，处理会话过期错误并重试。
+    line: 1086-1110
+    name: executeTool
+  - code:
+    - "\tasync executeToolByName("
+    - "\t\ttoolName: string,"
+    - "\t\targs: Record<string, unknown>,"
+    - "\t\tsignal?: AbortSignal"
+    - "\t): Promise<ToolExecutionResult> {"
+    - "\t\tconst serverName = this.toolsIndex.get(toolName);"
+    - "\t\tif (!serverName) throw new Error(`Unknown tool: ${toolName}`);"
+    - "\t\tconst connection = this.connections.get(serverName);"
+    - "\t\tif (!connection) throw new Error(`Server \"${serverName}\" is not connected`);"
+    - ''
+    - "\t\ttry {"
+    - "\t\t\treturn await MCPService.callTool(connection, { name: toolName, arguments:\
+      \ args }, signal);"
+    - "\t\t} catch (error) {"
+    - "\t\t\tif (MCPService.isSessionExpiredError(error)) {"
+    - "\t\t\t\tawait this.reconnectServer(serverName);"
+    - ''
+    - "\t\t\t\tconst newConnection = this.connections.get(serverName);"
+    - "\t\t\t\t"
+    desc: 根据工具名称异步执行工具（代码截断，功能应为直接通过名称调用工具）。
+    line: 1112-1131
+    name: executeToolByName
+  name: MCPStore
+- desc: MCPStore类封装了MCP服务器的连接管理、健康检查、工具调用、资源操作等核心功能。
+  methods:
+  - code:
+    - 'async callTool(toolName: string, args: string | Record<string, unknown>, signal?:
+      AbortSignal): Promise<any> {'
+    - '    const serverName = this.toolsIndex.get(toolName);'
+    - '    if (!serverName) throw new Error(`Unknown tool: ${toolName}`);'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) throw new Error(`Server "${serverName}" is not connected`);'
+    - '    try {'
+    - '        return await MCPService.callTool(connection, { name: toolName, arguments:
+      args }, signal);'
+    - '    } catch (error) {'
+    - '        if (MCPService.isSessionExpiredError(error)) {'
+    - '            await this.reconnectServer(serverName);'
+    - '            const newConnection = this.connections.get(serverName);'
+    - '            if (!newConnection) throw new Error(`Failed to reconnect to "${serverName}"`);'
+    - '            return MCPService.callTool(newConnection, { name: toolName, arguments:
+      args }, signal);'
+    - '        }'
+    - '        throw error;'
+    - '    }'
+    - '}'
+    desc: 调用指定工具，处理会话过期自动重连与重试。
+    line: 1169-1188
+    name: callTool
+  - code:
+    - 'private parseToolArguments(args: string | Record<string, unknown>): Record<string,
+      unknown> {'
+    - '    if (typeof args === ''string'') {'
+    - '        const trimmed = args.trim();'
+    - '        if (trimmed === '''') {'
+    - '            return {};'
+    - '        }'
+    - '        try {'
+    - '            const parsed = JSON.parse(trimmed);'
+    - '            if (typeof parsed !== ''object'' || parsed === null || Array.isArray(parsed))'
+    - '                throw new Error('
+    - '                    `Tool arguments must be an object, got ${Array.isArray(parsed)
+      ? ''array'' : typeof parsed}`'
+    - '                );'
+    - '            return parsed as Record<string, unknown>;'
+    - '        } catch (error) {'
+    - '            throw new Error(`Failed to parse tool arguments as JSON: ${(error
+      as Error).message}`);'
+    - '        }'
+    - '    }'
+    - '    if (typeof args === ''object'' && args !== null && !Array.isArray(args))
+      {'
+    - '        return args;'
+    - '    }'
+    - '    throw new Error(`Invalid tool arguments type: ${typeof args}`);'
+    - '}'
+    desc: 解析工具参数，支持字符串或对象，返回标准化的参数对象。
+    line: 1189-1217
+    name: parseToolArguments
+  - code:
+    - async getPromptCompletions(
+    - '    serverName: string,'
+    - '    promptName: string,'
+    - '    argumentName: string,'
+    - '    argumentValue: string'
+    - '): Promise<{ values: string[]; total?: number; hasMore?: boolean } | null>
+      {'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.warn(`[MCPStore] Server "${serverName}" is not connected`);'
+    - '        return null;'
+    - '    }'
+    - '    if (!connection.serverCapabilities?.completions) {'
+    - '        return null;'
+    - '    }'
+    - '    return MCPService.complete('
+    - '        connection,'
+    - '        { type: MCPRefType.PROMPT, name: promptName },'
+    - '        { name: argumentName, value: argumentValue }'
+    - '    );'
+    - '}'
+    desc: 获取指定服务器上某个prompt的参数补全建议。
+    line: 1218-1242
+    name: getPromptCompletions
+  - code:
+    - async getResourceCompletions(
+    - '    serverName: string,'
+    - '    uriTemplate: string,'
+    - '    argumentName: string,'
+    - '    argumentValue: string'
+    - '): Promise<{ values: string[]; total?: number; hasMore?: boolean } | null>
+      {'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.warn(`[MCPStore] Server "${serverName}" is not connected`);'
+    - '        return null;'
+    - '    }'
+    - '    if (!connection.serverCapabilities?.completions) {'
+    - '        return null;'
+    - '    }'
+    - '    return MCPService.complete('
+    - '        connection,'
+    - '        { type: MCPRefType.RESOURCE, uri: uriTemplate },'
+    - '        { name: argumentName, value: argumentValue }'
+    - '    );'
+    - '}'
+    desc: 获取资源模板参数的补全建议。
+    line: 1243-1268
+    name: getResourceCompletions
+  - code:
+    - 'async readResourceByUri(serverName: string, uri: string): Promise<MCPResourceContent[]
+      | null> {'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.error(`[MCPStore] No connection found for server: ${serverName}`);'
+    - '        return null;'
+    - '    }'
+    - '    try {'
+    - '        const result = await MCPService.readResource(connection, uri);'
+    - '        return result.contents;'
+    - '    } catch (error) {'
+    - '        console.error(`[MCPStore] Failed to read resource ${uri}:`, error);'
+    - '        return null;'
+    - '    }'
+    - '}'
+    desc: 通过任意URI读取资源内容，不要求URI在资源列表中。
+    line: 1269-1287
+    name: readResourceByUri
+  - code:
+    - 'private parseHeaders(headersJson?: string): Record<string, string> | undefined
+      {'
+    - '    if (!headersJson?.trim()) {'
+    - '        return undefined;'
+    - '    }'
+    - '    try {'
+    - '        const parsed = JSON.parse(headersJson);'
+    - '        if (typeof parsed === ''object'' && parsed !== null && !Array.isArray(parsed))'
+    - '            return parsed as Record<string, string>;'
+    - '    } catch {'
+    - '        console.warn(''[MCPStore] Failed to parse custom headers JSON:'', headersJson);'
+    - '    }'
+    - '    return undefined;'
+    - '}'
+    desc: 解析自定义请求头JSON字符串，返回对象或undefined。
+    line: 1288-1304
+    name: parseHeaders
+  - code:
+    - async runHealthChecksForServers(
+    - '    servers: {'
+    - '        id: string;'
+    - '        enabled: boolean;'
+    - '        url: string;'
+    - '        requestTimeoutSeconds: number;'
+    - '        headers?: string;'
+    - '    }[],'
+    - '    skipIfChecked = true,'
+    - '    promoteToActive = false'
+    - '): Promise<void> {'
+    - '    const serversToCheck = skipIfChecked'
+    - '        ? servers.filter((s) => !this.hasHealthCheck(s.id) && s.url.trim())'
+    - '        : servers.filter((s) => s.url.trim());'
+    - '    if (serversToCheck.length === 0) {'
+    - '        return;'
+    - '    }'
+    - '    const BATCH_SIZE = 5;'
+    - '    for (let i = 0; i < serversToCheck.length; i += BATCH_SIZE) {'
+    - '        const batch = serversToCheck.slice(i, i + BATCH_SIZE);'
+    - '        await Promise.allSettled(batch.map((server) => this.runHealthCheck(server,
+      promoteToActive)));'
+    - '    }'
+    - '}'
+    desc: 批量对多个服务器执行健康检查，支持跳过已检查和强制提升为活跃连接。
+    line: 1305-1337
+    name: runHealthChecksForServers
+  - code:
+    - 'getExistingConnection(serverId: string): MCPConnection | undefined {'
+    - '    return this.connections.get(serverId);'
+    - '}'
+    desc: 获取指定服务器的现有连接（如有）。
+    line: 1338-1341
+    name: getExistingConnection
+  - code:
+    - 'async runHealthCheck(server: HealthCheckParams, promoteToActive = false): Promise<void>
+      {'
+    - '    const existingConnection = this.connections.get(server.id);'
+    - '    if (existingConnection) {'
+    - '        try {'
+    - '            const tools = await MCPService.listTools(existingConnection);'
+    - '            const capabilities = this.#buildCapabilitiesInfo('
+    - '                existingConnection.serverCapabilities,'
+    - '                existingConnection.clientCapabilities'
+    - '            );'
+    - '            this.updateHealthCheck(server.id, {'
+    - '                status: HealthCheckStatus.SUCCESS,'
+    - '                tools: tools.map((tool) => ({'
+    - '                    name: tool.name,'
+    - '                    description: tool.description,'
+    - '                    title: tool.title'
+    - '                })),'
+    - '                serverInfo: existingConnection.serverInfo,'
+    - '                capabilities,'
+    - '                transportType: existingConnection.transportType,'
+    - '                protocolVersion: existingConnection.protocolVersion,'
+    - '                instructions: existingConnection.instructions,'
+    - '                connectionTimeMs: existingConnection.connectionTimeMs,'
+    - '                logs: []'
+    - '            });'
+    - '            return;'
+    - '        } catch (error) {'
+    - '            console.warn('
+    - '                `[MCPStore] Failed to reuse connection for ${server.id}, creating
+      new one:`,'
+    - '                error'
+    - '            );'
+    - '            this.connections.delete(server.id);'
+    - '        }'
+    - '    }'
+    - '    const trimmedUrl = server.url.trim();'
+    - '    const logs: MCPConnectionLog[] = [];'
+    - '    let currentPhase: MCPConnectionPhase = MCPConnectionPhase.IDLE;'
+    - '    if (!trimmedUrl) {'
+    - '        this.updateHealthCheck(server.id, {'
+    - '            status: HealthCheckStatus.ERROR,'
+    - '            message: ''Please enter a server URL first.'','
+    - '            logs: []'
+    - '        });'
+    - '        return;'
+    - '    }'
+    - '    this.updateHealthCheck(server.id, {'
+    - '        status: HealthCheckStatus.CONNECTING,'
+    - '        phase: MCPConnectionPhase.TRANSPORT_CREATING,'
+    - '        logs: []'
+    - '    });'
+    - '    const timeoutMs = Math.round(server.requestTimeoutSeconds * 1000);'
+    - '    const headers = this.parseHeaders(server.headers);'
+    - '    try {'
+    - '        const serverConfig: MCPServerConfig = {'
+    - '            url: trimmedUrl,'
+    - '            transport: detectMcpTransportFromUrl(trimmedUrl),'
+    - '            handshakeTimeoutMs: DEFAULT_MCP_CONFIG.connectionTimeoutMs,'
+    - '            requestTimeoutMs: timeoutMs,'
+    - '            headers,'
+    - '            useProxy: server.useProxy'
+    - '        };'
+    - '        this.serverConfigs.set(server.id, serverConfig);'
+    - '        const connection = await MCPService.connect('
+    - '            server.id,'
+    - '            serverConfig,'
+    - '            DEFAULT_MCP_CONFIG.clientInfo,'
+    - '            DEFAULT_MCP_CONFIG.capabilities,'
+    - '            (phase, log) => {'
+    - '                currentPhase = phase;'
+    - '                logs.push(log);'
+    - '                this.updateHealthCheck(server.id, {'
+    - '                    status: HealthCheckStatus.CONNECTING,'
+    - '                    phase,'
+    - '                    logs: [...logs]'
+    - '                });'
+    - '                if (phase === MCPConnectionPhase.DISCONNECTED && promoteToActive)
+      {'
+    - '                    console.log('
+    - '                        `[MCPStore][${server.id}] Connection lost during health
+      check, starting auto-reconnect`'
+    - '                    );'
+    - '                    this.autoReconnect(server.id);'
+    - '                }'
+    - '            }'
+    - '        );'
+    - '        const tools = connection.tools.map((tool) => ({'
+    - '            name: tool.name,'
+    - '            description: tool.description,'
+    - '            title: tool.title'
+    - '        }));'
+    - '        const capabilities = this.#buildCapabilitiesInfo('
+    - '            connection.serverCapabilities,'
+    - '            connection.clientCapabilities'
+    - '        );'
+    - '        this.updateHealthCheck(server.id, {'
+    - '            status: HealthCheckStatus.SUCCESS,'
+    - '            tools,'
+    - '            serverInfo: connection.serverInfo,'
+    - '            capabilities,'
+    - '            transportType: connection.transportType,'
+    - '            protocolVersion: connection.protocolVersion,'
+    - '            instructions: connection.instructions,'
+    - '            connectionTimeMs: connection.connectionTimeMs,'
+    - '            logs'
+    - '        });'
+    - '        if (promoteToActive && server.enabled) {'
+    - '            this.promoteHealthCheckToConnection(server.id, connection);'
+    - '        } else {'
+    - '            await MCPService.disconnect(connection);'
+    - '        }'
+    - '    } catch (error) {'
+    - '        const message = error instanceof Error ? error.message : ''Unknown
+      error occurred'';'
+    - '        logs.push({'
+    - '            timestamp: new Date(),'
+    - '            phase: MCPConnectionPhase.ERROR,'
+    - '            message: `Connection failed: ${message}`,'
+    - '            level: MCPLogLevel.ERROR'
+    - '        });'
+    - '        this.updateHealthCheck(server.id, {'
+    - '            status: HealthCheckStatus.ERROR,'
+    - '            message,'
+    - '            phase: currentPhase,'
+    - '            logs'
+    - '        });'
+    - '    }'
+    - '}'
+    desc: 对单个服务器执行健康检查，支持复用现有连接或新建连接，并可提升为活跃连接。
+    line: 1342-1491
+    name: runHealthCheck
+  - code:
+    - 'private promoteHealthCheckToConnection(serverId: string, connection: MCPConnection):
+      void {'
+    - '    for (const tool of connection.tools) {'
+    - '        if (this.toolsIndex.has(tool.name)) {'
+    - '            console.warn('
+    - '                `[MCPStore] Tool name conflict during promotion: "${tool.name}"
+      exists in "${this.toolsIndex.get(tool.name)}" and "${serverId}". Using tool
+      from "${serverId}".`'
+    - '            );'
+    - '        }'
+    - '        this.toolsIndex.set(tool.name, serverId);'
+    - '    }'
+    - '    this.connections.set(serverId, connection);'
+    - '    this.updateState({'
+    - '        toolCount: this.toolsIndex.size,'
+    - '        connectedServers: Array.from(this.connections.keys())'
+    - '    });'
+    - '}'
+    desc: 将健康检查连接提升为活跃连接，注册工具并更新状态。
+    line: 1492-1512
+    name: promoteHealthCheckToConnection
+  - code:
+    - 'getServersStatus(): ServerStatus[] {'
+    - '    const statuses: ServerStatus[] = [];'
+    - '    for (const [name, connection] of this.connections) {'
+    - '        statuses.push({'
+    - '            name,'
+    - '            isConnected: true,'
+    - '            toolCount: connection.tools.length,'
+    - '            error: undefined'
+    - '        });'
+    - '    }'
+    - '    return statuses;'
+    - '}'
+    desc: 获取所有已连接服务器的状态信息。
+    line: 1513-1527
+    name: getServersStatus
+  - code:
+    - 'getServerInstructions(): Array<{'
+    - '    serverName: string;'
+    - '    serverTitle?: string;'
+    - '    instructions: string;'
+    - '}> {'
+    - '    const results: Array<{ serverName: string; serverTitle?: string; instructions:
+      string }> = [];'
+    - '    for (const [serverName, connection] of this.connections) {'
+    - '        if (connection.instructions) {'
+    - '            results.push({'
+    - '                serverName,'
+    - '                serverTitle: connection.serverInfo?.title || connection.serverInfo?.name,'
+    - '                instructions: connection.instructions'
+    - '            });'
+    - '        }'
+    - '    }'
+    - '    return results;'
+    - '}'
+    desc: 获取所有已连接服务器的聚合指令信息。
+    line: 1528-1547
+    name: getServerInstructions
+  - code:
+    - 'getHealthCheckInstructions(): Array<{'
+    - '    serverId: string;'
+    - '    serverTitle?: string;'
+    - '    instructions: string;'
+    - '}> {'
+    - '    const results: Array<{ serverId: string; serverTitle?: string; instructions:
+      string }> = [];'
+    - '    for (const [serverId, state] of Object.entries(this._healthChecks)) {'
+    - '        if (state.status === HealthCheckStatus.SUCCESS && state.instructions)
+      {'
+    - '            results.push({'
+    - '                serverId,'
+    - '                serverTitle: state.serverInfo?.title || state.serverInfo?.name,'
+    - '                instructions: state.instructions'
+    - '            });'
+    - '        }'
+    - '    }'
+    - '    return results;'
+    - '}'
+    desc: 获取健康检查结果中的服务器指令（用于设置界面展示）。
+    line: 1548-1567
+    name: getHealthCheckInstructions
+  - code:
+    - 'hasServerInstructions(): boolean {'
+    - '    for (const connection of this.connections.values()) {'
+    - '        if (connection.instructions) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 检查是否有已连接服务器包含指令。
+    line: 1568-1578
+    name: hasServerInstructions
+  - code:
+    - 'hasResourcesCapability(perChatOverrides?: McpServerOverride[]): boolean {'
+    - '    if (perChatOverrides !== undefined) {'
+    - '        const enabledServerIds = new Set('
+    - '            perChatOverrides.filter((o) => o.enabled).map((o) => o.serverId)'
+    - '        );'
+    - '        if (enabledServerIds.size === 0) {'
+    - '            return false;'
+    - '        }'
+    - '        for (const [serverId, state] of Object.entries(this._healthChecks))
+      {'
+    - '            if (!enabledServerIds.has(serverId)) continue;'
+    - '            if ('
+    - '                state.status === HealthCheckStatus.SUCCESS &&'
+    - '                state.capabilities?.server?.resources !== undefined'
+    - '            ) {'
+    - '                return true;'
+    - '            }'
+    - '        }'
+    - '        for (const [serverName, connection] of this.connections) {'
+    - '            if (!enabledServerIds.has(serverName)) continue;'
+    - '            if (MCPService.supportsResources(connection)) {'
+    - '                return true;'
+    - '            }'
+    - '        }'
+    - '        return false;'
+    - '    }'
+    - '    for (const state of Object.values(this._healthChecks)) {'
+    - '        if ('
+    - '            state.status === HealthCheckStatus.SUCCESS &&'
+    - '            state.capabilities?.server?.resources !== undefined'
+    - '        ) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - '    for (const connection of this.connections.values()) {'
+    - '        if (MCPService.supportsResources(connection)) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 检查是否有服务器支持资源能力，可按会话覆盖过滤。
+    line: 1579-1632
+    name: hasResourcesCapability
+  - code:
+    - 'getServersWithResources(): string[] {'
+    - '    const servers: string[] = [];'
+    - '    for (const [name, connection] of this.connections) {'
+    - '        if (MCPService.supportsResources(connection) && !servers.includes(name))
+      {'
+    - '            servers.push(name);'
+    - '        }'
+    - '    }'
+    - '    for (const [serverId, state] of Object.entries(this._healthChecks)) {'
+    - '        if ('
+    - '            !servers.includes(serverId) &&'
+    - '            state.status === HealthCheckStatus.SUCCESS &&'
+    - '            state.capabilities?.server?.resources !== undefined'
+    - '        ) {'
+    - '            servers.push(serverId);'
+    - '        }'
+    - '    }'
+    - '    return servers;'
+    - '}'
+    desc: 获取所有支持资源的服务器列表。
+    line: 1633-1657
+    name: getServersWithResources
+  - code:
+    - 'async fetchAllResources(forceRefresh: boolean = false): Promise<void> {'
+    - '    const serversWithResources = this.getServersWithResources();'
+    - '    if (serversWithResources.length === 0) {'
+    - '        return;'
+    - '    }'
+    - '    if (!forceRefresh) {'
+    - '        const allServersCached = serversWithResources.every((serverName) =>
+      {'
+    - '            const serverRes = mcpResourceStore.getServerResources(serverName);'
+    - '            if (!serverRes || !serverRes.lastFetched) {'
+    - '                return false;'
+    - '            }'
+    - '            const age = Date.now() - serverRes.lastFetched.getTime();'
+    - '            return age < DEFAULT_CACHE_TTL_MS;'
+    - '        });'
+    - '        if (allServersCached) {'
+    - '            console.log(''[MCPStore] Using cached resources'');'
+    - '            return;'
+    - '        }'
+    - '    }'
+    - '    mcpResourceStore.setLoading(true);'
+    - '    try {'
+    - '        await Promise.all('
+    - '            serversWithResources.map((serverName) => this.fetchServerResources(serverName))'
+    - '        );'
+    - '    } finally {'
+    - '        mcpResourceStore.setLoading(false);'
+    - '    }'
+    - '}'
+    desc: 从所有支持资源的服务器获取资源，支持缓存与强制刷新。
+    line: 1658-1697
+    name: fetchAllResources
+  - code:
+    - 'async fetchServerResources(serverName: string): Promise<void> {'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.warn(`[MCPStore] No connection found for server: ${serverName}`);'
+    - '        return;'
+    - '    }'
+    - '    if (!MCPService.supportsResources(connection)) {'
+    - '        return;'
+    - '    }'
+    - '    mcpResourceStore.setServerLoading(serverName, true);'
+    - '    try {'
+    - '        const [resources, templates] = await Promise.all(['
+    - '            MCPService.listAllResources(connection),'
+    - '            MCPService.listAllResourceTemplates(connection)'
+    - '        ]);'
+    - '        mcpResourceStore.setServerResources(serverName, resources, templates);'
+    - '    } catch (error) {'
+    - '        const message = error instanceof Error ? error.message : String(error);'
+    - '        mcpResourceStore.setServerError(serverName, message);'
+    - '        console.error(`[MCPStore][${serverName}] Failed to fetch resources:`,
+      error);'
+    - '    }'
+    - '}'
+    desc: 从指定服务器获取资源并更新到资源存储。
+    line: 1698-1728
+    name: fetchServerResources
+  - code:
+    - 'async readResource(uri: string): Promise<MCPResourceContent[] | null> {'
+    - '    const cached = mcpResourceStore.getCachedContent(uri);'
+    - '    if (cached) {'
+    - '        return cached.content;'
+    - '    }'
+    - '    const serverName = mcpResourceStore.findServerForUri(uri);'
+    - '    if (!serverName) {'
+    - '        console.error(`[MCPStore] No server found for resource URI: ${uri}`);'
+    - '        return null;'
+    - '    }'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.error(`[MCPStore] No connection found for server: ${serverName}`);'
+    - '        return null;'
+    - '    }'
+    - '    try {'
+    - '        const result = await MCPService.readResource(connection, uri);'
+    - '        const resourceInfo = mcpResourceStore.findResourceByUri(uri);'
+    - '        if (resourceInfo) {'
+    - '            mcpResourceStore.cacheResourceContent(resourceInfo, result.contents);'
+    - '        }'
+    - '        return result.contents;'
+    - '    } catch (error) {'
+    - '        console.error(`[MCPStore] Failed to read resource ${uri}:`, error);'
+    - '        return null;'
+    - '    }'
+    - '}'
+    desc: 读取指定URI的资源内容，优先使用缓存。
+    line: 1729-1765
+    name: readResource
+  - code:
+    - 'async subscribeToResource(uri: string): Promise<boolean> {'
+    - '    const serverName = mcpResourceStore.findServerForUri(uri);'
+    - '    if (!serverName) {'
+    - '        console.error(`[MCPStore] No server found for resource URI: ${uri}`);'
+    - '        return false;'
+    - '    }'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.error(`[MCPStore] No connection found for server: ${serverName}`);'
+    - '        return false;'
+    - '    }'
+    - '    if (!MCPService.supportsResourceSubscriptions(connection)) {'
+    - '        return false;'
+    - '    }'
+    - '    try {'
+    - '        await MCPService.subscribeResource(connection, uri);'
+    - '        mcpResourceStore.addSubscription(uri, serverName);'
+    - '        return true;'
+    - '    } catch (error) {'
+    - '        console.error(`[MCPStore] Failed to subscribe to resource ${uri}:`,
+      error);'
+    - '        return false;'
+    - '    }'
+    - '}'
+    desc: 订阅指定资源的更新。
+    line: 1766-1797
+    name: subscribeToResource
+  - code:
+    - 'async unsubscribeFromResource(uri: string): Promise<boolean> {'
+    - '    const serverName = mcpResourceStore.findServerForUri(uri);'
+    - '    if (!serverName) {'
+    - '        console.error(`[MCPStore] No server found for resource URI: ${uri}`);'
+    - '        return false;'
+    - '    }'
+    - '    const connection = this.connections.get(serverName);'
+    - '    if (!connection) {'
+    - '        console.error(`[MCPStore] No connection found for server: ${serverName}`);'
+    - '        return false;'
+    - '    }'
+    - '    try {'
+    - '        await MCPService.unsubscribeResource(connection, uri);'
+    - '        mcpResourceStore.removeSubscription(uri);'
+    - '        return true;'
+    - '    } catch (error) {'
+    - '        console.error(`[MCPStore] Failed to unsubscribe from resource ${uri}:`,
+      error);'
+    - '        return false;'
+    - '    }'
+    - '}'
+    desc: 取消订阅指定资源的更新。
+    line: 1798-1826
+    name: unsubscribeFromResource
+  - code:
+    - 'async attachResource(uri: string): Promise<MCPResourceAttachment | null> {'
+    - '    const resourceInfo = mcpResourceStore.findResourceByUri(uri);'
+    - '    if (!resourceInfo) {'
+    - '        console.error(`[MCPStore] Resource not found: ${uri}`);'
+    - '        return null;'
+    - '    }'
+    - '    if (mcpResourceStore.isAttached(uri)) {'
+    - '        return null;'
+    - '    }'
+    - '    const attachment = mcpResourceStore.addAttachment(resourceInfo);'
+    - '    try {'
+    - '        const content = await this.readResource(uri);'
+    - '        if (content) {'
+    - '            mcpResourceStore.updateAttachmentContent(attachment.id, content);'
+    - '        } else {'
+    - '            mcpResourceStore.updateAttachmentError(attachment.id, ''Failed
+      to read resource'');'
+    - '        }'
+    - '    } catch (error) {'
+    - '        const message = error instanceof Error ? error.message : String(error);'
+    - '        mcpResourceStore.updateAttachmentError(attachment.id, message);'
+    - '    }'
+    - '    return mcpResourceStore.getAttachment(attachment.id) ?? null;'
+    - '}'
+    desc: 将资源作为附件添加到聊天上下文，自动获取内容。
+    line: 1827-1856
+    name: attachResource
+  - code:
+    - 'removeResourceAttachment(attachmentId: string): void {'
+    - '    mcpResourceStore.removeAttachment(attachmentId);'
+    - '}'
+    desc: 从聊天上下文移除指定资源附件。
+    line: 1857-1860
+    name: removeResourceAttachment
+  - code:
+    - 'clearResourceAttachments(): void {'
+    - '    mcpResourceStore.clearAttachments();'
+    - '}'
+    desc: 清空所有资源附件。
+    line: 1861-1864
+    name: clearResourceAttachments
+  - code:
+    - 'getResourceContextForChat(): string {'
+    - '    return mcpResourceStore.formatAttachmentsForContext();'
+    - '}'
+    desc: 获取格式化后的资源上下文用于聊天。
+    line: 1865-1868
+    name: getResourceContextForChat
+  - code:
+    - 'consumeResourceAttachmentsAsExtras(): DatabaseMessageExtraMcpResource[] {'
+    - '    const extras = mcpResourceStore.toMessageExtras();'
+    - '    if (extras.length > 0) {'
+    - '        mcpResourceStore.clearAttachments();'
+    - '    }'
+    - '    return extras;'
+    - '}'
+    desc: 将当前资源附件转换为DatabaseMessageExtra[]并清空附件。
+    line: 1869-1878
+    name: consumeResourceAttachmentsAsExtras
+  name: MCPStore
+desc: 该文件实现了一个基于 Svelte 5 Runes 的 MCP（Model Context Protocol）响应式状态存储（Store），作为 MCP
+  架构中的 Host 角色，负责管理多个 MCP 服务器连接的生命周期（初始化、重连、关闭）、工具路由与冲突检测、OpenAI 兼容工具定义生成、图标处理及健康检查状态，协调
+  MCPService 协议层与 UI 层之间的状态同步。该文件是MCP（Model Context Protocol）Store的核心实现，负责管理MCP服务器连接、健康检查、工具调用、资源订阅与管理等。它包含MCPStore类，封装了连接管理、健康检查、工具与资源操作、以及与外部MCP服务的交互逻辑。
+file: tools/server/webui/src/lib/stores/mcp.svelte.ts
+funcs:
+- code:
+  - export const mcpStore = new MCPStore();
+  - export const mcpIsInitializing = () => mcpStore.isInitializing;
+  - export const mcpIsInitialized = () => mcpStore.isInitialized;
+  - export const mcpError = () => mcpStore.error;
+  - export const mcpIsEnabled = () => mcpStore.isEnabled;
+  - export const mcpIsProxyAvailable = () => mcpStore.isProxyAvailable;
+  - export const mcpAvailableTools = () => mcpStore.availableTools;
+  - export const mcpConnectedServerCount = () => mcpStore.connectedServerCount;
+  - export const mcpConnectedServerNames = () => mcpStore.connectedServerNames;
+  - export const mcpToolCount = () => mcpStore.toolCount;
+  - export const mcpServerInstructions = () => mcpStore.getServerInstructions();
+  - export const mcpHasServerInstructions = () => mcpStore.hasServerInstructions();
+  - export const mcpHasResourcesCapability = () => mcpStore.hasResourcesCapability();
+  - export const mcpServersWithResources = () => mcpStore.getServersWithResources();
+  - export const mcpResourceContext = () => mcpStore.getResourceContextForChat();
+  desc: 模块级导出，包含MCPStore实例及各种便捷访问函数。
+  line: 1879-1895
+  name: __main__

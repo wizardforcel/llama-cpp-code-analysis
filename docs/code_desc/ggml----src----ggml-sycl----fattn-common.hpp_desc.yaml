@@ -1,0 +1,909 @@
+classes: []
+desc: The file ggml/src/ggml-sycl/fattn-common.hpp defines common utilities and kernels
+  for flash attention on SYCL devices. It provides templated functions for vector
+  dot products between quantized K and Q values, V dequantization, mask handling,
+  and final result combination, along with kernel launch helpers and type-based dispatch
+  functions.该文件是 ggml-sycl 后端中 Flash Attention 的公共头文件实现部分，负责在 SYCL 设备上执行 Flash Attention
+  算法的启动和调度。核心功能包括：处理 K/V 张量的数据类型转换（如转换为 FP16）、计算 tile 划分和并行块数量、根据掩码（mask）和流式 K（stream_k）参数进行内核调度优化，以及最终启动
+  Flash Attention 内核并处理需要的结果合并（combine/fixup）操作。
+file: ggml/src/ggml-sycl/fattn-common.hpp
+funcs:
+- code:
+  - '#define FATTN_KQ_STRIDE       256'
+  - '#define HALF_MAX_HALF         sycl::half(65504.0f/2)'
+  - '#define SOFTMAX_FTZ_THRESHOLD -20.0f'
+  - '#define FATTN_KQ_MAX_OFFSET (3.0f*0.6931f)'
+  - typedef void (*fattn_kernel_t)(...);
+  - typedef float (*vec_dot_KQ_t)(...);
+  desc: Global code containing preprocessor macros, two function pointer typedefs,
+    and template dispatch functions for flash attention.
+  line: 1-52
+  name: __main__
+- code:
+  - template <int D, int nthreads>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_f16(const char * __restrict__
+    K_c,
+  - '                                                      const void * __restrict__
+    Q_v,'
+  - '                                                      const int * __restrict__
+    Q_q8,'
+  - '                                                      const void * __restrict__
+    Q_ds_v) {'
+  - '    const sycl::half2 * K_h2 = (const sycl::half2 *) K_c;'
+  - '    GGML_UNUSED(Q_q8);'
+  - '    GGML_UNUSED(Q_ds_v);'
+  - '    constexpr int cpy_nb = ggml_sycl_get_max_cpy_bytes();'
+  - '    constexpr int cpy_ne = cpy_nb / 4;'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {'
+  - '        sycl::half2 tmp[cpy_ne];'
+  - '        ggml_sycl_memcpy_1<sizeof(tmp)>('
+  - '            tmp,'
+  - '            K_h2 + k_KQ_0 + (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2)
+    % nthreads) * cpy_ne);'
+  - '#pragma unroll'
+  - '        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {'
+  - '#ifdef GGML_SYCL_F16'
+  - '            ggml_sycl_mad(sum,                tmp[k_KQ_1] , ((const sycl::half2
+    *) Q_v)[k_KQ_0/nthreads + k_KQ_1]);'
+  - '#else'
+  - '            ggml_sycl_mad(sum, __half22float2(tmp[k_KQ_1]), ((const sycl::float2
+    *) Q_v)[k_KQ_0/nthreads + k_KQ_1]);'
+  - '#endif // GGML_SYCL_F16'
+  - '        }'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between K (half2) and Q (half2 or float2) for FP16
+    type.
+  line: 54-84
+  name: vec_dot_fattn_vec_KQ_f16
+- code:
+  - template <int D, int nthreads, int warp_size>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_q4_0(const char * __restrict__
+    K_c,
+  - '                                                       const void * __restrict__
+    Q_v,'
+  - '                                                       const int * __restrict__
+    Q_q8,'
+  - '                                                       const void * __restrict__
+    Q_ds_v) {'
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const block_q4_0 * K_q4_0   = (const block_q4_0 *) K_c;'
+  - '    GGML_UNUSED(Q_v);'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {'
+  - '        const int k_KQ ='
+  - '            k_KQ_0 + (nthreads == warp_size ? item_ct1.get_local_id(2) : item_ct1.get_local_id(2)
+    % nthreads);'
+  - '        const int ib    = k_KQ /  QI8_1;'
+  - '        const int iqs4  = k_KQ %  QI4_0;'
+  - '        const int shift = k_KQ & (QI8_1/2);'
+  - '        int v;'
+  - '        ggml_sycl_memcpy_1<sizeof(int), 2>(&v, K_q4_0[ib].qs + sizeof(int)*iqs4);'
+  - '        v = (v >> shift) & 0x0F0F0F0F;'
+  - '        const int u = Q_q8[k_KQ_0/nthreads];'
+  - '        const int sumi = ggml_sycl_dp4a(v, u, 0);'
+  - '        const sycl::float2 Q_ds = ((const sycl::float2 *) Q_ds_v)[k_KQ_0 / nthreads];'
+  - '        sum += __half2float(K_q4_0[ib].d) * (sumi*Q_ds.x() - (8/QI8_1)*Q_ds.y());'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between quantized K (Q4_0) and Q (Q8) for Q4_0 K
+    type.
+  line: 86-120
+  name: vec_dot_fattn_vec_KQ_q4_0
+- code:
+  - template <int D, int nthreads, int warp_size>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_q4_1(const char * __restrict__
+    K_c,
+  - '                                                       const void * __restrict__
+    Q_v,'
+  - '                                                       const int * __restrict__
+    Q_q8,'
+  - '                                                       const void * __restrict__
+    Q_ds_v) {'
+  - '    auto               item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const block_q4_1 * K_q4_1   = (const block_q4_1 *) K_c;'
+  - '    GGML_UNUSED(Q_v);'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {'
+  - '        const int k_KQ ='
+  - '            k_KQ_0 + (nthreads == warp_size ? item_ct1.get_local_id(2) : item_ct1.get_local_id(2)
+    % nthreads);'
+  - '        const int ib    = k_KQ /  QI8_1;'
+  - '        const int iqs4  = k_KQ %  QI4_1;'
+  - '        const int shift = k_KQ & (QI8_1/2);'
+  - '        int v;'
+  - '        ggml_sycl_memcpy_1<sizeof(int)>(&v, K_q4_1[ib].qs + sizeof(int)*iqs4);'
+  - '        v = (v >> shift) & 0x0F0F0F0F;'
+  - '        const int u = Q_q8[k_KQ_0/nthreads];'
+  - '        const int sumi = ggml_sycl_dp4a(v, u, 0);'
+  - '        const sycl::float2 K_dm = (K_q4_1[ib].dm).template convert<float, sycl::rounding_mode::automatic>();'
+  - '        const sycl::float2 Q_ds = ((const sycl::float2 *) Q_ds_v)[k_KQ_0 / nthreads];'
+  - '        sum += K_dm.x()*Q_ds.x()*sumi + K_dm.y()*Q_ds.y()/QI8_1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between quantized K (Q4_1) and Q (Q8) for Q4_1 K
+    type.
+  line: 122-157
+  name: vec_dot_fattn_vec_KQ_q4_1
+- code:
+  - template <int D, int nthreads, int warp_size>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_q5_0(const char * __restrict__
+    K_c,
+  - '                                                       const void * __restrict__
+    Q_v,'
+  - '                                                       const int * __restrict__
+    Q_q8,'
+  - '                                                       const void * __restrict__
+    Q_ds_v) {'
+  - '    auto               item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const block_q5_0 * K_q5_0   = (const block_q5_0 *) K_c;'
+  - '    GGML_UNUSED(Q_v);'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {'
+  - '        const int k_KQ ='
+  - '            k_KQ_0 + (nthreads == warp_size ? item_ct1.get_local_id(2) : item_ct1.get_local_id(2)
+    % nthreads);'
+  - '        const int ib    = k_KQ /  QI8_1;'
+  - '        const int iqs4  = k_KQ %  QI5_0;'
+  - '        const int iqs8  = k_KQ %  QI8_1;'
+  - '        const int shift = k_KQ & (QI8_1/2);'
+  - '        int v;'
+  - '        ggml_sycl_memcpy_1<sizeof(int), 2>(&v, K_q5_0[ib].qs + sizeof(int)*iqs4);'
+  - '        v = (v >> shift) & 0x0F0F0F0F;'
+  - '        {'
+  - '            int vh;'
+  - '            ggml_sycl_memcpy_1<sizeof(int), 2>(&vh, K_q5_0[ib].qh);'
+  - '            vh >>= iqs8 * QI5_0;'
+  - '            v |= (vh <<  4) & 0x00000010; // 0 ->  4'
+  - '            v |= (vh << 11) & 0x00001000; // 1 -> 12'
+  - '            v |= (vh << 18) & 0x00100000; // 2 -> 20'
+  - '            v |= (vh << 25) & 0x10000000; // 3 -> 28'
+  - '        }'
+  - '        const int u = Q_q8[k_KQ_0/nthreads];'
+  - '        const int sumi = ggml_sycl_dp4a(v, u, 0);'
+  - '        const sycl::float2 Q_ds = ((const sycl::float2 *) Q_ds_v)[k_KQ_0 / nthreads];'
+  - '        sum += __half2float(K_q5_0[ib].d) * (sumi*Q_ds.x() - (16/QI8_1)*Q_ds.y());'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between quantized K (Q5_0) and Q (Q8) for Q5_0 K
+    type.
+  line: 159-204
+  name: vec_dot_fattn_vec_KQ_q5_0
+- code:
+  - template <int D, int nthreads, int warp_size>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_q5_1(const char * __restrict__
+    K_c,
+  - '                                                       const void * __restrict__
+    Q_v,'
+  - '                                                       const int * __restrict__
+    Q_q8,'
+  - '                                                       const void * __restrict__
+    Q_ds_v) {'
+  - '    auto               item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const block_q5_1 * K_q5_1   = (const block_q5_1 *) K_c;'
+  - '    GGML_UNUSED(Q_v);'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {'
+  - '        const int k_KQ ='
+  - '            k_KQ_0 + (nthreads == warp_size ? item_ct1.get_local_id(2) : item_ct1.get_local_id(2)
+    % nthreads);'
+  - '        const int ib    = k_KQ /  QI8_1;'
+  - '        const int iqs4  = k_KQ %  QI5_1;'
+  - '        const int iqs8  = k_KQ %  QI8_1;'
+  - '        const int shift = k_KQ & (QI8_1/2);'
+  - '        int v;'
+  - '        ggml_sycl_memcpy_1<sizeof(int)>(&v, K_q5_1[ib].qs + sizeof(int)*iqs4);'
+  - '        v = (v >> shift) & 0x0F0F0F0F;'
+  - '        {'
+  - '            int vh;'
+  - '            ggml_sycl_memcpy_1<sizeof(int)>(&vh, K_q5_1[ib].qh);'
+  - '            vh >>= iqs8 * QI5_0;'
+  - '            v |= (vh <<  4) & 0x00000010; // 0 ->  4'
+  - '            v |= (vh << 11) & 0x00001000; // 1 -> 12'
+  - '            v |= (vh << 18) & 0x00100000; // 2 -> 20'
+  - '            v |= (vh << 25) & 0x10000000; // 3 -> 28'
+  - '        }'
+  - '        const int u = Q_q8[k_KQ_0/nthreads];'
+  - '        const int sumi = ggml_sycl_dp4a(v, u, 0);'
+  - '        const sycl::float2 K_dm = (K_q5_1[ib].dm).template convert<float, sycl::rounding_mode::automatic>();'
+  - '        const sycl::float2 Q_ds = ((const sycl::float2 *) Q_ds_v)[k_KQ_0 / nthreads];'
+  - '        sum += K_dm.x()*Q_ds.x()*sumi + K_dm.y()*Q_ds.y()/QI8_1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between quantized K (Q5_1) and Q (Q8) for Q5_1 K
+    type.
+  line: 206-252
+  name: vec_dot_fattn_vec_KQ_q5_1
+- code:
+  - template <int D, int nthreads, int warp_size>
+  - static __dpct_inline__ float vec_dot_fattn_vec_KQ_q8_0(const char * __restrict__
+    K_c,
+  - '                                                       const void * __restrict__
+    Q_v,'
+  - '                                                       const int * __restrict__
+    Q_q8,'
+  - '                                                       const void * __restrict__
+    Q_ds_v) {'
+  - '    auto               item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const block_q8_0 * K_q8_0   = (const block_q8_0 *) K_c;'
+  - '    GGML_UNUSED(Q_v);'
+  - '    float sum = 0.0f;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {'
+  - '        const int k_KQ ='
+  - '            k_KQ_0 + (nthreads == warp_size ? item_ct1.get_local_id(2) : item_ct1.get_local_id(2)
+    % nthreads);'
+  - '        const int ib  = k_KQ / QI8_0;'
+  - '        const int iqs = k_KQ % QI8_0;'
+  - '        int v;'
+  - '        ggml_sycl_memcpy_1<sizeof(v), 2>(&v, K_q8_0[ib].qs + 4*iqs);'
+  - '        const sycl::float2 * Q_ds = (const sycl::float2 *) Q_ds_v;'
+  - '        const float          Q_d  = Q_ds[k_KQ_0 / nthreads].x();'
+  - '        sum += vec_dot_q8_0_q8_1_impl<float, 1>(&v, &Q_q8[k_KQ_0/nthreads], K_q8_0[ib].d,
+    Q_d);'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: Computes the dot product between quantized K (Q8_0) and Q (Q8) for Q8_0 K
+    type.
+  line: 254-284
+  name: vec_dot_fattn_vec_KQ_q8_0
+- code:
+  - template <typename Tds, int ni, int warp_size>
+  - static __dpct_inline__ void quantize_q8_1_to_shared(const float * __restrict__
+    x,
+  - '                                                    const float scale,'
+  - '                                                    int * __restrict__ yq32,'
+  - '                                                    void * __restrict__ yds)
+    {'
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    float vals[sizeof(int)] = { 0.0f };'
+  - '#pragma unroll'
+  - '    for (int l = 0; l < int(sizeof(int)); ++l) {'
+  - '        vals[l] ='
+  - '            (ni == warp_size || item_ct1.get_local_id(2) < ni) ? scale * x[4
+    * item_ct1.get_local_id(2) + l] : 0.0f;'
+  - '    }'
+  - '    float amax = sycl::fabs(vals[0]);'
+  - '    float sum  = vals[0];'
+  - '#pragma unroll'
+  - '    for (int l = 1; l < int(sizeof(int)); ++l) {'
+  - '        amax = sycl::fmax(amax, sycl::fabs(vals[l]));'
+  - '        sum += vals[l];'
+  - '    }'
+  - '#pragma unroll'
+  - '    for (int mask = QI8_1/2; mask > 0; mask >>= 1) {'
+  - '        amax = sycl::fmax('
+  - '            amax, dpct::permute_sub_group_by_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
+    amax, mask));'
+  - '        sum += dpct::permute_sub_group_by_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
+    sum, mask);'
+  - '    }'
+  - '    const float d = amax / 127;'
+  - '    int q32 = 0;'
+  - '    int8_t * q8 = (int8_t *) &q32;'
+  - '    if (d != 0.0f) {'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < int(sizeof(int)); ++l) {'
+  - '            q8[l] = sycl::round(vals[l] / d);'
+  - '        }'
+  - '    }'
+  - '    yq32[item_ct1.get_local_id(2)] = q32;'
+  - '    if (item_ct1.get_local_id(2) % QI8_1 == 0 && (ni == warp_size || item_ct1.get_local_id(2)
+    < ni)) {'
+  - '        if (std::is_same<Tds, sycl::half2>::value) {'
+  - '            ((sycl::half2  *) yds)[item_ct1.get_local_id(2)/QI8_1] =  make_half2(d,
+    sum);'
+  - '        } else {'
+  - '            ((sycl::float2 *) yds)[item_ct1.get_local_id(2)/QI8_1] = make_float2(d,
+    sum);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Quantizes a vector of floats to Q8_1 format in shared memory, writing the
+    quantized ints and scale/sum pairs.
+  line: 286-332
+  name: quantize_q8_1_to_shared
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_f16(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    if constexpr (std::is_same_v<T, sycl::half>) {'
+  - '        ggml_sycl_memcpy_1<ne * sizeof(sycl::half)>(dst, (const sycl::half *)
+    vx + i0);'
+  - '    } else if constexpr (std::is_same_v<T, float>) {'
+  - '        static_assert(ne % 2 == 0, "bad ne");'
+  - '        sycl::half2 tmp[ne / 2];'
+  - '        ggml_sycl_memcpy_1<ne * sizeof(sycl::half)>(tmp, (const sycl::half *)
+    vx + i0);'
+  - '        sycl::float2 * dst_f2 = (sycl::float2 *) dst;'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne/2; ++l) {'
+  - '            dst_f2[l] = tmp[l].template convert<float, sycl::rounding_mode::automatic>();'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "unsupported type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from half to T (half or float), used for FP16 V type.
+  line: 336-352
+  name: dequantize_V_f16
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_q4_0(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    const block_q4_0 * x = (const block_q4_0 *) vx;'
+  - '    const int64_t ib    =  i0          /  QK4_0;'
+  - '    const int     iqs   =  i0          % (QK4_0/2);'
+  - '    const int     shift = (i0 % QK4_0) / (QK4_0/2);'
+  - '    int q;'
+  - '    static_assert(ne == 2 || ne == 4, "bad ne");'
+  - '    ggml_sycl_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);'
+  - '    q >>= 4*shift;'
+  - '    q &= 0x0F0F0F0F;'
+  - '    q = dpct::vectorized_binary<sycl::char4>(q, 0x08080808, dpct::sub_sat());'
+  - '    const int8_t * q8 = (const int8_t *) &q;'
+  - '#ifdef GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, sycl::half>) {'
+  - '        const sycl::half2 d = sycl::half2(x[ib].d);'
+  - '#pragma unroll'
+  - '        for (int l0 = 0; l0 < ne; l0 += 2) {'
+  - '            ((sycl::half2 *) dst)[l0 / 2] = d * sycl::half2(q8[l0 + 0], q8[l0
+    + 1]);'
+  - '        }'
+  - '    } else'
+  - '#endif // GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, float>) {'
+  - '        const float d = x[ib].d;'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            ((float *) dst)[l] = d * q8[l];'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "bad type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from Q4_0 blocks to T (half or float).
+  line: 354-384
+  name: dequantize_V_q4_0
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_q4_1(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    const block_q4_1 * x = (const block_q4_1 *) vx;'
+  - '    const int64_t ib    =  i0          /  QK4_1;'
+  - '    const int     iqs   =  i0          % (QK4_1/2);'
+  - '    const int     shift = (i0 % QK4_1) / (QK4_1/2);'
+  - '    int q;'
+  - '    static_assert(ne == 2 || ne == 4, "bad ne");'
+  - '    ggml_sycl_memcpy_1<ne>(&q, x[ib].qs + iqs);'
+  - '    q >>= 4*shift;'
+  - '    q &= 0x0F0F0F0F;'
+  - '    const int8_t * q8 = (const int8_t *) &q;'
+  - '#ifdef GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, sycl::half>) {'
+  - '        const sycl::half2 dm = x[ib].dm;'
+  - '        const sycl::half2 d  = sycl::half2(dm[0]);'
+  - '        const sycl::half2 m  = sycl::half2(dm[1]);'
+  - '#pragma unroll'
+  - '        for (int l0 = 0; l0 < ne; l0 += 2) {'
+  - '            ((sycl::half2 *) dst)[l0 / 2] = d * sycl::half2(q8[l0 + 0], q8[l0
+    + 1]) + m;'
+  - '        }'
+  - '    } else'
+  - '#endif // GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, float>) {'
+  - '        const sycl::float2 dm = (x[ib].dm).template convert<float, sycl::rounding_mode::automatic>();'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            ((float *) dst)[l] = dm.x() * q8[l] + dm.y();'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "bad type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from Q4_1 blocks to T (half or float), with offset.
+  line: 386-418
+  name: dequantize_V_q4_1
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_q5_0(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    const block_q5_0 * x = (const block_q5_0 *) vx;'
+  - '    const int64_t ib    =  i0          /  QK5_0;'
+  - '    const int     idq   =  i0          %  QK5_0;'
+  - '    const int     iqs   =  i0          % (QK5_0/2);'
+  - '    const int     shift = (i0 % QK5_0) / (QK5_0/2);'
+  - '    int q;'
+  - '    static_assert(ne == 2 || ne == 4, "bad ne");'
+  - '    ggml_sycl_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);'
+  - '    q >>= 4*shift;'
+  - '    q &= 0x0F0F0F0F;'
+  - '    {'
+  - '        int qh;'
+  - '        ggml_sycl_memcpy_1<ne, 2>(&qh, x[ib].qh);'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            q |= ((qh >> (idq + l)) & 0x00000001) << (8*l + 4);'
+  - '        }'
+  - '    }'
+  - '    q = dpct::vectorized_binary<sycl::char4>(q, 0x10101010, dpct::sub_sat());'
+  - '    const int8_t * q8 = (const int8_t *) &q;'
+  - '#ifdef GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, sycl::half>) {'
+  - '        const sycl::half2 d = sycl::half2(x[ib].d);'
+  - '#pragma unroll'
+  - '        for (int l0 = 0; l0 < ne; l0 += 2) {'
+  - '            ((sycl::half2 *) dst)[l0 / 2] = d * sycl::half2(q8[l0 + 0], q8[l0
+    + 1]);'
+  - '        }'
+  - '    } else'
+  - '#endif // GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, float>) {'
+  - '        const float d = x[ib].d;'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            ((float *) dst)[l] = d * q8[l];'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "bad type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from Q5_0 blocks to T (half or float), including the extra
+    high bits.
+  line: 420-464
+  name: dequantize_V_q5_0
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_q5_1(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    const block_q5_1 * x = (const block_q5_1 *) vx;'
+  - '    const int64_t ib    =  i0          /  QK5_1;'
+  - '    const int     idq   =  i0          %  QK5_1;'
+  - '    const int     iqs   =  i0          % (QK5_1/2);'
+  - '    const int     shift = (i0 % QK5_1) / (QK5_1/2);'
+  - '    int q;'
+  - '    static_assert(ne == 2 || ne == 4, "bad ne");'
+  - '    ggml_sycl_memcpy_1<ne>(&q, x[ib].qs + iqs);'
+  - '    q >>= 4*shift;'
+  - '    q &= 0x0F0F0F0F;'
+  - '    {'
+  - '        int qh;'
+  - '        ggml_sycl_memcpy_1<ne>(&qh, x[ib].qh);'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            q |= ((qh >> (idq + l)) & 0x00000001) << (8*l + 4);'
+  - '        }'
+  - '    }'
+  - '    const int8_t * q8 = (const int8_t *) &q;'
+  - '#ifdef GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, sycl::half>) {'
+  - '        const sycl::half2 dm = x[ib].dm;'
+  - '        const sycl::half2 d  = sycl::half2(dm[0]);'
+  - '        const sycl::half2 m  = sycl::half2(dm[1]);'
+  - '#pragma unroll'
+  - '        for (int l0 = 0; l0 < ne; l0 += 2) {'
+  - '            ((sycl::half2 *) dst)[l0 / 2] = d * sycl::half2(q8[l0 + 0], q8[l0
+    + 1]) + m;'
+  - '        }'
+  - '    } else'
+  - '#endif // GGML_SYCL_F16'
+  - '    if constexpr (std::is_same_v<T, float>) {'
+  - '        const sycl::float2 dm = (x[ib].dm).template convert<float, sycl::rounding_mode::automatic>();'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            ((float *) dst)[l] = dm.x() * q8[l] + dm.y();'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "bad type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from Q5_1 blocks to T (half or float), with offset and
+    extra high bits.
+  line: 466-512
+  name: dequantize_V_q5_1
+- code:
+  - template <typename T, int ne>
+  - static __dpct_inline__ void dequantize_V_q8_0(const void * __restrict__ vx, void
+    * __restrict__ dst, const int64_t i0) {
+  - '    const block_q8_0 * x = (const block_q8_0 *) vx;'
+  - '    const int64_t ib  = i0 / QK8_0;'
+  - '    const int     iqs = i0 % QK8_0;'
+  - '    static_assert(ne % 2 == 0, "bad ne");'
+  - '    int8_t qs[ne];'
+  - '    ggml_sycl_memcpy_1<ne, 2>(qs, x[ib].qs + iqs);'
+  - '#ifdef GGML_SYCL_F16'
+  - '    if constexpr (std::is_same<T, sycl::half>::value) {'
+  - '        const sycl::half2 d = sycl::half2(x[ib].d);'
+  - '#pragma unroll'
+  - '        for (int l0 = 0; l0 < ne; l0 += 2) {'
+  - '            ((sycl::half2 *) dst)[l0 / 2] = d * make_half2(qs[l0 + 0], qs[l0
+    + 1]);'
+  - '        }'
+  - '    } else'
+  - '#endif // GGML_SYCL_F16'
+  - '    if constexpr (std::is_same<T, float>::value) {'
+  - '        const float d = x[ib].d;'
+  - '#pragma unroll'
+  - '        for (int l = 0; l < ne; ++l) {'
+  - '            ((float *) dst)[l] = d * qs[l];'
+  - '        }'
+  - '    } else {'
+  - '        static_assert(std::is_same_v<T, void>, "unsupported type");'
+  - '    }'
+  - '}'
+  desc: Dequantizes V data from Q8_0 blocks to T (half or float).
+  line: 514-543
+  name: dequantize_V_q8_0
+- code:
+  - template <int type_K, int D, int nthreads, int warp_size>
+  - constexpr vec_dot_KQ_t get_vec_dot_KQ() {
+  - '    if constexpr (type_K == GGML_TYPE_F16) {'
+  - '        return vec_dot_fattn_vec_KQ_f16<D, nthreads>;'
+  - '    } else if constexpr (type_K == GGML_TYPE_Q4_0) {'
+  - '        return vec_dot_fattn_vec_KQ_q4_0<D, nthreads, warp_size>;'
+  - '    } else if constexpr (type_K == GGML_TYPE_Q4_1) {'
+  - '        return vec_dot_fattn_vec_KQ_q4_1<D, nthreads, warp_size>;'
+  - '    } else if constexpr (type_K == GGML_TYPE_Q5_0) {'
+  - '        return vec_dot_fattn_vec_KQ_q5_0<D, nthreads, warp_size>;'
+  - '    } else if constexpr (type_K == GGML_TYPE_Q5_1) {'
+  - '        return vec_dot_fattn_vec_KQ_q5_1<D, nthreads, warp_size>;'
+  - '    } else if constexpr (type_K == GGML_TYPE_Q8_0) {'
+  - '        return vec_dot_fattn_vec_KQ_q8_0<D, nthreads, warp_size>;'
+  - '    } else {'
+  - '        static_assert(type_K == -1, "bad type");'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: Compile-time dispatch function that returns the appropriate vec_dot_KQ function
+    pointer based on K quantization type.
+  line: 545-559
+  name: get_vec_dot_KQ
+- code:
+  - template <int type_V, typename T, int ne>
+  - constexpr dequantize_V_t get_dequantize_V() {
+  - '    if constexpr (type_V == GGML_TYPE_F16) {'
+  - '        return dequantize_V_f16<T, ne>;'
+  - '    } else if constexpr (type_V == GGML_TYPE_Q4_0) {'
+  - '        return dequantize_V_q4_0<T, ne>;'
+  - '    } else if constexpr (type_V == GGML_TYPE_Q4_1) {'
+  - '        return dequantize_V_q4_1<T, ne>;'
+  - '    } else if constexpr (type_V == GGML_TYPE_Q5_0) {'
+  - '        return dequantize_V_q5_0<T, ne>;'
+  - '    } else if constexpr (type_V == GGML_TYPE_Q5_1) {'
+  - '        return dequantize_V_q5_1<T, ne>;'
+  - '    } else if constexpr (type_V == GGML_TYPE_Q8_0) {'
+  - '        return dequantize_V_q8_0<T, ne>;'
+  - '    } else {'
+  - '        static_assert(type_V == -1, "bad type");'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: Compile-time dispatch function that returns the appropriate dequantize_V function
+    pointer based on V quantization type.
+  line: 561-575
+  name: get_dequantize_V
+- code:
+  - template <int ncols1, int warp_size>
+  - static void flash_attn_mask_to_KV_max(const sycl::half2 * __restrict__ mask,
+  - '                                      int * __restrict__ KV_max,'
+  - '                                      const int ne30,'
+  - '                                      const int s31,'
+  - '                                      const int s33,'
+  - '                                      int *     buf_iw) {'
+  - '    auto      item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const int ne31     = item_ct1.get_group_range(2);'
+  - '    const int tid      = item_ct1.get_local_id(2);'
+  - '    const int sequence = item_ct1.get_group(1);'
+  - '    const int jt       = item_ct1.get_group(2);'
+  - '    mask += sequence*s33 + jt*ncols1*s31;'
+  - '    if (tid < warp_size) {'
+  - '        buf_iw[tid] = 1;'
+  - '    }'
+  - '    item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '    int KV_max_sj = (ne30 - 1) * FATTN_KQ_STRIDE;'
+  - '    for (; KV_max_sj >= 0; KV_max_sj -= FATTN_KQ_STRIDE) {'
+  - '        int all_inf = 1;'
+  - '#pragma unroll'
+  - '        for (int j = 0; j < ncols1; ++j) {'
+  - '            const sycl::float2 tmp ='
+  - '                mask[j * s31 + KV_max_sj / 2 + tid].template convert<float, sycl::rounding_mode::automatic>();'
+  - '            all_inf = all_inf && int(sycl::isinf((float) (tmp.x()))) && int(sycl::isinf((float)
+    (tmp.y())));'
+  - '        }'
+  - '        all_inf = warp_reduce_all<warp_size>(all_inf);'
+  - '        if (tid % warp_size == 0) {'
+  - '            buf_iw[tid / warp_size] = all_inf;'
+  - '        }'
+  - '        item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '        all_inf = buf_iw[tid % warp_size];'
+  - '        item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '        all_inf = warp_reduce_all<warp_size>(all_inf);'
+  - '        if (!all_inf) {'
+  - '            break;'
+  - '        }'
+  - '    }'
+  - '    KV_max_sj += FATTN_KQ_STRIDE;'
+  - '    if (item_ct1.get_local_id(2) != 0) {'
+  - '        return;'
+  - '    }'
+  - '    KV_max[sequence*ne31 + jt] = KV_max_sj;'
+  - '}'
+  desc: Determines the maximum KV position that is not fully masked (all -inf) for
+    each sequence and head, writing to KV_max.
+  line: 577-620
+  name: flash_attn_mask_to_KV_max
+- code:
+  - template <int D, int ncols1, int ncols2>  // D == head size
+  - static void flash_attn_stream_k_fixup(float * __restrict__ dst,
+  - '                                      const sycl::float2 * __restrict__ dst_fixup,'
+  - '                                      const int ne01,'
+  - '                                      const int ne02,'
+  - '                                      const int ne03,'
+  - '                                      const int ne11,'
+  - '                                      const int ne12,'
+  - '                                      const int nbatch_fa) {'
+  - '    auto          item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    constexpr int ncols    = ncols1 * ncols2;'
+  - '    const int bidx0 = item_ct1.get_group(2);'
+  - '    const int j     = item_ct1.get_group(1);'
+  - '    const int c     = item_ct1.get_group(0);'
+  - '    const int jc    = j*ncols2 + c;'
+  - '    const int tid   = item_ct1.get_local_id(2);'
+  - '    const float * dst_fixup_data = ((const float *) dst_fixup) + item_ct1.get_group_range(2)
+    * (2 * 2 * ncols);'
+  - '    const int gqa_ratio = ne02 / ne12; // With grouped query attention there
+    are > 1 Q matrices per K, V matrix.'
+  - '    const int iter_k     = (ne11      + (nbatch_fa - 1)) / nbatch_fa;'
+  - '    const int iter_j     = (ne01      + (ncols1    - 1)) / ncols1;'
+  - '    const int iter_z_gqa = (gqa_ratio + (ncols2    - 1)) / ncols2;'
+  - '    const int kbc0 = int64_t(bidx0 + 0) * (iter_k * iter_j * iter_z_gqa * ne12
+    * ne03) / item_ct1.get_group_range(2);'
+  - '    const int kbc0_stop ='
+  - '        int64_t(bidx0 + 1) * (iter_k * iter_j * iter_z_gqa * ne12 * ne03) / item_ct1.get_group_range(2);'
+  - '    const bool did_not_have_any_data   = kbc0 == kbc0_stop;'
+  - '    const bool wrote_beginning_of_tile = kbc0 % iter_k == 0;'
+  - '    const bool did_not_write_last      = kbc0/iter_k == kbc0_stop/iter_k && kbc0_stop
+    % iter_k != 0;'
+  - '    if (did_not_have_any_data || wrote_beginning_of_tile || did_not_write_last)
+    {'
+  - '        return;'
+  - '    }'
+  - '    const int sequence =  kbc0 /(iter_k*iter_j*iter_z_gqa*ne12);'
+  - '    const int z_KV     = (kbc0 - iter_k*iter_j*iter_z_gqa*ne12 * sequence)/(iter_k*iter_j*iter_z_gqa);'
+  - '    const int zt_gqa   = (kbc0 - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa
+    * z_KV)/(iter_k*iter_j);'
+  - '    const int jt       = (kbc0 - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa
+    * z_KV - iter_k*iter_j * zt_gqa) / iter_k;'
+  - '    const int zt_Q = z_KV*gqa_ratio + zt_gqa*ncols2; // Global Q head start index.'
+  - '    if (jt*ncols1 + j >= ne01 || zt_gqa*ncols2 + c >= gqa_ratio) {'
+  - '        return;'
+  - '    }'
+  - '    dst += sequence*ne02*ne01*D + jt*ne02*(ncols1*D) + zt_Q*D + (j*ne02 + c)*D
+    + tid;'
+  - '    float dst_val = 0.0f;'
+  - '    float max_val = 0.0f;'
+  - '    float rowsum  = 0.0f;'
+  - '    {'
+  - '        dst_val = *dst;'
+  - '        const sycl::float2 tmp = dst_fixup[bidx0 * ncols + jc];'
+  - '        max_val                = tmp.x();'
+  - '        rowsum                 = tmp.y();'
+  - '    }'
+  - '    int bidx = bidx0 - 1;'
+  - '    int kbc_stop = kbc0;'
+  - '    while(true) {'
+  - '        const int kbc = int64_t(bidx) * (iter_k * iter_j * iter_z_gqa * ne12
+    * ne03) / item_ct1.get_group_range(2);'
+  - '        if (kbc == kbc_stop) { // Did not have any data.'
+  - '            bidx--;'
+  - '            kbc_stop = kbc;'
+  - '            continue;'
+  - '        }'
+  - '        const float dst_add = dst_fixup_data[bidx*ncols*D + jc*D + tid];'
+  - '        const sycl::float2 tmp = dst_fixup[(item_ct1.get_group_range(2) + bidx)
+    * ncols + jc];'
+  - '        const float max_val_new = sycl::fmax(max_val, tmp.x());'
+  - '        const float diff_val = max_val - max_val_new;'
+  - '        const float diff_add = tmp.x() - max_val_new;'
+  - '        const float scale_val = diff_val >= SOFTMAX_FTZ_THRESHOLD ? sycl::native::exp(diff_val)
+    : 0.0f;'
+  - '        const float scale_add = diff_add >= SOFTMAX_FTZ_THRESHOLD ? sycl::native::exp(diff_add)
+    : 0.0f;'
+  - '        dst_val = scale_val*dst_val + scale_add*dst_add;'
+  - '        rowsum  = scale_val * rowsum + scale_add * tmp.y();'
+  - '        max_val = max_val_new;'
+  - '        if (kbc % iter_k == 0 || kbc/iter_k < kbc0/iter_k) {'
+  - '            break;'
+  - '        }'
+  - '        bidx--;'
+  - '        kbc_stop = kbc;'
+  - '    }'
+  - '    *dst = dst_val / rowsum;'
+  - '}'
+  desc: Fixes up partial attention results for stream-K mode, combining results from
+    previous blocks using online softmax scaling.
+  line: 622-695
+  name: flash_attn_stream_k_fixup
+- code:
+  - template <int D>  // D == head size
+  - static void flash_attn_combine_results(const float * __restrict__ VKQ_parts,
+  - '                                       const sycl::float2 * __restrict__ VKQ_meta,'
+  - '                                       float * __restrict__ dst,'
+  - '                                       const int parallel_blocks,'
+  - '                                       uint8_t * dpct_local) {'
+  - '    auto      item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const int ne01     = item_ct1.get_group_range(2);'
+  - '    const int ne02     = item_ct1.get_group_range(1);'
+  - '    const int col      = item_ct1.get_group(2);'
+  - '    const int head     = item_ct1.get_group(1);'
+  - '    const int sequence = item_ct1.get_group(0);'
+  - '    const int j_dst_unrolled = (sequence*ne01 + col)*ne02 + head;'
+  - '    VKQ_parts += j_dst_unrolled * parallel_blocks*D;'
+  - '    VKQ_meta  += j_dst_unrolled * parallel_blocks;'
+  - '    dst       += j_dst_unrolled *                 D;'
+  - '    const int tid = item_ct1.get_local_id(2);'
+  - '    __builtin_assume(tid < D);'
+  - '    auto meta = (sycl::float2 *) dpct_local;'
+  - '    for (int i = tid; i < 2*parallel_blocks; i += D) {'
+  - '        ((float *) meta)[i] = ((const float *)VKQ_meta) [i];'
+  - '    }'
+  - '    item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '    float kqmax = meta[0].x();'
+  - '    for (int l = 1; l < parallel_blocks; ++l) {'
+  - '        kqmax = sycl::max(kqmax, meta[l].x());'
+  - '    }'
+  - '    float VKQ_numerator   = 0.0f;'
+  - '    float VKQ_denominator = 0.0f;'
+  - '    for (int l = 0; l < parallel_blocks; ++l) {'
+  - '        const float KQ_max_scale = sycl::native::exp(meta[l].x() - kqmax);'
+  - '        VKQ_numerator   += KQ_max_scale * VKQ_parts[l*D + tid];'
+  - '        VKQ_denominator += KQ_max_scale * meta[l].y();'
+  - '    }'
+  - '    dst[tid] = VKQ_numerator / VKQ_denominator;'
+  - '}'
+  desc: Combines partial attention results from parallel blocks using online softmax
+    scaling.
+  line: 697-738
+  name: flash_attn_combine_results
+- code:
+  - template <fattn_kernel_t fattn_kernel, int warp_size>
+  - static void lauch_kernel(
+  - '    dpct::dim3 group_range,'
+  - '    dpct::dim3 local_range,'
+  - '    queue_ptr q,'
+  - '    unsigned int local_mem_size,'
+  - '    const char* __restrict__ Q,'
+  - '    const char* __restrict__ K,'
+  - '    const char* __restrict__ V,'
+  - '    const char* __restrict__ mask,'
+  - '    const char* __restrict__ sinks,'
+  - '    const int* __restrict__ KV_max,'
+  - '    float* __restrict__ dst,'
+  - '    sycl::float2* __restrict__ dst_meta,'
+  - '    const float scale,'
+  - '    const float max_bias,'
+  - '    const float m0,'
+  - '    const float m1,'
+  - '    const uint32_t n_head_log2,'
+  - '    const float logit_softcap,'
+  - '    const int32_t ne00,'
+  - '    const sycl::uint3 ne01,'
+  - '    const int32_t ne02,'
+  - '    const int32_t ne03,'
+  - '    const int32_t nb01,'
+  - '    const int32_t nb02,'
+  - '    const int32_t nb03,'
+  - '    const int32_t ne10,'
+  - '    const int32_t ne11,'
+  - '    const int32_t ne12,'
+  - '    const int32_t ne13,'
+  - '    const int32_t nb11,'
+  - '    const int32_t nb12,'
+  - '    const int64_t nb13,'
+  - '    const int32_t nb21,'
+  - '    const int32_t nb22,'
+  - '    const int64_t nb23,'
+  - '    const int32_t ne31,'
+  - '    const int32_t ne32,'
+  - '    const int32_t ne33,'
+  - '    const int32_t nb31,'
+  - '    const int32_t nb32,'
+  - '    const int64_t nb33) {'
+  - '    GGML_UNUSED(local_mem_size);'
+  - '    q->submit([&](sycl::handler &cgh) {'
+  - '        cgh.parallel_for('
+  - '            sycl::nd_range<3>('
+  - '                static_cast<sycl::range<3>>(group_range * local_range),'
+  - '                static_cast<sycl::range<3>>(local_range)),'
+  - '            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(warp_size)]]
+    {'
+  - '                GGML_UNUSED(item_ct1);'
+  - '                fattn_kernel(Q, K, V, mask, sinks, KV_max, dst, dst_meta, scale,'
+  - '                             max_bias, m0, m1, n_head_log2, logit_softcap, ne00,'
+  - '                             ne01, ne02, ne03, nb01, nb02, nb03, ne10, ne11,'
+  - '                             ne12, ne13, nb11, nb12, nb13, nb21, nb22, nb23,'
+  - '                             ne31, ne32, ne33, nb31, nb32, nb33);'
+  - '            });'
+  - '    });'
+  - '}'
+  desc: Launches a flash attention kernel on the SYCL queue with the specified work
+    dimensions and arguments.
+  line: 740-780
+  name: lauch_kernel
+- code:
+  - template <int DV, int ncols1, int ncols2, fattn_kernel_t fattn_kernel, int warp_size>
+  - void launch_fattn(
+  - '    ggml_backend_sycl_context & ctx, ggml_tensor * dst, const int nwarps, const
+    size_t nbytes_shared,'
+  - '    const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const
+    bool stream_k) {'
+  - '    constexpr int ncols = ncols1 * ncols2;'
+  - '    const ggml_tensor * Q = dst->src[0];'
+  - '    const ggml_tensor * K = dst->src[1];'
+  - '    const ggml_tensor * V = dst->src[2];'
+  - '    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src
+    == K->view_src && V->view_offs == K->view_offs));'
+  - '    const ggml_tensor * mask  = dst->src[3];'
+  - '    const ggml_tensor * sinks = dst->src[4];'
+  - '    ggml_tensor * KQV = dst;'
+  - '    GGML_ASSERT(Q->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(KQV->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(Q->nb[0] == ggml_element_size(Q));'
+  - '    GGML_ASSERT(K->nb[0] == ggml_element_size(K));'
+  - '    GGML_ASSERT(V->nb[0] == ggml_element_size(V));'
+  - '    GGML_ASSERT(!mask || mask->type == GGML_TYPE_F16);'
+  - '    ggml_sycl_pool & pool = ctx.pool();'
+  - '    dpct::queue_ptr  main_stream = ctx.stream();'
+  - '    const int id  = ggml_sycl_get_device();'
+  - '    const int nsm = ggml_sycl_info().devices[id].nsm;'
+  - '    ggml_sycl_pool_alloc<sycl::half>   K_f16(pool);'
+  - '    ggml_sycl_pool_alloc<sycl::half>   V_f16(pool);'
+  - '    ggml_sycl_pool_alloc<int>    KV_max(pool);'
+  - '    ggml_sycl_pool_alloc<float>  dst_tmp(pool);'
+  - '    ggml_sycl_pool_alloc<sycl::float2> dst_tmp_meta(pool);'
+  - '    const char * K_data = (const char *) K->data;'
+  - '    size_t nb11 = K->nb[1];'
+  - '    size_t nb12 = K->nb[2];'
+  - '    size_t nb13 = K->nb[3];'
+  - '    const char * V_data = (const char *) V->data;'
+  - '    size_t nb21 = V->nb[1];'
+  - '    size_t nb22 = V->nb[2];'
+  - '    size_t nb23 = V->nb[3];'
+  - '    if (need_f16_K && K->type != GGML_TYPE_F16) {'
+  - '        const size_t bs = ggml_blck_size(K->type);'
+  - '        const size_t ts = ggml_type_size(K->type);'
+  - '        K_f16.alloc(ggml_nelements(K));'
+  - '        if (ggml_is_contiguously_allocated(K)) {'
+  - '            to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(K->type, dst);'
+  - '            to_fp16(K_data, K_f16.ptr, ggml_nelements(K), main_stream);'
+  - '            nb11 = nb11 * bs * sizeof(sycl::half) / ts;'
+  - '            nb12 = nb12 * bs * sizeof(sycl::half) / ts;'
+  - '            nb13 = nb13 * bs * sizeof(sycl::half) / ts;'
+  - '        } else {'
+  - '            GGML_ASSERT(K->nb[0] == ts);'
+  - '            to_fp16_nc_sycl_t to_fp16 = ggml_get_to_fp16_nc_sycl(K->type);'
+  - '            const int64_t s01 = nb11 / ts;'
+  - '            const int64_t s02 = nb12 / ts;'
+  - '            const int64_t s03 = nb13 / ts;'
+  - '            to_fp16(K_data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
+    s01, s02, s03, main_stream);'
+  - '            nb11 = K->ne[0] * sizeof(sycl::half);'
+  - '            nb12 = K->ne[1] * nb11;'
+  - '            nb13 = K->ne[2] * nb12;'
+  - '        }'
+  desc: Main launcher function for flash attention, preparing data (e.g., converting
+    K to FP16 if needed) and calling the kernel.
+  line: 782-850
+  name: launch_fattn

@@ -1,0 +1,348 @@
+classes:
+- desc: Llama模型超参数管理类，提供对模型架构参数如注意力头数、嵌入维度、循环层等的访问和计算功能
+  methods:
+  - code:
+    - void llama_hparams::set_swa_pattern(uint32_t n_pattern, bool dense_first) {
+    - '    if (dense_first) {'
+    - '        for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '            swa_layers[il] = n_pattern == 0 || (il % n_pattern != 0);'
+    - '        }'
+    - '    } else {'
+    - '        for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '            swa_layers[il] = n_pattern == 0 || (il % n_pattern < (n_pattern
+      - 1));'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 根据模式设置各层的滑动窗口注意力(SWA)标志，支持密集优先和分散两种模式
+    line: 8-20
+    name: set_swa_pattern
+  - code:
+    - bool llama_hparams::is_swa_any() const {
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        if (swa_layers[il]) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return false;'
+    - '}'
+    desc: 检查是否至少有一层使用滑动窗口注意力
+    line: 22-32
+    name: is_swa_any
+  - code:
+    - uint32_t llama_hparams::n_head(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return n_head_arr[il];'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的注意力头数，如果层索引超出范围则终止程序
+    line: 34-41
+    name: n_head
+  - code:
+    - uint32_t llama_hparams::n_head_kv(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return n_head_kv_arr[il];'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的KV注意力头数，如果层索引超出范围则终止程序
+    line: 43-50
+    name: n_head_kv
+  - code:
+    - uint32_t llama_hparams::n_ff(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return n_ff_arr[il];'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的前馈网络维度，如果层索引超出范围则终止程序
+    line: 52-59
+    name: n_ff
+  - code:
+    - uint32_t llama_hparams::n_gqa(uint32_t il) const {
+    - '    const uint32_t n_head    = this->n_head(il);'
+    - '    const uint32_t n_head_kv = this->n_head_kv(il);'
+    - ''
+    - '    if (n_head_kv == 0) {'
+    - '        return 0;'
+    - '    }'
+    - ''
+    - '    return n_head/n_head_kv;'
+    - '}'
+    desc: 计算指定层的分组查询注意力(GQA)的分组数，即注意力头数与KV头数的比值
+    line: 61-71
+    name: n_gqa
+  - code:
+    - uint32_t llama_hparams::n_rot(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return is_swa(il) ? n_rot_swa : n_rot_full;'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的旋转位置编码维度，根据是否为SWA层选择不同的值
+    line: 73-80
+    name: n_rot
+  - code:
+    - uint32_t llama_hparams::n_embd_inp() const {
+    - '    uint32_t n_embd_inp = n_embd;'
+    - ''
+    - '    if (n_deepstack_layers > 0) {'
+    - '        n_embd_inp += n_embd * n_deepstack_layers;'
+    - '    }'
+    - ''
+    - '    return n_embd_inp;'
+    - '}'
+    desc: 计算输入嵌入总维度，如果启用深度堆叠层，则增加额外的嵌入维度
+    line: 82-90
+    name: n_embd_inp
+  - code:
+    - uint32_t llama_hparams::n_embd_out() const {
+    - '    return n_embd_out_impl > 0 ? n_embd_out_impl : n_embd;'
+    - '}'
+    desc: 返回输出嵌入维度，如果有专门指定的输出维度则使用，否则使用标准嵌入维度
+    line: 92-94
+    name: n_embd_out
+  - code:
+    - uint32_t llama_hparams::n_embd_head_k(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return is_swa(il) ? n_embd_head_k_swa : n_embd_head_k_full;'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的K头嵌入维度，根据是否为SWA层选择不同的值
+    line: 96-103
+    name: n_embd_head_k
+  - code:
+    - uint32_t llama_hparams::n_embd_head_v(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return is_swa(il) ? n_embd_head_v_swa : n_embd_head_v_full;'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 返回指定层的V头嵌入维度，根据是否为SWA层选择不同的值
+    line: 105-112
+    name: n_embd_head_v
+  - code:
+    - uint32_t llama_hparams::n_embd_k_gqa(uint32_t il) const {
+    - '    const uint32_t n_head_kv = this->n_head_kv(il);'
+    - ''
+    - '    return n_embd_head_k(il) * n_head_kv;'
+    - '}'
+    desc: 计算指定层的K嵌入总维度，即K头维度乘以KV头数
+    line: 114-118
+    name: n_embd_k_gqa
+  - code:
+    - uint32_t llama_hparams::n_embd_v_gqa(uint32_t il) const {
+    - '    const uint32_t n_head_kv = this->n_head_kv(il);'
+    - ''
+    - '    return n_embd_head_v(il) * n_head_kv;'
+    - '}'
+    desc: 计算指定层的V嵌入总维度，即V头维度乘以KV头数
+    line: 120-124
+    name: n_embd_v_gqa
+  - code:
+    - bool llama_hparams::is_n_embd_k_gqa_variable() const {
+    - '    const uint32_t val = n_embd_k_gqa();'
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        if (val != n_embd_k_gqa(il)) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return false;'
+    - '}'
+    desc: 检查所有层的K嵌入总维度是否不同
+    line: 126-136
+    name: is_n_embd_k_gqa_variable
+  - code:
+    - bool llama_hparams::is_n_embd_v_gqa_variable() const {
+    - '    const uint32_t val = n_embd_v_gqa();'
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        if (val != n_embd_v_gqa(il)) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return false;'
+    - '}'
+    desc: 检查所有层的V嵌入总维度是否不同
+    line: 138-148
+    name: is_n_embd_v_gqa_variable
+  - code:
+    - uint32_t llama_hparams::n_embd_k_gqa_max() const {
+    - '    uint32_t val = n_embd_k_gqa();'
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        val = std::max(val, n_embd_k_gqa(il));'
+    - '    }'
+    - ''
+    - '    return val;'
+    - '}'
+    desc: 计算所有层中K嵌入总维度的最大值
+    line: 150-157
+    name: n_embd_k_gqa_max
+  - code:
+    - uint32_t llama_hparams::n_embd_v_gqa_max() const {
+    - '    uint32_t val = n_embd_v_gqa();'
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        val = std::max(val, n_embd_v_gqa(il));'
+    - '    }'
+    - ''
+    - '    return val;'
+    - '}'
+    desc: 计算所有层中V嵌入总维度的最大值
+    line: 159-166
+    name: n_embd_v_gqa_max
+  - code:
+    - uint32_t llama_hparams::n_embd_r() const {
+    - '    if (wkv_head_size != 0) {'
+    - '        // for RWKV models'
+    - '        return token_shift_count * n_embd;'
+    - '    }'
+    - ''
+    - '    if (n_shortconv_l_cache != 0) {'
+    - '        // for LFM2 models'
+    - '        return n_embd * (n_shortconv_l_cache - 1);'
+    - '    }'
+    - ''
+    - '    if (n_embd_head_kda != 0) {'
+    - '        // for Kimi KDA layers'
+    - '        // Conv state for Q, K, V: 3 * (d_conv - 1) * n_head * head_dim'
+    - '        const uint32_t d_inner = n_head() * n_embd_head_kda;  // 32 * 128 =
+      4096'
+    - '        return 3 * (ssm_d_conv > 0 ? ssm_d_conv - 1 : 3) * d_inner;'
+    - '    }'
+    - ''
+    - '    // TODO: maybe support other convolution strides than 1'
+    - '    // NOTE: since the first column of the conv_state is shifted out each time,
+      it''s not actually needed'
+    - '    // Corresponds to Mamba''s conv_states size'
+    - '    return (ssm_d_conv > 0 ? ssm_d_conv - 1 : 0) * (ssm_d_inner + 2*ssm_n_group*ssm_d_state);'
+    - '}'
+    desc: 计算循环层的输入嵌入维度，根据模型类型（RWKV、LFM2、Kimi KDA等）返回不同的值
+    line: 168-188
+    name: n_embd_r
+  - code:
+    - uint32_t llama_hparams::n_embd_s() const {
+    - '    if (wkv_head_size != 0) {'
+    - '        // corresponds to RWKV''s wkv_states size'
+    - '        return n_embd * wkv_head_size;'
+    - '    }'
+    - ''
+    - '    if (n_embd_head_kda != 0) {'
+    - '        // for Kimi KDA layers'
+    - '        // Full recurrent state: head_dim * head_dim * n_head'
+    - '        // h tensor shape for delta attention: [head_dim, head_dim, n_head]'
+    - '        return n_embd_head_kda * n_embd_head_kda * n_head();  // 128 * 128
+      * 32 = 524288'
+    - '    }'
+    - ''
+    - '    // corresponds to Mamba''s ssm_states size'
+    - '    return ssm_d_state * ssm_d_inner;'
+    - '}'
+    desc: 计算循环层的状态嵌入维度，根据模型类型（RWKV、Kimi KDA等）返回不同的值
+    line: 190-205
+    name: n_embd_s
+  - code:
+    - bool llama_hparams::is_recurrent(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return recurrent_layer_arr[il];'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("%s: il (%u) out of bounds (n_layer: %u)\n", __func__, il, n_layer);'
+    - '}'
+    desc: 检查指定层是否为循环层，如果层索引超出范围则终止程序
+    line: 207-213
+    name: is_recurrent
+  - code:
+    - uint32_t llama_hparams::n_pos_per_embd() const {
+    - '    return rope_type == LLAMA_ROPE_TYPE_MROPE || rope_type == LLAMA_ROPE_TYPE_IMROPE
+      ? 4 : 1;'
+    - '}'
+    desc: 返回每个嵌入的位置数，对于MROPE或IMROPE类型的旋转编码返回4，否则返回1
+    line: 215-217
+    name: n_pos_per_embd
+  - code:
+    - bool llama_hparams::is_swa(uint32_t il) const {
+    - '    if (il < n_layer) {'
+    - '        return swa_layers[il];'
+    - '    }'
+    - ''
+    - '    GGML_ABORT("fatal error");'
+    - '}'
+    desc: 检查指定层是否使用滑动窗口注意力，如果层索引超出范围则终止程序
+    line: 219-225
+    name: is_swa
+  - code:
+    - bool llama_hparams::is_mla() const {
+    - '    assert((n_embd_head_k_mla_impl == 0 && n_embd_head_v_mla_impl == 0) ||'
+    - '           (n_embd_head_k_mla_impl != 0 && n_embd_head_v_mla_impl != 0));'
+    - ''
+    - '    return n_embd_head_k_mla_impl != 0 && n_embd_head_v_mla_impl != 0;'
+    - '}'
+    desc: 检查模型是否使用多头潜在注意力(MLA)，要求K和V的MLA实现维度同时为0或同时不为0
+    line: 227-233
+    name: is_mla
+  - code:
+    - uint32_t llama_hparams::n_embd_head_k_mla() const {
+    - '    return is_mla() ? n_embd_head_k_mla_impl : n_embd_head_k();'
+    - '}'
+    desc: 返回MLA的K头嵌入维度，如果未使用MLA则返回标准K头维度
+    line: 235-237
+    name: n_embd_head_k_mla
+  - code:
+    - uint32_t llama_hparams::n_embd_head_v_mla() const {
+    - '    return is_mla() ? n_embd_head_v_mla_impl : n_embd_head_v();'
+    - '}'
+    desc: 返回MLA的V头嵌入维度，如果未使用MLA则返回标准V头维度
+    line: 239-241
+    name: n_embd_head_v_mla
+  - code:
+    - bool llama_hparams::has_kv(uint32_t il) const {
+    - '    if (n_layer_kv_from_start >= 0) {'
+    - '        if (il < (uint32_t) n_layer_kv_from_start) {'
+    - '            return true;'
+    - '        }'
+    - ''
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    // by default, all layers have kv'
+    - '    return true;'
+    - '}'
+    desc: 检查指定层是否有KV缓存，如果n_layer_kv_from_start非负，则前若干层有KV
+    line: 243-253
+    name: has_kv
+  - code:
+    - uint32_t llama_hparams::n_layer_kv() const {
+    - '    uint32_t res = 0;'
+    - ''
+    - '    for (uint32_t il = 0; il < n_layer; ++il) {'
+    - '        if (has_kv(il)) {'
+    - '            res++;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return res;'
+    - '}'
+    desc: 计算有KV缓存的层数
+    line: 255-265
+    name: n_layer_kv
+  - code:
+    - bool llama_hparams::use_mrope() const {
+    - '    return rope_sections[0] > 0 && rope_sections[1] > 0;'
+    - '}'
+    desc: 检查是否使用MROPE旋转位置编码，要求rope_sections的第一和第二个值都大于0
+    line: 267-269
+    name: use_mrope
+  name: llama_hparams
+desc: 该文件实现了llama_hparams类，用于管理和查询Llama模型的各种超参数，包括滑动窗口注意力(SWA)层的设置、多头注意力头数、前馈网络维度、嵌入维度、循环层配置等，为模型推理提供了参数查询接口。
+file: src/llama-hparams.cpp
+funcs: []

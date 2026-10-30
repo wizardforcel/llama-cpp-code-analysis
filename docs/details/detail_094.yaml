@@ -1,0 +1,252 @@
+code_map:
+- examples/embedding/embedding.cpp
+- ├── 辅助函数
+- '│   ├── split_lines()              # 按分隔符拆分多行文本输入'
+- '│   ├── batch_add_seq()            # 将 token 序列填入 llama_batch'
+- '│   ├── batch_decode()             # 核心：执行推理 + 提取嵌入 + 归一化'
+- '│   └── print_raw_embeddings()     # 格式化输出向量（支持精度控制）'
+- ├── 全局代码 __main__
+- │   ├── 参数解析与模型加载
+- │   ├── 分词与批处理组织
+- │   ├── llama_decode() 推理执行
+- │   ├── 池化类型分支处理（NONE / RANK / CLS / MEAN）
+- │   └── 结果输出（原生向量 / JSON / 相似度矩阵）
+- ''
+- examples/retrieval/retrieval.cpp
+- ├── 数据结构
+- '│   └── struct chunk               # 文档块：filename/filepos/textdata/tokens/embedding'
+- ├── 辅助函数
+- '│   ├── print_usage()              # 打印使用示例与参数说明'
+- '│   └── chunk_file()               # 按分隔符/固定大小智能分块'
+- ├── 批处理核心
+- '│   ├── batch_add_seq()            # 序列组装'
+- '│   └── batch_process()            # 推理 + 提取 + L2 归一化'
+- ├── 全局代码 __main__
+- │   ├── 参数解析 --chunk-size --chunk-separator
+- │   ├── 模型加载（强制要求 embedding 模式）
+- │   ├── 全库文档向量化与内存缓存
+- │   ├── 交互式查询循环
+- │   └── common_embd_similarity_cos() 余弦相似度排序
+- ''
+- examples/passkey/passkey.cpp
+- '├── print_usage()                  # 使用说明'
+- '├── main()                         # 主函数：SelfExtend 上下文扩展与 passkey 提取'
+- │   ├── 合成提示词生成
+- │   │   ├── prompt_prefix + n_junk 填充文本
+- │   │   ├── 随机位置 i_pos 插入 passkey
+- │   │   └── prompt_suffix 收尾
+- │   ├── SelfExtend 参数计算
+- │   │   ├── n_ctx = n_ctx_train * n_grp + n_keep
+- │   │   └── n_batch_grp = n_batch / n_grp
+- │   ├── KV 缓存填充阶段
+- │   │   ├── 常规批处理填充
+- │   │   └── SelfExtend 模式：llama_memory_seq_add() + seq_div()
+- │   ├── KV 缓存移位阶段
+- │   │   └── llama_memory_seq_rm() + seq_add() 释放空间
+- │   └── 贪心采样循环验证 passkey 提取
+exercises:
+- contents:
+  - 运行 embedding 示例，使用相同输入文本，分别指定：
+  - 1. --pooling none  2. --pooling cls  3. --pooling mean
+  - 观察并回答：
+  - '- 三种池化方式输出的向量维度有何差异？'
+  - '- 对于句子『The quick brown fox』，CLS 和 MEAN 池化生成的向量在语义上有何不同倾向？'
+  - '- NONE 池化模式下，每个 token 输出一个向量，这些向量之间有什么关联性？'
+  - 进阶：修改代码，在 batch_decode() 中打印每个 token 的原始嵌入值，观察哪个 token 对 CLS 池化贡献最大。
+  'no': 1
+  title: 嵌入池化策略对比实验
+- contents:
+  - 基于 retrieval 示例，完成以下任务：
+  - 1. 准备一个多主题文档（如混合技术文档、小说、新闻），用 chunk_file() 切分
+  - 2. 分别测试 chunk_size=64、chunk_size=256、chunk_size=512 对检索结果的影响
+  - 3. 实现一个简易的「混合检索」：同时使用余弦相似度和关键词重叠率（BM25 简化版）
+  - 思考问题：
+  - '- 分块过小会导致什么问题？（语义不完整）'
+  - '- 分块过大会导致什么问题？（噪声干扰、 Embedding 稀释）'
+  - '- 为什么在检索前进行 L2 归一化后，余弦相似度可以简化为点积？'
+  - 提示：修改 batch_process() 中的 embd_norm 参数，观察不归一化时的相似度分布差异。
+  'no': 2
+  title: RAG 检索精度调优
+- contents:
+  - 深入 passkey.cpp 的 main() 函数，分析 SelfExtend 实现：
+  - 1. 推导位置映射公式：给定 n_grp=2，原始位置 pos=100，压缩后的位置是多少？
+  - 2. 画图表示 selfExtend 模式下，KV 缓存中位置 ID 的分布变化（前段、中段、末端）
+  - 3. 修改代码：将 n_grp 从 2 改为 4，观察 n_ctx 的变化公式如何调整
+  - 4. 验证实验：固定 n_junk=250，逐步增加 i_pos（passkey 位置），记录模型成功提取的最大距离
+  - 思考问题：
+  - '- SelfExtend 为什么要把最近的 n_keep 个 token 保留完整位置？'
+  - '- seq_div(mem, 0, start, end, n_grp) 中的除法操作对注意力分数计算有何影响？'
+  - '- 如果 n_grp 过大，会出现什么精度问题？（位置分辨率损失）'
+  - '- passkey.cpp 的 main() 与其他示例的 __main__ 宏有何本质区别？'
+  'no': 3
+  title: SelfExtend 机制的数学推导与验证
+- contents:
+  - 对比 embedding 和 retrieval 两个示例的批处理实现：
+  - 1. 在 batch_decode() 和 batch_process() 中添加时间戳，统计：
+  - '   - 纯推理时间（llama_decode）'
+  - '   - 嵌入提取时间'
+  - '   - 归一化时间'
+  - 2. 调整 n_batch 参数（如 512 → 2048），观察吞吐量变化曲线
+  - 3. 分析 memory clear 的开销：注释掉 llama_memory_clear()，观察结果误差与性能变化
+  - 思考问题：
+  - '- 为什么嵌入场景需要清空 KV 缓存，而文本生成不需要？'
+  - '- 当 n_seq（序列数）远大于 n_batch（批大小）时，如何设计流水线避免内存溢出？'
+  - '- common_batch_add() 中的 position ID 为什么必须是连续的？如果不连续会发生什么？'
+  'no': 4
+  title: 批处理性能瓶颈分析
+learning_targets:
+- 理解文本嵌入的完整计算流程——从原始文本到向量表示
+- 掌握多种池化策略（NONE、RANK、CLS、MEAN）的实现差异与应用场景
+- 深入 llama_batch 批处理机制，实现多序列并行嵌入计算
+- 掌握向量归一化（L2/L∞）与余弦相似度计算的工程实现
+- 理解简易 RAG 系统的骨架：文档分块 → 向量化 → 相似度检索
+- 剖析 SelfExtend 技术如何通过位置映射压缩突破上下文长度限制
+- 掌握 KV 缓存的动态管理策略：llama_memory_seq_add/div/rm 的协同使用
+life_analogy:
+- 想象 llama.cpp 的嵌入与检索系统是一个**大型图书馆的智能化改造**：
+- '- **embedding.cpp** = 图书的「语义编码室」——每本书（文本）经过处理，得到一个「语义身份证」（向量）'
+- '- **池化策略** = 身份证的生成规则：'
+- '  - NONE = 逐页拍照（每个 token 一个向量）'
+- '  - CLS = 只看封面总结全书'
+- '  - MEAN = 取全书所有页的平均印象'
+- '  - RANK = 用于分类评级的特殊编码'
+- '- **retrieval.cpp** = 智能检索台——你把问题（查询）也编码成向量，然后在整个图书馆中找「最近邻」的书籍段落'
+- '- **余弦相似度** = 语义距离的量尺：两个向量的夹角越小，语义越接近'
+- '- **passkey.cpp** = 一场「大海捞针」的极限测试：在 250 条无关新闻中藏入一条密码，看模型能否在「记忆宫殿」中准确定位'
+- ''
+- SelfExtend 技术就像一个**聪明的图书管理员**：当书架（上下文）不够长时，他把旧书按「每 n 本合并一格」的方式压缩摆放，让有限的空间容纳更多的知识，同时保证最近的书（位置信息）仍然完整可寻。
+'no': 93
+summary:
+- concept: llama_pooling_type
+  desc: 池化类型决定嵌入提取方式，NONE=逐token / CLS=取首token / MEAN=平均 / RANK=分类头
+- concept: llama_get_embeddings_ith/seq
+  desc: 嵌入提取双入口：ith 用于 NONE 池化，seq 用于 CLS/MEAN/RANK 序列级池化
+- concept: common_embd_normalize
+  desc: L2/L∞ 向量归一化，消除量纲影响，适配余弦相似度计算
+- concept: llama_batch / common_batch_add
+  desc: 批处理核心结构，支持多序列并行推理，通过 seq_id 区分不同序列
+- concept: llama_memory_clear
+  desc: 嵌入场景无需历史状态，每次解码前清空 KV 缓存避免干扰
+- concept: chunk_file
+  desc: 文档分块策略：按分隔符（如句号）智能切分，保留文件偏移元数据
+- concept: common_embd_similarity_cos
+  desc: 余弦相似度计算：dot(a,b) / (|a|*|b|)，值域 [-1,1]，越大越相似
+- concept: SelfExtend / n_grp
+  desc: 位置压缩技术：pos_in_group = pos / n_grp，突破训练时上下文限制
+- concept: llama_memory_seq_add / seq_div
+  desc: KV 缓存位置动态调整：add 平移位置，div 等比压缩，实现 SelfExtend
+- concept: llama_memory_seq_rm / n_keep
+  desc: 缓存清理策略：保留前 n_keep 个 token（注意力汇聚点），移除中间段释放空间
+- concept: RAG 骨架
+  desc: 检索增强生成的最简实现：文档向量化预计算 + 查询时余弦相似度匹配
+- concept: 贪心采样 llama_sampler_init_greedy
+  desc: passkey 测试使用确定性解码，排除采样随机性，专注验证上下文记忆能力
+- concept: main() vs __main__
+  desc: passkey.cpp 使用标准 main() 函数作为入口，区别于其他示例的 __main__ 命名约定
+units:
+- codes:
+  - file: examples/embedding/embedding.cpp
+    line: 88-292
+    method_or_func: __main__
+  - file: examples/embedding/embedding.cpp
+    line: 11-23
+    method_or_func: split_lines()
+  - file: examples/embedding/embedding.cpp
+    line: 25-30
+    method_or_func: batch_add_seq()
+  - file: examples/embedding/embedding.cpp
+    line: 32-63
+    method_or_func: batch_decode()
+  - file: examples/embedding/embedding.cpp
+    line: 66-86
+    method_or_func: print_raw_embeddings()
+  name: 文本嵌入计算 —— 从文本到向量的「转换工厂」
+  'no': 1
+  points:
+  - '**嵌入计算的核心流程**：解析参数 → 加载模型 → 分词 → 批处理 → 池化输出'
+  - '- 支持多种池化方式：NONE（逐 token）、RANK（分类头输出）、CLS、MEAN'
+  - '- 池化类型由 `llama_pooling_type(ctx)` 动态获取，影响嵌入向量的提取策略'
+  - '- 嵌入维度由 `llama_model_n_embd_out(model)` 确定，支持输出向量归一化'
+  - '**批处理机制**：多序列、多 token 的高效计算'
+  - '- 使用 `llama_batch` 结构组织 token，通过 `common_batch_add()` 将序列添加到批次'
+  - '- 支持 `n_tokens` 和 `n_seq` 统计，在单批次中并行处理多个文本序列'
+  - '- 批处理前清除 KV 缓存：`llama_memory_clear()`（embedding 场景无需历史状态）'
+  - '**输出向量提取与归一化**：从模型隐藏状态到可用的向量表示'
+  - '- 通过 `llama_get_embeddings_ith()` 获取第 i 个 token 的嵌入（NONE 池化）'
+  - '- 通过 `llama_get_embeddings_seq()` 获取序列级嵌入（其他池化类型）'
+  - '- 使用 `common_embd_normalize()` 对向量进行 L2 或 L∞ 归一化，适配相似度计算'
+  - '**关键函数解析**'
+  - '- `split_lines()`：按分隔符拆分多行输入文本，作为嵌入输入'
+  - '- `batch_decode()`：执行推理 + 提取嵌入 + 归一化的核心流水'
+  - '- `print_raw_embeddings()`：按行或按列格式化输出原始或归一化后的向量'
+  - '**__main__ 全局流程**：串联参数解析、模型初始化、分词、批处理推理与结果输出'
+- codes:
+  - file: examples/retrieval/retrieval.cpp
+    line: 119-343
+    method_or_func: __main__
+  - file: examples/retrieval/retrieval.cpp
+    line: 16-19
+    method_or_func: print_usage()
+  - file: examples/retrieval/retrieval.cpp
+    line: 50-104
+    method_or_func: chunk_file()
+  - file: examples/retrieval/retrieval.cpp
+    line: 113-139
+    method_or_func: batch_process()
+  - file: examples/retrieval/retrieval.cpp
+    line: 107-111
+    method_or_func: batch_add_seq()
+  name: 语义检索系统 —— 向量空间的「最近邻搜寻」
+  'no': 2
+  points:
+  - '**检索流程概要**：文档切分 → 向量化 → 查询 → 余弦相似度排序 → 返回 top-k'
+  - '- 从轻量级的 RAG（检索增强生成）骨架，展示向量数据库的基本原理'
+  - '- 使用 BERT 类编码模型（非生成式模型），专注提取语义特征'
+  - '**使用说明与参数入口**：`print_usage()` 展示如何指定模型路径、top-k、context-file、chunk-size 与 chunk-separator
+    等关键参数'
+  - '**文档分块策略**'
+  - '- `chunk_file()` 支持按分隔符（如句号、换行）或固定长度智能切分长文档'
+  - '- 每个 chunk 保留元数据：filename、filepos、textdata、tokens、embedding'
+  - '- 分块大小通过 `--chunk-size` 参数控制，兼容不同文档结构与检索精度需求'
+  - '**向量化与池化**'
+  - '- 强制要求 `pooling_type != NONE`，仅支持 CLS/MEAN/RANK 等序列级嵌入'
+  - '- 通过 `common_embd_normalize()` 进行 L2 归一化，适配余弦相似度公式'
+  - '- 所有 chunk 的嵌入存储在 `chunks[i].embedding` 中，支持内存内快速检索'
+  - '**余弦相似度检索**'
+  - '- 使用 `common_embd_similarity_cos()` 计算查询向量与所有 chunk 向量的余弦相似度'
+  - '- 相似度结果排序后，返回前 K 个最相关的文档块及原始文本'
+  - '- 整个检索过程预计算完成，无重复推理，实现亚毫秒级的响应'
+  - '**命令行交互与 __main__ 主流程**'
+  - '- `__main__` 负责：参数解析 → 模型加载 → 全文切分与向量化 → 交互式查询循环'
+  - '- 支持交互模式：用户持续输入查询，系统即时返回语义最相近的文档段落'
+  - '- 通过 `--context-file` 支持多文档批量加载，合并为单一检索索引'
+- codes:
+  - file: examples/passkey/passkey.cpp
+    line: 16-193
+    method_or_func: main()
+  - file: examples/passkey/passkey.cpp
+    line: 10-14
+    method_or_func: print_usage()
+  name: Passkey 长上下文压力测试 —— SelfExtend 窗口扩展技术的「压力验证」
+  'no': 3
+  points:
+  - '**Passkey 测试的核心思想**：在超长上下文中埋入「关键信息」，验证模型能否突破原始 n_ctx 限制提取它'
+  - '- 生成会包含无关填充文本（junk text）与随机隐藏的关键 passkey'
+  - '- 通过实际的推理任务评估模型对超长上下文的「注意力聚焦能力」'
+  - '**SelfExtend 技术：位置ID 映射的魔法**'
+  - '- 通过 `n_grp` 参数启用 SelfExtend，将位置 ID 周期性地「压缩」以适应长上下文'
+  - '- 位置计算公式：`pos_in_group = pos / n_grp`，多个位置对应同一个 KV 缓存槽'
+  - '- 允许 `n_ctx = model_n_ctx_train * n_grp + n_keep`，突破模型训练时上下文限制'
+  - '**KV 缓存管理策略**'
+  - '- 使用 `llama_memory_seq_add()` 与 `llama_memory_seq_div()` 动态调整序列位置映射'
+  - '- 分阶段分配缓存：前段用完整位置 → 中段被压缩位置 → 末端恢复线性位置'
+  - '- 通过 `n_keep`（保留 token）和 `n_junk`（填充 token）精细控制内存占用'
+  - '**填充文本生成：hide and seek 的游戏**'
+  - '- 循环生成 n_junk 条无关事实性句子（如「草是绿的，天是蓝的」）'
+  - '- 在随机位置 `i_pos` 插入包含 passkey 的句子，如「The pass key is 12345」'
+  - '- 前后文用指令模板包裹，防止模型意外学到位置模式'
+  - '**验证流程：让模型「说出答案」**'
+  - '- 通过贪心采样（`llama_sampler_init_greedy()`）逐 token 生成，不依赖温度或多样性'
+  - '- 检查解码结果中是否包含原始 passkey 数值，以此判断上下文保留能力'
+  - '- 性能指标：统计每秒生成 token 数，评估长上下文处理的计算开销'
+  - '**main() 函数特殊说明**：passkey.cpp 使用标准 `main()` 而非 `__main__` 宏定义'

@@ -1,0 +1,573 @@
+classes: []
+desc: 该文件是llama.cpp中llguidance库的语法测试文件，通过定义一系列静态测试函数来验证llama_sampler结合llguidance语法和JSON
+  schema的字符串匹配行为，包括基本语法、复杂语法、特殊字符、量词和JSON schema的测试用例。该文件为llguidance集成测试，验证llama.cpp中llguidance采样器与语法解析器的集成效果，通过多个测试函数覆盖简单语法、复杂语法、特殊字符、量词、JSON模式及采样器链的正常与异常场景，确保语法约束与token采样正确协同工作。
+file: tests/test-grammar-llguidance.cpp
+funcs:
+- code:
+  - static const llama_vocab * vocab;
+  desc: 文件顶层全局代码，定义了全局vocab指针变量。
+  line: '9'
+  name: __main__
+- code:
+  - static bool match_string(const std::string & input, llama_sampler * grammar) {
+  - '    llama_sampler_reset(grammar);'
+  - '    auto tokens = common_tokenize(vocab, input, false, false);'
+  - '    auto n_vocab = llama_vocab_n_tokens(vocab);'
+  - '    std::vector<llama_token_data> cur;'
+  - '    cur.reserve(n_vocab);'
+  - '    for (llama_token token_id = 0; token_id < (llama_token) n_vocab; token_id++)
+    {'
+  - '        cur.emplace_back(llama_token_data{ token_id, 0.0f, 0.0f });'
+  - '    }'
+  - '    auto tok_arr = llama_token_data_array{ cur.data(), cur.size(), -1, false
+    };'
+  - '    for (const auto token : tokens) {'
+  - '        for (llama_token token_id = 0; token_id < (llama_token) n_vocab; token_id++)
+    {'
+  - '            cur[token_id].logit = 0.0f;'
+  - '        }'
+  - '        llama_sampler_apply(grammar, &tok_arr);'
+  - '        if (cur[token].logit < 0.0f) {'
+  - '            return false;'
+  - '        }'
+  - '        llama_sampler_accept(grammar, token);'
+  - '    }'
+  - '    auto tok_eos = llama_vocab_eot(vocab);'
+  - '    if (tok_eos == LLAMA_TOKEN_NULL) {'
+  - '        tok_eos = llama_vocab_eos(vocab);'
+  - '    }'
+  - '    cur[tok_eos].logit = 0.0f;'
+  - '    llama_sampler_apply(grammar, &tok_arr);'
+  - '    return cur[tok_eos].logit >= 0.0f;'
+  - '}'
+  desc: 使用给定的llama_sampler语法器检查输入字符串是否匹配，通过tokenize并逐个token应用采样器并检查logit值来判断匹配结果。
+  line: 11-38
+  name: match_string
+- code:
+  - static void test(const std::string & test_desc, const std::string & grammar_str,
+  - '                 const std::vector<std::string> & passing_strings, const std::vector<std::string>
+    & failing_strings) {'
+  - '    fprintf(stderr, "⚫ Testing %s\n%s\n", test_desc.c_str(), grammar_str.c_str());'
+  - '    fflush(stderr);'
+  - '    auto * grammar = llama_sampler_init_llg(vocab, "lark", grammar_str.c_str());'
+  - '    fprintf(stderr, "  🔵 Valid strings:\n");'
+  - '    for (const auto & test_string : passing_strings) {'
+  - '        fprintf(stderr, "    \"%s\" ", test_string.c_str());'
+  - '        fflush(stderr);'
+  - '        bool matched = match_string(test_string, grammar);'
+  - '        if (!matched) {'
+  - '            fprintf(stderr, "❌ (failed to match)\n");'
+  - '            FILE * grammar_file = fopen("test-grammar-integration.grammar.gbnf",
+    "w");'
+  - '            if (grammar_file) {'
+  - '                fprintf(grammar_file, "%s", grammar_str.c_str());'
+  - '                fclose(grammar_file);'
+  - '            }'
+  - '            FILE * string_file = fopen("test-grammar-integration.string.txt",
+    "w");'
+  - '            if (string_file) {'
+  - '                fprintf(string_file, "%s", test_string.c_str());'
+  - '                fclose(string_file);'
+  - '            }'
+  - '            fprintf(stderr,'
+  - '                    "\n NOTE: Debug grammar file generated. To analyze this failure
+    in detail, run the following "'
+  - '                    "command:     ./test-gbnf-validator test-grammar-integration.grammar.gbnf
+    "'
+  - '                    "test-grammar-integration.string.txt\n\n");'
+  - '        } else {'
+  - '            fprintf(stdout, "✅︎\n");'
+  - '        }'
+  - '        assert(matched);'
+  - '    }'
+  - '    fprintf(stderr, "  🟠 Invalid strings:\n");'
+  - '    for (const auto & test_string : failing_strings) {'
+  - '        fprintf(stderr, "    \"%s\" ", test_string.c_str());'
+  - '        fflush(stderr);'
+  - '        bool matched = match_string(test_string, grammar);'
+  - '        if (matched) {'
+  - '            fprintf(stderr, "❌ (incorrectly matched)\n");'
+  - '        } else {'
+  - '            fprintf(stdout, "✅︎\n");'
+  - '        }'
+  - '        assert(!matched);'
+  - '    }'
+  - '    llama_sampler_free(grammar);'
+  - '}'
+  desc: 执行单个语法或schema的测试，遍历成功和失败字符串列表进行检查，失败时会输出错误信息并生成调试文件。
+  line: 40-82
+  name: test
+- code:
+  - static void test_grammar(const std::string & test_desc, const std::string & grammar_str,
+  - '                         const std::vector<std::string> & passing_strings,'
+  - '                         const std::vector<std::string> & failing_strings) {'
+  - '    test(test_desc + ". Grammar: " + grammar_str, grammar_str, passing_strings,
+    failing_strings);'
+  - '}'
+  desc: 测试LLGuidance语法字符串的辅助函数，将语法字符串作为测试描述的一部分并调用test函数。
+  line: 84-88
+  name: test_grammar
+- code:
+  - static void test_schema(const std::string & test_desc, const std::string & schema_str,
+  - '                        const std::vector<std::string> & passing_strings,'
+  - '                        const std::vector<std::string> & failing_strings) {'
+  - '    test(test_desc + ". Schema: " + schema_str, "%llguidance {}\nstart: %json
+    " + schema_str, passing_strings,'
+  - '         failing_strings);'
+  - '}'
+  desc: 测试JSON schema的辅助函数，将schema字符串包装成llguidance格式的语法字符串并调用test函数。
+  line: 90-96
+  name: test_schema
+- code:
+  - static void test_simple_grammar() {
+  - '    test_schema("min 0",'
+  - '                R"""({"type": "integer", "minimum": 0})""",'
+  - '                { "0", "10", "12", "10000" },'
+  - '                { "-1", "-10", "-10000", "-100000000000000000000000000000000",
+    "00", "01", "-0" });'
+  - '    test_schema("min 2",'
+  - '                R"""({"type": "integer", "minimum": 2})""",'
+  - '                { "2", "3", "4", "10", "20", "1234567890000000" },'
+  - '                { "0", "1", "-1", "-100", "0", "1", "01", "02" });'
+  - '    test_schema("min 456",'
+  - '                R"""({"type": "integer", "minimum": 456})""",'
+  - '                { "456", "4560", "457", "460", "500" },'
+  - '                { "455", "356", "50", "050", "-1", "-456" });'
+  - '    test_schema("min -123",'
+  - '                R"""({"type": "integer", "minimum": -123})""",'
+  - '                { "-123", "-122", "-11", "-1", "0", "1", "123", "1234", "2345"
+    },'
+  - '                { "-1234", "-124" });'
+  - '    test_schema("max 9999",'
+  - '                R"""({"type": "integer", "maximum": 9999})""",'
+  - '                { "-99999", "0", "9999" },'
+  - '                { "10000", "99991" });'
+  - '    test_schema("max -9999",'
+  - '                R"""({"type": "integer", "maximum": -9999})""",'
+  - '                { "-10000", "-9999" },'
+  - '                { "-9998", "0", "9999" });'
+  - '    test_schema("min 5 max 30",'
+  - '                R"""({"type": "integer", "minimum": 5, "maximum": 30})""",'
+  - '                { "5", "10", "30" },'
+  - '                { "05", "4", "-1", "31", "123", "0123" });'
+  - '    test_schema("min -1 max 1",'
+  - '                R"""({"type": "integer", "minimum": -1, "maximum": 1})""",'
+  - '                { "-1", "0", "1" },'
+  - '                { "-11", "-10", "-2", "2", "10", "11" });'
+  - '    test_schema("min -123 max 42",'
+  - '                R"""({"type": "integer", "minimum": -123, "maximum": 42})""",'
+  - '                { "-123", "-122", "-13", "-11", "-2", "-1", "0", "1", "5", "10",
+    "39", "40", "42" },'
+  - '                { "-0123", "-124", "-1123", "-200", "43", "123", "0123" });'
+  - '    test_schema("exclusive min / max",'
+  - '                R"""({"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum":
+    10000})""",'
+  - '                { "1", "9999" },'
+  - '                { "0", "01", "10000", "99999" });'
+  - '    test_grammar("simple grammar",'
+  - '                 R"""(start: expr
+
+    expr: term ("+" term)*
+
+    term: number
+
+    number: /[0-9]+/ )""",'
+  - '                 { "42", "1+2+3+4+5", "123+456" },'
+  - '                 { "+", "/ 3", "1+2+3+4+5+", "12a45" });'
+  - '}'
+  desc: 测试简单语法和整数schema的边界条件，包括最小最大值、排他性和简单表达式。
+  line: 98-159
+  name: test_simple_grammar
+- code:
+  - static void test_complex_grammar() {
+  - '    test_grammar("medium complexity grammar",'
+  - '                 R"""(start: expression
+
+    expression: term ws (("+"|"-") ws term)*
+
+    term: factor ws (("*"|"/") ws factor)*
+
+    factor: number | variable | "(" expression ")" | function-call
+
+    number: /[0-9]+/
+
+    variable: /[a-zA-Z_][a-zA-Z0-9_]*/
+
+    function-call: variable ws "(" (expression ("," ws expression)*)? ")"
+
+    ws: /[ \t\n\r]?/ )""",'
+  - '                 { "42", "1*2*3*4*5", "x", "x+10", "x1+y2", "(a+b)*(c-d)", "func()",
+    "func(x,y+2)", "a*(b+c)-d/e", "f(g(x),h(y,z))", "x + 10", "x1 + y2", "(a + b)
+    * (c - d)", "func()", "func(x, y + 2)", "a * (b + c) - d / e", "f(g(x), h(y, z))",
+    "123+456", "123*456*789-123/456+789*123", "123+456*789-123/456+789*123-456/789+123*456-789/123+456*789-123/456+789*123-456"
+    },'
+  - '                 { "+", "/ 3x", "x + + y", "a * / b", "func(,)", "func(x y)",
+    "(a + b", "x + y)", "a + b * (c - d", "42 +", "x +", "x + 10 +", "(a + b) * (c
+    - d", "func(", "func(x, y + 2", "a * (b + c) - d /", "f(g(x), h(y, z)", "123+456*789-123/456+789*123-456/789+123*456-789/123+456*789-123/456+789*123-456/"
+    });'
+  - '}'
+  desc: 测试较复杂的算术表达式语法，包含变量、函数调用和括号操作符等，验证复杂的嵌套和递归匹配。
+  line: 161-186
+  name: test_complex_grammar
+- code:
+  - static void test_special_chars() {
+  - '    test_grammar("special characters",'
+  - '                 R"""(start: /.../ "abc" /.../)""",'
+  - '                 { "abcabcabc", "aaaabcccc", "🔵🟠✅abc❌🟠🔵" },'
+  - '                 { "aaabcccc", "aaaaabcccc", "aaaabccc", "aaaabccccc", "🔵🟠✅❌abc❌✅🟠🔵",
+    "🔵🟠abc🟠🔵" });'
+  - '}'
+  desc: 测试特殊字符如'.'和多字节Unicode字符在语法中的匹配行为，确保字符计数正确。
+  line: 188-194
+  name: test_special_chars
+- code:
+  - static void test_quantifiers() {
+  - '    test_grammar("* quantifier",'
+  - '                R"""(start: "a"*)""",'
+  - '                { "", "a", "aaaaa", "aaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },'
+  - '                { "b", "ab", "aab", "ba", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+    });'
+  - '    test_grammar("+ quantifier",'
+  - '                R"""(start: "a"+)""",'
+  - '                { "a", "aaaaa", "aaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },'
+  - '                { "", "b", "ab", "aab", "ba", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+    });'
+  - '    test_grammar("? quantifier",'
+  - '                R"""(start: "a"?)""",'
+  - '                { "", "a" },'
+  - '                { "b", "ab", "aa", "ba" });'
+  - '    test_grammar("mixed quantifiers",'
+  - '                R"""(start: cons+ vowel* cons? (vowel cons)*
+
+    vowel: /[aeiouy]/
+
+    cons: /[bcdfghjklmnpqrstvwxyz]/)""",'
+  - '                { "yes", "no", "noyes", "crwth", "four", "bryyyy" },'
+  - '                { "yess", "yesno", "forty", "catyyy" });'
+  - '    test_grammar("simple exact repetition",'
+  - '                R"""(start: /[ab]{4}/)""",'
+  - '                { "aaaa", "bbbb", "abab" },'
+  - '                { "a", "b", "aaaaa" });'
+  - '    test_grammar("simple min repetition",'
+  - '                R"""(start: /[ab]{4,}/)""",'
+  - '                { "aaaa", "aaaaab", "bbbb", "ababab" },'
+  - '                { "", "aba" });'
+  - '    test_grammar("simple max repetition",'
+  - '                R"""(start: /[ab]{0,4}/)""",'
+  - '                { "", "a", "aa", "aaa", "aaab" },'
+  - '                { "aaaaa" });'
+  - '}'
+  desc: 测试语法中的量词（*、+、?、{}）的匹配行为，包括简单和混和量词以及重复计数。
+  line: 196-229
+  name: test_quantifiers
+- code:
+  - static void test_json_schema() {
+  - '    test_schema("empty schema (object)",'
+  - '                R"""({"type":"object"})""",'
+  - '                { R"""({})""", R"""({"foo": "bar"})""" },'
+  - '                { "", "[]", "null", R"""("")""", "true" });'
+  - '    test_schema("exotic formats (list)",'
+  - '                R"""({"items": [{ "format": "date" }, { "format": "uuid" }, {
+    "format": "time" }, { "format": "date-time" }]})""",'
+  - '                { R"""(["2012-04-23", "12345678-1234-1234-1234-1234567890ab",
+    "18:25:43.511Z", "2012-04-23T18:25:43.511Z"])""" },'
+  - '                { R"""(["foo", "bar"])""", R"""(["12345678-1234-1234-1234-1234567890ab"])"""
+    });'
+  - '    test_schema("string",'
+  - '                R"""({"type": "string"})""",'
+  - '                { R"""("foo")""", R"""("bar")""", R"""("")""" },'
+  - '                { R"""({})""", R"""("foo": "bar")""" });'
+  - '    test_schema("string w/ min length 1",'
+  - '                R"""({"type": "string", "minLength": 1})""",'
+  - '                { R"""("foo")""", R"""("bar")""" },'
+  - '                { R"""("")""", R"""({})""", R"""("foo": "bar")""" });'
+  - '    test_schema("string w/ min length 3",'
+  - '                R"""({"type": "string", "minLength": 3})""",'
+  - '                { R"""("foo")""", R"""("bar")""", R"""("foobar")""" },'
+  - '                { R"""("")""", R"""("f")""", R"""("fo")""" });'
+  - '    test_schema("string w/ max length",'
+  - '                R"""({"type": "string", "maxLength": 3})""",'
+  - '                { R"""("foo")""", R"""("bar")""", R"""("")""", R"""("f")""",
+    R"""("fo")""" },'
+  - '                { R"""("foobar")""" });'
+  - '    test_schema("string w/ min & max length",'
+  - '                R"""({"type": "string", "minLength": 1, "maxLength": 4})""",'
+  - '                { R"""("foo")""", R"""("bar")""", R"""("f")""", R"""("barf")"""
+    },'
+  - '                { R"""("")""", R"""("barfo")""", R"""("foobar")""" });'
+  - '    test_schema("boolean",'
+  - '                R"""({"type": "boolean"})""",'
+  - '                { "true", "false" },'
+  - '                { R"""("")""", R"""("true")""", R"""(True)""", R"""(FALSE)"""
+    });'
+  - '    test_schema("integer",'
+  - '                R"""({"type": "integer"})""",'
+  - '                { R"""(0)""", R"""(12345)""", R"""(1234567890123456)""" },'
+  - '                { R"""()""", R"""(01)""", R"""(007)""", R"""(12345678901234567  )"""
+    });'
+  - '    test_schema("string const",'
+  - '                R"""({"const": "foo"})""",'
+  - '                { R"""("foo")""" },'
+  - '                { R"""(foo)""", R"""("bar")""" });'
+  - '    test_schema("non-string const",'
+  - '                R"""({"const": true})""",'
+  - '                { R"""(true)""" },'
+  - '                { R"""()""", R"""(foo)""", R"""("true")""" });'
+  - '    test_schema("non-string const",'
+  - '                R"""({"enum": ["red", "amber", "green", null, 42, ["foo"]]})""",'
+  - '                { R"""("red")""", R"""(null)""", R"""(42)""", R"""(["foo"])"""
+    },'
+  - '                { R"""()""", R"""(420)""", R"""(true)""", R"""(foo)""" });'
+  - '    test_schema("simple pattern",'
+  - '                R"""({"pattern": "^[a-zA-Z0-9_-]*$"})""",'
+  - '                { R"""("")""", R"""("He_llo-12")""" },'
+  - '                { R"""("!")""", R"""("Hello World")""" });'
+  - '    test_schema("pattern with escapes",'
+  - '                R"""({"pattern": "^a\\^\\$\\.\\[\\]\\(\\)\\|\\{\\}\\*\\+\\?b$"})""",'
+  - '                { R"""("a^$.[]()|{}*+?b")""" },'
+  - '                { R"""("ab")""" });'
+  - '    test_schema("",'
+  - '                R"""({"type": ["array", "null"], "items": { "type": "string"
+    }})""",'
+  - '                { "null", "[]", "[\"123\"]", "[\"foo\", \"bar\"]" },'
+  - '                { "", "[123]", "\"foo\"", "[\"foo\", 42]" });'
+  - '    test_schema("min+max items",'
+  - '                R"""({"items": {"type": ["number", "integer"]}, "minItems": 3,
+    "maxItems": 5})""",'
+  - '                { R"""([1, 2, 3])""", R"""([1, 2, 3, 4])""", R"""([1, 2, 3, 4,
+    5])""", R"""(1)""" },'
+  - '                { R"""([1, 2])""", R"""([1, 2, 3, 4, 5, 6])""" });'
+  - '    test_schema("object properties",'
+  - '                R"""({"type": "object", "properties": {"number": { "type": "number"
+    }, "street_name": { "type": "string" }, "street_type": { "enum": ["Street", "Avenue",
+    "Boulevard"] }}, "additionalProperties": false})""",'
+  - '                { R"""({ "number": 1600, "street_name": "Pennsylvania", "street_type":"Avenue"})""",
+    R"""({ "street_name": "Pennsylvania" })""", R"""({ "number": 1600, "street_name":
+    "Pennsylvania" })""", R"""({})""", R"""({ "number": 1600, "street_name": "Pennsylvania",
+    "street_type": "Avenue" })""" },'
+  - '                { R"""({ "number": "1600", "street_name": "Pennsylvania", "street_type":"Avenue"})""",
+    R"""({ "street_name": "Pennsylvania", "number": 1600 })""", R"""({ "number": "1600",
+    "street_name": "Pennsylvania", "street_type":"Avenue"})""", R"""({ "number": 1600,
+    "street_name": "Pennsylvania", "street_type":"Avenue", "direction":"NW"})""" });'
+  - '    test_schema("additional properties can''t override other properties",'
+  - '                R"""({"properties": {"a": {"type": "integer"}, "b": {"type":
+    "integer"}}, "additionalProperties": true})""",'
+  - '                { R"""({"a": 42})""", R"""({"c": ""})""", R"""({"a": 42, "c":
+    ""})""", R"""({"a_": ""})""" },'
+  - '                { R"""()""", R"""({"a": ""})""", R"""({"a": "", "b": ""})"""
+    });'
+  - '    test_schema("object properties, additionalProperties: true",'
+  - '                R"""({"type": "object", "properties": {"number": { "type": "number"
+    }, "street_name": { "type": "string" }, "street_type": { "enum": ["Street", "Avenue",
+    "Boulevard"] }}, "additionalProperties": true})""",'
+  - '                { R"""({})""", R"""({"number":1600,"street_name":"Pennsylvania","street_type":"Avenue"})""",
+    R"""({ "street_name": "Pennsylvania" })""", R"""({ "number": 1600, "street_name":
+    "Pennsylvania" })""", R"""({ "number": 1600, "street_name": "Pennsylvania", "street_type":"Avenue",
+    "direction":"NW"})""", R"""({ "number": 1600, "street_name": "Pennsylvania", "street_type":
+    "Avenue" })""" },'
+  - '                { R"""({ "number": "1600", "street_name": "Pennsylvania", "street_type":"Avenue"})""",
+    R"""({ "street_name": "Pennsylvania", "number": 1600, "street_type":"Avenue"})"""
+    });'
+  - '    test_schema("required + optional props each in original order",'
+  - '                R"""({"type": "object", "properties": {"number": { "type": "number"
+    }, "street_name": { "type": "string" }, "street_type": { "enum": ["Street", "Avenue",
+    "Boulevard"] }}, "additionalProperties": false})""",'
+  - '                { R"""({ "street_name": "Pennsylvania" })""", R"""({ "number":
+    1600, "street_type":"Avenue"})""", R"""({ "number": 1600, "street_name": "Pennsylvania"
+    })""", R"""({ "number": 1600, "street_name": "Pennsylvania", "street_type":"Avenue"})""",
+    R"""({ "number": 1600, "street_name": "Pennsylvania", "street_type": "Avenue"
+    })""" },'
+  - '                { R"""({ "street_type": "Avenue", "number": 1600 })""", R"""({
+    "number": 1600, "street_name": "Pennsylvania", "street_type": "Avenue", "direction":
+    "NW" })""" });'
+  - '    test_schema("required + optional props each in original order",'
+  - '                R"""({"properties": {"b": {"type": "string"}, "a": {"type": "string"},
+    "d": {"type": "string"}, "c": {"type": "string"}}, "required": ["a", "b"], "additionalProperties":
+    false})""",'
+  - '                { R"""({"b": "foo", "a": "bar"})""", R"""({"b":"foo","a":"bar","d":"qux"})""",
+    R"""({"b":"foo", "a":"bar", "d":"qux", "c":"baz"})""" },'
+  - '                { R"""({"a": "foo", "b": "bar"})""", R"""({"b": "bar"})""", R"""({"a":
+    "foo", "c": "baz"})""", R"""({"a":"foo", "b":"bar", "c":"baz", "d":"qux"})"""
+    });'
+  - '    test_schema("required props",'
+  - '                R"""({"$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://example.com/product.schema.json", "title": "Product", "description":
+    "A product from Acme''s catalog", "type": "object", "properties": {"productId":
+    {"description": "The unique identifier for a product", "type": "integer"}, "productName":
+    {"description": "Name of the product", "type": "string"}, "price": {"description":
+    "The price of the product", "type": "number", "exclusiveMinimum": 0}, "tags":
+    {"description": "Tags for the product", "type": "array", "items": {"type": "string"},
+    "minItems": 1, "DISABLED_uniqueItems": true}, "dimensions": {"type": "object",
+    "properties": {"length": {"type": "number"}, "width": {"type": "number"}, "height":
+    {"type": "number"}}, "required": ["length", "width", "height"]}}, "required":
+    ["productId", "productName", "price"]})""",'
+  - '                { R"""({"productId": 1, "productName": "A green door", "price":
+    12.50})""", R"""({"productId": 1, "productName": "A green door", "price": 12.50,
+    "tags": ["home", "green"]})""", R"""({"productId": 1, "productName": "A green
+    door", "price": 12.50, "tags": ["home", "green"], "dimensions": {"length": 785,
+    "width": 250.5, "height": -0.359}})""" },'
+  - '                { }'
+  - '}'
+  desc: 测试多种JSON schema约束的转换和匹配，包括类型、长度、枚举、模式和对象属性等。
+  line: 231-333
+  name: test_json_schema
+- code:
+  - '#include "llama.h"'
+  - '#include "common.h"'
+  - '#include "sampler.h"'
+  - llama_vocab * vocab;
+  - static void test_simple_grammar(void);
+  - static void test_complex_grammar(void);
+  - static void test_special_chars(void);
+  - static void test_quantifiers(void);
+  - static void test_json_schema(void);
+  - static void one_hot(llama_token_data_array & tok_arr, llama_token selected);
+  - static void test_sampler_chain(void);
+  - int main(int argc, const char ** argv) {
+  - '    fprintf(stdout, "Running llguidance integration tests...\n");'
+  - '    if (argc != 2) {'
+  - '        fprintf(stderr, "Usage: %s <vocab-file>\n", argv[0]);'
+  - '        return 1;'
+  - '    }'
+  - '    const char * vocab_file = argv[1];'
+  - '    fprintf(stderr, "reading vocab from: ''%s''\n", vocab_file);'
+  - '    llama_model *   model;'
+  - '    llama_context * ctx;'
+  - '    llama_backend_init();'
+  - '    {'
+  - '        auto mparams = llama_model_default_params();'
+  - '        mparams.vocab_only = true;'
+  - '        model = llama_model_load_from_file(vocab_file, mparams);'
+  - '        if (model == NULL) {'
+  - '            fprintf(stderr, "%s: error: failed to load vocab ''%s''\n", __func__,
+    vocab_file);'
+  - '            return 1;'
+  - '        }'
+  - '        auto cparams = llama_context_default_params();'
+  - '        ctx = llama_init_from_model(model, cparams);'
+  - '        if (ctx == NULL) {'
+  - '            fprintf(stderr, "%s: error: failed to load vocab ''%s''\n", __func__,
+    vocab_file);'
+  - '            llama_model_free(model);'
+  - '            return 1;'
+  - '        }'
+  - '    }'
+  - '    vocab = llama_model_get_vocab(model);'
+  - '    test_simple_grammar();'
+  - '    test_complex_grammar();'
+  - '    test_special_chars();'
+  - '    test_quantifiers();'
+  - '    test_json_schema();'
+  - '    test_sampler_chain();'
+  - '    llama_free(ctx);'
+  - '    llama_model_free(model);'
+  - '    fprintf(stdout, "All tests passed.\n");'
+  - '    return 0;'
+  - '}'
+  desc: 全局代码区域，包含预处理指令、全局变量vocab定义，以及主函数main入口，负责加载词汇表、初始化后端、依次执行各测试函数并输出测试结果。
+  line: 1075-1148
+  name: __main__
+- code:
+  - static void test_simple_grammar(void);
+  - '{'
+  - '    // 测试简单语法规则的函数实现'
+  - '    // 具体实现代码不在此代码片段中'
+  - '}'
+  desc: 测试简单grammar规则的使用，定义test_simple_grammar函数，但具体实现代码未在此片段中展示。
+  line: 1126-1129
+  name: test_simple_grammar
+- code:
+  - static void test_complex_grammar(void);
+  - '{'
+  - '    // 测试复杂语法规则的函数实现'
+  - '    // 具体实现代码不在此代码片段中'
+  - '}'
+  desc: 测试复杂grammar规则的使用，定义test_complex_grammar函数，但具体实现代码未在此片段中展示。
+  line: 1127-1130
+  name: test_complex_grammar
+- code:
+  - static void test_special_chars(void);
+  - '{'
+  - '    // 测试特殊字符处理的函数实现'
+  - '    // 具体实现代码不在此代码片段中'
+  - '}'
+  desc: 测试特殊字符在grammar中的处理，定义test_special_chars函数，但具体实现代码未在此片段中展示。
+  line: 1128-1131
+  name: test_special_chars
+- code:
+  - static void test_quantifiers(void);
+  - '{'
+  - '    // 测试量词处理的函数实现'
+  - '    // 具体实现代码不在此代码片段中'
+  - '}'
+  desc: 测试量词在grammar中的处理，定义test_quantifiers函数，但具体实现代码未在此片段中展示。
+  line: 1129-1132
+  name: test_quantifiers
+- code:
+  - static void test_json_schema(void)
+  - '{'
+  - '    using guide::LLGuidanceConfig;'
+  - '    go_test_json_schema_cfg<test_cfg, test_json_schema>();'
+  - '    // ... 代码片段仅在开头显示，省略了大部分实现细节'
+  - '}'
+  desc: 测试JSON Schema的grammar集成，通过go_test_json_schema_cfg函数调用，验证JSON Schema中对象属性、数组限制、字符串格式等约束是否正确应用，包含通过和失败两组测试用例。
+  line: 1020-1080
+  name: test_json_schema
+- code:
+  - static void one_hot(llama_token_data_array & tok_arr, llama_token selected)
+  - '{'
+  - '    auto n_vocab = tok_arr.size;'
+  - '    tok_arr.selected = -1;'
+  - '    tok_arr.sorted   = false;'
+  - '    for (llama_token token_id = 0; token_id < (llama_token) n_vocab; token_id++)
+    {'
+  - '        tok_arr.data[token_id].id    = token_id;'
+  - '        tok_arr.data[token_id].logit = 0.0f;'
+  - '    }'
+  - '    tok_arr.data[selected].logit = 100.0f;'
+  - '}'
+  desc: 将选定token的logit值设为100.0，其他token都设为0.0，用于模拟one-hot编码的token分布，辅助采样器测试。
+  line: 1082-1090
+  name: one_hot
+- code:
+  - static void test_sampler_chain(void)
+  - '{'
+  - '    auto sparams            = llama_sampler_chain_default_params();'
+  - '    sparams.no_perf         = false;'
+  - '    llama_sampler * sampler = llama_sampler_chain_init(sparams);'
+  - '    const auto grammar_data = R"(%llguidance {}\nstart: /[A-Z ]*/";'
+  - '    llama_sampler_chain_add(sampler, llama_sampler_init_llg(vocab, "lark", grammar_data));'
+  - '    llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));'
+  - '    auto input  = "ALL YOUR BASE ARE BELONG TO US";'
+  - '    auto tokens = common_tokenize(vocab, input, false, false);'
+  - '    auto n_vocab = llama_vocab_n_tokens(vocab);'
+  - '    std::vector<llama_token_data> cur;'
+  - '    cur.reserve(n_vocab);'
+  - '    for (llama_token token_id = 0; token_id < (llama_token) n_vocab; token_id++)
+    {'
+  - '        cur.emplace_back(llama_token_data{ token_id, 0.0f, 0.0f });'
+  - '    }'
+  - '    auto tok_arr = llama_token_data_array{ cur.data(), cur.size(), -1, false
+    };'
+  - '    for (const auto token : tokens) {'
+  - '        one_hot(tok_arr, token);'
+  - '        fprintf(stderr, "applying token: %d\n", token);'
+  - '        llama_sampler_apply(sampler, &tok_arr);'
+  - '        auto idx = tok_arr.selected;'
+  - '        fprintf(stderr, " -> %d %f\n", cur[idx].id, cur[idx].logit);'
+  - '        assert(cur[tok_arr.selected].id == token);'
+  - '        llama_sampler_accept(sampler, token);'
+  - '    }'
+  - '    auto tok_eos = llama_vocab_eot(vocab);'
+  - '    if (tok_eos == LLAMA_TOKEN_NULL) {'
+  - '        tok_eos = llama_vocab_eos(vocab);'
+  - '    }'
+  - '    one_hot(tok_arr, tok_eos);'
+  - '    llama_sampler_apply(sampler, &tok_arr);'
+  - '    assert(cur[tok_arr.selected].id == tok_eos);'
+  - '}'
+  desc: 测试采样器链的功能，创建包含llg采样器和dist采样器的链，对token序列进行采样，验证采样结果与预期一致，并确保EOS（或EOT）token也被正确采样。
+  line: 1092-1120
+  name: test_sampler_chain

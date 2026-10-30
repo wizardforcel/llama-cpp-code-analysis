@@ -1,0 +1,174 @@
+classes:
+- desc: 跨平台的文件读写封装类，通过PIMPL模式（指针隐藏实现）在不同操作系统上提供统一的文件操作接口，支持直接I/O、分段读取等功能。
+  methods:
+  - code:
+    - 'llama_file::llama_file(const char * fname, const char * mode, const bool use_direct_io)
+      :'
+    - '    pimpl(std::make_unique<impl>(fname, mode, use_direct_io)) {}'
+    - 'llama_file::llama_file(FILE * file) : pimpl(std::make_unique<impl>(file)) {}'
+    desc: 构造函数，根据文件名和模式打开文件，并初始化文件大小和指针位置。
+    line: 188-189
+    name: llama_file
+  - code:
+    - llama_file::~llama_file() = default;
+    desc: 析构函数，释放内部实现对象。
+    line: '191'
+    name: ~llama_file
+  - code:
+    - size_t llama_file::tell() const { return pimpl->tell(); }
+    desc: 返回当前文件读取位置（以字节为单位）。
+    line: '193'
+    name: tell
+  - code:
+    - size_t llama_file::size() const { return pimpl->size; }
+    desc: 返回文件的总大小（以字节为单位）。
+    line: '194'
+    name: size
+  - code:
+    - size_t llama_file::read_alignment() const { return pimpl->read_alignment();
+      }
+    desc: 返回读取数据时的对齐字节数。
+    line: '196'
+    name: read_alignment
+  - code:
+    - bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
+    desc: 检查是否启用了直接I/O（绕过操作系统缓存）。
+    line: '197'
+    name: has_direct_io
+  - code:
+    - int llama_file::file_id() const {
+    - '#ifdef _WIN32'
+    - '    return _fileno(pimpl->fp);'
+    - '#else'
+    - '    if (pimpl->fd != -1) {'
+    - '        return pimpl->fd;'
+    - '    }'
+    - '#if defined(fileno)'
+    - '    return fileno(pimpl->fp);'
+    - '#else'
+    - '    return ::fileno(pimpl->fp);'
+    - '#endif'
+    - '#endif'
+    - '}'
+    desc: 返回文件描述符（POSIX）或文件句柄ID（Windows），用于底层系统调用。
+    line: 199-209
+    name: file_id
+  - code:
+    - void llama_file::seek(size_t offset, int whence) const { pimpl->seek(offset,
+      whence); }
+    desc: 移动文件指针到指定偏移位置。
+    line: '211'
+    name: seek
+  - code:
+    - void llama_file::read_raw(void * ptr, size_t len) { pimpl->read_raw(ptr, len);
+      }
+    desc: 从文件读取指定长度的原始数据，可能使用对齐读取优化。
+    line: '212'
+    name: read_raw
+  - code:
+    - '#ifdef _WIN32'
+    - void llama_file::read_raw_unsafe(void * ptr, size_t len) { pimpl->read_raw(ptr,
+      len); }
+    - '#else'
+    - void llama_file::read_raw_unsafe(void * ptr, size_t len) { pimpl->read_raw_unsafe(ptr,
+      len); }
+    - '#endif'
+    desc: 从文件读取原始数据，不进行对齐处理（适用于不支持对齐读取的平台）。
+    line: 213-217
+    name: read_raw_unsafe
+  - code:
+    - uint32_t llama_file::read_u32() { return pimpl->read_u32(); }
+    desc: 从文件读取一个32位无符号整数。
+    line: '219'
+    name: read_u32
+  - code:
+    - void llama_file::write_raw(const void * ptr, size_t len) const { pimpl->write_raw(ptr,
+      len); }
+    desc: 向文件写入指定长度的原始数据。
+    line: '221'
+    name: write_raw
+  - code:
+    - void llama_file::write_u32(uint32_t val) const { pimpl->write_u32(val); }
+    desc: 向文件写入一个32位无符号整数。
+    line: '222'
+    name: write_u32
+  name: llama_file
+- desc: 内存映射封装类，将一个文件映射到进程地址空间，支持按需分片映射和取消映射，在处理大模型文件时避免整文件加载。
+  methods:
+  - code:
+    - 'llama_mmap::llama_mmap(struct llama_file * file, size_t prefetch, bool numa)
+      : pimpl(std::make_unique<impl>(file, prefetch, numa)) {}'
+    desc: 构造函数，接受一个llama_file指针，创建文件的内存映射。
+    line: '356'
+    name: llama_mmap
+  - code:
+    - llama_mmap::~llama_mmap() = default;
+    desc: 析构函数，释放内存映射资源。
+    line: '357'
+    name: ~llama_mmap
+  - code:
+    - size_t llama_mmap::size() const { return pimpl->size; }
+    desc: 返回映射文件的大小。
+    line: '359'
+    name: size
+  - code:
+    - void * llama_mmap::addr() const { return pimpl->addr; }
+    desc: 返回映射后的内存起始地址。
+    line: '360'
+    name: addr
+  - code:
+    - void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first,
+      last); }
+    desc: 取消映射指定范围的内存区域。
+    line: '362'
+    name: unmap_fragment
+  name: llama_mmap
+- desc: 内存锁定封装类，将已分配的内存锁定在RAM中，防止被交换到磁盘，这对模型推理性能至关重要。
+  methods:
+  - code:
+    - 'llama_mlock::llama_mlock() : pimpl(std::make_unique<impl>()) {}'
+    desc: 构造函数，初始化锁定状态。
+    line: '459'
+    name: llama_mlock
+  - code:
+    - llama_mlock::~llama_mlock() = default;
+    desc: 析构函数，释放锁定资源。
+    line: '460'
+    name: ~llama_mlock
+  - code:
+    - void llama_mlock::init(void * ptr) { pimpl->init(ptr); }
+    desc: 初始化要锁定的内存区域。
+    line: '462'
+    name: init
+  - code:
+    - void llama_mlock::grow_to(size_t target_size) { pimpl->grow_to(target_size);
+      }
+    desc: 扩大锁定内存的范围到指定大小，确保内存驻留在物理RAM中。
+    line: '463'
+    name: grow_to
+  name: llama_mlock
+desc: 该文件实现了llama.cpp中文件读写、内存映射和内存锁定相关的基础设施。它定义了llama_file（文件封装）、llama_mmap（内存映射）和llama_mlock（内存锁定）三个核心类，分别用于跨平台的文件操作、大文件的内存映射访问以及模型权重在内存中的锁定，以支持不同平台（Windows、POSIX等）上的模型加载和推理优化。
+file: src/llama-mmap.cpp
+funcs:
+- code:
+  - '#if defined(_WIN32)'
+  - static std::string llama_format_win_err(DWORD err) {
+  - '    LPSTR buf;'
+  - '    size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+    | FORMAT_MESSAGE_IGNORE_INSERTS,'
+  - '                                 NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+    (LPSTR)&buf, 0, NULL);'
+  - '    if (!size) {'
+  - '        return "FormatMessageA failed";'
+  - '    }'
+  - '    std::string ret(buf, size);'
+  - '    LocalFree(buf);'
+  - '    return ret;'
+  - '}'
+  - '#endif'
+  - size_t llama_path_max() {
+  - '    return PATH_MAX;'
+  - '}'
+  desc: 全局代码，包含Windows平台的错误格式化辅助函数和路径最大长度的全局函数。
+  line: 1-476
+  name: __main__

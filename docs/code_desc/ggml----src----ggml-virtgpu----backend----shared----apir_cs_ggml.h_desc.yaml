@@ -1,0 +1,308 @@
+classes: []
+desc: 定义RPC序列化/反序列化辅助函数，用于在Host与Guest之间传输ggml结构体（tensor、buffer、cgraph等），并处理句柄编解码和安全校验
+file: ggml/src/ggml-virtgpu/backend/shared/apir_cs_ggml.h
+funcs:
+- code:
+  - static inline void apir_encode_ggml_buffer_host_handle(apir_encoder * enc, const
+    apir_buffer_host_handle_t * handle);
+  desc: 声明对象编码函数：实现从ggml buffer到host句柄的序列化功能
+  line: '8'
+  name: apir_encode_ggml_buffer_host_handle
+- code:
+  - static inline ggml_backend_buffer_t apir_decode_ggml_buffer(apir_decoder * dec);
+  desc: 声明对象解码函数：实现解码host句柄为ggml buffer的功能
+  line: '10'
+  name: apir_decode_ggml_buffer（前向声明）
+- code:
+  - static inline void apir_encode_rcp_tensor(apir_encoder * enc, const apir_rpc_tensor
+    * apir_rpc_tensor) {
+  - '    size_t apir_rpc_tensor_size = sizeof(*apir_rpc_tensor);'
+  - '    apir_encode(enc, apir_rpc_tensor_size, apir_rpc_tensor, apir_rpc_tensor_size);'
+  - '}'
+  desc: 将apir_rpc_tensor结构体编码为字节序列，写入编码器
+  line: 15-19
+  name: apir_encode_rcp_tensor
+- code:
+  - static inline apir_rpc_tensor * apir_decode_apir_rpc_tensor_inplace(apir_decoder
+    * dec) {
+  - '    size_t apir_rpc_tensor_size = sizeof(apir_rpc_tensor);'
+  - ''
+  - '    return (apir_rpc_tensor *) (uintptr_t) apir_decoder_use_inplace(dec, apir_rpc_tensor_size);'
+  - '}'
+  desc: 从解码器内存中原地获取单个apir_rpc_tensor结构体（不复制数据）
+  line: 22-27
+  name: apir_decode_apir_rpc_tensor_inplace
+- code:
+  - static inline apir_rpc_tensor * apir_decode_apir_rpc_tensor_array_inplace(apir_decoder
+    * dec, uint32_t n_tensors) {
+  - '    size_t apir_rpc_tensor_size = sizeof(apir_rpc_tensor) * n_tensors;'
+  - ''
+  - '    return (apir_rpc_tensor *) (uintptr_t) apir_decoder_use_inplace(dec, apir_rpc_tensor_size);'
+  - '}'
+  desc: 从解码器内存中原地获取多个apir_rpc_tensor结构体（批量获取数组）
+  line: 29-35
+  name: apir_decode_apir_rpc_tensor_array_inplace
+- code:
+  - static inline void apir_encode_ggml_tensor(apir_encoder * enc, const ggml_tensor
+    * tensor) {
+  - '    apir_rpc_tensor serialized = apir_serialize_tensor(tensor);'
+  - ''
+  - '    apir_encode_rcp_tensor(enc, &serialized);'
+  - '}'
+  desc: 将ggml_tensor序列化为apir_rpc_tensor并编码到缓冲区
+  line: 42-47
+  name: apir_encode_ggml_tensor
+- code:
+  - static inline const ggml_tensor * apir_decode_ggml_tensor(apir_decoder * dec)
+    {
+  - '    const apir_rpc_tensor * apir_rpc_tensor = apir_decode_apir_rpc_tensor_inplace(dec);'
+  - ''
+  - '    if (!apir_rpc_tensor) {'
+  - '        return NULL;'
+  - '    }'
+  - ''
+  - '    ggml_init_params params{'
+  - '        /*.mem_size   =*/ggml_tensor_overhead(),'
+  - '        /*.mem_buffer =*/NULL,'
+  - '        /*.no_alloc   =*/true,'
+  - '    };'
+  - ''
+  - '    ggml_context * ctx = ggml_init(params);'
+  - ''
+  - '    const ggml_tensor * tensor = apir_deserialize_tensor(ctx, apir_rpc_tensor);'
+  - ''
+  - '    return tensor;'
+  - '}'
+  desc: 从解码器数据结构重构ggml_tensor对象，并分配必要的上下文
+  line: 49-67
+  name: apir_decode_ggml_tensor
+- code:
+  - static inline void apir_encode_ggml_buffer_type(apir_encoder * enc, ggml_backend_buffer_type_t
+    buft) {
+  - '    apir_buffer_type_host_handle_t handle = ggml_buffer_type_to_apir_handle(buft);'
+  - '    apir_encoder_write(enc, sizeof(handle), &handle, sizeof(handle));'
+  - '}'
+  desc: 将ggml_backend_buffer_type_t的host句柄编码到编码器
+  line: 79-83
+  name: apir_encode_ggml_buffer_type
+- code:
+  - static inline ggml_backend_buffer_type_t apir_decode_ggml_buffer_type(apir_decoder
+    * dec) {
+  - '    apir_buffer_type_host_handle_t handle;'
+  - ''
+  - '    apir_decoder_read(dec, sizeof(handle), &handle, sizeof(handle));'
+  - ''
+  - '    return (ggml_backend_buffer_type_t) handle;'
+  - '}'
+  desc: 从编码器读取host句柄并转换为ggml_backend_buffer_type_t指针
+  line: 85-93
+  name: apir_decode_ggml_buffer_type
+- code:
+  - static inline void apir_encode_apir_buffer_type_host_handle(apir_encoder * enc,
+    apir_buffer_type_host_handle_t handle) {
+  - '    apir_encoder_write(enc, sizeof(handle), &handle, sizeof(handle));'
+  - '}'
+  desc: 直接编码apir_buffer_type_host_handle_t类型的句柄值
+  line: 95-97
+  name: apir_encode_apir_buffer_type_host_handle
+- code:
+  - static inline apir_buffer_type_host_handle_t apir_decode_apir_buffer_type_host_handle(apir_decoder
+    * dec) {
+  - '    apir_buffer_type_host_handle_t handle;'
+  - ''
+  - '    apir_decoder_read(dec, sizeof(handle), &handle, sizeof(handle));'
+  - ''
+  - '    return handle;'
+  - '}'
+  desc: 从解码器读取apir_buffer_type_host_handle_t类型的句柄值
+  line: 99-107
+  name: apir_decode_apir_buffer_type_host_handle
+- code:
+  - static inline void apir_encode_ggml_buffer(apir_encoder * enc, const ggml_backend_buffer_t
+    buffer) {
+  - '    apir_buffer_host_handle_t handle = BUFFER_TO_HOST_HANDLE(buffer);'
+  - '    apir_encoder_write(enc, sizeof(handle), &handle, sizeof(handle));'
+  - '}'
+  desc: 将ggml_backend_buffer_t转换为句柄并编码，实现指针安全传输
+  line: 112-115
+  name: apir_encode_ggml_buffer
+- code:
+  - static inline ggml_backend_buffer_t apir_decode_ggml_buffer(apir_decoder * dec)
+    {
+  - '    ggml_backend_buffer_t buffer;'
+  - '    size_t                buffer_ptr_size = sizeof(buffer);'
+  - ''
+  - '    apir_decoder_read(dec, buffer_ptr_size, &buffer, buffer_ptr_size);'
+  - ''
+  - '    // SECURITY: Validate buffer handle against tracked buffers to prevent'
+  - '    // guest VM from providing arbitrary host memory addresses'
+  - '    if (buffer) {'
+  - '        extern std::unordered_set<ggml_backend_buffer_t> backend_buffers;'
+  - '        if (backend_buffers.find(buffer) == backend_buffers.end()) {'
+  - '            GGML_LOG_WARN("ggml-virtgpu-backend: %s: Invalid buffer handle from
+    guest: %p\n", __func__,'
+  - '                          (void *) buffer);'
+  - '            // Set fatal flag to prevent further processing with invalid handle'
+  - '            apir_decoder_set_fatal(dec);'
+  - '            return NULL;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return buffer;'
+  - '}'
+  desc: 读取buffer句柄并验证合法性：检查是否在已跟踪的合法句柄集中，防止guest传入任意内存地址
+  line: 117-138
+  name: apir_decode_ggml_buffer
+- code:
+  - static inline void apir_encode_ggml_status(apir_encoder * enc, const ggml_status
+    * status) {
+  - '    apir_encoder_write(enc, sizeof(*status), status, sizeof(*status));'
+  - '}'
+  desc: 将ggml_status枚举值编码到缓冲区
+  line: 143-145
+  name: apir_encode_ggml_status
+- code:
+  - static inline void apir_decode_ggml_status(apir_decoder * dec, ggml_status * status)
+    {
+  - '    apir_decoder_read(dec, sizeof(*status), status, sizeof(*status));'
+  - '}'
+  desc: 从缓冲区解码ggml_status枚举值
+  line: 147-149
+  name: apir_decode_ggml_status
+- code:
+  - static inline void apir_encode_virtgpu_shmem_res_id(apir_encoder * enc, uint32_t
+    shmem_res_id) {
+  - '    apir_encode_uint32_t(enc, &shmem_res_id);'
+  - '}'
+  desc: 编码virtgpu共享内存资源ID
+  line: 153-155
+  name: apir_encode_virtgpu_shmem_res_id
+- code:
+  - static inline void apir_decode_virtgpu_shmem_res_id(apir_decoder * dec, uint32_t
+    * shmem_res_id) {
+  - '    apir_decode_uint32_t(dec, shmem_res_id);'
+  - '}'
+  desc: 解码virtgpu共享内存资源ID
+  line: 157-159
+  name: apir_decode_virtgpu_shmem_res_id
+- code:
+  - static inline size_t apir_serialize_ggml_cgraph(ggml_cgraph * cgraph, std::vector<uint8_t>
+    & cgraph_data) {
+  - '    apir_serialize_graph(cgraph, cgraph_data);'
+  - ''
+  - '    return cgraph_data.size();'
+  - '}'
+  desc: 序列化计算图(cgraph)到vector字节数组并返回序列化长度
+  line: 164-169
+  name: apir_serialize_ggml_cgraph
+- code:
+  - static inline void apir_encode_cgraph_data(apir_encoder * enc, std::vector<uint8_t>
+    & cgraph_data) {
+  - '    size_t cgraph_size = cgraph_data.size();'
+  - ''
+  - '    apir_encode(enc, cgraph_size, cgraph_data.data(), cgraph_size);'
+  - '}'
+  desc: 将序列化的计算图数据编码到编码器
+  line: 171-177
+  name: apir_encode_cgraph_data
+- code:
+  - static inline ggml_cgraph * apir_decode_ggml_cgraph(apir_decoder * dec, size_t
+    cgraph_size) {
+  - '    GGML_UNUSED(cgraph_size);'
+  - ''
+  - '    uint32_t n_nodes;'
+  - '    apir_decode_uint32_t(dec, &n_nodes);'
+  - '    const uint64_t * nodes = apir_decode_uint64_t_array_inplace(dec, n_nodes);'
+  - ''
+  - '    uint32_t n_tensors;'
+  - '    apir_decode_uint32_t(dec, &n_tensors);'
+  - '    const apir_rpc_tensor * tensors = apir_decode_apir_rpc_tensor_array_inplace(dec,
+    n_tensors);'
+  - ''
+  - '    return apir_deserialize_graph(n_nodes, n_tensors, tensors, nodes);'
+  - '}'
+  desc: 从解码器重建计算图：解码节点数组和张量数组后构建cgraph
+  line: 179-192
+  name: apir_decode_ggml_cgraph
+- code:
+  - static inline void apir_encode_ggml_buffer_handle(apir_encoder * enc, const apir_buffer_host_handle_t
+    * handle) {
+  - '    apir_encoder_write(enc, sizeof(*handle), &handle, sizeof(*handle));'
+  - '}'
+  desc: 编码apir_buffer_host_handle_t类型句柄（疑似有个&取址错误）
+  line: 195-197
+  name: apir_encode_ggml_buffer_handle
+- code:
+  - static inline void apir_encode_ggml_tensor_inline(apir_encoder * enc, const ggml_tensor
+    * tensor) {
+  - '    size_t tensor_size = sizeof(*tensor);'
+  - ''
+  - '    if (tensor->extra) {'
+  - '        GGML_ABORT("%s: Cannot pass tensors with extra", __func__);'
+  - '    }'
+  - ''
+  - '    if (tensor->src[0] && tensor->buffer) {'
+  - '        static int first = 1;'
+  - '        if (first) {'
+  - '            GGML_LOG_WARN("%s: Cannot pass tensors with src and buffer\n", __func__);'
+  - '            first = 0;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    apir_encoder_write(enc, tensor_size, tensor, tensor_size);'
+  - ''
+  - '    // tensor->data is a pointer inside the device buffer. No need to touch it'
+  - '    // tensor->buffer is a pointer to a buffer. Encoding the buffer handle in
+    sequence.'
+  - '    // (could also make a copy of the tensor, and update locally.)'
+  - ''
+  - '    if (tensor->buffer) {'
+  - '        apir_buffer_host_handle_t buffer_handle = ggml_buffer_to_apir_handle(tensor->buffer);'
+  - '        apir_encode_ggml_buffer_handle(enc, &buffer_handle);'
+  - '    }'
+  - ''
+  - '    if (tensor->view_src) {'
+  - '        apir_encoder_write(enc, tensor_size, tensor->view_src, tensor_size);'
+  - '    }'
+  - ''
+  - '    for (int i = 0; tensor->src[i]; i++) {'
+  - '        const ggml_tensor * tensor_src = tensor->src[i];'
+  - '        apir_encoder_write(enc, tensor_size, tensor_src, tensor_size);'
+  - '    }'
+  - '}'
+  desc: 将ggml_tensor完整地原地编码：包含结构体本体、buffer句柄、view_src及相关源张量；不支持带extra的tensor
+  line: 200-239
+  name: apir_encode_ggml_tensor_inline
+- code:
+  - static inline const ggml_tensor * apir_decode_ggml_tensor_inplace(apir_decoder
+    * dec) {
+  - '    // it safe to remove the `const` qualifier here, we *do* want to'
+  - '    // modify the shared memory data to fix the `src` pointers.'
+  - '    ggml_tensor * tensor = (ggml_tensor *) (uintptr_t) apir_decoder_use_inplace(dec,
+    sizeof(ggml_tensor));'
+  - ''
+  - '    // tensor->data is a pointer inside the device buffer. No need to touch it'
+  - '    // tensor->buffer is a pointer to a buffer. Decode the buffer handle encoded
+    in sequence.'
+  - '    if (tensor->buffer) {'
+  - '        tensor->buffer = apir_decode_ggml_buffer(dec);'
+  - '    }'
+  - ''
+  - '    if (tensor->view_src) {'
+  - '        ggml_tensor * tensor_view_src = (ggml_tensor *) (uintptr_t) apir_decoder_use_inplace(dec,
+    sizeof(ggml_tensor));'
+  - '        tensor->view_src              = tensor_view_src;'
+  - '    }'
+  - ''
+  - '    for (int i = 0; tensor->src[i]; i++) {'
+  - '        ggml_tensor * tensor_src = (ggml_tensor *) (uintptr_t) apir_decoder_use_inplace(dec,
+    sizeof(ggml_tensor));'
+  - '        tensor->src[i] = tensor_src;  // overwrite op->src[i] pointer with the
+    actual location of the src tensor'
+  - '    }'
+  - ''
+  - '    return tensor;'
+  - '}'
+  desc: 在解码器共享内存中原地解码ggml_tensor并修复其src和view_src指针；buffer句柄单独解码并通过安全校验
+  line: 241-264
+  name: apir_decode_ggml_tensor_inplace

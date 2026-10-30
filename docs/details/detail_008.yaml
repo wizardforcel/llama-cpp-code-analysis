@@ -1,0 +1,125 @@
+code_map:
+- tools/tts/convert_pt_to_hf.py
+- ├── __main__ 顶层执行流（1-48行）
+- '│   ├── torch.load()               # 加载 PyTorch checkpoint'
+- '│   ├── isinstance 检查            # 区分 nn.Module 与 state_dict'
+- '│   └── 打印模型结构               # 调试用，输出所有键与超参数'
+- ├── flatten_state_dict() 函数（49-100行）
+- '│   ├── 递归展平嵌套字典           # flatten_state_dict 递归调用'
+- '│   ├── 键名前缀过滤               # 丢弃 feature_extractor/backbone.head.out'
+- '│   ├── 键名重命名映射             # pos_net->posnet, _codebook.embed->embedding.weight'
+- '│   ├── 特殊键处理                 # norm.scale.weight, norm.shift.weight, gamma'
+- '│   └── 形状调整（unsqueeze）      # 1D->2D 以支持 ggml_add 广播'
+- ├── 输出文件生成（102-135行）
+- '│   ├── save_file()                # 写出 model.safetensors'
+- '│   ├── 构造 weight_map            # 单文件模型映射'
+- '│   ├── 写出 index.json            # 元数据：total_size + weight_map'
+- '│   └── 写出 config.json           # WavTokenizerDec 架构超参数'
+exercises:
+- contents:
+  - 阅读 `tools/tts/convert_pt_to_hf.py` 第 1-48 行的顶层代码，理解：
+  - 1. 它从命令行哪个位置读取模型路径？默认路径是什么？
+  - 2. 如何区分加载的是 `torch.nn.Module` 还是 `state_dict`？
+  - 3. 它打印了哪些调试信息？这些信息对排查转换错误有什么帮助？
+  - 回答问题：
+  - '- 如果模型文件同时包含 `state_dict` 与 `optimizer_states`，当前代码会怎么处理？'
+  - '- 假如输入是一个保存为 module 对象但没有 `state_dict` 属性的旧格式 checkpoint，会发生什么？'
+  'no': 1
+  title: 阅读 convert_pt_to_hf.py 整体流程
+- contents:
+  - 阅读 `tools/tts/convert_pt_to_hf.py` 第 49-100 行的 `flatten_state_dict` 函数，逐行梳理键名转换规则：
+  - 1. 它过滤掉哪些前缀？为什么这些键不需要？
+  - 2. `pos_net` -> `posnet` 是简单的字符串替换，背后的设计动机是什么？
+  - 3. `backbone.posnet.%d.bias` -> `backbone.posnet.%d.norm.bias` 这个正则替换解决了什么问题？
+  - 4. `_codebook.embed` -> `embedding.weight` 这一行为什么必须放在循环最开始？
+  - 5. `norm.scale.weight` 与 `norm.shift.weight` 分别对应 RMSNorm 的什么参数？为什么要 `value[0]`
+    取首元素？
+  - 6. 哪些键会触发 `unsqueeze(1)`？为什么必须把 1D 转 2D 才能在 GGML 中做加法广播？
+  - 回答问题：
+  - '- 如果未来新增一种 `norm.gamma.weight`，你能在不破坏现有逻辑的前提下加入吗？'
+  - '- 请画一张表，列出至少 5 个原键 -> 新键的映射关系。'
+  'no': 2
+  title: 剖析 flatten_state_dict 的键名映射规则
+- contents:
+  - 阅读 `tools/tts/convert_pt_to_hf.py` 第 102-135 行的输出生成代码，理解：
+  - 1. 为什么使用 `safetensors` 而非 `pickle`？
+  - 2. `index.json` 中 `weight_map` 的作用是什么？为什么这里直接用 `"*"`？
+  - 3. `config.json` 中每个超参数的含义（hidden_size=1282, n_embd_features=512, n_ff=2304 等），它们如何对应到
+    WavTokenizer 的网络结构？
+  - 4. `posnet` 与 `convnext` 的嵌套子配置说明了什么？
+  - 回答问题：
+  - '- `total_size` 在分片加载时会起什么作用？'
+  - '- 假设 WavTokenizer 后续版本增加了 `n_experts` 字段，config.json 需要怎么扩展才能保持向后兼容？'
+  'no': 3
+  title: 理解输出三件套的协作关系
+learning_targets:
+- 理解 convert_pt_to_hf.py 在 TTS 模型预处理流水线中的核心定位
+- 掌握 PyTorch checkpoint 到 Hugging Face 格式的转换流程
+- 理解 flatten_state_dict 函数如何递归展平、过滤、重命名与调整张量形状
+- 熟悉 WavTokenizer 特有的键名映射规则（pos_net -> posnet、codebook -> embedding 等）
+- 了解如何通过 safetensors、index.json、config.json 构造完整的 HF 模型目录
+- 能阅读并修改类似的模型格式转换脚本
+life_analogy:
+- 想象 WavTokenizer 模型是一个「跨国搬家」场景：
+- '- **PyTorch .pt 文件** = 装在老家杂乱木箱里的私人物品（旧格式、不兼容）'
+- '- **flatten_state_dict** = 搬家公司的拆箱师傅：拆开嵌套木箱、扔掉不需要的杂物、把标签重新贴好、调整包裹尺寸让运输车能装下'
+- '- **键名重命名** = 统一翻译标签语言，让新家管家（HuggingFace / GGUF）一眼认出来'
+- '- **形状调整（unsqueeze）** = 把扁平的衣服重新挂上衣架，让衣柜能整齐收纳'
+- '- **safetensors + index.json + config.json** = 新家的三件套：行李清单（index）、物品本身（safetensors）、房屋户型图（config）'
+- 就像搬家需要把物品按新家的规则重新整理，convert_pt_to_hf.py 把 .pt 权重按 HuggingFace/GGUF 的命名与结构规则重新打包。
+'no': 7
+summary:
+- concept: '`torch.load + isinstance 检查'
+  desc: 兼容加载 torch.nn.Module 与裸 state_dict 两种 checkpoint
+- concept: '`flatten_state_dict 递归展平'
+  desc: 将嵌套字典展开为扁平的 (key, tensor) 列表
+- concept: '`键名前缀过滤`'
+  desc: 仅保留 backbone 相关权重，丢弃量化器与 head
+- concept: '`pos_net → posnet 重命名`'
+  desc: 匹配 GGML/GGUF 中常见的命名风格
+- concept: '`_codebook.embed → backbone.embedding.weight`'
+  desc: 将 VQ 码本映射到统一的 embedding 层
+- concept: '`norm.scale/shift.weight 拆分`'
+  desc: RMSNorm 风格的 scale/shift 拆为 weight/bias，并取首个元素
+- concept: '`unsqueeze(1) 形状调整`'
+  desc: 1D 偏置转 2D，让 ggml_add 可以按列广播
+- concept: '`safetensors.save_file`'
+  desc: 以 HuggingFace 标准格式写出安全张量文件
+- concept: '`index.json`'
+  desc: 记录 weight_map 与 total_size，用于多文件分片恢复
+- concept: '`config.json`'
+  desc: 声明 WavTokenizerDec 架构与所有超参数
+units:
+- codes:
+  - file: tools/tts/convert_pt_to_hf.py
+    line: 1-48
+    method_or_func: __main__
+  - file: tools/tts/convert_pt_to_hf.py
+    line: 49-100
+    method_or_func: flatten_state_dict()
+  - file: tools/tts/convert_pt_to_hf.py
+    line: 102-135
+    method_or_func: __main__
+  name: convert_pt_to_hf.py —— TTS 模型的「格式转换流水线」
+  'no': 1
+  points:
+  - '**convert_pt_to_hf.py 的核心目标是什么？**'
+  - '- 它将 WavTokenizer 的 PyTorch checkpoint（.pt 文件）转换为 Hugging Face 格式，包括 safetensors
+    权重、index.json 和 config.json，以便与 convert_hf_to_gguf.py 兼容，最终生成 GGUF 文件'
+  - '**如何加载和预处理输入模型？**'
+  - '- 使用 torch.load 从指定路径加载模型，并检查是 torch.nn.Module 还是 state_dict，以获取正确的状态字典'
+  - '**flatten_state_dict 函数的主要职责是什么？**'
+  - '- 递归展平嵌套的 state_dict，过滤掉不需要的键（如特征提取器和量化器部分），只保留 backbone 相关权重'
+  - '- 重命名键以匹配 GGUF 格式，例如移除 ''state_dict.'' 前缀，将 ''pos_net'' 重命名为 ''posnet'''
+  - '- 调整张量形状以适应后续计算，例如将 1D 偏差转换为 2D 以支持广播操作'
+  - '**有哪些典型的键重命名和形状调整规则？**'
+  - '- 将 ''feature_extractor.encodec.quantizer.vq.layers.0._codebook.embed'' 映射为 ''backbone.embedding.weight'''
+  - '- 将 ''norm.scale.weight'' 转换为 ''norm.weight''，并取张量的第一个元素'
+  - '- 对于 backbone.posnet 的偏差和权重，将 1D 张量 unsqueeze 为 2D'
+  - '**如何生成输出文件？**'
+  - '- 使用 safetensors.save_file 将处理后的张量保存为 model.safetensors'
+  - '- 创建 index.json，包含权重映射和总大小信息'
+  - '- 生成 config.json，定义模型架构（如 WavTokenizerDec）和超参数（如 hidden_size、n_layer 等）'
+  - '**config.json 中指定了哪些关键超参数？**'
+  - '- 包括架构名、hidden_size=1282, n_embd_features=512, n_ff=2304, vocab_size=4096, n_head=1,
+    层数=12, 以及 posnet 和 convnext 的配置'

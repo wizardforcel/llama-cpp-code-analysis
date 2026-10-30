@@ -1,0 +1,1588 @@
+code_map:
+- src/llama-graph.h
+- '├── enum llm_graph_type                # DEFAULT/EL/ENCODER/DECODER 图类型'
+- '├── enum llm_ffn_op_type               # SILU/GELU/RELU/SWIGLU/GEGLU/REGLU/OAI_MOE'
+- '├── enum llm_ffn_gate_type             # SEQ/PAR'
+- '├── enum llm_norm_type                 # NORM/NORM_RMS/NORM_GROUP'
+- '├── struct llama_cross                 # 编码器-解码器桥梁数据'
+- │
+- '├── llm_graph_input_i                  # 输入抽象基类 (60-85)'
+- '│   ├── llm_graph_input_i() 构造函数   # 读取 LLAMA_GRAPH_INPUT_DEBUG'
+- '│   ├── ~llm_graph_input_i() 虚析构    # = default'
+- '│   ├── set_input() virtual            # 实际填值'
+- '│   ├── can_reuse() virtual            # 复用判定（默认返回 false）'
+- '│   └── debug 字段                     # LLAMA_GRAPH_INPUT_DEBUG 控制'
+- '├── using llm_graph_input_ptr           # unique_ptr<llm_graph_input_i> (86)'
+- │
+- '├── llm_graph_input_embd               # 双通道嵌入 (87-103)'
+- '│   ├── llm_graph_input_embd() 构造函数 # n_embd 构造'
+- │   ├── ~llm_graph_input_embd()
+- '│   ├── tokens / embd 字段             # I32 / F32 占位'
+- │   ├── set_input() / can_reuse()
+- '├── llm_graph_input_pos                # 多维位置 (105-118)'
+- '│   ├── llm_graph_input_pos()          # n_pos_per_embd 构造'
+- │   ├── ~llm_graph_input_pos()
+- '│   ├── set_input()                    # M-RoPE 4D 扩展'
+- │   └── can_reuse()
+- '├── llm_graph_input_attn_temp          # llama4 注意力温度 (120-135)'
+- '│   ├── llm_graph_input_attn_temp()    # 构造参数'
+- │   ├── ~llm_graph_input_attn_temp()
+- '│   └── set_input()                    # log(floor+1)*scale+1'
+- '├── llm_graph_input_pos_bucket         # T5 自注意力桶 (137-148)'
+- '│   ├── llm_graph_input_pos_bucket()   # hparams 引用'
+- │   ├── ~llm_graph_input_pos_bucket()
+- '│   └── set_input()                    # llama_relative_position_bucket'
+- '├── llm_graph_input_pos_bucket_kv      # T5 解码器桶 (150-155)'
+- '│   ├── llm_graph_input_pos_bucket_kv() # hparams + mctx'
+- │   ├── ~llm_graph_input_pos_bucket_kv()
+- '│   └── set_input()                    # 委托 mctx'
+- '├── llm_graph_input_out_ids            # 输出索引 (157-173)'
+- │   ├── llm_graph_input_out_ids()
+- │   ├── ~llm_graph_input_out_ids()
+- '│   ├── set_input()                    # 收集 output 标记'
+- │   └── can_reuse()
+- '├── llm_graph_input_mean               # 均值池化 (175-186)'
+- │   ├── llm_graph_input_mean()
+- │   ├── ~llm_graph_input_mean()
+- '│   └── set_input()                    # 1/sum 倒数填充'
+- '├── llm_graph_input_cls                # CLS/LAST/RANK (188-201)'
+- '│   ├── llm_graph_input_cls()          # cparams + arch'
+- │   ├── ~llm_graph_input_cls()
+- '│   └── set_input()                    # 取 min/max pos 对应行'
+- '├── llm_graph_input_rs                 # RNN 状态复制 (210-235)'
+- │   ├── llm_graph_input_rs()
+- │   ├── ~llm_graph_input_rs()
+- │   ├── s_copy / s_copy_main / s_copy_extra
+- │   ├── head / rs_z 字段
+- '│   ├── set_input()                    # 填充 s_copy'
+- '│   └── can_reuse()                    # 校验 head/rs_z'
+- '├── llm_graph_input_cross_embd         # 交叉嵌入 (203-209)'
+- '│   ├── llm_graph_input_cross_embd()   # cross 指针'
+- │   ├── ~llm_graph_input_cross_embd()
+- '│   └── set_input()                    # 从 cross->v_embd 复制'
+- '├── llm_graph_input_attn_no_cache      # 编码器无缓存 (240-268)'
+- '│   ├── llm_graph_input_attn_no_cache() # hparams + cparams'
+- │   ├── ~llm_graph_input_attn_no_cache()
+- │   ├── get_kq_mask() / get_kq_mask_swa()
+- │   ├── self_kq_mask / self_kq_mask_swa / _cnv
+- '│   └── set_input()                    # fill_mask lambda'
+- '├── llm_graph_input_attn_kv            # 标准 KV 缓存 (270-308)'
+- │   ├── llm_graph_input_attn_kv()
+- │   ├── ~llm_graph_input_attn_kv()
+- │   ├── get_k_idxs() / get_v_idxs() / get_kq_mask()
+- │   ├── self_k_idxs / self_v_idxs / self_kq_mask / self_kq_mask_cnv
+- │   ├── self_k_rot / self_v_rot
+- '│   ├── set_input()                    # 委托 mctx'
+- │   └── can_reuse()
+- '├── llm_graph_input_attn_k             # V-less (315-345)'
+- │   ├── llm_graph_input_attn_k()
+- │   ├── ~llm_graph_input_attn_k()
+- │   ├── get_k_idxs() / get_kq_mask()
+- │   ├── self_k_idxs / self_kq_mask / self_kq_mask_cnv
+- '│   ├── set_input()                    # 只调用 set_input_k_idxs + set_input_kq_mask'
+- │   └── can_reuse()
+- '├── llm_graph_input_attn_kv_iswa       # ISWA 双缓存 (354-388)'
+- │   ├── llm_graph_input_attn_kv_iswa()
+- │   ├── ~llm_graph_input_attn_kv_iswa()
+- │   ├── get_k_idxs() / get_v_idxs()
+- │   ├── get_k_idxs_swa() / get_v_idxs_swa()
+- │   ├── get_kq_mask() / get_kq_mask_swa()
+- │   ├── self_k_idxs / self_v_idxs / self_k_idxs_swa / self_v_idxs_swa
+- │   ├── self_kq_mask / self_kq_mask_swa / _cnv
+- │   ├── self_k_rot / self_v_rot (base)
+- '│   ├── set_input()                    # base + swa 双填'
+- '│   └── can_reuse()                    # 校验两套缓存'
+- '├── llm_graph_input_attn_cross         # 交叉注意力 (390-407)'
+- │   ├── llm_graph_input_attn_cross()
+- │   ├── ~llm_graph_input_attn_cross()
+- │   ├── get_kq_mask_cross()
+- │   ├── cross_kq_mask / cross_kq_mask_cnv
+- '│   └── set_input()                    # 基于 seq_ids_enc 集合'
+- '├── llm_graph_input_mem_hybrid         # 混合内存 (409-435)'
+- │   ├── llm_graph_input_mem_hybrid()
+- │   ├── ~llm_graph_input_mem_hybrid()
+- │   ├── inp_attn / inp_rs 子输入
+- │   ├── get_attn() / get_recr()
+- '│   ├── set_input()                    # 委托子输入'
+- │   └── can_reuse()
+- '├── llm_graph_input_mem_hybrid_k       # V-less 混合 (437-463)'
+- │   ├── llm_graph_input_mem_hybrid_k()
+- │   ├── ~llm_graph_input_mem_hybrid_k()
+- │   ├── inp_attn(K) / inp_rs
+- │   ├── get_attn() / get_recr()
+- '│   ├── set_input()                    # 只 set_input_k_idxs'
+- │   └── can_reuse()
+- '├── llm_graph_input_mem_hybrid_iswa    # ISWA 混合 (465-491)'
+- │   ├── llm_graph_input_mem_hybrid_iswa()
+- │   ├── ~llm_graph_input_mem_hybrid_iswa()
+- │   ├── get_attn() / get_recr()
+- '│   ├── set_input()                    # 容错 base/swa'
+- │   └── can_reuse()
+- '├── llm_graph_input_sampling           # 后端采样器 (498-509)'
+- │   ├── llm_graph_input_sampling()
+- │   ├── ~llm_graph_input_sampling()
+- '│   ├── set_input()                    # active_samplers 集合'
+- │   └── can_reuse()
+- │
+- '├── struct llm_graph_params            # 构图参数快照 (520-605)'
+- '│   ├── samplers_equal() static        # 采样器集合比较'
+- '│   └── allow_reuse()                  # 多维度复用校验'
+- │
+- '├── class llm_graph_result             # 图结果容器 (700-790)'
+- '│   ├── llm_graph_result()             # 读取 LLAMA_GRAPH_RESULT_DEBUG'
+- '│   ├── ~llm_graph_result()            # = default'
+- │   ├── get_inp_tokens() / get_logits() / get_embd() / get_embd_pooled()
+- │   ├── get_gf() / get_ctx() / get_max_nodes()
+- '│   ├── reset()                        # 重置所有状态'
+- '│   ├── set_inputs()                   # 遍历 input 调 set_input'
+- '│   ├── set_outputs()                  # ggml_set_output'
+- '│   ├── can_reuse()                    # 输入级复用校验'
+- '│   ├── add_input()                    # 注册输入'
+- '│   ├── set_params()                   # 保存参数快照'
+- │   └── params / debug 字段
+- │
+- '├── struct llm_graph_context           # 图构建上下文 (820-960)'
+- │   ├── 模型维度字段 (n_embd ... n_expert_used)
+- │   ├── RoPE/YaRN 字段
+- │   ├── 归一化字段
+- │   ├── 上下文/采样字段
+- │   ├── 外部资源字段
+- │   ├── llm_graph_context() 构造
+- │   ├── ~llm_graph_context()
+- '│   ├── cb()                           # 回调通知'
+- │   ├── 通用构建器 build_cvec/build_lora_mm/build_lora_mm_id/build_norm/build_ffn/build_moe_ffn
+- │   ├── 输入构建器 build_inp_*
+- │   ├── 位置桶 build_pos_bias
+- │   ├── 注意力 build_attn_mha + build_attn 五重载 + build_attn_inp_*
+- │   ├── 循环状态 build_rs/build_rs_inp/build_rwkv_token_shift_*
+- │   ├── 混合输入 build_inp_mem_hybrid_*
+- │   ├── 输出 build_pooling/build_dense_out/build_sampling
+- │
+- '└── llama_relative_position_bucket()   # T5 桶号算法'
+- ''
+- src/llama-graph.cpp
+- ├── 静态辅助函数
+- '│   ├── build_attn_inp_kq_mask()       # 创建 KQ 掩码张量'
+- '│   ├── can_reuse_kq_mask()            # 掩码复用校验'
+- '│   ├── ggml_mul_mat_aux()             # RoPE 旋转辅助'
+- '│   └── print_mask()                   # 掩码调试打印'
+- │
+- ├── 输入 set_input / can_reuse 实现
+- │   ├── llm_graph_input_embd::set_input / can_reuse
+- │   ├── llm_graph_input_pos::set_input / can_reuse
+- │   ├── llm_graph_input_attn_temp::set_input
+- │   ├── llm_graph_input_pos_bucket::set_input
+- │   ├── llm_graph_input_pos_bucket_kv::set_input
+- │   ├── llm_graph_input_out_ids::set_input / can_reuse
+- │   ├── llm_graph_input_mean::set_input
+- │   ├── llm_graph_input_cls::set_input
+- │   ├── llm_graph_input_rs::set_input / can_reuse
+- │   ├── llm_graph_input_cross_embd::set_input
+- │   ├── llm_graph_input_attn_no_cache::set_input
+- │   ├── llm_graph_input_attn_kv::set_input / can_reuse
+- │   ├── llm_graph_input_attn_k::set_input / can_reuse
+- │   ├── llm_graph_input_attn_kv_iswa::set_input / can_reuse
+- │   ├── llm_graph_input_attn_cross::set_input
+- │   ├── llm_graph_input_mem_hybrid::set_input / can_reuse
+- │   ├── llm_graph_input_mem_hybrid_k::set_input / can_reuse
+- │   ├── llm_graph_input_mem_hybrid_iswa::set_input / can_reuse
+- │   └── llm_graph_input_sampling::set_input / can_reuse
+- │
+- ├── llm_graph_result 实现
+- │   ├── llm_graph_result() / get_max_nodes()
+- │   ├── reset()
+- │   ├── set_inputs() / set_outputs()
+- │   ├── can_reuse()
+- │   ├── add_input() / set_params()
+- │
+- ├── llm_graph_context 实现
+- │   ├── 构造函数
+- │   ├── cb() 回调通知
+- │   ├── 通用构建器实现 (build_cvec/build_lora_mm/build_lora_mm_id/build_norm/build_ffn/build_moe_ffn)
+- │   ├── 输入构建器实现 (build_inp_embd/build_inp_pos/build_inp_attn_scale/build_inp_out_ids/build_inp_mean/build_inp_cls/build_inp_cross_embd/build_inp_pos_bucket_enc/build_inp_pos_bucket_dec)
+- │   ├── build_pos_bias
+- │   ├── 注意力构建器实现 (build_attn_mha + build_attn_inp_no_cache/kv/k/kv_iswa/cross +
+  build_attn 五重载)
+- │   ├── 循环状态构建器实现 (build_rs/build_rs_inp/build_rwkv_token_shift_load/store)
+- │   ├── 混合输入构建器实现 (build_inp_mem_hybrid/build_inp_mem_hybrid_k/build_inp_mem_hybrid_iswa)
+- │   └── 输出构建器实现 (build_pooling/build_dense_out/build_sampling)
+- │
+- └── llama_relative_position_bucket()
+exercises:
+- contents:
+  - 阅读 `src/llama-graph.h` 第 60-85 行以及 `src/llama-graph.cpp` 第 995-1045 行，理解：
+  - 1. `llm_graph_input_i` 基类的 `set_input` 与 `can_reuse` 虚函数约定
+  - 2. `LLAMA_GRAPH_INPUT_DEBUG` 与 `LLAMA_GRAPH_RESULT_DEBUG` 两个环境变量的作用
+  - 3. `llm_graph_params::allow_reuse` 的多维度校验逻辑
+  - 回答问题：
+  - '- 为什么 `can_reuse` 默认返回 `false` 而不是 `true`？'
+  - '- `allow_reuse` 校验 `samplers_equal` 时为什么不能只比较 `size()`？'
+  - '- 当 `cparams.embeddings == true` 但图实际只产出 logits 时，复用是否安全？'
+  - '- 哪些情况会导致 `allow_reuse` 在 `ubatch.equal_seqs()` 校验阶段直接返回 `false`？'
+  'no': 1
+  title: 阅读 llm_graph_input_i 抽象基类与 can_reuse 判定
+- contents:
+  - 阅读 `src/llama-graph.cpp` 中 `llm_graph_input_attn_kv`、`attn_k`、`attn_kv_iswa`、`attn_no_cache`、`attn_cross`
+    五个类的 `set_input` 与 `can_reuse` 实现（行号 440-820）。
+  - 回答问题：
+  - '- 这五种输入在 `set_input` 中各自调用了哪些内存上下文的方法？'
+  - '- 为什么 `attn_kv_iswa` 需要校验两套 K 索引、SWA 掩码的形状？'
+  - '- `attn_k` 的 V-less 设计省略了哪些张量？这对内存有何影响？'
+  - '- 哪些输入会在 `set_input` 阶段调用 `set_input_k_rot`/`set_input_v_rot`？'
+  - '- 对比 `can_reuse_kq_mask` 静态函数校验的四个维度，写出每种输入对应的 `n_stream` 取值。'
+  'no': 2
+  title: 对比五种注意力输入的复用条件
+- contents:
+  - 阅读 `src/llama-graph.cpp` 第 1395-1665 行 `build_moe_ffn` 的两个重载实现。
+  - 回答问题：
+  - '- 第一个重载（无 bias）是如何转发到第二个重载的？'
+  - '- 路由分数（logits）的计算使用了哪个 GGML 算子？'
+  - '- 三种 `gating_op`（SOFTMAX/SIGMOID/SOFTMAX_WEIGHT）分别如何处理 probs？'
+  - '- `exp_probs_b` 在哪些场景会被使用？它和 `selection_probs` 的关系是什么？'
+  - '- DeepSeek-V3 风格的分组路由（`n_expert_groups > 1`）具体实现了什么？'
+  - '- `gate_up_exps` 合并路径与 `gate_exps/up_exps` 分离路径的区别是什么？'
+  - '- Step35 的 per-layer clamp 是如何应用到 routed experts 的？'
+  - '- 最后的专家聚合为何使用 `ggml_view_2d` + 多次 `ggml_add` 而不是一次 reduce？'
+  'no': 3
+  title: 阅读 build_moe_ffn 的完整专家路由流程
+- contents:
+  - 阅读 `src/llama-graph.cpp` 第 1975-2100 行 `build_attn_mha` 的完整实现。
+  - 回答问题：
+  - '- `n_stream` 是如何从 K 张量的 `ne[3]` 提取的？流式注意力的目的是什么？'
+  - '- Flash Attention 路径下，为何要将 F32 的 K/V cast 到 F16？'
+  - '- MLA 吸收优化（`v_mla`）在 Flash Attention 路径下的实现方式是什么？注释中说明了怎样的性能权衡？'
+  - '- 传统注意力路径下，`use_alibi`、`attn_soft_cap`、`Grok tanh 限幅`、`kq_b` 偏置四种修饰的先后顺序是什么？'
+  - '- `ggml_soft_max_ext` 与 `ggml_soft_max_add_sinks` 如何协同工作？'
+  - '- `cparams.offload_kqv` 为 `false` 时，KQV 输出会怎样被调度？'
+  'no': 4
+  title: 剖析 build_attn_mha 的双路径选择
+- contents:
+  - 阅读 `src/llama-graph.cpp` 第 2135-2470 行 `build_attn` 的五个重载实现。
+  - 回答问题：
+  - '- 五个重载分别对应哪五种 `llm_graph_input_attn_*` 类型？'
+  - '- `attn_kv` 与 `attn_kv_iswa` 路径中，`self_k_rot`/`self_v_rot` 在何时被应用到 q_cur/k_cur/v_cur？'
+  - '- 为什么在 `attn_kv` 路径中要在 `cpy_k`/`cpy_v` 之前调用 `ggml_build_forward_expand(gf, k_cur)`？'
+  - '- ISWA 路径中，base 与 SWA 缓存的选择依据是什么（`is_swa(il)`）？'
+  - '- GLM4/GLM4-MOE/JAIS2 为何要在 `wo` 投影上设置 `GGML_PREC_F32`？这解决了什么问题？'
+  - '- `attn_cross` 路径为何既无 RoPE 应用也无 KV 缓存写入？'
+  'no': 5
+  title: 理解 build_attn 的五种重载与编排技巧
+- contents:
+  - 阅读 `src/llama-graph.cpp` 第 2715-2760 行 `build_sampling` 实现以及 `llm_graph_input_sampling::set_input`（第
+    945-985 行）。
+  - 回答问题：
+  - '- `set_input` 阶段为何先构造 `active_samplers` 集合再遍历采样器？'
+  - '- 为什么要给 `t_logits` 末尾 `ggml_pad` 一行 dummy？这对图拓扑稳定性有何意义？'
+  - '- `ggml_build_forward_select(gf, outs.data(), outs.size(), i_out)` 的作用是什么？'
+  - '- 四类输出（sampled/probs/sampled_logits/candidates）是如何被分别处理的？'
+  - '- `i_out` 的取值 0 与 1 分别代表什么场景？'
+  - '- 注释中 `TODO: Call llama_sampler_accept_ggml` 为何被注释掉？'
+  'no': 6
+  title: 阅读 build_sampling 的后端采样集成
+- contents:
+  - 阅读 `src/llama-graph.h` 第 354-491 行以及 `src/llama-graph.cpp` 第 582-820 行中 `attn_kv_iswa`
+    与三个 `mem_hybrid*` 类的实现。
+  - 回答问题：
+  - '- `attn_kv_iswa` 中 base 与 SWA 两套缓存的张量如何分别管理？'
+  - '- 为何 base 与 SWA 共享同一套 `self_k_rot`/`self_v_rot`？'
+  - '- `mem_hybrid_iswa` 在 `set_input` 中为何要先判断 `tensor && tensor->buffer`？'
+  - '- 比较 `mem_hybrid`、`mem_hybrid_k`、`mem_hybrid_iswa` 三者的差异，分别适用于哪些场景？'
+  - '- 源码注释中提到"Hybrid input classes are a bit redundant，未来应重构为两个独立输入"，这种重构的潜在收益与风险是什么？'
+  - '- 这三个混合类在 `can_reuse` 阶段如何协同校验 attn 子输入与 rs 子输入？'
+  'no': 7
+  title: 理解 ISWA 与混合内存输入的层次结构
+learning_targets:
+- 理解 llm_graph_input_i 抽象基类的设计思想与多态管理机制
+- 掌握各类图输入（embeddings、positions、attention masks、cross、rs）的构造与填充流程
+- 理解 llm_graph_context 的核心字段与生命周期，明确其作为模型构建桥梁的角色
+- 熟悉 build_norm、build_ffn、build_moe_ffn 等基础构建器的实现逻辑
+- 掌握 build_attn_mha 的 Flash Attention 与传统注意力两条路径选择策略
+- 理解 RoPE 应用、MLA 吸收优化、注意力温度缩放等高级特性的图构建方式
+- 掌握 build_attn 五个重载如何对接五种不同的注意力输入类型
+- 理解 build_rs 与 build_rwkv_token_shift 的 RNN 状态复制与 token shift 机制
+- 了解 build_pooling 与 build_sampling 在图末端的差异化处理
+- 理解 llm_graph_params.allow_reuse 与 llm_graph_result.can_reuse 的多维度复用判定策略
+- 掌握所有输入构造器（build_inp_*）与注意力输入构造器（build_attn_inp_*）的工厂方法实现
+- 理解静态辅助函数（build_attn_inp_kq_mask、can_reuse_kq_mask、ggml_mul_mat_aux、print_mask、llama_relative_position_bucket）的职责
+- 掌握 build_lora_mm / build_lora_mm_id 的 LoRA 累加与 per-tensor scale 机制
+- 理解 build_pos_bias 的 T5 相对位置偏置构建流程
+- 掌握 build_dense_out 的 dense 分类头 2-3 层投影
+- 理解混合内存输入（mem_hybrid / mem_hybrid_k / mem_hybrid_iswa）的层次结构与容错填充
+- 能阅读并修改自定义算子与图构建逻辑
+life_analogy:
+- 想象 GGML 的计算图构建是一场精密的"建筑工程"：
+- '- **llm_graph_context** = 工程指挥中心，集中存放设计图纸（hparams）、施工材料（ubatch）、施工场地（ctx0、gf）等所有资源'
+- '- **llm_graph_input_i 派生类** = 各类"原料仓库"，分别保管 token 仓库（embd）、注意力掩码仓库（kq_mask）、状态仓库（s_copy）等'
+- '- **llm_graph_input_i 抽象基类** = 仓库的"通用合同模板"：定义 set_input（装填货物）与 can_reuse（能否复用货架）两个标准动作'
+- '- **llm_graph_input_ptr（unique_ptr）** = 仓库的"自动归还钥匙"：当图结果（result）析构时，所有输入仓库自动释放'
+- '- **llm_graph_result** = 建筑成品，封装了从仓库到屋顶的全部管道电路，承载 logits、embeddings、采样结果等产出物'
+- '- **build_norm / build_ffn / build_moe_ffn** = 模块化工厂车间，按规格生产标准件（归一化层、前馈层、专家层）'
+- '- **build_attn_mha** = 精密装配车间，将 QKV 半成品组装为 Flash Attention 或传统注意力模块'
+- '- **Flash Attention 路径** = 现代化流水线：原材料（QKV）一次性走完整套工艺，高效'
+- '- **传统注意力路径** = 传统流水线：原材料分阶段处理，灵活但稍慢'
+- '- **RoPE 旋转** = 给钢筋做"扭转加工"，通过 mul_mat_aux 完成空间位置编码'
+- '- **MoE 专家路由** = 智能调度员，根据输入特征挑选最合适的几位专家工人协同作业'
+- '- **allow_reuse / can_reuse** = 工程师的"图纸复用审批"，只有当新的施工需求与旧图纸完全兼容时才允许复用'
+- '- **build_sampling** = 末端质检台，集成了后端采样器（图内执行）让 LLM 在算图中直接选出下一个 token'
+- '- **静态辅助函数 build_attn_inp_kq_mask** = 掩码仓库的"批量生产机器"，统一规格后分发给各模块'
+- '- **debug 字段** = 仓库的"日志记录仪"，env 变量开启后记录每次装填/复用的详细痕迹'
+- 就像真正的建筑需要合理安排材料仓库、施工车间与质检台的位置，llama.cpp 的图构建也需要精心编排各类输入、构建器与输出，确保整张图高效执行并能跨次推理复用。
+'no': 18
+summary:
+- concept: '`llm_graph_input_i`'
+  desc: 输入抽象基类，定义 set_input/can_reuse 多态接口
+- concept: '`llm_graph_input_i::llm_graph_input_i()`'
+  desc: 构造函数，读取 LLAMA_GRAPH_INPUT_DEBUG 环境变量初始化 debug 字段
+- concept: '`llm_graph_input_i::~llm_graph_input_i()`'
+  desc: 默认虚析构函数，保证派生类通过基类指针正确销毁
+- concept: '`llm_graph_input_i::set_input()`'
+  desc: 纯虚函数，派生类实现具体的输入填充逻辑
+- concept: '`llm_graph_input_i::can_reuse()`'
+  desc: 默认返回 false，防止未实现复用的派生类被错误复用
+- concept: '`llm_graph_input_ptr`'
+  desc: unique_ptr 别名，让 input 对象在 result.inputs 中自动析构
+- concept: '`llm_graph_input_embd`'
+  desc: 双通道嵌入（token 或 vector），通过 ggml_build_forward_select 切换
+- concept: '`llm_graph_input_embd::set_input()`'
+  desc: 根据 ubatch.token/embd 是否为空决定填哪一个通道
+- concept: '`llm_graph_input_embd::can_reuse()`'
+  desc: 校验 tokens->ne[0] 与 embd->ne[1] 与 n_tokens 一致
+- concept: '`llm_graph_input_pos`'
+  desc: 多维位置编码输入，n_pos_per_embd=4 时支持 M-RoPE
+- concept: '`llm_graph_input_pos::set_input()`'
+  desc: M-RoPE 下扩展 1D 位置为 4D（前三维相同，第四维为 0）
+- concept: '`llm_graph_input_pos::can_reuse()`'
+  desc: 校验 pos->ne[0] == n_tokens*n_pos_per_embd
+- concept: '`llm_graph_input_attn_temp`'
+  desc: llama4 风格的注意力温度缩放输入
+- concept: '`llm_graph_input_attn_temp::set_input()`'
+  desc: 基于位置计算 log(floor(pos+offset)/n+1)*scale+1
+- concept: '`llm_graph_input_pos_bucket`'
+  desc: T5 编码器自注意力相对位置桶
+- concept: '`llm_graph_input_pos_bucket::set_input()`'
+  desc: 调用 llama_relative_position_bucket 填桶号
+- concept: '`llm_graph_input_pos_bucket_kv`'
+  desc: T5 解码器交叉注意力桶，依赖 KV 缓存
+- concept: '`llm_graph_input_pos_bucket_kv::set_input()`'
+  desc: 委托给 mctx->set_input_pos_bucket
+- concept: '`llm_graph_input_out_ids`'
+  desc: 输出 token 索引收集，避免图拓扑依赖 token 数
+- concept: '`llm_graph_input_out_ids::set_input()`'
+  desc: 遍历 ubatch.output 标记填充索引；n_outputs==n_tokens 时填 [0..n_tokens]
+- concept: '`llm_graph_input_out_ids::can_reuse()`'
+  desc: 仅校验 n_outputs 一致
+- concept: '`llm_graph_input_mean`'
+  desc: 均值池化的 1/sum 倒数矩阵
+- concept: '`llm_graph_input_mean::set_input()`'
+  desc: 两遍扫描：第一遍统计 sum，第二遍写 1/sum 倒数
+- concept: '`llm_graph_input_cls`'
+  desc: CLS/LAST/RANK 池化的目标行索引
+- concept: '`llm_graph_input_cls::set_input()`'
+  desc: 架构感知：Qwen3/Qwen3VL RANK 取 LAST，其余 RANK/CLS 取最小 pos
+- concept: '`llm_graph_input_rs`'
+  desc: RNN 状态复制索引，主/额外视图
+- concept: '`llm_graph_input_rs::set_input()`'
+  desc: 遍历 n_rs 写入 mctx->s_copy(i) 索引
+- concept: '`llm_graph_input_rs::can_reuse()`'
+  desc: 校验 head/rs_z 未变、视图偏移一致
+- concept: '`llm_graph_input_cross_embd`'
+  desc: 交叉嵌入，从 cross->v_embd 拷贝到 host tensor
+- concept: '`llm_graph_input_cross_embd::set_input()`'
+  desc: 用 ggml_backend_tensor_set 复制整个 v_embd
+- concept: '`llm_graph_input_attn_no_cache`'
+  desc: 无缓存注意力，支持 SWA 双掩码与 ALiBi 偏置
+- concept: '`llm_graph_input_attn_no_cache::set_input()`'
+  desc: fill_mask lambda：跨序列/因果/SWA/ALiBi 四层过滤
+- concept: '`llm_graph_input_attn_kv`'
+  desc: 标准 KV 缓存注意力输入，含 RoPE 旋转矩阵
+- concept: '`llm_graph_input_attn_kv::set_input()`'
+  desc: 委托 mctx 填 K/V 索引、KQ 掩码、K/V 旋转矩阵
+- concept: '`llm_graph_input_attn_kv::can_reuse()`'
+  desc: 校验 K 索引维度和 KQ 掩码形状（can_reuse_kq_mask）
+- concept: '`llm_graph_input_attn_k`'
+  desc: V-less 优化变体，省略 V 索引与 V 旋转
+- concept: '`llm_graph_input_attn_k::set_input()`'
+  desc: 仅调用 set_input_k_idxs 与 set_input_kq_mask
+- concept: '`llm_graph_input_attn_kv_iswa`'
+  desc: ISWA 双缓存（base + SWA）输入
+- concept: '`llm_graph_input_attn_kv_iswa::set_input()`'
+  desc: 分别从 base 与 swa 缓存填索引与掩码，共享旋转矩阵
+- concept: '`llm_graph_input_attn_kv_iswa::can_reuse()`'
+  desc: 同时校验 base 与 SWA 两套 K 索引与掩码形状
+- concept: '`llm_graph_input_attn_cross`'
+  desc: 编码器-解码器交叉注意力掩码
+- concept: '`llm_graph_input_attn_cross::set_input()`'
+  desc: 基于 seq_ids_enc 集合包含关系生成掩码
+- concept: '`llm_graph_input_mem_hybrid`'
+  desc: Transformer+RNN 混合内存组合输入
+- concept: '`llm_graph_input_mem_hybrid::set_input()`'
+  desc: 协调 attn 子输入与 rs 子输入的 set_input
+- concept: '`llm_graph_input_mem_hybrid::can_reuse()`'
+  desc: 透传调用两个子输入的 can_reuse 并额外校验循环头部状态
+- concept: '`llm_graph_input_mem_hybrid_k`'
+  desc: V-less 混合内存输入
+- concept: '`llm_graph_input_mem_hybrid_k::set_input()`'
+  desc: 只 set_input_k_idxs
+- concept: '`llm_graph_input_mem_hybrid_iswa`'
+  desc: ISWA 增强混合内存
+- concept: '`llm_graph_input_mem_hybrid_iswa::set_input()`'
+  desc: 通过 tensor->buffer 判空容错 base/swa 是否已分配
+- concept: '`llm_graph_input_sampling`'
+  desc: 后端采样器集合（按 seq_id 索引）
+- concept: '`llm_graph_input_sampling::set_input()`'
+  desc: 构造 active_samplers 集合，对激活序列调 backend_set_input
+- concept: '`llm_graph_input_sampling::can_reuse()`'
+  desc: 通过指针比较校验采样器集合是否变化
+- concept: '`llm_graph_params.allow_reuse`'
+  desc: 多维度复用判定：ubatch/samplers/cparams/arch/cvec/loras/cross
+- concept: '`llm_graph_params::samplers_equal()`'
+  desc: 静态函数，比较两个采样器 map 是否一致
+- concept: '`llm_graph_result.llm_graph_result()`'
+  desc: 读取 LLAMA_GRAPH_RESULT_DEBUG 环境变量并初始化 max_nodes
+- concept: '`llm_graph_result::~llm_graph_result()`'
+  desc: 默认虚析构函数
+- concept: '`llm_graph_result::reset()`'
+  desc: 重置所有输出/输入字段，重新分配 buf_compute_meta 与 ggml 图
+- concept: '`llm_graph_result::set_inputs()`'
+  desc: 遍历 inputs 容器，调用每个 input->set_input(ubatch)
+- concept: '`llm_graph_result::set_outputs()`'
+  desc: 为 t_logits/t_embd/t_sampled 等张量调用 ggml_set_output
+- concept: '`llm_graph_result::can_reuse()`'
+  desc: 先调 this->params.allow_reuse，再遍历 input 调 can_reuse
+- concept: '`llm_graph_result::add_input()`'
+  desc: 用 emplace_back 将 input 移到 inputs 并返回原始指针
+- concept: '`llm_graph_result::set_params()`'
+  desc: 保存 params 快照供下次 can_reuse 比对
+- concept: '`llm_graph_result::get_inp_tokens()`'
+  desc: 返回 t_inp_tokens
+- concept: '`llm_graph_result::get_logits()`'
+  desc: 返回 t_logits
+- concept: '`llm_graph_result::get_embd()`'
+  desc: 返回 t_embd
+- concept: '`llm_graph_result::get_embd_pooled()`'
+  desc: 返回 t_embd_pooled
+- concept: '`llm_graph_result::get_gf()`'
+  desc: 返回 gf
+- concept: '`llm_graph_result::get_ctx()`'
+  desc: 返回 ctx_compute.get()
+- concept: '`llm_graph_result::get_max_nodes()`'
+  desc: 返回 max_nodes
+- concept: '`llm_graph_context`'
+  desc: 图构建上下文，封装全部构建所需参数与图/上下文/调度器
+- concept: '`llm_graph_context::llm_graph_context()`'
+  desc: 从 llm_graph_params 拷贝所有字段并自动调 res->set_params
+- concept: '`llm_graph_context::~llm_graph_context()`'
+  desc: 默认虚析构函数
+- concept: '`llm_graph_context::cb()`'
+  desc: 转发到 cb_func，附加 ubatch/name/il 信息
+- concept: '`build_cvec`'
+  desc: 将控制向量 cvec 按层应用到 cur 张量
+- concept: '`build_lora_mm`'
+  desc: 带 LoRA 累加与 per-tensor scale 的矩阵乘
+- concept: '`build_lora_mm_id`'
+  desc: MoE 版本的 LoRA 矩阵乘（带专家 ID）
+- concept: '`build_norm`'
+  desc: 三种归一化（普通/RMS/Group）统一接口
+- concept: '`build_ffn`'
+  desc: 支持 7 种激活（SiLU/GELU/ReLU/SwiGLU/GeGLU/ReGLU/OAI_MOE）与 SEQ/PAR 门控结构
+- concept: '`build_moe_ffn`'
+  desc: 完整 MoE 路由：softmax/sigmoid 门控、Top-K、专家矩阵乘、可选权重归一化
+- concept: '`build_attn_mha`'
+  desc: Flash Attention 与传统注意力两条路径，支持 MLA 吸收优化
+- concept: '`build_attn`'
+  desc: 五个 build_attn 重载对应五种输入类型的统一舞台
+- concept: '`build_attn_inp_no_cache`'
+  desc: 构造 attn_no_cache 输入对象，含 SWA 掩码分配
+- concept: '`build_attn_inp_kv`'
+  desc: 构造 attn_kv 输入对象（KV 缓存 + RoPE 旋转）
+- concept: '`build_attn_inp_k`'
+  desc: 构造 attn_k 输入对象（V-less）
+- concept: '`build_attn_inp_kv_iswa`'
+  desc: 构造 attn_kv_iswa 输入对象（双缓存）
+- concept: '`build_attn_inp_cross`'
+  desc: 构造 attn_cross 输入对象（编解码桥梁）
+- concept: '`build_rs`'
+  desc: RNN 状态复制：主状态 get_rows + 额外状态 ccp
+- concept: '`build_rs_inp`'
+  desc: 构造 rs 输入对象（含主/额外视图）
+- concept: '`build_rwkv_token_shift_load`'
+  desc: RWKV 加载 token_shift 视图
+- concept: '`build_rwkv_token_shift_store`'
+  desc: RWKV 存储 token_shift 到 R 层
+- concept: '`build_inp_mem_hybrid`'
+  desc: 构造 mem_hybrid 输入对象
+- concept: '`build_inp_mem_hybrid_k`'
+  desc: 构造 mem_hybrid_k 输入对象
+- concept: '`build_inp_mem_hybrid_iswa`'
+  desc: 构造 mem_hybrid_iswa 输入对象
+- concept: '`build_pooling`'
+  desc: 四种池化（NONE/MEAN/CLS/RANK）含架构差异化处理
+- concept: '`build_dense_out`'
+  desc: dense 分类头的 2-3 层投影
+- concept: '`build_sampling`'
+  desc: 后端采样器集成，通过 ggml_pad + build_forward_select 稳定拓扑
+- concept: '`build_pos_bias`'
+  desc: T5 位置偏置：reshape/get_rows/permute/cont 构建 3D 偏置
+- concept: '`build_attn_inp_kq_mask()`'
+  desc: 静态辅助：创建 [n_kv, n_tokens/n_stream, 1, n_stream] 掩码张量
+- concept: '`can_reuse_kq_mask()`'
+  desc: 静态辅助：四维校验（ne[0..3]）复用条件
+- concept: '`build_attn_inp_kv_impl()`'
+  desc: attn_kv 输入的构造工厂（提取 mctx 引用）
+- concept: '`build_attn_inp_k_impl()`'
+  desc: attn_k 输入的构造工厂
+- concept: '`build_rs_inp_impl()`'
+  desc: rs 输入的构造工厂（设置 s_copy 视图）
+- concept: '`ggml_mul_mat_aux()`'
+  desc: RoPE 旋转辅助：reshape_2d → mul_mat → reshape_4d
+- concept: '`print_mask()`'
+  desc: 调试辅助：以字符形式可视化掩码矩阵
+- concept: '`llama_relative_position_bucket()`'
+  desc: T5 风格相对位置桶：max_distance=128、log 桶插值
+units:
+- codes:
+  - file: src/llama-graph.h
+    line: 60-85
+    method_or_func: llm_graph_input_i
+  - file: src/llama-graph.h
+    line: '86'
+    method_or_func: llm_graph_input_ptr
+  - file: src/llama-graph.h
+    line: 63-67
+    method_or_func: llm_graph_input_i.llm_graph_input_i()
+  - file: src/llama-graph.h
+    line: '69'
+    method_or_func: llm_graph_input_i.~llm_graph_input_i()
+  - file: src/llama-graph.h
+    line: '71'
+    method_or_func: llm_graph_input_i.set_input()
+  - file: src/llama-graph.h
+    line: 74-80
+    method_or_func: llm_graph_input_i.can_reuse()
+  name: 图输入管理基础 —— GGML 世界的「原料仓库」
+  'no': 1
+  points:
+  - '**为什么需要 llm_graph_input_i 抽象基类？**'
+  - '- 计算图构建与执行是分离的：构图时只知道张量的形状与含义，执行时才知道具体数值'
+  - '- 不同输入（embeddings、positions、attention masks 等）需要各自的填充规则与能否复用判定'
+  - '- 通过基类统一管理 `set_input`（实际填值）与 `can_reuse`（能否复用已有图）'
+  - '- 通过环境变量 `LLAMA_GRAPH_INPUT_DEBUG` 启用调试输出'
+  - '- 基类析构函数声明为 `virtual = default`，保证通过基类指针安全删除派生对象'
+  - '**can_reuse 默认实现的安全策略**'
+  - '- 基类默认 `return false` 防止未实现复用的派生类被错误复用'
+  - '- 派生类需要显式覆盖以表达"我能复用"的承诺'
+  - '**智能指针封装的意义**'
+  - '- `llm_graph_input_ptr = unique_ptr<llm_graph_input_i>` 让输入对象在 `llm_graph_result.inputs`
+    中自动析构'
+  - '- 多态调用 `set_input`/`can_reuse` 时通过基类指针访问派生类成员'
+  - '- 派生类构造函数（如 llm_graph_input_embd(int64_t n_embd)）只存储必要参数，资源在图构造阶段才绑定'
+  - '**基类的所有成员**'
+  - '- 构造函数 `llm_graph_input_i()`：读取 LLAMA_GRAPH_INPUT_DEBUG 环境变量并初始化 debug 字段'
+  - '- 虚析构 `~llm_graph_input_i() = default`：保证派生类正确析构'
+  - '- 纯虚 `set_input(const llama_ubatch*)`：派生类必须实现的填值接口'
+  - '- 虚 `can_reuse(const llm_graph_params&)`：默认返回 false 的复用判定'
+  - '- 受保护字段 `debug`：由环境变量控制，辅助日志输出'
+- codes:
+  - file: src/llama-graph.h
+    line: 87-103
+    method_or_func: llm_graph_input_embd
+  - file: src/llama-graph.h
+    line: 105-118
+    method_or_func: llm_graph_input_pos
+  - file: src/llama-graph.h
+    line: 157-173
+    method_or_func: llm_graph_input_out_ids
+  - file: src/llama-graph.h
+    line: '89'
+    method_or_func: llm_graph_input_embd.llm_graph_input_embd()
+  - file: src/llama-graph.h
+    line: '90'
+    method_or_func: llm_graph_input_embd.~llm_graph_input_embd()
+  - file: src/llama-graph.h
+    line: '107'
+    method_or_func: llm_graph_input_pos.llm_graph_input_pos()
+  - file: src/llama-graph.h
+    line: '108'
+    method_or_func: llm_graph_input_pos.~llm_graph_input_pos()
+  - file: src/llama-graph.h
+    line: '160'
+    method_or_func: llm_graph_input_out_ids.llm_graph_input_out_ids()
+  - file: src/llama-graph.h
+    line: '162'
+    method_or_func: llm_graph_input_out_ids.~llm_graph_input_out_ids()
+  - file: src/llama-graph.cpp
+    line: 75-100
+    method_or_func: llm_graph_input_embd.set_input()
+  - file: src/llama-graph.cpp
+    line: 100-110
+    method_or_func: llm_graph_input_embd.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 112-145
+    method_or_func: llm_graph_input_pos.set_input()
+  - file: src/llama-graph.cpp
+    line: 145-155
+    method_or_func: llm_graph_input_pos.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 230-265
+    method_or_func: llm_graph_input_out_ids.set_input()
+  - file: src/llama-graph.cpp
+    line: 265-275
+    method_or_func: llm_graph_input_out_ids.can_reuse()
+  name: 基础输入家族 —— 嵌入、位置与输出的「原料三剑客」
+  'no': 2
+  points:
+  - '**llm_graph_input_embd：双通道嵌入输入**'
+  - '- 构造函数 llm_graph_input_embd(int64_t n_embd) 存储 n_embd_inp 维度'
+  - '- 同时持有 tokens（I32 [n_batch]）与 embd（F32 [n_embd, n_batch]）两个占位张量'
+  - '- `set_input` 根据 `ubatch.token`/`ubatch.embd` 是否为空来决定填哪一个通道'
+  - '- `can_reuse` 检查两个张量的第一维是否匹配当前 ubatch 的 token 数'
+  - '- 上层通过 `ggml_build_forward_select` 在运行时选择 token 或 vector 嵌入路径（PR #18550）'
+  - '**llm_graph_input_pos：多维位置编码（支持 M-RoPE）**'
+  - '- 构造函数存储 n_pos_per_embd（标准为 1，Qwen2-VL 等多模态模型为 4）'
+  - '- `set_input` 在 M-RoPE 场景下将 1D 位置扩展为 4D（前三维相同，第四维为 0）'
+  - '- `can_reuse` 校验第一维是否等于 `n_tokens * n_pos_per_embd`'
+  - '**llm_graph_input_out_ids：输出 token 索引收集**'
+  - '- 构造函数接收 hparams、cparams、n_outputs 三个参数'
+  - '- 当 `n_outputs < n_tokens` 时构造，否则跳过此优化以保持拓扑稳定'
+  - '- `set_input` 根据 `ubatch.output` 标记填充 I32 [n_outputs] 的索引张量'
+  - '- `n_outputs == n_tokens` 时直接填 [0..n_tokens] 跳过扫描'
+  - '- `can_reuse` 仅校验 `n_outputs` 是否一致，避免拓扑依赖 token 数（参考 PR #14275）'
+- codes:
+  - file: src/llama-graph.h
+    line: 175-186
+    method_or_func: llm_graph_input_mean
+  - file: src/llama-graph.h
+    line: 188-201
+    method_or_func: llm_graph_input_cls
+  - file: src/llama-graph.h
+    line: 120-135
+    method_or_func: llm_graph_input_attn_temp
+  - file: src/llama-graph.h
+    line: '177'
+    method_or_func: llm_graph_input_mean.llm_graph_input_mean()
+  - file: src/llama-graph.h
+    line: '178'
+    method_or_func: llm_graph_input_mean.~llm_graph_input_mean()
+  - file: src/llama-graph.h
+    line: '190'
+    method_or_func: llm_graph_input_cls.llm_graph_input_cls()
+  - file: src/llama-graph.h
+    line: '191'
+    method_or_func: llm_graph_input_cls.~llm_graph_input_cls()
+  - file: src/llama-graph.h
+    line: 122-124
+    method_or_func: llm_graph_input_attn_temp.llm_graph_input_attn_temp()
+  - file: src/llama-graph.h
+    line: '125'
+    method_or_func: llm_graph_input_attn_temp.~llm_graph_input_attn_temp()
+  - file: src/llama-graph.cpp
+    line: 267-320
+    method_or_func: llm_graph_input_mean.set_input()
+  - file: src/llama-graph.cpp
+    line: 322-375
+    method_or_func: llm_graph_input_cls.set_input()
+  - file: src/llama-graph.cpp
+    line: 147-165
+    method_or_func: llm_graph_input_attn_temp.set_input()
+  name: 池化与分类输入 —— 嵌入模型的「特征工程器」
+  'no': 3
+  points:
+  - '**llm_graph_input_mean：均值池化的权重矩阵**'
+  - '- 构造函数接收 cparams 引用（用于判断 pooling_type）'
+  - '- 构造 F32 [n_tokens, n_seqs_unq] 张量，每一行是一个序列的归一化倒数'
+  - '- `set_input` 仅在 `embeddings && (MEAN || RANK)` 时填充'
+  - '- 通过两次扫描：先统计每个序列的总 token 数得到 `sum`，再写入 `1/sum` 倒数'
+  - '**llm_graph_input_cls：CLS/LAST 池化的目标行**'
+  - '- 构造函数接收 cparams 与 arch（用于架构感知）'
+  - '- 构造 I32 [n_seqs_unq] 张量，每个元素是目标 token 在 batch 中的行索引'
+  - '- 支持 CLS（取最小 pos）、LAST（取最大 pos）、RANK（按架构区分）'
+  - '- Qwen3/Qwen3VL 的 reranker 模型使用 LAST 池化策略（arch 字段判定）'
+  - '**llm_graph_input_attn_temp：llama4 温度缩放**'
+  - '- 构造函数接收 n_attn_temp_floor_scale、f_attn_temp_scale、f_attn_temp_offset 三个常量'
+  - '- 提供 llama4 风格的温度缩放（按位置动态调整注意力 logits）'
+  - '- `set_input` 基于位置计算 log(floor((pos+offset)/n)+1)*scale+1'
+  - '**架构感知的差异化处理**'
+  - '- `arch` 字段在 `llm_graph_input_cls` 构造函数中被传入'
+  - '- 运行时通过 `arch == LLM_ARCH_QWEN3` 等判断决定策略'
+- codes:
+  - file: src/llama-graph.h
+    line: 137-148
+    method_or_func: llm_graph_input_pos_bucket
+  - file: src/llama-graph.h
+    line: 150-155
+    method_or_func: llm_graph_input_pos_bucket_kv
+  - file: src/llama-graph.h
+    line: '139'
+    method_or_func: llm_graph_input_pos_bucket.llm_graph_input_pos_bucket()
+  - file: src/llama-graph.h
+    line: '140'
+    method_or_func: llm_graph_input_pos_bucket.~llm_graph_input_pos_bucket()
+  - file: src/llama-graph.h
+    line: '152'
+    method_or_func: llm_graph_input_pos_bucket_kv.llm_graph_input_pos_bucket_kv()
+  - file: src/llama-graph.h
+    line: '153'
+    method_or_func: llm_graph_input_pos_bucket_kv.~llm_graph_input_pos_bucket_kv()
+  - file: src/llama-graph.cpp
+    line: 167-185
+    method_or_func: llm_graph_input_pos_bucket.set_input()
+  - file: src/llama-graph.cpp
+    line: 187-192
+    method_or_func: llm_graph_input_pos_bucket_kv.set_input()
+  - file: src/llama-graph.cpp
+    line: 2765-2790
+    method_or_func: llama_relative_position_bucket()
+  name: 相对位置桶输入 —— T5 编码器的「位置语言」
+  'no': 4
+  points:
+  - '**llm_graph_input_pos_bucket：编码器自注意力桶**'
+  - '- 构造函数接收 llama_hparams 引用（用于 n_rel_attn_bkts）'
+  - '- 持有 I32 [n_tokens, n_tokens] 张量，每个元素是相对位置桶编号'
+  - '- `set_input` 调用 `llama_relative_position_bucket` 计算桶号，bidirectional=true'
+  - '- 仅在 `equal_seqs() == false` 时使用（不支持序列并行场景）'
+  - '- 强制要求张量在 host buffer（GGML_ASSERT 校验）'
+  - '**llm_graph_input_pos_bucket_kv：解码器交叉桶**'
+  - '- 构造函数接收 llama_hparams + llama_kv_cache_context 指针'
+  - '- 持有 I32 [n_kv, n_tokens] 张量，依赖 KV 缓存的上下文长度'
+  - '- `set_input` 委托给 `mctx->set_input_pos_bucket`（内存模块负责填充）'
+  - '**桶编号算法（llama_relative_position_bucket）**'
+  - '- 双向函数下将桶数减半，前半给负相对位置，后半给正相对位置'
+  - '- 小距离精确编码（max_exact），大距离对数插值（log 桶）'
+  - '- max_distance=128 是 T5 的典型值'
+- codes:
+  - file: src/llama-graph.h
+    line: 240-268
+    method_or_func: llm_graph_input_attn_no_cache
+  - file: src/llama-graph.h
+    line: 244-247
+    method_or_func: llm_graph_input_attn_no_cache.llm_graph_input_attn_no_cache()
+  - file: src/llama-graph.h
+    line: '249'
+    method_or_func: llm_graph_input_attn_no_cache.~llm_graph_input_attn_no_cache()
+  - file: src/llama-graph.h
+    line: '251'
+    method_or_func: llm_graph_input_attn_no_cache.get_kq_mask()
+  - file: src/llama-graph.h
+    line: '252'
+    method_or_func: llm_graph_input_attn_no_cache.get_kq_mask_swa()
+  - file: src/llama-graph.cpp
+    line: 440-510
+    method_or_func: llm_graph_input_attn_no_cache.set_input()
+  - file: src/llama-graph.cpp
+    line: 412-455
+    method_or_func: print_mask()
+  name: 无缓存注意力输入 —— 编码器的「纯粹注意力」
+  'no': 5
+  points:
+  - '**llm_graph_input_attn_no_cache：自包含的注意力掩码**'
+  - '- 构造函数接收 llama_hparams + llama_cparams 引用'
+  - '- 持有 self_kq_mask（F32 [n_tokens, n_tokens, 1, 1]）与可选的 SWA 版本'
+  - '- 提供 get_kq_mask() / get_kq_mask_swa() 访问器（返回 _cnv 转换版）'
+  - '- 当模型没有 KV 缓存（编码器或嵌入模型）时使用'
+  - '- `set_input` 调用 fill_mask lambda 完成以下逻辑：'
+  - '  · 跨函数掩码（s0 != s1）'
+  - '  · 因果掩码（causal_attn && p0 > p1）'
+  - '  · SWA 滑动窗口掩码（is_masked_swa）'
+  - '  · ALiBi 偏置（use_alibi 时填充 `-abs(p0-p1)`）'
+  - '- 通过 `debug` 环境变量可打印掩码矩阵（print_mask 函数）'
+  - '**SWA 双掩码机制**'
+  - '- 同时维护 `self_kq_mask`（标准）与 `self_kq_mask_swa`（滑动窗口）'
+  - '- 当 `hparams.swa_type != LLAMA_SWA_TYPE_NONE` 时才分配 SWA 掩码'
+  - '- Flash Attention 模式下转换为 F16（通过 `ggml_cast`）'
+  - '**print_mask 调试辅助**'
+  - '- 以 0/∞ 字符可视化掩码矩阵（前 20×20 子矩阵）'
+  - '- 区分 SWA 类型输出调试字符串'
+- codes:
+  - file: src/llama-graph.h
+    line: 270-308
+    method_or_func: llm_graph_input_attn_kv
+  - file: src/llama-graph.h
+    line: 315-345
+    method_or_func: llm_graph_input_attn_k
+  - file: src/llama-graph.h
+    line: 273-282
+    method_or_func: llm_graph_input_attn_kv.llm_graph_input_attn_kv()
+  - file: src/llama-graph.h
+    line: '284'
+    method_or_func: llm_graph_input_attn_kv.~llm_graph_input_attn_kv()
+  - file: src/llama-graph.h
+    line: '286'
+    method_or_func: llm_graph_input_attn_kv.get_k_idxs()
+  - file: src/llama-graph.h
+    line: '287'
+    method_or_func: llm_graph_input_attn_kv.get_v_idxs()
+  - file: src/llama-graph.h
+    line: '289'
+    method_or_func: llm_graph_input_attn_kv.get_kq_mask()
+  - file: src/llama-graph.h
+    line: 321-329
+    method_or_func: llm_graph_input_attn_k.llm_graph_input_attn_k()
+  - file: src/llama-graph.h
+    line: '331'
+    method_or_func: llm_graph_input_attn_k.~llm_graph_input_attn_k()
+  - file: src/llama-graph.h
+    line: '333'
+    method_or_func: llm_graph_input_attn_k.get_k_idxs()
+  - file: src/llama-graph.h
+    line: '335'
+    method_or_func: llm_graph_input_attn_k.get_kq_mask()
+  - file: src/llama-graph.cpp
+    line: 512-550
+    method_or_func: llm_graph_input_attn_kv.set_input()
+  - file: src/llama-graph.cpp
+    line: 550-560
+    method_or_func: llm_graph_input_attn_kv.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 552-580
+    method_or_func: llm_graph_input_attn_k.set_input()
+  - file: src/llama-graph.cpp
+    line: 580-590
+    method_or_func: llm_graph_input_attn_k.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 12-25
+    method_or_func: build_attn_inp_kq_mask()
+  - file: src/llama-graph.cpp
+    line: 27-40
+    method_or_func: can_reuse_kq_mask()
+  name: KV 缓存注意力输入家族 —— 解码器的「记忆接口」
+  'no': 6
+  points:
+  - '**llm_graph_input_attn_kv：标准 KV 缓存接口**'
+  - '- 构造函数接收 hparams、cparams、llama_kv_cache_context 指针'
+  - '- 提供 get_k_idxs() / get_v_idxs() / get_kq_mask() 三个 getter'
+  - '- 持有 K 索引、值索引、KQ 掩码以及可选的 RoPE 旋转矩阵'
+  - '- `set_input` 委托给 `mctx->set_input_*` 系列方法（内存模块自管理）'
+  - '- `can_reuse` 校验 K 索引维度与掩码形状是否匹配'
+  - '**llm_graph_input_attn_k：V-less 接口（PR #19067）**'
+  - '- 构造函数签名与 attn_kv 一致'
+  - '- 仅存储 K 索引，省略 V 索引与 V 旋转'
+  - '- 提供 get_k_idxs() / get_kq_mask() getter（无 V 相关 getter）'
+  - '- 用于不需要 V 缓存的特殊场景'
+  - '- `set_input` 只调用 `set_input_k_idxs` 与 `set_input_kq_mask`'
+  - '**RoPE 旋转矩阵的妙用**'
+  - '- `self_k_rot`/`self_v_rot` 作为输入占位张量在构图阶段确定'
+  - '- 执行阶段由 `mctx->set_input_k_rot` 填入具体的旋转矩阵'
+  - '- `build_attn` 中通过 `ggml_mul_mat_aux` 完成旋转（reshape→mul_mat→reshape_4d）'
+  - '**掩码复用判定**'
+  - '- `can_reuse_kq_mask` 静态函数校验四个维度：`n_kv` × `n_tokens/n_stream` × 1 × `n_stream`'
+  - '- `n_stream` 在 `kv_unified` 模式下为 1，否则为 `n_seqs_unq`（每个独立序列一个流）'
+  - '**静态辅助函数 build_attn_inp_kq_mask / can_reuse_kq_mask**'
+  - '- 工厂式创建 KQ 掩码张量（统一命名为 attn_inp_kq_mask）'
+  - '- 校验复用：四维 ne 数组逐一比对'
+- codes:
+  - file: src/llama-graph.h
+    line: 354-388
+    method_or_func: llm_graph_input_attn_kv_iswa
+  - file: src/llama-graph.h
+    line: 390-407
+    method_or_func: llm_graph_input_attn_cross
+  - file: src/llama-graph.h
+    line: 357-365
+    method_or_func: llm_graph_input_attn_kv_iswa.llm_graph_input_attn_kv_iswa()
+  - file: src/llama-graph.h
+    line: '367'
+    method_or_func: llm_graph_input_attn_kv_iswa.~llm_graph_input_attn_kv_iswa()
+  - file: src/llama-graph.h
+    line: '369'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_k_idxs()
+  - file: src/llama-graph.h
+    line: '370'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_v_idxs()
+  - file: src/llama-graph.h
+    line: '371'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_k_idxs_swa()
+  - file: src/llama-graph.h
+    line: '372'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_v_idxs_swa()
+  - file: src/llama-graph.h
+    line: '374'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_kq_mask()
+  - file: src/llama-graph.h
+    line: '375'
+    method_or_func: llm_graph_input_attn_kv_iswa.get_kq_mask_swa()
+  - file: src/llama-graph.h
+    line: '392'
+    method_or_func: llm_graph_input_attn_cross.llm_graph_input_attn_cross()
+  - file: src/llama-graph.h
+    line: '393'
+    method_or_func: llm_graph_input_attn_cross.~llm_graph_input_attn_cross()
+  - file: src/llama-graph.h
+    line: '395'
+    method_or_func: llm_graph_input_attn_cross.get_kq_mask_cross()
+  - file: src/llama-graph.cpp
+    line: 582-625
+    method_or_func: llm_graph_input_attn_kv_iswa.set_input()
+  - file: src/llama-graph.cpp
+    line: 625-635
+    method_or_func: llm_graph_input_attn_kv_iswa.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 627-660
+    method_or_func: llm_graph_input_attn_cross.set_input()
+  - file: src/llama-graph.cpp
+    line: 2175-2210
+    method_or_func: build_attn_inp_kv_impl()
+  - file: src/llama-graph.cpp
+    line: 2265-2290
+    method_or_func: build_attn_inp_k_impl()
+  name: ISWA 与交叉注意力输入 —— 滑动窗口与编解码桥梁
+  'no': 7
+  points:
+  - '**llm_graph_input_attn_kv_iswa：双层缓存的滑动窗口方案**'
+  - '- 构造函数接收 hparams、cparams、llama_kv_cache_iswa_context 指针'
+  - '- 提供六个 getter：get_k_idxs/v_idxs/k_idxs_swa/v_idxs_swa/kq_mask/kq_mask_swa'
+  - '- 同时持有 base 与 SWA 两套 K/V 索引与 KQ 掩码'
+  - '- 通过 `mctx->get_base()` 与 `mctx->get_swa()` 分别填充'
+  - '- `can_reuse` 同时校验两套缓存的张量维度'
+  - '- 共享同一套 RoPE 旋转矩阵（`self_k_rot`/`self_v_rot` 仅 base 持有）'
+  - '**llm_graph_input_attn_cross：编码器-解码器桥梁**'
+  - '- 构造函数接收 const llama_cross * 指针'
+  - '- 提供 get_kq_mask_cross() getter'
+  - '- 持有 cross_kq_mask（F32 [n_outputs_enc, n_tokens, 1, 1]）'
+  - '- `set_input` 根据 `cross->seq_ids_enc` 集合判断哪些编码器输出对当前解码 token 可见'
+  - '- 强制要求 `equal_seqs() == false`（序列不对齐场景）'
+  - '- Flash Attention 模式下转换为 F16'
+  - '**为什么需要独立的 cross 输入？**'
+  - '- 交叉注意力的 KV 来自编码器输出，而非解码器自身的 KV 缓存'
+  - '- 掩码语义不同：基于序列 ID 集合包含关系，而非时间因果性'
+  - '**辅助工厂函数 build_attn_inp_kv_impl / build_attn_inp_k_impl**'
+  - '- 实现 attn_kv 与 attn_k 输入对象的构造逻辑'
+  - '- 将 mctx 接口方法（build_input_k_idxs 等）与 ggml 上下文串联'
+- codes:
+  - file: src/llama-graph.h
+    line: 210-235
+    method_or_func: llm_graph_input_rs
+  - file: src/llama-graph.h
+    line: 498-509
+    method_or_func: llm_graph_input_sampling
+  - file: src/llama-graph.h
+    line: '212'
+    method_or_func: llm_graph_input_rs.llm_graph_input_rs()
+  - file: src/llama-graph.h
+    line: '213'
+    method_or_func: llm_graph_input_rs.~llm_graph_input_rs()
+  - file: src/llama-graph.h
+    line: '205'
+    method_or_func: llm_graph_input_cross_embd.llm_graph_input_cross_embd()
+  - file: src/llama-graph.h
+    line: '206'
+    method_or_func: llm_graph_input_cross_embd.~llm_graph_input_cross_embd()
+  - file: src/llama-graph.h
+    line: '500'
+    method_or_func: llm_graph_input_sampling.llm_graph_input_sampling()
+  - file: src/llama-graph.h
+    line: '501'
+    method_or_func: llm_graph_input_sampling.~llm_graph_input_sampling()
+  - file: src/llama-graph.cpp
+    line: 385-425
+    method_or_func: llm_graph_input_rs.set_input()
+  - file: src/llama-graph.cpp
+    line: 425-435
+    method_or_func: llm_graph_input_rs.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 427-440
+    method_or_func: llm_graph_input_cross_embd.set_input()
+  - file: src/llama-graph.cpp
+    line: 945-985
+    method_or_func: llm_graph_input_sampling.set_input()
+  - file: src/llama-graph.cpp
+    line: 985-995
+    method_or_func: llm_graph_input_sampling.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 2515-2540
+    method_or_func: build_rs_inp_impl()
+  name: 循环状态与采样输入 —— RNN 与后端采样的「特殊通道」
+  'no': 8
+  points:
+  - '**llm_graph_input_rs：循环状态复制索引**'
+  - '- 构造函数接收 const llama_memory_recurrent_context * 指针'
+  - '- 持有 s_copy（I32 [n_rs]）主索引张量，并通过视图拆分为 s_copy_main 与 s_copy_extra'
+  - '- 额外缓存 head 与 rs_z 两个标量，用于视图偏移校验'
+  - '- `can_reuse` 校验 head、rs_z 是否变化（视图偏移匹配）'
+  - '**辅助工厂 build_rs_inp_impl**'
+  - '- 构造 s_copy 张量与 s_copy_main/extra 视图'
+  - '- 同时缓存 head 与 rs_z 以便复用校验'
+  - '**RWKV token shift 的加载/存储**'
+  - '- `build_rwkv_token_shift_load` 通过 `build_rs` 获取状态视图并 reshape 为 3D'
+  - '- `build_rwkv_token_shift_store` 使用 `ggml_cpy` 将状态写入 R 层'
+  - '- 偏移计算基于 `kv_head = mctx_cur->get_head()`'
+  - '**llm_graph_input_cross_embd：编码器输出**'
+  - '- 构造函数接收 llama_cross 指针'
+  - '- 持有 cross_embd（F32 [n_embd, n_enc]）'
+  - '- `set_input` 将 cross->v_embd 完整复制到 host tensor（临时实现）'
+  - '**llm_graph_input_sampling：后端采样器的图集成**'
+  - '- 构造函数接收 std::map<seq_id, llama_sampler*> 采样器集合'
+  - '- 持有采样器映射（按 seq_id 索引）'
+  - '- `set_input` 仅对当前 batch 中 output=1 的序列调用 `backend_set_input`'
+  - '- `can_reuse` 通过指针比较校验采样器集合是否变化（避免悬空指针）'
+  - '**采样器的图内执行**'
+  - '- `build_sampling` 中通过 `ggml_pad` 添加 dummy 行以稳定图拓扑'
+  - '- 每个采样器通过 `ggml_build_forward_select` 二选一输出（实际/dummy）'
+- codes:
+  - file: src/llama-graph.h
+    line: 409-435
+    method_or_func: llm_graph_input_mem_hybrid
+  - file: src/llama-graph.h
+    line: 437-463
+    method_or_func: llm_graph_input_mem_hybrid_k
+  - file: src/llama-graph.h
+    line: 465-491
+    method_or_func: llm_graph_input_mem_hybrid_iswa
+  - file: src/llama-graph.h
+    line: 412-420
+    method_or_func: llm_graph_input_mem_hybrid.llm_graph_input_mem_hybrid()
+  - file: src/llama-graph.h
+    line: '421'
+    method_or_func: llm_graph_input_mem_hybrid.~llm_graph_input_mem_hybrid()
+  - file: src/llama-graph.h
+    line: '428'
+    method_or_func: llm_graph_input_mem_hybrid.get_attn()
+  - file: src/llama-graph.h
+    line: '429'
+    method_or_func: llm_graph_input_mem_hybrid.get_recr()
+  - file: src/llama-graph.h
+    line: 440-448
+    method_or_func: llm_graph_input_mem_hybrid_k.llm_graph_input_mem_hybrid_k()
+  - file: src/llama-graph.h
+    line: '449'
+    method_or_func: llm_graph_input_mem_hybrid_k.~llm_graph_input_mem_hybrid_k()
+  - file: src/llama-graph.h
+    line: '456'
+    method_or_func: llm_graph_input_mem_hybrid_k.get_attn()
+  - file: src/llama-graph.h
+    line: '457'
+    method_or_func: llm_graph_input_mem_hybrid_k.get_recr()
+  - file: src/llama-graph.h
+    line: 468-476
+    method_or_func: llm_graph_input_mem_hybrid_iswa.llm_graph_input_mem_hybrid_iswa()
+  - file: src/llama-graph.h
+    line: '477'
+    method_or_func: llm_graph_input_mem_hybrid_iswa.~llm_graph_input_mem_hybrid_iswa()
+  - file: src/llama-graph.h
+    line: '484'
+    method_or_func: llm_graph_input_mem_hybrid_iswa.get_attn()
+  - file: src/llama-graph.h
+    line: '485'
+    method_or_func: llm_graph_input_mem_hybrid_iswa.get_recr()
+  - file: src/llama-graph.cpp
+    line: 662-705
+    method_or_func: llm_graph_input_mem_hybrid.set_input()
+  - file: src/llama-graph.cpp
+    line: 705-710
+    method_or_func: llm_graph_input_mem_hybrid.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 710-755
+    method_or_func: llm_graph_input_mem_hybrid_k.set_input()
+  - file: src/llama-graph.cpp
+    line: 755-760
+    method_or_func: llm_graph_input_mem_hybrid_k.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 760-820
+    method_or_func: llm_graph_input_mem_hybrid_iswa.set_input()
+  - file: src/llama-graph.cpp
+    line: 820-830
+    method_or_func: llm_graph_input_mem_hybrid_iswa.can_reuse()
+  name: 混合内存输入 —— Transformer+RNN 的「混合驱动器」
+  'no': 9
+  points:
+  - '**llm_graph_input_mem_hybrid：双引擎协调器**'
+  - '- 构造函数接收 cparams、inp_attn(unique_ptr)、inp_rs(unique_ptr)、mctx 指针'
+  - '- 提供 get_attn() / get_recr() 访问器'
+  - '- 同时持有 attn（KV 缓存输入）与 recr（循环状态输入）两个子输入'
+  - '- `set_input` 协调两者：先调 attn 的 set_input_*，再处理 recr 的 s_copy'
+  - '- `can_reuse` 透传调用两个子输入的 can_reuse 并额外校验循环头部状态'
+  - '**llm_graph_input_mem_hybrid_k：V-less 变体**'
+  - '- 构造函数签名与 mem_hybrid 类似但 attn 子输入为 K-only 版本'
+  - '- 适用于 V-less MoE 等不需要完整 KV 的混合架构'
+  - '**llm_graph_input_mem_hybrid_iswa：ISWA 增强版**'
+  - '- 构造函数使用 attn_kv_iswa 子输入'
+  - '- 在 hybrid 基础上叠加 ISWA 双缓存'
+  - '- 额外校验 base/SWA 两组张量是否已分配 buffer'
+  - '- 通过 `if (tensor && tensor->buffer)` 容错（可能没有 base 或没有 SWA 层）'
+  - '**未来重构方向**'
+  - '- 注释提示未来可简化为创建两个独立输入而非聚合的 hybrid 输入'
+- codes:
+  - file: src/llama-graph.h
+    line: 820-960
+    method_or_func: llm_graph_context
+  - file: src/llama-graph.h
+    line: 870-880
+    method_or_func: llm_graph_context.llm_graph_context()
+  - file: src/llama-graph.h
+    line: '882'
+    method_or_func: llm_graph_context.~llm_graph_context()
+  - file: src/llama-graph.h
+    line: 884-890
+    method_or_func: llm_graph_context.cb()
+  - file: src/llama-graph.cpp
+    line: 1050-1115
+    method_or_func: llm_graph_context.llm_graph_context()
+  - file: src/llama-graph.cpp
+    line: 1115-1130
+    method_or_func: llm_graph_context.cb()
+  name: 图构建上下文 llm_graph_context —— 推理引擎的「施工总指挥」
+  'no': 10
+  points:
+  - '**为什么需要图构建上下文？**'
+  - '- 将所有构建所需的参数（hparams、cparams、ubatch、内存上下文、采样器等）封装为单一结构'
+  - '- 派生类（具体模型构建器）只需继承即可获得全部上下文'
+  - '- 通过引用避免大量拷贝，复用上层 llama_context 的资源'
+  - '**构造函数的关键步骤**'
+  - '- 构造函数接收 const llm_graph_params & 引用'
+  - '- 从 params 复制所有基础类型字段'
+  - '- 引用外部资源（避免生命周期问题）'
+  - '- 自动调用 `res->set_params(params)` 保存图参数快照（用于 can_reuse 判定）'
+  - '- 自动获取 ctx0（res->get_ctx()）与 gf（res->get_gf()）'
+  - '**关键字段分类**'
+  - '- 模型维度：n_embd、n_layer、n_head、n_head_kv、n_embd_head_k/v、n_expert'
+  - '- RoPE/YaRN：freq_base、freq_scale、ext_factor、attn_factor、beta_fast/slow'
+  - '- 归一化：norm_eps、norm_rms_eps'
+  - '- 上下文：ctx0（图上下文）、gf（图对象）、sched（调度器）、backend_cpu'
+  - '- 外部资源：cvec、loras、mctx、cross、samplers、cb_func'
+  - '**析构函数**'
+  - '- 默认虚析构 `~llm_graph_context() = default`'
+  - '- 不释放任何资源（全部为引用）'
+  - '**回调机制 cb()**'
+  - '- 将 `ggml_tensor` 与层号 il 暴露给外部 cb_func'
+  - '- 用于实现自定义后端分配、量化感知调度、可视化等'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 1190-1230
+    method_or_func: llm_graph_context.build_norm()
+  - file: src/llama-graph.cpp
+    line: 1135-1170
+    method_or_func: llm_graph_context.build_lora_mm()
+  - file: src/llama-graph.cpp
+    line: 1172-1190
+    method_or_func: llm_graph_context.build_lora_mm_id()
+  - file: src/llama-graph.cpp
+    line: 1100-1115
+    method_or_func: llm_graph_context.build_cvec()
+  - file: src/llama-graph.h
+    line: 15-26
+    method_or_func: llm_ffn_op_type
+  - file: src/llama-graph.h
+    line: 28-31
+    method_or_func: llm_ffn_gate_type
+  - file: src/llama-graph.h
+    line: 33-36
+    method_or_func: llm_norm_type
+  name: 归一化与 LoRA 构建器 —— 基础组件的「工厂方法」
+  'no': 11
+  points:
+  - '**build_norm：三种归一化统一接口**'
+  - '- 通过 `llm_norm_type` 枚举分派：LLM_NORM、LLM_NORM_RMS、LLM_NORM_GROUP'
+  - '- Group Norm 需要先 reshape 为 3D（最后一维拆为 group 数）再 reshape 回 2D'
+  - '- 权重 mw 与偏置 mb 可选（部分模型如无参数化 LayerNorm）'
+  - '- 通过 cb() 给 norm/norm_w 节点命名，便于调度器识别'
+  - '**build_lora_mm：带 LoRA 的矩阵乘法**'
+  - '- 主路径：`ggml_mul_mat(ctx0, w, cur)`'
+  - '- LoRA 累加：对每个 lora 计算 `b @ (a @ cur) * scale` 后 `add` 到主结果'
+  - '- scale 计算：`alpha ? adapter_scale * alpha / rank : adapter_scale`（alpha 归一化）'
+  - '- 可选 per-tensor scale（`w_s`）：`ggml_mul` 应用于结果'
+  - '**build_lora_mm_id：MoE 版本的 LoRA 矩阵乘**'
+  - '- 与 build_lora_mm 类似但使用 `ggml_mul_mat_id`（带专家 ID）'
+  - '- 适配 MoE 专家权重的 LoRA 微调场景'
+  - '**build_cvec：控制向量应用**'
+  - '- 将 cvec 张量按层号 il 应用到 cur 上'
+  - '- 作为整个图的初始偏置注入'
+  - '**枚举定义**'
+  - '- `llm_ffn_op_type`：SILU/GELU/RELU/RELU_SQR/SWIGLU/GEGLU/REGLU/SWIGLU_OAI_MOE'
+  - '- `llm_ffn_gate_type`：SEQ/PAR'
+  - '- `llm_norm_type`：NORM/NORM_RMS/NORM_GROUP'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 1230-1390
+    method_or_func: llm_graph_context.build_ffn()
+  name: 前馈网络 build_ffn —— 激活函数的「百变大厨」
+  'no': 12
+  points:
+  - '**统一的 FFN 抽象**'
+  - '- 接受 up/up_b/up_s、gate/gate_b/gate_s、down/down_b/down_s、act_scales 等十余个可选参数'
+  - '- 支持 `LLM_FFN_SEQ`（gate 在 up 之后）与 `LLM_FFN_PAR`（gate 与 up 并行）两种结构'
+  - '**激活函数分派**'
+  - '- SILU/GELU/RELU 等基础激活：直接调用 `ggml_silu`/`ggml_gelu`/`ggml_relu`'
+  - '- SwiGLU/GeGLU/ReGLU 等门控激活：使用 `ggml_*glue_split`（gate 在另一端时）'
+  - '- SwiGLU_OAI_MOE（GPT-OSS 风格）：固定 alpha=1.702、limit=7.0 的特殊变体'
+  - '- RELU_SQR（Arcee）：ReLU 后接平方'
+  - '**Step35 的特殊 SwiGLU 限幅**'
+  - '- 仅当 arch == LLM_ARCH_STEP35 且层 il >= 0 时启用'
+  - '- 对 gate 端 SiLU 后做 `clamp(-INF, limit)`'
+  - '- 对 up 端做 `clamp(-limit, limit)`'
+  - '- 通过 `hparams.swiglu_clamp_shexp[il]` 提供逐层限幅值'
+  - '**GLM4/JAIS2 的精度修正**'
+  - '- 对 down 投影设置 `GGML_PREC_F32`（half 精度累加器有数值问题）'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 1395-1420
+    method_or_func: llm_graph_context.build_moe_ffn() [no bias]
+  - file: src/llama-graph.cpp
+    line: 1420-1665
+    method_or_func: llm_graph_context.build_moe_ffn() [with bias]
+  name: MoE 前馈网络 build_moe_ffn —— 专家系统的「调度大师」
+  'no': 13
+  points:
+  - '**两阶段签名（无 bias 与有 bias）**'
+  - '- 第一阶段为不带 bias 的便捷入口，转发到带 bias 的完整实现'
+  - '- gate_up_exps 表示融合的 gate+up 张量（部分模型优化），分离路径则用 up_exps+gate_exps'
+  - '**专家路由流程**'
+  - '- 第一步：`logits = gate_inp @ cur`（n_expert × n_tokens 路由分数）'
+  - '- 第二步：gating 函数（softmax/sigmoid/softmax_weight）'
+  - '- 第三步：可选 exp_probs_b 偏置（DeepSeek V3）'
+  - '- 第四步：分组路由（DeepSeek-V3 风格的 n_group_used 选择）'
+  - '- 第五步：`argsort_top_k` 选出 top-k 专家 ID'
+  - '**权重归一化与缩放**'
+  - '- norm_w=true 时通过 sum_rows + clamp + div 做权重归一化'
+  - '- 避免除零：clamp 到 `6.103515625e-5`（F16 最小表示）'
+  - '- w_scale 提供全局缩放（如某些模型的 0.1 校准）'
+  - '**合并 vs 分离的专家权重**'
+  - '- 合并路径（gate_up_exps）：单次 mul_mat_id 后 view_3d 拆分'
+  - '- 分离路径：两次 mul_mat_id 分别计算 gate 与 up'
+  - '- 都支持 per-expert scale（up_exps_s、gate_exps_s、down_exps_s）'
+  - '**专家聚合**'
+  - '- 将各专家结果 view_2d + add 累加'
+  - '- 单专家场景使用 `ggml_cont` 保证连续性'
+  - '- 通过 `ggml_build_forward_expand` 在循环中触发拆分以优化并行度'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 1975-2100
+    method_or_func: llm_graph_context.build_attn_mha()
+  - file: src/llama-graph.cpp
+    line: 42-55
+    method_or_func: ggml_mul_mat_aux()
+  name: 注意力核心 build_attn_mha —— Flash Attention 与 MLA 的「融合艺术」
+  'no': 14
+  points:
+  - '**流式注意力（n_stream）的支持**'
+  - '- 通过 `q = ggml_view_4d` 将 q/k/v 拆分为 n_stream 流'
+  - '- 维度变换：`ne[0]` × `ne[1]` × `ne[2]/n_stream` × `n_stream`'
+  - '- 配合 kv_unified 配置实现多序列并行注意力'
+  - '**Flash Attention 路径**'
+  - '- 通过 `use_flash_attn = cparams.flash_attn && kq_b == nullptr` 判定'
+  - '- F32 K/V 自动转为 F16（Flash Attention 限制）'
+  - '- 使用 `ggml_flash_attn_ext` 一步完成 QKV → 输出'
+  - '- 支持 ALiBi 偏置、注意力 soft cap、sinks 等高级特性'
+  - '**MLA 吸收优化**'
+  - '- 通过 v_mla 张量在 Flash Attention 输出后做一次 mul_mat'
+  - '- 注释说明：作为 mat-mat 比 mat-vec 高效（维度 1 放 n_tokens）'
+  - '- 需要 2 次 permute + 1 次 cont 维持张量布局'
+  - '**传统注意力路径**'
+  - '- `kq = ggml_mul_mat(ctx0, k, q)` + `GGML_PREC_F32`（需要高精度）'
+  - '- Grok 的 tanh 软上限：`30 * tanh(kq/30)`'
+  - '- 通用 soft_cap：`scale → tanh → scale`'
+  - '- kq_b 偏置累加（ALiBi 编码器变体）'
+  - '- Softmax with sinks：`ggml_soft_max_ext` + `ggml_soft_max_add_sinks`'
+  - '- 最后 reshape_2d 合并多流'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 2105-2130
+    method_or_func: llm_graph_context.build_attn_inp_no_cache()
+  - file: src/llama-graph.cpp
+    line: 2135-2170
+    method_or_func: llm_graph_context.build_attn(inp_no_cache) 重载
+  - file: src/llama-graph.cpp
+    line: 2175-2210
+    method_or_func: llm_graph_context.build_attn_inp_kv()
+  - file: src/llama-graph.cpp
+    line: 2215-2260
+    method_or_func: llm_graph_context.build_attn(inp_kv) 重载
+  - file: src/llama-graph.cpp
+    line: 2265-2290
+    method_or_func: llm_graph_context.build_attn_inp_k()
+  - file: src/llama-graph.cpp
+    line: 2295-2330
+    method_or_func: llm_graph_context.build_attn(inp_k) 重载
+  - file: src/llama-graph.cpp
+    line: 2335-2380
+    method_or_func: llm_graph_context.build_attn_inp_kv_iswa()
+  - file: src/llama-graph.cpp
+    line: 2385-2420
+    method_or_func: llm_graph_context.build_attn(inp_kv_iswa) 重载
+  - file: src/llama-graph.cpp
+    line: 2425-2440
+    method_or_func: llm_graph_context.build_attn_inp_cross()
+  - file: src/llama-graph.cpp
+    line: 2445-2470
+    method_or_func: llm_graph_context.build_attn(inp_cross) 重载
+  name: 注意力分发 build_attn —— 五种输入类型的统一舞台
+  'no': 15
+  points:
+  - '**五种 build_attn 重载对应五种注意力输入**'
+  - '- attn_no_cache：编码器/嵌入模型（无 KV 缓存）'
+  - '- attn_kv：标准 Transformer 解码器'
+  - '- attn_k：V-less 优化变体（V 与 K 共享存储）'
+  - '- attn_kv_iswa：ISWA 双缓存方案'
+  - '- attn_cross：编码器-解码器交叉注意力'
+  - '**关键编排技巧**'
+  - '- 通过连续 `ggml_build_forward_expand` 锁定 q/k/v 顺序，减少图拆分'
+  - '- 在 cpy_k/cpy_v 之前 expand v 以支持 RoPE fusion（直接写入缓存）'
+  - '- `kqv_out` 命名约定：build_attn_mha 输出后再走 wo/wo_b 输出投影'
+  - '**RoPE 应用位置**'
+  - '- 对 attn_kv 与 attn_kv_iswa：通过 `ggml_mul_mat_aux` 将 q/k/v 乘以旋转矩阵'
+  - '- attn_no_cache/attn_cross 无此步（RoPE 在更上层应用）'
+  - '**KV 缓存写入**'
+  - '- `mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il)` 与 cpy_v'
+  - '- 通过 ggml_build_forward_expand 触发缓存写入节点'
+  - '- ISWA 路径根据 is_swa(il) 选择 base 或 SWA 缓存'
+  - '**输入构造器家族 build_attn_inp_***'
+  - '- 五个 build_attn_inp_* 对应五种输入类型的构造工厂'
+  - '- build_attn_inp_no_cache 分配 SWA 掩码'
+  - '- build_attn_inp_kv 委托给 build_attn_inp_kv_impl 静态函数'
+  - '- build_attn_inp_k 委托给 build_attn_inp_k_impl'
+  - '- build_attn_inp_kv_iswa 内部直接构造两个 cache 的 K 索引与掩码'
+  - '- build_attn_inp_cross 构造 n_enc × n_tokens 交叉掩码'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 2475-2510
+    method_or_func: llm_graph_context.build_rs() [显式索引]
+  - file: src/llama-graph.cpp
+    line: 2515-2540
+    method_or_func: llm_graph_context.build_rs_inp()
+  - file: src/llama-graph.cpp
+    line: 2540-2545
+    method_or_func: llm_graph_context.build_rs(inp) 重载
+  - file: src/llama-graph.cpp
+    line: 2545-2560
+    method_or_func: llm_graph_context.build_rwkv_token_shift_load()
+  - file: src/llama-graph.cpp
+    line: 2565-2580
+    method_or_func: llm_graph_context.build_rwkv_token_shift_store()
+  name: 循环状态 build_rs —— RNN 模型的「时间隧道」
+  'no': 16
+  points:
+  - '**两阶段签名**'
+  - '- 第一阶段接受具体的 main/extra 索引张量，直接构造'
+  - '- 第二阶段接受 `llm_graph_input_rs*`，自动从 inp 中获取索引'
+  - '**状态复制机制**'
+  - '- 通过 `ggml_reshape_2d` 将 state 张量重塑为 [state_size, rs_size]'
+  - '- 零状态清理：`ggml_scale_inplace(state_zero, 0)`'
+  - '- 主状态复制：`get_state_rows(ctx0, states, state_copy_main)`'
+  - '- 额外状态复制：`ggml_cpy` 到指定偏移的视图'
+  - '**自定义 get_rows 函数**'
+  - '- `llm_graph_get_rows_fn` 是函数指针，默认实现为 `ggml_get_rows`'
+  - '- RWKV 等模型可能使用自己的状态行提取实现（性能优化）'
+  - '**build_rwkv_token_shift 的特别实现**'
+  - '- load：通过 build_rs 获取 token_shift 视图并 reshape_3d'
+  - '- store：通过 ggml_cpy 写入 R 层（带 kv_head 偏移）'
+  - '- token_shift_count 决定每个 token 的 shift 维度'
+  - '**辅助工厂 build_rs_inp**'
+  - '- 构造 llm_graph_input_rs 对象（含 s_copy 视图与 head/rs_z 缓存）'
+  - '- 接收 llama_memory_recurrent_context 指针与 ubatch'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 2675-2710
+    method_or_func: llm_graph_context.build_pooling()
+  - file: src/llama-graph.cpp
+    line: 2655-2670
+    method_or_func: llm_graph_context.build_dense_out()
+  - file: src/llama-graph.cpp
+    line: 2715-2760
+    method_or_func: llm_graph_context.build_sampling()
+  - file: src/llama-graph.cpp
+    line: 1940-1970
+    method_or_func: llm_graph_context.build_pos_bias()
+  name: 池化与输出构建 —— 模型末端的「成果提炼」
+  'no': 17
+  points:
+  - '**build_pooling：四类池化策略**'
+  - '- NONE：直接返回最后一层 hidden states'
+  - '- MEAN：与 inp_mean 矩阵相乘实现加权平均'
+  - '- CLS/LAST：使用 inp_cls 选择特定行'
+  - '- RANK：在 CLS/LAST 基础上叠加分类头（cls→tanh/GeLU→norm→cls_out）'
+  - '**ModernBERT 的特殊处理**'
+  - '- RANK 模式下先用 mean 池化再做分类头（与传统 BERT 不同）'
+  - '- 分类头使用 GeLU 而非 tanh'
+  - '**Qwen3 的 softmax 输出**'
+  - '- RANK 模式下在 cls_out 后接 softmax（reranker 专用）'
+  - '**build_dense_out：dense 分类头**'
+  - '- 仅在 `cparams.embeddings` 为真且 dense_2/b/3 任一存在时执行'
+  - '- 优先使用 `t_embd_pooled`（已被 pooling 设置），回退到 `t_embd`'
+  - '- 链式 mul_mat + add 构成 2-3 层 dense 投影'
+  - '**build_sampling：后端采样集成**'
+  - '- 对每个激活采样器调用 `backend_apply` 在图内完成采样'
+  - '- 通过 ggml_pad + ggml_build_forward_select 实现稳定拓扑'
+  - '- 输出 candidates/sampled/probs/logits 四类结果到 res'
+  - '**build_pos_bias：T5 位置偏置**'
+  - '- 接收 pos_bucket 与 attn_rel_b 两个张量'
+  - '- 通过 reshape/get_rows/permute/cont 构建 3D 偏置张量'
+- codes:
+  - file: src/llama-graph.h
+    line: 530-545
+    method_or_func: llm_graph_params.samplers_equal()
+  - file: src/llama-graph.h
+    line: 545-605
+    method_or_func: llm_graph_params.allow_reuse()
+  - file: src/llama-graph.h
+    line: '703'
+    method_or_func: llm_graph_result.llm_graph_result()
+  - file: src/llama-graph.h
+    line: '706'
+    method_or_func: llm_graph_result.~llm_graph_result()
+  - file: src/llama-graph.h
+    line: '708'
+    method_or_func: llm_graph_result.get_inp_tokens()
+  - file: src/llama-graph.h
+    line: '709'
+    method_or_func: llm_graph_result.get_logits()
+  - file: src/llama-graph.h
+    line: '710'
+    method_or_func: llm_graph_result.get_embd()
+  - file: src/llama-graph.h
+    line: '711'
+    method_or_func: llm_graph_result.get_embd_pooled()
+  - file: src/llama-graph.h
+    line: '713'
+    method_or_func: llm_graph_result.get_gf()
+  - file: src/llama-graph.h
+    line: '714'
+    method_or_func: llm_graph_result.get_ctx()
+  - file: src/llama-graph.h
+    line: '716'
+    method_or_func: llm_graph_result.get_max_nodes()
+  - file: src/llama-graph.h
+    line: '715'
+    method_or_func: llm_graph_result.reset()
+  - file: src/llama-graph.h
+    line: '717'
+    method_or_func: llm_graph_result.set_inputs()
+  - file: src/llama-graph.h
+    line: '718'
+    method_or_func: llm_graph_result.set_outputs()
+  - file: src/llama-graph.h
+    line: '723'
+    method_or_func: llm_graph_result.can_reuse()
+  - file: src/llama-graph.h
+    line: '725'
+    method_or_func: llm_graph_result.add_input()
+  - file: src/llama-graph.h
+    line: '727'
+    method_or_func: llm_graph_result.set_params()
+  - file: src/llama-graph.cpp
+    line: 880-905
+    method_or_func: llm_graph_result.llm_graph_result()
+  - file: src/llama-graph.cpp
+    line: 903-905
+    method_or_func: llm_graph_result.get_max_nodes()
+  - file: src/llama-graph.cpp
+    line: 905-940
+    method_or_func: llm_graph_result.reset()
+  - file: src/llama-graph.cpp
+    line: 945-960
+    method_or_func: llm_graph_result.set_inputs()
+  - file: src/llama-graph.cpp
+    line: 960-990
+    method_or_func: llm_graph_result.set_outputs()
+  - file: src/llama-graph.cpp
+    line: 995-1045
+    method_or_func: llm_graph_result.can_reuse()
+  - file: src/llama-graph.cpp
+    line: 1050-1075
+    method_or_func: llm_graph_result.add_input()
+  - file: src/llama-graph.cpp
+    line: 1080-1090
+    method_or_func: llm_graph_result.set_params()
+  name: 图复用与 can_reuse 机制 —— 推理引擎的「节能开关」
+  'no': 18
+  points:
+  - '**为什么需要图复用？**'
+  - '- LLM 推理通常逐 token 生成，每步的图结构高度相似'
+  - '- 重建 ggml_cgraph + ggml_alloc 分配的开销显著'
+  - '- 通过比较新旧 params 判断是否可以复用旧图的拓扑'
+  - '**llm_graph_params.allow_reuse 的多维度校验**'
+  - '- ubatch 维度：equal_seqs、n_tokens、n_seq_tokens、n_seqs、n_seqs_unq'
+  - '- 当 equal_seqs=true 时校验 seq_id_unq 是否一致（注意力流可能不同）'
+  - '- samplers 集合：通过 samplers_equal 校验指针与集合大小'
+  - '- cparams：embeddings/causal_attn'
+  - '- 顶层：arch、gtype、cvec、loras、cross'
+  - '**llm_graph_result.can_reuse 的逐输入校验**'
+  - '- 先调 this->params.allow_reuse(params)'
+  - '- 再对每个 input 调用 input->can_reuse(params)'
+  - '- 调试输出：环境变量 LLAMA_GRAPH_RESULT_DEBUG 控制详细程度'
+  - '**llm_graph_result 生命周期管理**'
+  - '- 构造函数：读取 LLAMA_GRAPH_RESULT_DEBUG + 初始化 max_nodes'
+  - '- reset()：清空所有 output/input 字段与上下文，重新分配图对象'
+  - '- set_inputs()：遍历 inputs 调用 set_input(ubatch)'
+  - '- set_outputs()：为所有输出张量调 ggml_set_output'
+  - '- set_params()：保存 params 快照供下次 can_reuse 比对'
+  - '- add_input()：用 unique_ptr 接管 input 对象'
+  - '- 访问器：get_inp_tokens/get_logits/get_embd/get_embd_pooled/get_gf/get_ctx/get_max_nodes'
+  - '**典型复用场景**'
+  - '- decode 阶段 n_tokens=1、n_seqs=1：高度可复用'
+  - '- n_batch 固定的多轮生成：每轮可复用'
+  - '- 切换采样器：不可复用（指针变化）'
+  - '- 切换 LoRA：不可复用（loras 指针变化）'
+  - '**debug 字段的工程价值**'
+  - '- `LLAMA_GRAPH_INPUT_DEBUG`：在 input->set_input 时输出额外日志'
+  - '- `LLAMA_GRAPH_RESULT_DEBUG`：在 can_reuse 判定时输出每个 input 的结果'
+  - '- 帮助排查复用失败的根本原因'
+- codes:
+  - file: src/llama-graph.cpp
+    line: 1665-1755
+    method_or_func: llm_graph_context.build_inp_embd()
+  - file: src/llama-graph.cpp
+    line: 1760-1790
+    method_or_func: llm_graph_context.build_inp_pos()
+  - file: src/llama-graph.cpp
+    line: 1790-1810
+    method_or_func: llm_graph_context.build_inp_attn_scale()
+  - file: src/llama-graph.cpp
+    line: 1810-1830
+    method_or_func: llm_graph_context.build_inp_out_ids()
+  - file: src/llama-graph.cpp
+    line: 1830-1850
+    method_or_func: llm_graph_context.build_inp_mean()
+  - file: src/llama-graph.cpp
+    line: 1850-1870
+    method_or_func: llm_graph_context.build_inp_cls()
+  - file: src/llama-graph.cpp
+    line: 1870-1900
+    method_or_func: llm_graph_context.build_inp_cross_embd()
+  - file: src/llama-graph.cpp
+    line: 1900-1920
+    method_or_func: llm_graph_context.build_inp_pos_bucket_enc()
+  - file: src/llama-graph.cpp
+    line: 1920-1940
+    method_or_func: llm_graph_context.build_inp_pos_bucket_dec()
+  - file: src/llama-graph.cpp
+    line: 1940-1970
+    method_or_func: llm_graph_context.build_pos_bias()
+  - file: src/llama-graph.cpp
+    line: 2585-2600
+    method_or_func: llm_graph_context.build_inp_mem_hybrid()
+  - file: src/llama-graph.cpp
+    line: 2605-2620
+    method_or_func: llm_graph_context.build_inp_mem_hybrid_k()
+  - file: src/llama-graph.cpp
+    line: 2625-2650
+    method_or_func: llm_graph_context.build_inp_mem_hybrid_iswa()
+  name: 输入构造器与基础输入构建 —— 图的「第一颗螺丝钉」
+  'no': 19
+  points:
+  - '**build_inp_embd：双通道嵌入选择器**'
+  - '- 同时构造 tokens（I32）与 embd（F32）两个占位张量'
+  - '- 通过 `ggml_build_forward_select` 二选一：token 路径走 get_rows+lora，vector 路径直接用 embd'
+  - '- 注册 llm_graph_input_embd 用于运行时的实际填值'
+  - '- 保存 t_inp_tokens 与 t_inp_embd 到 res'
+  - '- 当 n_embd_inp != n_embd 时使用 pad/view_2d 对齐'
+  - '- Granite 架构额外应用 f_embedding_scale'
+  - '**build_inp_pos：多维位置张量**'
+  - '- 创建 1D I32 张量，大小为 n_tokens * n_pos_per_embd'
+  - '- 注册 llm_graph_input_pos 供 M-RoPE 4D 扩展'
+  - '**build_inp_attn_scale：llama4 注意力温度**'
+  - '- 创建 3D F32 张量 [1, 1, n_tokens]（便于广播）'
+  - '- 注册 llm_graph_input_attn_temp'
+  - '- 命名 attn_scale 便于调试追踪'
+  - '**build_inp_out_ids / build_inp_mean / build_inp_cls**'
+  - '- 分别构造 out_ids [n_outputs]、mean [n_tokens, n_seqs_unq]、cls [n_seqs_unq]'
+  - '- 注册对应的输入对象'
+  - '- 输出索引收集避免拓扑依赖 token 数'
+  - '**build_inp_cross_embd：编码器-解码器桥梁**'
+  - '- 构造 F32 [n_embd, n_enc] 张量接收编码器输出'
+  - '- 从 cross->v_embd 拷贝到 host tensor（tmp 实现）'
+  - '**build_inp_pos_bucket_enc / build_inp_pos_bucket_dec**'
+  - '- 编码器：构造 [n_tokens, n_tokens] 双向相对位置桶'
+  - '- 解码器：构造 [n_kv, n_tokens] 单向相对位置桶（依赖 KV 缓存）'
+  - '- build_pos_bias 通过 get_rows + permute 构建 3D 偏置'
+  - '**build_inp_mem_hybrid*：组合输入构造器**'
+  - '- 三个 hybrid 构造器分别组合 attn+rs、attn_k+rs、attn_kv_iswa+rs'
+  - '- 在构造阶段委托给对应的子输入构造工厂'
+  - '- 通过 res->add_input 注册整体输入'

@@ -1,0 +1,291 @@
+code_map:
+- examples/training/finetune.cpp
+- └── main() (16-86行)
+- '    ├── 参数解析与强制配置'
+- '    │   ├── common_params_parse()           # CLI 参数提取'
+- '    │   ├── params.use_mmap = false         # 禁用只读内存映射（训练需可写）'
+- '    │   └── cache_type_k/v = GGML_TYPE_F32  # 强制 F32 KV Cache（OUT_PROD 反向兼容）'
+- '    ├── 后端初始化'
+- '    │   ├── llama_backend_init()            # 初始化 GGML 后端'
+- '    │   └── common_init_from_params()       # 加载模型与上下文'
+- '    ├── 数据集构建'
+- '    │   ├── common_tokenize()               # Prompt → Token 序列'
+- '    │   └── common_opt_dataset_init()       # 构建训练数据集（ ctx/2 为窗口）'
+- '    ├── 优化器配置'
+- '    │   ├── llama_opt_params 结构体装配     # 注入 lr0/wd/optimizer_type'
+- '    │   └── llama_opt_init()                # 注册优化器上下文'
+- '    ├── 训练循环'
+- '    │   ├── llama_opt_epoch()               # 单轮训练/验证（带进度条回调）'
+- '    │   └── ggml_opt_result_reset()         # 重置统计结果'
+- '    └── 模型持久化'
+- '        └── llama_model_save_to_file()      # 保存微调后权重'
+- ''
+- pocs/vdot/vdot.cpp
+- ├── 全局定义 (__main__) (1-48行)
+- '│   ├── block_q4_0                          # 4-bit 量化块：d + 16字节qs(32个4-bit值)'
+- '│   ├── block_q4_1                          # 4-bit 带偏置：d + m + 16字节qs'
+- '│   └── block_q8_0                          # 8-bit 量化块：d + 32字节qs'
+- ├── 随机数据生成
+- '│   ├── drawFromGaussianPdf() (49-61行)     # Box-Muller 高斯采样（缓存优化）'
+- '│   └── fillRandomGaussianFloats() (62-64行) # 填充随机浮点向量'
+- ├── 标量点积实现族
+- '│   ├── dot() (89-114行)                    # Q4_0 + FP32：16项查找表 + 位掩码提取'
+- '│   ├── dot3() (115-187行)                  # 优化版：256项pair查找表（字节→两个浮点）'
+- '│   ├── dot41() (188-211行)                 # Q4_1 + FP32：额外处理 m（最小值偏移）'
+- '│   └── dot_q4_q8() (230-244行)             # Q4_0 × Q8_0：纯整数运算，最后乘 scale'
+- ├── 量化参考实现
+- '│   └── quantize_row_q8_0_reference() (212-229行) # 浮点→Q8_0 的参考量化'
+- '└── main() (245-298行)                      # 双路径对比：scalar vs ggml vec_dot'
+- ''
+- pocs/vdot/q8dot.cpp
+- ├── 全局定义 (__main__) (1-38行)
+- '│   ├── block_q4_0 / block_q4_1 / block_q8_0  # 量化块结构定义'
+- │   └── static_assert 布局校验
+- ├── 填充工具
+- '│   ├── fillQ4blocks() (40-50行)            # 随机填充 Q4_0/Q4_1 块（模板函数）'
+- '│   └── fillQ80blocks() (52-63行)           # 随机填充 Q8_0 块并预计算 s（和）'
+- ├── Q4×Q8 点积核心
+- │   └── simpleDot() 重载 (65-93行)
+- '│       ├── Q4_0 × Q8_0 版本                # 解 nibble → 整数乘累加 → 乘 scale'
+- '│       └── Q4_1 × Q8_0 版本                # 额外处理 m（最小值）× y.s（和）'
+- ├── Stat 统计类 (97-137行)
+- '│   ├── addResult() (122-125行)             # 累加结果/时间/时间平方/最大值'
+- '│   └── reportResult() (126-137行)          # 计算并打印均值与标准差'
+- '└── main() (140-181行)                      # 对比 simpleDot vs ggml vec_dot 性能'
+exercises:
+- contents:
+  - 阅读 `examples/training/finetune.cpp` 的 `main()` 函数（16-86行），回答以下问题：
+  - 1. 为什么代码中强制将 `params.use_mmap` 设为 `false`？如果保留 `mmap` 会发生什么？
+  - 2. `cache_type_k` 和 `cache_type_v` 被强制设为 `GGML_TYPE_F32` 的具体原因是什么？这与推理时的行为有何不同？
+  - 3. `common_opt_dataset_init(ctx, tokens, llama_n_ctx(ctx) / 2)` 中，为什么使用上下文长度的一半作为数据集窗口？
+  - 4. 绘制 `llama_opt_epoch()` 的调用时序图，说明 `result_train` 和 `result_eval` 在循环中如何被重置和累积？
+  'no': 1
+  title: 微调流程逆向工程
+- contents:
+  - 分析 `pocs/vdot/vdot.cpp` 和 `q8dot.cpp` 中的基础设施代码：
+  - 1. 对比两个文件中 `__main__` 区域（1-48行 和 1-38行）定义的 `block_q4_0`、`block_q4_1`、`block_q8_0`：它们的
+    `static_assert` 分别验证了什么内存布局约束？
+  - 2. `fillQ4blocks` 是模板函数，它如何同时支持 Q4_0 和 Q4_1？`uint8_t v1 = rndm() >> 28` 这行代码生成的随机数范围是多少，为什么这样设计？
+  - 3. `fillQ80blocks` 中为什么要在填充时计算 `b.s = b.d * sum`？这个预计算在后续 `simpleDot` 中如何节省时间？
+  - 4. `drawFromGaussianPdf` 使用 Box-Muller 变换，静态变量 `lastX` 和 `haveX` 在这里起到什么作用？
+  'no': 2
+  title: 量化块布局与随机数据生成
+- contents:
+  - 深入研究点积和量化参考实现：
+  - 1. 阅读 `quantize_row_q8_0_reference`（212-229行），写出从浮点数组到 Q8_0 块的完整量化公式，并解释 `d =
+    amax / 127` 中 127 的由来。
+  - 2. 对比 `dot()` 与 `dot3()`（89-187行）：256 项查找表相比 16 项查找表为什么可能更快？从 CPU 缓存和分支预测角度分析。
+  - 3. 在 `simpleDot(const block_q4_1& x, const block_q8_0& y)` 中，返回式 `y.d * x.d *
+    s1 + y.s * x.m` 的数学含义是什么？`y.s` 代表什么？
+  - 4. `dot_q4_q8`（230-244行）与 `simpleDot` 都计算 Q4×Q8，前者使用 `quantize_row_q8_0_reference`
+    预处理后者使用 `fillQ80blocks`，这两种数据准备方式对性能测试有何影响？
+  'no': 3
+  title: 点积实现与量化参考分析
+- contents:
+  - 综合分析 `Stat` 类与 `finetune.cpp`：
+  - 1. `Stat::addResult` 中为什么要记录 `sumt2`（时间平方和）？只用 `sumt` 和 `nloop` 能否计算标准差？
+  - 2. 如果要在 `vdot.cpp` 或 `q8dot.cpp` 的 `main()` 中增加「中位数」统计，需要如何修改 `Stat` 类？
+  - 3. 列举至少三个「训练特有」而「推理不需要」的资源限制或配置（提示：从 mmap、精度、内存布局角度思考）。
+  - 4. 如果要在 `finetune.cpp` 中启用混合精度训练（部分层 FP16），需要修改哪些关键代码行？会有什么风险？
+  'no': 4
+  title: 性能统计与训练推理对比
+learning_targets:
+- 理解 llama.cpp 微调示例（finetune）的完整工作流：从参数解析到模型保存
+- 掌握训练态与推理态的核心差异：为什么强制禁用 mmap、为何使用 F32 KV Cache
+- 解析 llama_opt_params 的参数装配机制与 epoch 训练循环的数据流
+- 深入理解 Q4_0/Q4_1/Q8_0 量化块的内存布局与位打包策略
+- 掌握 Box-Muller 高斯采样原理及随机数据生成工具的实现
+- 理解标量查找表、Q8_0 参考量化与 ggml vec_dot 的性能差异根源
+- 掌握性能基准测试的统计方法：均值、标准差、Box-Muller 高斯采样
+life_analogy:
+- 想象 llama.cpp 的微调与量化测试是两个专业工作室：
+- '- **微调示例（finetune）** = **健身房私教工作室**：'
+- '  - `params.use_mmap = false` = 训练时必须把器械（权重）搬到可自由调整的实心地面（可写内存），不能使用只能观看的玻璃展示柜（只读
+  mmap）'
+- '  - `GGML_TYPE_F32` = 使用标准重量片而非电子计数器，确保每次调整（反向传播）的精度'
+- '  - `llama_opt_epoch()` = 完成一轮「训练-评估-记录」的完整训练周期'
+- '- **量化点积 POC** = **百米赛道计时赛**：'
+- '  - `block_q4_0` / `block_q8_0` = 不同规格的压缩跑鞋（4位 vs 8位存储）'
+- '  - `fillQ4blocks/fillQ80blocks` = 赛前自动填充装备（随机初始化量化块）'
+- '  - `Box-Muller` 高斯采样 = 使用标准赛道条件（真实数据分布），确保比赛结果有代表性'
+- '  - `drawFromGaussianPdf` / `fillRandomGaussianFloats` = 高精度随机发令枪（生成符合统计规律的测试数据）'
+- '  - `quantize_row_q8_0_reference` = 手工计时员（参考实现），用于验证电子计时器（SIMD 优化）的准确性'
+- '  - `simpleDot()` = 人工手动计时（标量查找表实现）'
+- '  - `ggml vec_dot` = 高速摄像机+激光计时器（SIMD 优化实现）'
+- 共同哲学：前者验证「模型可以学会新技能」，后者验证「计算引擎跑得够快且足够准」。
+'no': 98
+summary:
+- concept: '`finetune.cpp main()`'
+  desc: 微调全流程管家：参数解析→禁用mmap→F32缓存→epoch训练→模型落盘
+- concept: '`use_mmap = false`'
+  desc: 训练态必须可写，推理态只读零拷贝，资源访问模式的硬隔离
+- concept: '`GGML_TYPE_F32 KV Cache`'
+  desc: OUT_PROD 反向传播缺乏 FP16 支持，训练时强制使用 32 位浮点缓存
+- concept: '`block_q4_0` 布局'
+  desc: 32 个 4-bit 值打包进 16 字节 + 1 个 float scale（d），0-15 映射到 -8 到 7
+- concept: '`block_q4_1` 布局'
+  desc: 比 Q4_0 多一个 float 最小值（m），支持带偏置的量化映射
+- concept: '`block_q8_0` 布局'
+  desc: 32 个 8-bit 整数 + 1 个 float scale，量化精度与性能的平衡点
+- concept: '`drawFromGaussianPdf`'
+  desc: Box-Muller 变换生成高斯随机数，缓存第二个值优化性能
+- concept: '`fillRandomGaussianFloats`'
+  desc: 高斯分布填充工具，为量化测试提供符合真实分布的输入数据
+- concept: '`fillQ4blocks/fillQ80blocks`'
+  desc: 量化块随机填充工具，Q8_0 版本预计算块内和（s）以加速后续点积
+- concept: '`quantize_row_q8_0_reference`'
+  desc: Q8_0 参考量化实现：找最大绝对值→计算 scale→四舍五入到 8 位整数
+- concept: '`dot() / dot3()`'
+  desc: 标量查找表实现：16 项基础版 vs 256 项 pair 优化版，展示「空间换时间」策略
+- concept: '`dot41()`'
+  desc: Q4_1 专用点积，额外累加 y 的和与 x.m 的乘积项，处理非对称量化
+- concept: '`simpleDot()`'
+  desc: Q4×Q8 直接整数乘累加，验证混合精度点积的可行性
+- concept: '`Stat::reportResult()`'
+  desc: 性能基准三要素：均值、标准差（稳定性）、最大值（尾部延迟）
+- concept: '`ggml_get_type_traits_cpu()->vec_dot`'
+  desc: GGML 后端的优化点积入口，与 POC 实现形成「手工作坊 vs 工业流水线」的对比
+units:
+- codes:
+  - file: examples/training/finetune.cpp
+    line: 16-86
+    method_or_func: main()
+  name: 模型微调示例 —— 用梯度下降调教模型权重的「健身房私教」
+  'no': 1
+  points:
+  - '**为什么是「健身房私教」？**'
+  - '- 微调训练就像给模型定制健身计划：参数是教练指令（学习率、权重衰减、epochs），数据集是训练器械，优化器是训练方案，模型的权重在一次次迭代中被「举铁」塑形。'
+  - '- 与纯推理不同，微调需要反向传播和梯度更新，对张量类型、精度、内存访问模式有更多限制。'
+  - ''
+  - '**关键入口：main() 的全景流程**'
+  - '- 整个微调流程被浓缩在一个 main() 中，体现了 llama.cpp 的极简工程哲学：它不在通用框架下堆砌抽象，而是直接拉起后端、加载模型、构建数据集、跑
+    epoch、保存模型。'
+  - '- 关键顺序：`common_params_parse` → `llama_backend_init` / `common_init_from_params`
+    → `common_tokenize` → `common_opt_dataset_init` → `llama_opt_init` → `llama_opt_epoch`
+    循环 → `llama_model_save_to_file`。'
+  - ''
+  - '**为什么强制关闭 mmap？**'
+  - '- 这里有一句非常重要的注释性逻辑：`params.use_mmap = false`。'
+  - '- 原因是训练会修改权重；而 mmap 通常建立的是只读视图。如果继续用 mmap，你得到的会是只读指针，训练时想回写权重就会出问题。'
+  - '- 这反映了 llama.cpp 对「训练态」和「推理态」资源访问模式的明确划分：推理可以零拷贝读取，训练必须可写驻留内存。'
+  - ''
+  - '**为什么把 KV cache 强行改成 F32？**'
+  - '- 代码里明确把 `cache_type_k/cache_type_v` 强制设为 `GGML_TYPE_F32`：'
+  - '- 原因是 `OUT_PROD` 反向相关路径缺少 FP16 支持。训练中梯度外积、部分反向计算对 F32 更友好。'
+  - '- 这也提示：训练示例本质上是「能用且稳定」的基准实现，而不是在所有类型上都追求极限兼容。'
+  - ''
+  - '**训练参数如何从命令行进入优化器？**'
+  - '- `common_params` 解析得到优化器类型、学习率 `lr0`、权重衰减 `wd`、最小学习率 `lr_min`、epoch 数、验证集比例
+    `val_split` 等。'
+  - '- 这些值被装配进 `llama_opt_params`，再通过 `llama_opt_init()` 注册到优化器上下文。'
+  - '- 这种结构把「通用 CLI 参数」与「优化器内部参数」解耦，示例因此保持了很高的可读性。'
+  - ''
+  - '**数据集是如何被「灌进」训练器的？**'
+  - '- 先通过 `common_tokenize(ctx, params.prompt, true)` 把 prompt 变成 token 序列。'
+  - '- 再用 `common_opt_dataset_init(ctx, tokens, llama_n_ctx(ctx) / 2)` 初始化训练数据集。'
+  - '- 注意这里把上下文长度的一半作为训练样本窗口，相当于在保证可训练的同时，给验证/上下文布局留出余地。'
+  - ''
+  - '**epoch 循环的本质是什么？**'
+  - '- 每个 epoch 调一次 `llama_opt_epoch(...)`，同时返回训练/评估结果 `result_train/result_eval`。'
+  - '- 之后立刻 `ggml_opt_result_reset()`，为下一轮重置统计结果。'
+  - '- 整个循环非常像健身房里一轮训练打卡：做组、记录成绩、恢复状态、进入下一轮。'
+  - ''
+  - '**结果如何落地为模型文件？**'
+  - '- 训练完成后直接调用 `llama_model_save_to_file(model, params.out_file.c_str())`。'
+  - '- 这说明微调示例并不是只跑数值实验，而是把「训练成果」持久化为可加载模型输出。'
+  - '- 对读者而言，这一行最值得记住：训练的成功与否，最终都要以可落盘、可复用的权重文件来交付。'
+- codes:
+  - file: pocs/vdot/vdot.cpp
+    line: 1-48
+    method_or_func: __main__
+  - file: pocs/vdot/vdot.cpp
+    line: 49-61
+    method_or_func: drawFromGaussianPdf()
+  - file: pocs/vdot/vdot.cpp
+    line: 62-64
+    method_or_func: fillRandomGaussianFloats()
+  - file: pocs/vdot/vdot.cpp
+    line: 89-114
+    method_or_func: dot()
+  - file: pocs/vdot/vdot.cpp
+    line: 115-187
+    method_or_func: dot3()
+  - file: pocs/vdot/vdot.cpp
+    line: 188-211
+    method_or_func: dot41()
+  - file: pocs/vdot/vdot.cpp
+    line: 212-229
+    method_or_func: quantize_row_q8_0_reference()
+  - file: pocs/vdot/vdot.cpp
+    line: 230-244
+    method_or_func: dot_q4_q8()
+  - file: pocs/vdot/vdot.cpp
+    line: 245-298
+    method_or_func: main()
+  - file: pocs/vdot/q8dot.cpp
+    line: 1-38
+    method_or_func: __main__
+  - file: pocs/vdot/q8dot.cpp
+    line: 40-50
+    method_or_func: fillQ4blocks()
+  - file: pocs/vdot/q8dot.cpp
+    line: 52-63
+    method_or_func: fillQ80blocks()
+  - file: pocs/vdot/q8dot.cpp
+    line: 65-93
+    method_or_func: simpleDot()
+  - file: pocs/vdot/q8dot.cpp
+    line: 122-125
+    method_or_func: Stat.addResult()
+  - file: pocs/vdot/q8dot.cpp
+    line: 126-137
+    method_or_func: Stat.reportResult()
+  - file: pocs/vdot/q8dot.cpp
+    line: 140-181
+    method_or_func: main()
+  name: 量化点积性能基准 —— 量化计算的「百米计时赛」
+  'no': 2
+  points:
+  - '**为什么是「百米计时赛」？**'
+  - '- 这组 POC 的本质不是追求完整推理，而是盯着量化向量的点积性能做专项冲刺：谁算得快、谁数值稳、谁更接近理想结果。'
+  - '- 其核心目标有两个：一是测性能，二是验数值一致性。'
+  - ''
+  - '**vdot.cpp 与 q8dot.cpp 的分工**'
+  - '- `pocs/vdot/vdot.cpp` 更偏「标准对比实验」：用高斯随机浮点向量、量化块、标量实现和 ggml CPU 后端实现做并列比较。'
+  - '- `pocs/vdot/q8dot.cpp` 则更聚焦：直接比较「简单自定义 Q4_0/Q4_1 × Q8_0 点积」与 ggml 类型 traits
+    提供的 `vec_dot` 路径。'
+  - '- 两者都像赛道计时器：同一条跑道（量化数据），不同跑法（简单实现 vs 库实现）。'
+  - ''
+  - '**全局定义与数据结构（__main__）**'
+  - '- 两个文件都在文件头部（`__main__` 区域）定义了核心量化块结构：`block_q4_0`、`block_q4_1`、`block_q8_0`。'
+  - '- 通过 `static_assert` 强制校验内存布局（如 `sizeof(block_q4_0) == sizeof(float) + QK4_0/2`），确保
+    POC 层面的结构与 GGML 内部定义二进制兼容。'
+  - '- 这体现了量化优化的基本心智：先弄清内存布局，再谈 SIMD 加速。'
+  - ''
+  - '**随机数据生成工具**'
+  - '- `drawFromGaussianPdf()` 使用 Box-Muller 变换从均匀分布生成高斯分布随机数，并缓存第二个结果以减少计算。'
+  - '- `fillRandomGaussianFloats()` 基于上述函数填充浮点向量，作为量化前的原始数据。'
+  - '- `fillQ4blocks()`（模板函数）与 `fillQ80blocks()` 分别用随机数填充 Q4_0/Q4_1 和 Q8_0 量化块；其中
+    Q8_0 版本会预计算块内元素和 `s` 并存储，为后续点积优化做准备。'
+  - '- 高斯分布更接近真实模型权重/激活的统计特性，避免均匀分布导致的性能测试失真。'
+  - ''
+  - '**量化参考实现：quantize_row_q8_0_reference**'
+  - '- 这是浮点到 Q8_0 的参考量化实现：遍历每个块，找到绝对值最大值 `amax`，计算缩放因子 `d = amax / 127`，然后四舍五入到 8
+    位整数。'
+  - '- 作为基准实现，它用于验证 GGML 库函数 `from_float` 的正确性，也是性能对比的「手工计时」基准。'
+  - ''
+  - '**标量点积的「查表艺术」**'
+  - '- `dot()`：针对 Q4_0 + 浮点向量的标量实现，用 16 项查找表和位掩码提取 nibble，再逐项累加。'
+  - '- `dot3()`：进一步优化，把「一个量化字节」映射到一对浮点值（共 256 种组合），减少分支和重复计算，是典型的「空间换时间」策略。'
+  - '- `dot41()`：Q4_1 版本，额外把 `m` 参与累加，处理非对称量化的偏置项。'
+  - '- `dot_q4_q8()`：Q4_0 与 Q8_0 的直接整数乘累加，最后统一乘 scale，展示纯整数运算路径。'
+  - ''
+  - '**simpleDot：Q4×Q8 的极简实现**'
+  - '- `simpleDot()` 两种重载分别处理 Q4_0 和 Q4_1，核心思想：从 4 位 nibble 解出索引值，与 Q8_0 的整数相乘累加，最后乘上各自的
+    scale / 偏移修正。'
+  - '- 这是理解混合精度点积（Mixed Precision Dot）的最小可行实现。'
+  - ''
+  - '**统计与验证逻辑**'
+  - '- `Stat` 类通过 `addResult()` 累加时间、结果、时间平方和最大值，`reportResult()` 计算并输出均值与标准差。'
+  - '- 两个 `main()` 都遵循相同的对比逻辑：生成数据 → 自定义实现计时 → ggml `vec_dot` 计时 → 输出统计结果，形成「手工作坊
+    vs 工业流水线」的闭环验证。'

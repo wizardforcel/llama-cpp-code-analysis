@@ -1,0 +1,501 @@
+classes:
+- desc: 该结构体用于存储模型相关的固定参数，包括上下文长度、头数、RoPE 参数、KV 缓存名称等，并提供参数比较和复用判断的方法。
+  methods:
+  - code:
+    - bool same_rope_params(const ModelParams & other) const {
+    - '    return memcmp(rope_params, other.rope_params, sizeof(int32_t) * 15) ==
+      0;'
+    - '}'
+    desc: 比较当前模型参数与另一个模型参数的 RoPE 参数是否相同。
+    line: 20-22
+    name: same_rope_params
+  - code:
+    - bool can_reuse_dynamically(const ModelParams & other) const { return same_rope_params(other);
+      }
+    desc: 判断是否可以动态复用另一个模型参数，当前仅检查 RoPE 参数是否相同。
+    line: '24'
+    name: can_reuse_dynamically
+  - code:
+    - bool can_reuse_statically(const ModelParams & other) const { return same_rope_params(other)
+      && ctx == other.ctx; }
+    desc: 判断是否可以静态复用另一个模型参数，要求 RoPE 参数和上下文长度都相同。
+    line: '26'
+    name: can_reuse_statically
+  - code:
+    - bool kv_buffer_changed(const ModelParams & other) const { return kv_buffer_ctx_id
+      != other.kv_buffer_ctx_id; }
+    desc: 检查 KV 缓冲区的上下文 ID 是否与另一个模型参数不同。
+    line: '28'
+    name: kv_buffer_changed
+  name: ModelParams
+- desc: 该结构体用于存储计算过程中的动态参数，如序列数、注意力大小、输入长度、过去的 KV 长度等。
+  methods: []
+  name: ComputeParams
+- desc: 该类继承自 ov::frontend::ggml::GgmlDecoder，是 GGML 计算图到 OpenVINO 图转换的核心解码器。它管理节点信息、模型输入输出、权重等，并实现了接口要求的所有方法以支持图的解码和遍历。
+  methods:
+  - code:
+    - GgmlOvDecoder(ggml_cgraph * cgraph,
+    - '              ModelParams & model_params,'
+    - '              ComputeParams & compute_params,'
+    - '              std::map<std::string, std::shared_ptr<ov::Node>> & model_weights,'
+    - '              bool is_static,'
+    - '              bool is_stateful = false,'
+    - '              bool is_prefill = false,'
+    - '              int prefill_chunk_size = 256);'
+    desc: 构造函数，用于初始化解码器并构建节点信息列表，适用于图形解码器场景。
+    line: 75-83
+    name: GgmlOvDecoder
+  - code:
+    - GgmlOvDecoder(ggml_cgraph * cgraph, std::map<std::string, std::shared_ptr<ov::Node>>
+      & model_weights);
+    desc: 构造函数，用于初始化解码器，适用于朴素图解码器场景。
+    line: 85-86
+    name: GgmlOvDecoder
+  - code:
+    - virtual ov::Any get_attribute(const std::string & name) const override {
+    - '    return nullptr;'
+    - '    GGML_UNUSED(name);'
+    - '}'
+    desc: 获取节点的属性值，当前实现返回空指针并忽略名称参数。
+    line: 88-92
+    name: get_attribute
+  - code:
+    - virtual ov::PartialShape get_input_shape(int node_idx, const std::string & name)
+      const override;
+    desc: 获取指定节点的输入张量形状。
+    line: '94'
+    name: get_input_shape
+  - code:
+    - virtual std::vector<size_t> get_input_stride(int node_idx, const std::string
+      & name) const override;
+    desc: 获取指定节点的输入张量步幅。
+    line: '96'
+    name: get_input_stride
+  - code:
+    - virtual ov::element::Type get_input_type(int node_idx, const std::string & name)
+      const override;
+    desc: 获取指定节点的输入张量数据类型。
+    line: '98'
+    name: get_input_type
+  - code:
+    - virtual size_t get_input_size() const override;
+    - virtual size_t get_input_size(int node_idx) const override;
+    desc: 获取模型输入端口的总数，存在两个重载版本，一个无参数，一个接受节点索引。
+    line: 100-102
+    name: get_input_size
+  - code:
+    - virtual void get_input_node(size_t input_port_idx, std::string & producer_name,
+      std::string & producer_output_port_name, size_t & producer_output_port_index)
+      const override {
+    - '    GGML_UNUSED(input_port_idx);'
+    - '    GGML_UNUSED(producer_name);'
+    - '    GGML_UNUSED(producer_output_port_name);'
+    - '    GGML_UNUSED(producer_output_port_index);'
+    - '}'
+    desc: 获取指定输入端口对应的生产者节点名称、输出端口名称和端口索引，当前实现为空操作。
+    line: 105-112
+    name: get_input_node
+  - code:
+    - virtual std::vector<std::string> get_input_names(int node_idx) const override;
+    desc: 获取指定节点的输入名称列表。
+    line: '114'
+    name: get_input_names
+  - code:
+    - virtual ov::PartialShape get_output_shape(int node_idx) const override;
+    desc: 获取指定节点的输出张量形状。
+    line: '116'
+    name: get_output_shape
+  - code:
+    - virtual ov::element::Type get_output_type(int node_idx) const override;
+    desc: 获取指定节点的输出张量数据类型。
+    line: '118'
+    name: get_output_type
+  - code:
+    - virtual int32_t * get_input_op_params(int node_idx, const std::string & name)
+      const override;
+    desc: 获取指定节点的输入操作参数指针。
+    line: '120'
+    name: get_input_op_params
+  - code:
+    - virtual int32_t * get_output_op_params(int node_idx) const override;
+    desc: 获取指定节点的输出操作参数指针。
+    line: '122'
+    name: get_output_op_params
+  - code:
+    - virtual std::vector<std::string> get_output_names(int node_idx) const override;
+    desc: 获取指定节点的输出名称列表。
+    line: '124'
+    name: get_output_names
+  - code:
+    - virtual const std::string & get_op_type() const override;
+    - virtual const std::string & get_op_type(int node_idx) const override;
+    desc: 获取操作类型，存在两个重载版本，一个接受节点索引，一个不接受。
+    line: 126-128
+    name: get_op_type
+  - code:
+    - virtual const std::string & get_op_name() const override;
+    - virtual const std::string & get_op_name(int node_idx) const override;
+    desc: 获取操作名称，存在两个重载版本，一个接受节点索引，一个不接受。
+    line: 130-132
+    name: get_op_name
+  - code:
+    - virtual void visit_subgraph(std::function<void(std::shared_ptr<GgmlDecoder>,
+      int node_idx)> node_visitor) const override;
+    desc: 遍历子图，对每个节点调用访问者函数。
+    line: '134'
+    name: visit_subgraph
+  - code:
+    - ggml_tensor * get_input_ggml_tensor(const std::string & name) const { return
+      m_inputs.at(name); }
+    desc: 根据名称获取输入的 GGML 张量。
+    line: '136'
+    name: get_input_ggml_tensor
+  - code:
+    - virtual int get_op_case(int node_idx) const override { return m_node_info_list[node_idx].node_op_case;
+      }
+    desc: 获取指定节点的操作案例编号。
+    line: 138-140
+    name: get_op_case
+  - code:
+    - virtual const std::map<std::string, std::shared_ptr<ov::Node>> & get_model_inputs()
+      const override {
+    - '    return m_model_inputs;'
+    - '}'
+    desc: 获取模型的输入节点映射。
+    line: 142-145
+    name: get_model_inputs
+  - code:
+    - virtual const std::map<std::string, std::shared_ptr<ov::Node>> & get_model_extra_inputs()
+      const override {
+    - '    return m_model_extra_inputs;'
+    - '}'
+    desc: 获取模型的额外输入节点映射。
+    line: 147-150
+    name: get_model_extra_inputs
+  - code:
+    - virtual const std::map<std::string, std::shared_ptr<ov::Tensor>> & get_model_extra_input_values()
+      const {
+    - '    return m_model_extra_input_values;'
+    - '}'
+    desc: 获取模型的额外输入张量值映射。
+    line: 152-155
+    name: get_model_extra_input_values
+  - code:
+    - virtual const std::map<std::string, std::shared_ptr<ov::Node>> & get_model_weights()
+      const override {
+    - '    return m_model_weights;'
+    - '}'
+    desc: 获取模型的权重节点映射。
+    line: 157-160
+    name: get_model_weights
+  - code:
+    - virtual std::vector<std::string> get_model_output_names() const override {
+    - '    return m_model_output_names;'
+    - '}'
+    desc: 获取模型的输出名称列表。
+    line: 162-164
+    name: get_model_output_names
+  - code:
+    - const std::map<std::string, ggml_tensor *> & get_model_outputs() const { return
+      m_model_outputs; }
+    desc: 获取模型的输出 GGML 张量映射。
+    line: '166'
+    name: get_model_outputs
+  - code:
+    - virtual int get_ctx_size() const { return m_model_params.ctx; }
+    desc: 获取上下文大小。
+    line: '168'
+    name: get_ctx_size
+  - code:
+    - virtual int get_ctx_swa_size() const { return m_model_params.ctx_swa; }
+    desc: 获取滑动窗口上下文大小。
+    line: '170'
+    name: get_ctx_swa_size
+  - code:
+    - virtual int get_ctx_per_seq() const { return m_model_params.ctx_per_seq; }
+    desc: 获取每个序列的上下文大小。
+    line: '172'
+    name: get_ctx_per_seq
+  - code:
+    - virtual int get_ctx_per_seq_swa() const { return m_model_params.ctx_per_seq_swa;
+      }
+    desc: 获取每个序列的滑动窗口上下文大小。
+    line: '174'
+    name: get_ctx_per_seq_swa
+  - code:
+    - virtual int get_n_seq() const { return m_model_params.n_seq; }
+    desc: 获取序列数量。
+    line: '176'
+    name: get_n_seq
+  - code:
+    - virtual int is_swa_layer(int layer) const override {
+    - '    return std::find(m_model_params.swa_layers.begin(), m_model_params.swa_layers.end(),
+      layer) != m_model_params.swa_layers.end();'
+    - '}'
+    desc: 检查给定层索引是否为滑动窗口注意力层。
+    line: 178-181
+    name: is_swa_layer
+  - code:
+    - int get_past_kv_len() const { return m_compute_params.past_kv_len; }
+    desc: 获取过去的 KV 长度。
+    line: '183'
+    name: get_past_kv_len
+  - code:
+    - int get_input_len() const { return m_compute_params.input_len; }
+    desc: 获取输入长度。
+    line: '185'
+    name: get_input_len
+  - code:
+    - virtual int32_t * get_rope_params() const override { return const_cast<int32_t
+      *>(m_model_params.rope_params); }
+    desc: 获取 RoPE 参数指针。
+    line: '187'
+    name: get_rope_params
+  - code:
+    - virtual std::map<std::string, std::string> get_kv_param_res_names() const override;
+    desc: 获取 KV 参数资源名称映射。
+    line: '189'
+    name: get_kv_param_res_names
+  - code:
+    - virtual bool is_static() const override { return m_is_static; }
+    desc: 检查是否为静态图模式。
+    line: '191'
+    name: is_static
+  - code:
+    - virtual bool is_stateful() const override { return m_is_stateful; }
+    desc: 检查是否为有状态图模式。
+    line: '193'
+    name: is_stateful
+  - code:
+    - ov::PartialShape get_graph_input_shape(const ggml_tensor * op, const ggml_tensor
+      * input) const;
+    desc: 获取图输入张量的形状，基于操作和输入张量。
+    line: '195'
+    name: get_graph_input_shape
+  - code:
+    - static void dump_cgraph(const ggml_cgraph * cgraph, std::string & filename);
+    desc: 静态方法，将计算图转储到文件中。
+    line: '197'
+    name: dump_cgraph
+  - code:
+    - static std::shared_ptr<ov::Node> create_weight_node(ggml_tensor * tensor, bool
+      naive = false);
+    desc: 静态方法，创建表示权重张量的 OpenVINO 节点。
+    line: '199'
+    name: create_weight_node
+  - code:
+    - static std::map<std::string, std::shared_ptr<ov::Node>> create_weight_nodes(ggml_cgraph
+      * cgraph, bool naive = false);
+    desc: 静态方法，为计算图中的所有权重张量创建 OpenVINO 节点映射。
+    line: 201-202
+    name: create_weight_nodes
+  - code:
+    - const ggml_tensor * get_tensor_used_op(const ggml_tensor * tensor) const;
+    desc: 获取使用了指定张量的操作张量。
+    line: '204'
+    name: get_tensor_used_op
+  - code:
+    - const ggml_tensor * get_tensor_from_name(const std::string & name) const;
+    desc: 根据名称获取 GGML 张量。
+    line: '206'
+    name: get_tensor_from_name
+  - code:
+    - void clear_model_weights() { m_model_weights.clear(); }
+    desc: 清除模型权重映射。
+    line: '208'
+    name: clear_model_weights
+  - code:
+    - static std::pair<ModelParams, ComputeParams> compute_llm_params(ggml_cgraph
+      * cgraph, bool is_static);
+    desc: 静态方法，从计算图中计算模型参数和计算参数。
+    line: '210'
+    name: compute_llm_params
+  - code:
+    - ModelParams get_model_params() const { return m_model_params; }
+    desc: 获取模型参数。
+    line: '212'
+    name: get_model_params
+  - code:
+    - ComputeParams get_compute_params() const { return m_compute_params; }
+    desc: 获取计算参数。
+    line: '214'
+    name: get_compute_params
+  - code:
+    - void set_model_params(const ModelParams & model_params) { m_model_params = model_params;
+      }
+    desc: 设置模型参数。
+    line: '216'
+    name: set_model_params
+  - code:
+    - void set_compute_params(const ComputeParams & compute_params) { m_compute_params
+      = compute_params; }
+    desc: 设置计算参数。
+    line: '218'
+    name: set_compute_params
+  - code:
+    - static ov::Shape get_shape(const ggml_tensor * tensor);
+    desc: 静态方法，获取 GGML 张量的形状。
+    line: '222'
+    name: get_shape
+  - code:
+    - static std::vector<size_t> get_stride(const ggml_tensor * tensor);
+    desc: 静态方法，获取 GGML 张量的步幅。
+    line: '223'
+    name: get_stride
+  - code:
+    - static ov::element::Type get_ov_type(const ggml_tensor * tensor);
+    desc: 静态方法，获取 GGML 张量的 OpenVINO 数据类型。
+    line: '224'
+    name: get_ov_type
+  - code:
+    - static std::string compute_op_type(const ggml_tensor * node);
+    desc: 静态方法，计算 GGML 节点的操作类型。
+    line: '225'
+    name: compute_op_type
+  - code:
+    - void add_extra_inputs();
+    desc: 添加额外的输入到模型中。
+    line: '226'
+    name: add_extra_inputs
+  - code:
+    - void update_io(ggml_cgraph * cgraph);
+    desc: 更新计算图的输入输出信息。
+    line: '228'
+    name: update_io
+  - code:
+    - inline static bool is_inp_tok(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_GET_ROWS && tensor == op->src[1] && op->src[0]->op
+      == GGML_OP_NONE;'
+    - '}'
+    desc: 内联静态方法，检查张量是否为输入 token。
+    line: 230-232
+    name: is_inp_tok
+  - code:
+    - inline static bool is_inp_pos(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_ROPE && tensor == op->src[1];'
+    - '}'
+    desc: 内联静态方法，检查张量是否为输入位置。
+    line: 234-236
+    name: is_inp_pos
+  - code:
+    - inline static bool is_inp_emb(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return tensor->op == GGML_OP_GET_ROWS && op->op == GGML_OP_RMS_NORM;'
+    - '}'
+    desc: 内联静态方法，检查张量是否为输入嵌入。
+    line: 238-240
+    name: is_inp_emb
+  - code:
+    - inline static bool is_inp_mask(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_CPY || (op->op == GGML_OP_FLASH_ATTN_EXT && tensor
+      == op->src[3]);'
+    - '}'
+    desc: 内联静态方法，检查张量是否为输入掩码。
+    line: 242-244
+    name: is_inp_mask
+  - code:
+    - inline static bool is_rope_freqs_weight(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_ROPE && tensor == op->src[2];'
+    - '}'
+    desc: 内联静态方法，检查张量是否为 RoPE 频率权重。
+    line: 246-248
+    name: is_rope_freqs_weight
+  - code:
+    - inline static bool is_kvcache(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_SET_ROWS && op->src[2] == tensor;'
+    - '}'
+    desc: 内联静态方法，检查张量是否为 KV 缓存。
+    line: 250-252
+    name: is_kvcache
+  - code:
+    - inline static bool is_kv_idx(const ggml_tensor * tensor, const ggml_tensor *
+      op) {
+    - '    return op->op == GGML_OP_SET_ROWS && op->src[1] == tensor;'
+    - '}'
+    desc: 内联静态方法，检查张量是否为 KV 索引。
+    line: 254-256
+    name: is_kv_idx
+  - code:
+    - inline static bool is_output_idx(const ggml_tensor * tensor, const ggml_tensor
+      * op) {
+    - '    return op->op == GGML_OP_GET_ROWS && tensor == op->src[1] && op->src[0]->op
+      != GGML_OP_NONE;'
+    - '}'
+    desc: 内联静态方法，检查张量是否为输出索引。
+    line: 258-260
+    name: is_output_idx
+  - code:
+    - static std::string get_graph_input_ov_name(const ggml_tensor * tensor, const
+      ggml_tensor * op) {
+    - '    if (is_inp_tok(tensor, op)) {'
+    - '        return "inp_tokens";'
+    - '    }'
+    - '    if (is_inp_pos(tensor, op)) {'
+    - '        return "inp_pos";'
+    - '    }'
+    - '    if (is_inp_emb(tensor, op)) {'
+    - '        return "embd";'
+    - '    }'
+    - '    if (is_output_idx(tensor, op)) {'
+    - '        return "inp_out_ids";'
+    - '    }'
+    - '    if (is_inp_mask(tensor, op)) {'
+    - '        return std::string(tensor->name).find("swa") == std::string::npos ?
+      "self_kq_mask" : "self_kq_mask_swa";'
+    - '    }'
+    - '    return tensor->name;'
+    - '}'
+    desc: 静态方法，根据张量和操作获取图输入在 OpenVINO 中的名称。
+    line: 262-276
+    name: get_graph_input_ov_name
+  - code:
+    - void set_input_output();
+    desc: 私有方法，设置模型的输入和输出。
+    line: '279'
+    name: set_input_output
+  - code:
+    - int compute_op_case(const ggml_tensor * node) const;
+    desc: 私有方法，计算 GGML 节点的操作案例编号。
+    line: '280'
+    name: compute_op_case
+  - code:
+    - bool node_is_used_as_src(const int node_idx);
+    desc: 私有方法，检查节点是否被用作源节点。
+    line: '281'
+    name: node_is_used_as_src
+  - code:
+    - void compute_model_inputs();
+    desc: 私有方法，计算模型的输入节点映射。
+    line: '282'
+    name: compute_model_inputs
+  - code:
+    - void compute_model_outputs();
+    desc: 私有方法，计算模型的输出节点映射。
+    line: '283'
+    name: compute_model_outputs
+  - code:
+    - void validate_cgraph() const;
+    desc: 私有方法，验证计算图的有效性。
+    line: '285'
+    name: validate_cgraph
+  name: GgmlOvDecoder
+desc: 该文件定义了 GGML 计算图在 OpenVINO 推理场景下的解码器头文件，包含模型参数和计算参数的结构体，以及 GgmlOvDecoder 类。该类通过实现
+  OpenVINO GgmlDecoder 接口，将 GGML 计算图中的张量、节点和处理逻辑映射到 OpenVINO 的图中，并提供了模型输入输出管理、参数访问、图遍历、配置和调试辅助等核心功能，是实现从
+  GGML 格式到 OpenVINO 推理格式转换的关键组件。
+file: ggml/src/ggml-openvino/ggml-decoder.h
+funcs:
+- code:
+  - void print_tensor_address_map(const ggml_cgraph * cgraph);
+  desc: 全局函数，打印计算图中张量的地址映射信息，用于调试。
+  line: '304'
+  name: print_tensor_address_map
+- code:
+  - int extract_layer_from_name(const std::string & name);
+  desc: 全局函数，从给定的名称中提取层索引，用于解析层相关信息。
+  line: '306'
+  name: extract_layer_from_name

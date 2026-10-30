@@ -1,0 +1,307 @@
+classes:
+- desc: 基于 Map 实现的泛型 TTL 缓存类，提供自动过期、容量上限、LRU 式最旧条目逐出、过期清理、键刷新及逐出回调等功能。
+  methods:
+  - code:
+    - 'constructor(options: TTLCacheOptions = {}) {'
+    - '    this.ttlMs = options.ttlMs ?? DEFAULT_CACHE_TTL_MS;'
+    - '    this.maxEntries = options.maxEntries ?? DEFAULT_CACHE_MAX_ENTRIES;'
+    - '    this.onEvict = options.onEvict;'
+    - '}'
+    desc: 初始化 TTLCache 实例，从配置项中读取 TTL 毫秒数、最大条目数和逐出回调，缺省时使用全局默认常量。
+    line: 41-45
+    name: constructor
+  - code:
+    - 'get(key: K): V | null {'
+    - '    const entry = this.cache.get(key);'
+    - '    if (!entry) return null;'
+    - ''
+    - '    if (Date.now() > entry.expiresAt) {'
+    - '        this.delete(key);'
+    - '        return null;'
+    - '    }'
+    - ''
+    - '    // Update last accessed time for LRU-like behavior'
+    - '    entry.lastAccessed = Date.now();'
+    - '    return entry.value;'
+    - '}'
+    desc: 获取指定键的缓存值；若键不存在或已过期（过期时顺带删除该键）则返回 null，否则更新最近访问时间并返回缓存值。
+    line: 50-62
+    name: get
+  - code:
+    - 'set(key: K, value: V, customTtlMs?: number): void {'
+    - '    // Evict oldest entries if at capacity'
+    - '    if (this.cache.size >= this.maxEntries && !this.cache.has(key)) {'
+    - '        this.evictOldest();'
+    - '    }'
+    - ''
+    - '    const ttl = customTtlMs ?? this.ttlMs;'
+    - '    const now = Date.now();'
+    - ''
+    - '    this.cache.set(key, {'
+    - '        value,'
+    - '        expiresAt: now + ttl,'
+    - '        lastAccessed: now'
+    - '    });'
+    - '}'
+    desc: 向缓存中写入键值对，可携带自定义 TTL；当缓存已满且写入新键时先逐出最久未访问的条目，然后记录值、过期时间和最近访问时间。
+    line: 67-81
+    name: set
+  - code:
+    - 'has(key: K): boolean {'
+    - '    const entry = this.cache.get(key);'
+    - '    if (!entry) return false;'
+    - ''
+    - '    if (Date.now() > entry.expiresAt) {'
+    - '        this.delete(key);'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    return true;'
+    - '}'
+    desc: 检查指定键是否存在且未过期；若已过期则删除该键并返回 false，否则返回 true。
+    line: 86-97
+    name: has
+  - code:
+    - 'delete(key: K): boolean {'
+    - '    const entry = this.cache.get(key);'
+    - '    if (entry && this.onEvict) {'
+    - '        this.onEvict(key, entry.value);'
+    - '    }'
+    - '    return this.cache.delete(key);'
+    - '}'
+    desc: 删除指定键；若该键存在且注册了逐出回调，则先触发 onEvict 回调，再从底层 Map 中删除并返回删除结果。
+    line: 102-108
+    name: delete
+  - code:
+    - 'clear(): void {'
+    - '    if (this.onEvict) {'
+    - '        for (const [key, entry] of this.cache) {'
+    - '            this.onEvict(key, entry.value);'
+    - '        }'
+    - '    }'
+    - '    this.cache.clear();'
+    - '}'
+    desc: 清空缓存中的所有条目；若注册了逐出回调，则对每一个现存条目逐一触发 onEvict 后再清空底层 Map。
+    line: 113-120
+    name: clear
+  - code:
+    - 'get size(): number {'
+    - '    return this.cache.size;'
+    - '}'
+    desc: 只读 getter 属性，返回缓存中当前条目数量（包含可能已过期但尚未清理的条目）。
+    line: 125-127
+    name: size
+  - code:
+    - 'prune(): number {'
+    - '    const now = Date.now();'
+    - '    let pruned = 0;'
+    - ''
+    - '    for (const [key, entry] of this.cache) {'
+    - '        if (now > entry.expiresAt) {'
+    - '            this.delete(key);'
+    - '            pruned++;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return pruned;'
+    - '}'
+    desc: 主动遍历缓存，删除所有已过期的条目，并返回本次被清理的条目数量；适合周期性调用做提前清理。
+    line: 133-145
+    name: prune
+  - code:
+    - 'keys(): K[] {'
+    - '    const now = Date.now();'
+    - '    const validKeys: K[] = [];'
+    - ''
+    - '    for (const [key, entry] of this.cache) {'
+    - '        if (now <= entry.expiresAt) {'
+    - '            validKeys.push(key);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return validKeys;'
+    - '}'
+    desc: 遍历缓存并收集所有尚未过期的键，返回由有效键组成的数组。
+    line: 150-161
+    name: keys
+  - code:
+    - 'private evictOldest(): void {'
+    - '    let oldestKey: K | null = null;'
+    - '    let oldestTime = Infinity;'
+    - ''
+    - '    for (const [key, entry] of this.cache) {'
+    - '        if (entry.lastAccessed < oldestTime) {'
+    - '            oldestTime = entry.lastAccessed;'
+    - '            oldestKey = key;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (oldestKey !== null) {'
+    - '        this.delete(oldestKey);'
+    - '    }'
+    - '}'
+    desc: 私有方法，遍历整个缓存查找 lastAccessed 最小的（即最久未访问的）条目并将其删除，用于容量达到上限时的 LRU 式逐出。
+    line: 166-179
+    name: evictOldest
+  - code:
+    - 'touch(key: K): boolean {'
+    - '    const entry = this.cache.get(key);'
+    - '    if (!entry) return false;'
+    - ''
+    - '    const now = Date.now();'
+    - '    if (now > entry.expiresAt) {'
+    - '        this.delete(key);'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    entry.expiresAt = now + this.ttlMs;'
+    - '    entry.lastAccessed = now;'
+    - '    return true;'
+    - '}'
+    desc: 为已存在且未过期的键刷新过期时间与最近访问时间（不修改缓存值），实现续约效果；键不存在或已过期时返回 false。
+    line: 184-196
+    name: touch
+  name: TTLCache
+- desc: 基于 Svelte 5 $state 响应式状态包装的 TTL 缓存映射类，提供与 TTLCache 类似的过期淘汰和容量管理能力，使其数据变化可直接驱动
+    Svelte 组件的响应式更新。
+  methods:
+  - code:
+    - 'constructor(options: TTLCacheOptions = {}) {'
+    - '    this.ttlMs = options.ttlMs ?? DEFAULT_CACHE_TTL_MS;'
+    - '    this.maxEntries = options.maxEntries ?? DEFAULT_CACHE_MAX_ENTRIES;'
+    - '}'
+    desc: 初始化响应式 TTL 缓存，根据配置项设置默认 TTL 毫秒数和最大条目数，缺省时使用全局默认常量。
+    line: 209-212
+    name: constructor
+  - code:
+    - 'get(key: K): V | null {'
+    - '    const entry = this.entries.get(key);'
+    - '    if (!entry) return null;'
+    - ''
+    - '    if (Date.now() > entry.expiresAt) {'
+    - '        this.entries.delete(key);'
+    - '        return null;'
+    - '    }'
+    - ''
+    - '    entry.lastAccessed = Date.now();'
+    - '    return entry.value;'
+    - '}'
+    desc: 从响应式缓存中读取指定键的值；键不存在或已过期（过期时同步删除该条目）时返回 null，否则更新最近访问时间后返回缓存值。
+    line: 214-225
+    name: get
+  - code:
+    - 'set(key: K, value: V, customTtlMs?: number): void {'
+    - '    if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {'
+    - '        this.evictOldest();'
+    - '    }'
+    - ''
+    - '    const ttl = customTtlMs ?? this.ttlMs;'
+    - '    const now = Date.now();'
+    - ''
+    - '    this.entries.set(key, {'
+    - '        value,'
+    - '        expiresAt: now + ttl,'
+    - '        lastAccessed: now'
+    - '    });'
+    - '}'
+    desc: 向响应式缓存中写入键值对，可携带自定义 TTL；当容量已满且写入新键时先逐出最久未访问的条目，再记录值、过期时间和最近访问时间。
+    line: 227-240
+    name: set
+  - code:
+    - 'has(key: K): boolean {'
+    - '    const entry = this.entries.get(key);'
+    - '    if (!entry) return false;'
+    - ''
+    - '    if (Date.now() > entry.expiresAt) {'
+    - '        this.entries.delete(key);'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    return true;'
+    - '}'
+    desc: 判断指定键在响应式缓存中是否存在且未过期；若已过期则同时删除该条目并返回 false，否则返回 true。
+    line: 242-253
+    name: has
+  - code:
+    - 'delete(key: K): boolean {'
+    - '    return this.entries.delete(key);'
+    - '}'
+    desc: 直接从响应式缓存中删除指定键并返回是否删除成功，不触发任何回调。
+    line: 255-257
+    name: delete
+  - code:
+    - 'clear(): void {'
+    - '    this.entries.clear();'
+    - '}'
+    desc: 清空响应式缓存中的所有条目，无额外回调处理。
+    line: 259-261
+    name: clear
+  - code:
+    - 'get size(): number {'
+    - '    return this.entries.size;'
+    - '}'
+    desc: 只读 getter 属性，返回响应式缓存中当前的条目数量（包含可能已过期的条目）。
+    line: 263-265
+    name: size
+  - code:
+    - 'prune(): number {'
+    - '    const now = Date.now();'
+    - '    let pruned = 0;'
+    - ''
+    - '    for (const [key, entry] of this.entries) {'
+    - '        if (now > entry.expiresAt) {'
+    - '            this.entries.delete(key);'
+    - '            pruned++;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return pruned;'
+    - '}'
+    desc: 主动遍历响应式缓存，删除所有已过期条目并返回被清理的数量，用于周期性手动释放内存。
+    line: 267-279
+    name: prune
+  - code:
+    - 'private evictOldest(): void {'
+    - '    let oldestKey: K | null = null;'
+    - '    let oldestTime = Infinity;'
+    - ''
+    - '    for (const [key, entry] of this.entries) {'
+    - '        if (entry.lastAccessed < oldestTime) {'
+    - '            oldestTime = entry.lastAccessed;'
+    - '            oldestKey = key;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (oldestKey !== null) {'
+    - '        this.entries.delete(oldestKey);'
+    - '    }'
+    - '}'
+    desc: 私有方法，遍历响应式缓存找到最近访问时间最早的条目并删除，在容量达到上限时为新的写入腾出空间。
+    line: 281-294
+    name: evictOldest
+  name: ReactiveTTLMap
+desc: 该文件实现了一个基于 TTL（Time-To-Live）机制的内存缓存工具模块，用于在 Svelte Web 前端中管理带自动过期和容量限制的缓存数据，避免长时间运行时的内存膨胀。模块提供了通用的
+  TTLCache 类（支持逐出回调、LRU 式清理、主动 prune、touch 续约等）以及基于 Svelte 响应式状态 ($state) 封装的 ReactiveTTLMap
+  类，二者均支持自定义 TTL 和最大条目数。
+file: tools/server/webui/src/lib/utils/cache-ttl.ts
+funcs:
+- code:
+  - import { DEFAULT_CACHE_TTL_MS, DEFAULT_CACHE_MAX_ENTRIES } from '$lib/constants';
+  - export interface TTLCacheOptions {
+  - '    /** Time-to-live in milliseconds. Default: 5 minutes */'
+  - '    ttlMs?: number;'
+  - '    /** Maximum number of entries. Oldest entries are evicted when exceeded.
+    Default: 100 */'
+  - '    maxEntries?: number;'
+  - '    /** Callback when an entry expires or is evicted */'
+  - '    onEvict?: (key: string, value: unknown) => void;'
+  - '}'
+  - interface CacheEntry<T> {
+  - '    value: T;'
+  - '    expiresAt: number;'
+  - '    lastAccessed: number;'
+  - '}'
+  desc: 模块顶层全局代码：导入缓存默认常量，声明 TTLCacheOptions 公共配置接口（TTL、最大条目数、逐出回调）以及内部使用的 CacheEntry
+    缓存条目结构（值、过期时间、最近访问时间）。
+  line: 1-31
+  name: __main__

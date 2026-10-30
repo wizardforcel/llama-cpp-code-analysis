@@ -1,0 +1,552 @@
+code_map:
+- src/models/mamba-base.cpp
+- '├── llm_build_mamba_base::llm_build_mamba_base()       # 基类构造（空实现，仅传递参数）'
+- '├── build_mamba_layer()                    # Mamba1 三段式构建（Conv1D + SSM + 门控）'
+- '│   ├── ssm_dt_b_c_rms 条件分支           # 部分变体（FalconMamba）需要对 B/C/dt 做 RMS Norm'
+- '│   ├── build_rs 获取 conv state 缓存     # Conv1D 状态管理'
+- '│   ├── ggml_ssm_conv 完成 1D 卷积        # 卷积阶段'
+- '│   ├── ggml_ssm_scan 并行关联扫描        # SSM 核心算子'
+- '│   └── ggml_swiglu_split 门控融合        # z 与 y 融合'
+- '├── build_mamba2_layer()                   # Mamba2 多头分组实现'
+- '│   ├── n_head = ssm_dt_rank              # Mamba2 多头设计'
+- '│   ├── 一次性投出 z/xBC/dt              # 三路张量'
+- '│   ├── 分组 RMS Norm (n_group)           # 多组 SSM 稳定性'
+- '│   └── ssm_norm 归一化                   # 组级归一化权重'
+- ''
+- src/models/mamba.cpp
+- ├── llm_build_mamba::llm_build_mamba()
+- │   ├── build_inp_embd 获取嵌入输入
+- │   ├── build_rs_inp 获取循环输入上下文
+- │   ├── model.arch 分发（MAMBA2 vs MAMBA）
+- │   └── build_norm + build_lora_mm 输出层
+- ''
+- src/models/jamba.cpp
+- ├── llm_build_jamba::llm_build_jamba()
+- │   ├── build_inp_mem_hybrid 同时管理 KV 与循环状态
+- │   ├── n_head_kv == 0 判断 SSM/Attention 层
+- │   ├── build_attn 时 NULL RoPE（位置无关）
+- │   ├── ffn_gate_inp 区分 FFN/MoE 分支
+- │   └── LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX 门控
+- ''
+- src/models/falcon-h1.cpp
+- ├── llm_build_falcon_h1::llm_build_falcon_h1()
+- │   ├── build_attn 与 build_mamba2_layer 并行调用
+- │   ├── ggml_rope_ext 完整 RoPE 配置（n_rot/freq_base/ext_factor）
+- │   ├── kq_scale 双重来源（f_attention_scale）
+- │   └── Aggregation：ggml_add(attn_out, ssm_out)
+- ''
+- src/models/nemotron-h.cpp
+- ├── llm_build_nemotron_h::llm_build_nemotron_h()
+- │   ├── is_recurrent/n_ff 三分支判断
+- │   └── GGML_ASSERT(n_embd_head == n_embd_head_k)
+- '├── build_attention_layer()                 # 标准 Attention + 可选 bias'
+- │   ├── Q/K/V 可选加 bq/bk/bv
+- │   └── kq_scale 自定义缩放
+- '└── build_ffn_layer()                       # MoE + 共享专家'
+- '    ├── LLM_FFN_RELU_SQR 激活（Nemotron 特色）'
+- '    ├── ffn_latent_down/up 潜空间压缩'
+- '    ├── LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID 门控'
+- '    └── ffn_shexp 共享专家分支'
+- ''
+- src/models/granite-hybrid.cpp
+- ├── llm_build_granite_hybrid::llm_build_granite_hybrid()
+- │   ├── rope_finetuned 条件启用 RoPE
+- │   └── f_logit_scale 输出 logits 缩放
+- '├── build_attention_layer()                 # 条件 RoPE'
+- │   ├── get_rope_factors 取得 YaRN 缩放因子
+- │   └── ggml_rope_ext 注入 rope_factors
+- '└── build_layer_ffn()                       # Granite 残差缩放 + MoE + 共享专家'
+- '    ├── f_residual_scale 残差缩放'
+- '    ├── MoE + shexp 共享专家（n_ff_shexp）'
+- '    └── 输出前再次缩放残差'
+- ''
+- src/models/plamo2.cpp
+- ├── llm_build_plamo2::llm_build_plamo2()
+- │   ├── pre/post-mixer-norm 双归一化结构
+- │   ├── build_plamo2_attn_layer 调用
+- │   └── build_plamo2_mamba_layer 调用
+- '├── build_plamo2_attn_layer()               # QKV 拆分 + Q/K 独立 RMS Norm'
+- │   ├── ggml_view_3d 拆分 qkv 联合张量
+- │   ├── attn_q_norm/attn_k_norm 预归一化
+- │   └── norm → RoPE → build_attn 顺序
+- '└── build_plamo2_mamba_layer()              # 定制化 Mamba2 变体'
+- '    ├── zx permute+cont_4d 重新布局'
+- '    ├── dt_dim = max(64, n_embd/16)        # 动态 dt 维度'
+- '    ├── B/C/dt 三者都做 RMS Norm'
+- '    ├── get_ssm_rows 复用 ssm_scan 逻辑'
+- '    └── y + D*x + swiglu_split(z, y) 门控融合'
+- ''
+- src/models/plamo3.cpp
+- ├── template <bool iswa>
+- ├── llm_build_plamo3<iswa>::llm_build_plamo3()
+- │   ├── std::conditional_t 类型分支
+- │   ├── build_attn_inp_kv_iswa() vs build_attn_inp_kv()
+- │   ├── 每层差异化 RoPE 频率（get_rope_freq_base）
+- │   ├── attn_q_norm/attn_k_norm 预归一化
+- │   └── 双残差 + 后归一化结构
+- └── template struct llm_build_plamo3<false>;
+- '  template struct llm_build_plamo3<true>;  # 显式实例化'
+exercises:
+- contents:
+  - 阅读 `src/models/mamba-base.cpp` 第 15-186 行（`build_mamba_layer`）和第 188-358 行（`build_mamba2_layer`）。
+  - 回答问题：
+  - 1. 两种实现中 `n_head` 与 `head_dim` 的计算方式有何不同？
+  - 2. 为什么 Mamba2 一次性投出 z/xBC/dt 三个张量，而 Mamba1 是分开投出 xz 与 x_db？
+  - 3. Mamba2 引入的「分组 RMS Norm」（`ssm_norm`）作用在哪个张量上？分组数 `n_group` 如何影响？
+  - 4. 在 SSM 扫描后，两种实现对状态保存（`ggml_cpy` 到 `ssm_states_all`）的字节偏移计算有何差异？
+  - 5. `ggml_swiglu_split` 在两种实现中的调用方式是否完全一致？
+  'no': 1
+  title: 对比 Mamba1 与 Mamba2 的 SSM 层构建差异
+- contents:
+  - 阅读 `src/models/jamba.cpp`、`src/models/falcon-h1.cpp`、`src/models/nemotron-h.cpp`
+    的构造函数。
+  - 回答问题：
+  - 1. 三种架构各自通过什么方法获取混合输入对象？它们分别返回什么类型的指针？
+  - 2. Jamba 通过 `hparams.n_head_kv(il) == 0` 区分层类型，Falcon-H1 和 Nemotron-H 分别用什么方式判断？
+  - 3. Falcon-H1 的「并行融合」在计算图中对应什么 ggml 操作？与 Jamba 的「按层切换」有何本质区别？
+  - 4. Nemotron-H 的 `build_ffn_layer` 中，MoE 分支与共享专家（`ffn_shexp`）是如何融合的？
+  - 5. Nemotron-H 中 `LLM_FFN_RELU_SQR` 激活与标准 SwiGLU 在数学上有何不同？
+  'no': 2
+  title: 追踪 Mamba 混合架构的状态管理
+- contents:
+  - 阅读 `src/models/plamo2.cpp` 第 102-160 行（`build_plamo2_attn_layer`）和 `src/models/plamo3.cpp`
+    整个文件。
+  - 回答问题：
+  - 1. PLaMo2 中 Q/K 的 RMS Norm 发生在 RoPE 之前还是之后？这种「norm-then-rope」设计有什么好处？
+  - 2. PLaMo3 中 `std::conditional_t<iswa, llm_graph_input_attn_kv_iswa, llm_graph_input_attn_kv>`
+    的作用是什么？编译后会生成几种类型？
+  - 3. 解释 `if constexpr (iswa)` 与普通 `if` 的区别，并说明 RoPE 参数 `freq_base_l/freq_scale_l`
+    如何根据模板参数变化。
+  - 4. PLaMo3 文件末尾的两行 `template struct llm_build_plamo3<false>;` 和 `<true>;` 为什么是必须的？
+  - 5. 对比 PLaMo2 与 PLaMo3 在 Attention 子层结构上的异同：两者都有 `attn_q_norm/attn_k_norm` 吗？FFN
+    激活方式有何不同？
+  'no': 3
+  title: 剖析 PLaMo 系列的预归一化与模板化设计
+- contents:
+  - 阅读 `src/models/granite-hybrid.cpp` 整个文件。
+  - 回答问题：
+  - 1. `hparams.rope_finetuned` 标志的作用是什么？什么情况下 Granite 模型不需要 RoPE？
+  - 2. `hparams.f_residual_scale` 在哪些位置被使用？它影响的是哪部分计算图的输出？
+  - 3. `hparams.f_logit_scale` 与 `f_residual_scale` 的数学作用有何不同？为什么 logit 缩放需要除以（`1.0f
+    / f_logit_scale`）？
+  - 4. 当 `model.layers[il].ffn_gate_inp == nullptr` 和 `hparams.n_ff_shexp > 0` 同时成立时，FFN
+    实际如何构建？
+  - 5. `ggml_rope_ext` 中传入的 `rope_factors`（通过 `get_rope_factors` 获取）通常用于支持哪些 RoPE
+    缩放策略？
+  'no': 4
+  title: 理解 Granite-Hybrid 的缩放策略与 MoE 设计
+- contents:
+  - 基于 `src/models/mamba-base.cpp` 中 `build_mamba_layer` 的状态管理逻辑，回答问题：
+  - 1. 在 SSM 扫描后，状态保存的 `ggml_view_1d` 是如何定位到当前序列（`kv_head`）对应的状态槽位的？
+  - 2. 为什么需要先 `ggml_cpy` 回状态缓存，而不是直接原地修改（inplace）？
+  - 3. `build_rs` 中的 lambda `get_ssm_rows` 接受哪些参数？它在状态复用时如何跳过未修改部分的拷贝？
+  - 4. 如果你需要在状态保存后立即读取（例如做残差流验证），应该在计算图的哪个位置插入读取节点？
+  - 5. 思考：Mamba 状态管理为何比 Transformer 的 KV Cache 复杂？提示：从「按 token 增量更新」与「按序列整体重算」两个角度分析。
+  'no': 5
+  title: 实战：实现一个简化版 Mamba 状态保存
+learning_targets:
+- 理解 Mamba/Mamba2 SSM 循环层的两段式构建流水线（Conv1D + SSM 扫描 + 门控融合）
+- 掌握 build_mamba_layer 与 build_mamba2_layer 在状态管理、维度布局和分组 RMS Norm 上的差异
+- 理解混合架构（Hybrid）中三种 SSM+Attention 组合策略：按层切换（Jamba）、并行融合（Falcon-H1）、三分支（Nemotron-H）
+- 掌握混合输入管理：build_rs_inp 与 build_inp_mem_hybrid 如何分别管理纯循环与混合状态
+- 理解模板类显式实例化（如 llm_build_plamo3<iswa>）的 C++ 工程实践与 ISWA 复用机制
+- 了解 PLaMo 系列预归一化（attn_q_norm/attn_k_norm）以及后归一化（attn_post_norm/ffn_post_norm）的设计哲学
+- 掌握 Granite-Hybrid 的残差缩放（f_residual_scale）和 logits 缩放（f_logit_scale）等架构特性
+life_analogy:
+- 想象 SSM 与 Attention 的混合架构是一场**"特种部队的协同作战"**：
+- '- **Mamba（SSM 循环层）** = 高速公路巡逻队，擅长长距离快速扫描，对历史信息有"记忆缓存"'
+- '- **Attention（注意力层）** = 精准狙击手，能锁定任意位置的关键信息，但每次行动成本较高'
+- '- **Jamba（按层切换）** = 班长调度员，按地形决定派哪支队伍上场（SSM 层 / Attention 层交替）'
+- '- **Falcon-H1（并行融合）** = 双警组同时出动，一队巡逻一队狙击，情报汇总后联合决策'
+- '- **Nemotron-H（三分支）** = 三军种联合作战，可全 SSM、全 Attention 或纯 FFN 任意搭配'
+- '- **Granite-Hybrid** = 强调"作战日志标准化"的部队，所有行动都按统一的残差缩放比例记录'
+- '- **PLaMo2/PLaMo3** = 强调"前后检查站"的精锐部队，每个动作前后都有独立的安全检查（post-norm）'
+- '- **状态缓存（conv state / ssm state）** = 巡逻队的"交接班记录本"，下一班直接继承上一班的工作'
+- '- **get_ssm_rows lambda** = "按需调阅"机制——只调取未修改部分，避免重复劳动'
+- '- **ISWA（Intermittent Sliding Window Attention）** = 滑动窗口哨兵，重要路段加强巡逻，普通路段常规处理'
+'no': 28
+summary:
+- concept: '`llm_build_mamba_base`'
+  desc: SSM 循环层构建的共同基类，提供 build_mamba_layer 与 build_mamba2_layer 两个核心方法
+- concept: '`llm_build_mamba_base::llm_build_mamba_base()`'
+  desc: 基类构造函数，仅将 llm_graph_params 透传给 llm_graph_context，无额外初始化逻辑
+- concept: '`build_mamba_layer`'
+  desc: Mamba1 三段式流水线（Conv1D + SSM 扫描 + 门控融合），支持 ssm_dt_b_c_rms 条件归一化
+- concept: '`build_mamba2_layer`'
+  desc: Mamba2 多头分组设计，n_head = ssm_dt_rank，引入分组 RMS Norm
+- concept: '`build_rs`'
+  desc: 获取循环状态缓存（conv state / ssm state），通过 lambda 实现按需复用
+- concept: '`ggml_ssm_conv`'
+  desc: SSM 模型的 1D 卷积算子，与历史状态拼接形成 d_conv-1+n_seq_tokens 长度
+- concept: '`ggml_ssm_scan`'
+  desc: SSM 核心并行关联扫描算子，实现 Mamba 论文 Annex D 的优化
+- concept: '`ggml_swiglu_split`'
+  desc: 将 z 分支与 y 分支做门控融合，是 Mamba 系列的标志性输出方式
+- concept: '`build_inp_mem_hybrid`'
+  desc: 混合输入管理，同时支持 KV Cache 与循环状态（SSM）
+- concept: '`llm_build_mamba`'
+  desc: Mamba/Mamba2 主模型构造函数，由 model.arch 分发到 build_mamba_layer 或 build_mamba2_layer
+- concept: '`llm_build_jamba`'
+  desc: AI21 Jamba 按层切换 Mamba/Attention，无 RoPE 的 Attention 变体
+- concept: '`llm_build_falcon_h1`'
+  desc: Falcon-H1 并行融合 Attention 与 Mamba2，ggml_add 聚合两路输出
+- concept: '`llm_build_nemotron_h`'
+  desc: Nemotron-H 三分支（SSM/Attention/FFN）混合架构，支持 MoE + 共享专家
+- concept: '`LLM_FFN_RELU_SQR`'
+  desc: Nemotron 特色的 ReLU 平方激活函数
+- concept: '`LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID`'
+  desc: Nemotron 使用的 Sigmoid 门控（区别于 Softmax）
+- concept: '`ffn_shexp`'
+  desc: Nemotron/Granite 的共享专家分支，独立于 MoE 路由专家
+- concept: '`llm_build_granite_hybrid`'
+  desc: IBM Granite-Hybrid，f_residual_scale 残差缩放 + f_logit_scale logits 缩放
+- concept: '`rope_finetuned`'
+  desc: Granite 条件启用 RoPE 的标志，配合 get_rope_factors 支持 YaRN
+- concept: '`llm_build_plamo2`'
+  desc: PLaMo2 双归一化结构（pre/post-mixer-norm），Q/K 独立 RMS Norm 后再 RoPE
+- concept: '`build_plamo2_mamba_layer`'
+  desc: PLaMo2 定制化 Mamba2，dt_dim 动态调整，B/C/dt 三者都做 RMS Norm
+- concept: '`llm_build_plamo3<iswa>`'
+  desc: 模板化 PLaMo3，通过显式实例化复用 ISWA 与标准 KV Cache
+- concept: '`std::conditional_t<iswa, ...>`'
+  desc: C++ 类型分支技巧，根据 iswa 决定 attn 输入类型
+- concept: '`if constexpr (iswa)`'
+  desc: 编译期条件分支，为模板参数生成不同二进制代码
+- concept: '`template struct ...`'
+  desc: 显式模板实例化，避免隐式实例化跨编译单元链接问题
+- concept: '`attn_q_norm / attn_k_norm`'
+  desc: Q/K 预归一化权重，PLaMo 系列在 RoPE 之前归一化的特殊设计
+- concept: '`attn_post_norm / ffn_post_norm`'
+  desc: PLaMo 风格的后归一化，每个 mixer 子层后独立归一化
+- concept: '`build_attn_inp_kv_iswa`'
+  desc: 构建 ISWA 注意力输入对象，支持 SWA 与非 SWA 双 KV Cache
+- concept: '`kq_scale`'
+  desc: 注意力 QK 缩放因子，可由 hparams.f_attention_scale 自定义
+units:
+- codes:
+  - file: src/models/mamba-base.cpp
+    line: 1-5
+    method_or_func: llm_build_mamba_base.llm_build_mamba_base()
+  - file: src/models/mamba-base.cpp
+    line: 15-186
+    method_or_func: llm_build_mamba_base.build_mamba_layer()
+  - file: src/models/mamba-base.cpp
+    line: 188-358
+    method_or_func: llm_build_mamba_base.build_mamba2_layer()
+  - file: src/models/mamba-base.cpp
+    line: 1-358
+    method_or_func: __main__
+  name: Mamba 基础构建器 —— SSM 循环层的"万能工厂"
+  'no': 1
+  points:
+  - '**`llm_build_mamba_base` 的角色：Mamba 系列的"共同基因"**'
+  - '- 作为 Mamba/Mamba2/Jamba/Falcon-H1 等模型的共同基类，它提供了 SSM 层的核心构建方法'
+  - '- 通过 `build_mamba_layer` 和 `build_mamba2_layer` 两个关键方法，支持两代 SSM 架构的差异'
+  - '- 内部通过 `hparams`（模型超参数）、`ctx0`（ggml 计算图）、`gf`（前向图）、`inp`（输入）来完成构图'
+  - ''
+  - '**基类构造函数：`llm_build_mamba_base()` 的透传哲学**'
+  - '- 基类构造函数仅接收 `llm_graph_params` 并透传给父类 `llm_graph_context`'
+  - '- 这种"空构造"设计体现了"基类只提供骨架，子类填充血肉"的工程哲学'
+  - '- 所有超参数、张量指针、后端缓冲都在 `llm_graph_context` 父类中持有'
+  - ''
+  - '**`build_mamba_layer` 的三段式流水线：Conv1D + SSM 扫描 + 门控融合**'
+  - '- **Conv1D 阶段**：通过 `build_rs` 取出循环状态缓存，与当前输入拼接形成 `d_conv - 1 + n_seq_tokens`
+    长度的序列，再用 `ggml_ssm_conv` 完成 1D 卷积'
+  - '- **SSM 阶段**：`ssm_x` 投射出 `dt + B + C`，与 A 矩阵、状态一起送入 `ggml_ssm_scan`，这是 SSM 的核心并行扫描算子'
+  - '- **门控阶段**：通过 `ggml_swiglu_split` 把 z 分支与 y 分支做门控融合，再由 `ssm_out` 投射回 `n_embd`
+    维度'
+  - ''
+  - '**`build_mamba2_layer` 与 Mamba1 的核心差异**'
+  - '- Mamba2 采用「分组 + 多头」设计：`n_head = ssm_dt_rank`，`head_dim = d_inner / n_head`'
+  - '- 把 `xBCdt` 一次性投出，分为 z、xBC、dt 三个张量；`dt` 不再经过 `dt` 矩阵投射，而是直接由输入投射'
+  - '- 引入「分组 RMS Norm」：通过 `ssm_norm` 对 `n_group` 个组分别归一化，提升多组 SSM 的训练稳定性'
+  - '- 把 `ssm_d`（跳跃连接）广播成与 `x` 同形的多头张量'
+  - ''
+  - '**状态管理的关键细节**'
+  - '- 通过 `get_r_l(il)` 和 `get_s_l(il)` 获取当前层的卷积状态和 SSM 状态缓冲区'
+  - '- 在 `ggml_cpy` 时通过 `kv_head * ... * ggml_element_size(...)` 精确定位到该序列的状态槽位'
+  - '- 使用 `build_rs` 的 lambda `get_ssm_rows` 在状态复用时跳过对未修改部分的拷贝'
+  - ''
+  - '**为什么需要 `build_norm(B/C/dt)`？**'
+  - '- 部分变体（如 Falcon-Mamba、Jamba）要求对 dt、B、C 三个张量先做 RMS Norm'
+  - '- 通过 `ssm_dt_b_c_rms` 标志或显式的 `ssm_dt_norm/ssm_b_norm/ssm_c_norm` 是否存在来决定是否归一化'
+  - '- 这种设计让同一基类能兼容多种 SSM 变体而无需写多个子类'
+- codes:
+  - file: src/models/mamba.cpp
+    line: 1-66
+    method_or_func: llm_build_mamba.llm_build_mamba()
+  - file: src/models/mamba.cpp
+    line: 1-66
+    method_or_func: __main__
+  name: Mamba 与 Mamba2 模型 —— 纯 SSM 的"独行者"
+  'no': 2
+  points:
+  - '**`llm_build_mamba` 的极简结构：循环层的"标准化样板"**'
+  - '- 与 Transformer 最大的不同：循环层没有 QKV、RoPE 和 Attention 计算'
+  - '- 每一层调用一次 `build_mamba_layer` 或 `build_mamba2_layer`，由 `model.arch` 判断属于哪种 SSM'
+  - '- 通过 `rs_inp = build_rs_inp()` 获取循环输入上下文，再交给基类的 layer 构建器'
+  - ''
+  - '**`MAMBA` vs `MAMBA2` 的分发逻辑**'
+  - '- 当 `model.arch == LLM_ARCH_MAMBA2` 时调用 `build_mamba2_layer`（基类的 Mamba2 实现）'
+  - '- 否则调用 `build_mamba_layer`（基类的 Mamba1 实现）'
+  - '- 这是「架构判断 + 基类多态」组合的典型范例：基类提供两种 SSM 实现，子类按需选择'
+  - ''
+  - '**最后的标准化输出**'
+  - '- `inp_out_ids` 用于「最后 token 采样」时只取出需要的 logits 行，节省计算'
+  - '- 最终 `build_norm` + `build_lora_mm(model.output, ...)` 完成输出层，与标准 Transformer
+    一致'
+  - '- `ggml_build_forward_expand(gf, cur)` 把 logits 标记为图输出节点'
+  - ''
+  - '**为什么 Mamba 也能用 `llm_graph_context`？**'
+  - '- 因为基类 `llm_build_mamba_base` 本身就继承自 `llm_graph_context`'
+  - '- `build_inp_embd`、`build_norm`、`build_lora_mm`、`cb`、`res->t_logits` 等都是基类提供的能力'
+  - '- 这让 SSM 模型可以无缝复用 Transformer 的辅助方法，无需重复实现'
+- codes:
+  - file: src/models/jamba.cpp
+    line: 1-138
+    method_or_func: llm_build_jamba.llm_build_jamba()
+  - file: src/models/jamba.cpp
+    line: 1-138
+    method_or_func: __main__
+  name: Jamba 混合架构 —— Mamba 与 Attention 的"交叉跑道"
+  'no': 3
+  points:
+  - '**`llm_build_jamba` 的核心设计：按层类型切换路径**'
+  - '- 通过 `hparams.n_head_kv(il) == 0` 判断该层是否是 Mamba 层'
+  - '- `n_head_kv == 0` 表示该层没有 KV 头，即为纯 SSM 层'
+  - '- 否则为标准 Self-Attention 层，执行 QKV 投影 + `build_attn`'
+  - ''
+  - '**混合输入的获取：`build_inp_mem_hybrid`**'
+  - '- 与纯 Transformer 不同，Jamba 需要同时管理 KV Cache 和 SSM 状态'
+  - '- `inp_hybrid->get_recr()` 返回 `llm_graph_input_rs*`，用于循环层'
+  - '- `inp_hybrid->get_attn()` 返回 `llm_graph_input_attn_kv*`，用于注意力层'
+  - '- 这两种输入对象分别维护各自的状态机，互不干扰'
+  - ''
+  - '**MoE 与 FFN 的双分支结构**'
+  - '- 通过 `model.layers[il].ffn_gate_inp == nullptr` 判断该层是否使用 MoE'
+  - '- 普通 FFN 使用 `build_ffn`（SwiGLU 激活 + PAR 并行模式）'
+  - '- MoE FFN 使用 `build_moe_ffn`，支持专家路由（`LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX`）'
+  - '- MoE 参数支持 `expert_weights_scale`（专家权重缩放因子）'
+  - ''
+  - '**「无 RoPE」的 Jamba 注意力层**'
+  - '- 注意 `build_attn` 调用时所有 mask/freqs 参数都传 `NULL`'
+  - '- 因为 Jamba 是一种「位置无关」的注意力变体，不使用 RoPE 位置编码'
+  - '- 这一设计简化了计算图构建，但与标准 Transformer 在注意力层并不完全相同'
+  - ''
+  - '**残留连接的双层结构**'
+  - '- 第一层 `cur = ggml_add(ctx0, inpL, cur)`（attn/ssm 的残差）'
+  - '- 第二层 `ffn_inp` 是上一层的输出，再加一次 FFN 输出'
+  - '- 这种「attn 残差 + ffn 残差」结构是 Transformer 类模型的经典设计'
+- codes:
+  - file: src/models/falcon-h1.cpp
+    line: 1-145
+    method_or_func: llm_build_falcon_h1.llm_build_falcon_h1()
+  name: Falcon-H1 混合架构 —— Mamba2 + Attention 的"分支汇流"
+  'no': 4
+  points:
+  - '**`llm_build_falcon_h1` 的核心设计：每层并行 Attention 与 Mamba2**'
+  - '- 与 Jamba 按层切换不同，Falcon-H1 每层同时计算 Attention 和 Mamba2'
+  - '- 两者结果通过 `ggml_add` 加和，再经过 FFN 输出'
+  - '- 这种「并行混合」在保持 SSM 线性复杂度的同时，提供了 Attention 的精确位置建模能力'
+  - ''
+  - '**`build_attn` 与 `build_mamba2_layer` 的独立调用**'
+  - '- `inp = build_inp_mem_hybrid()` 同时为 Attention 和 Mamba 提供输入'
+  - '- Attention 分支：wq/wk/wv → reshape → `ggml_rope_ext` → `build_attn`'
+  - '- 注意 RoPE 配置完整：`n_rot`、`rope_type`、`freq_base`、`freq_scale`、`ext_factor` 等'
+  - '- Mamba2 分支：复用基类的 `build_mamba2_layer`'
+  - ''
+  - '**`kq_scale` 的双重来源**'
+  - '- `hparams.f_attention_scale == 0.0f` 时使用标准的 `1.0f / sqrtf(float(n_embd_head))`'
+  - '- 否则使用 `hparams.f_attention_scale`，允许模型自定义注意力缩放因子'
+  - '- 这种条件判断兼容了「未配置」与「已配置」两种状态'
+  - ''
+  - '**Aggregation 节点：attn_out + ssm_out**'
+  - '- `cur = ggml_add(ctx0, attn_out, ssm_out)`：两个分支的输出汇合'
+  - '- `inpSA = ggml_add(ctx0, cur, inpSA)`：再加上残差'
+  - '- 这与 Gemma3 的「post-norm + pre-FFN」结构类似，但 FFN 前没有再次归一化'
+  - ''
+  - '**FFN 层的 Bias 支持**'
+  - '- `build_ffn` 调用中传入了 `ffn_up_b`、`ffn_gate_b`、`ffn_down_b`'
+  - '- 表明 Falcon-H1 的 FFN 使用了带 bias 的实现，与标准 SwiGLU FFN 略有差异'
+  - '- 最终 `cur = ggml_add(ctx0, cur, inpSA)` 加入残差并作为下一层的输入'
+- codes:
+  - file: src/models/nemotron-h.cpp
+    line: 1-75
+    method_or_func: llm_build_nemotron_h.llm_build_nemotron_h()
+  - file: src/models/nemotron-h.cpp
+    line: 77-120
+    method_or_func: llm_build_nemotron_h.build_attention_layer()
+  - file: src/models/nemotron-h.cpp
+    line: 122-200
+    method_or_func: llm_build_nemotron_h.build_ffn_layer()
+  name: Nemotron-H 混合架构 —— 「按层类型」的三路分支
+  'no': 5
+  points:
+  - '**`llm_build_nemotron_h` 的三分支设计**'
+  - '- 通过 `hparams.is_recurrent(il)` 判断该层是否是循环层（Mamba2）'
+  - '- 否则 `hparams.n_ff(il) == 0` 时为纯 Attention 层'
+  - '- 否则为 FFN 层（包含普通 FFN 和 MoE FFN）'
+  - '- 这种设计允许模型在同一架构中混用三种层类型'
+  - ''
+  - '**`build_attention_layer`：标准 Attention + 可选 bias**'
+  - '- Q/K/V 都通过 `build_lora_mm` 计算，并可选加上 `bq/bk/bv` bias'
+  - '- Q/K/V reshape 成 `(n_embd_head, n_head/n_head_kv, n_tokens)`'
+  - '- 调用 `build_attn` 组合 wo 与 bo：bias 加到最终输出'
+  - '- 与 Falcon-H1 不同，这里使用 `inp->get_attn()` 而不是 RoPE 后的位置输入'
+  - ''
+  - '**`build_ffn_layer` 的 MoE + 共享专家设计**'
+  - '- 普通分支使用 `LLM_FFN_RELU_SQR`（ReLU 平方激活，是 Nemotron 的特色）'
+  - '- MoE 分支额外支持：'
+  - '  - `ffn_latent_down` / `ffn_latent_up`：潜空间压缩与还原'
+  - '  - `ffn_exp_probs_b`：专家概率偏置'
+  - '  - `LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID`：Sigmoid 门控（区别于 Softmax）'
+  - '  - `ffn_shexp`：共享专家分支，独立于 MoE 路由专家'
+  - '- 这种「MoE + 共享专家」是 Nemotron 系列的核心架构创新'
+  - ''
+  - '**残差结构的简洁性**'
+  - '- 只有一层 `cur = ggml_add(ctx0, cur, inpSA)`：在 SSM/Attn/FFN 输出之后'
+  - '- 与 Falcon-H1 不同，没有中间的「attn + ssm」聚合节点'
+  - '- 因为 Nemotron-H 每层只走一条路径（recurrent/attention/ffn）'
+  - ''
+  - '**`GGML_ASSERT(n_embd_head == n_embd_head_k())` 的设计意图**'
+  - '- 在构造函数开头断言，确保 K 与 V 使用相同的 head 维度'
+  - '- 这是模型架构的硬约束，若不满足则在图构建时就失败'
+  - '- 体现了「早失败」的工程哲学'
+- codes:
+  - file: src/models/granite-hybrid.cpp
+    line: 1-90
+    method_or_func: llm_build_granite_hybrid.llm_build_granite_hybrid()
+  - file: src/models/granite-hybrid.cpp
+    line: 1-90
+    method_or_func: __main__
+  - file: src/models/granite-hybrid.cpp
+    line: 92-155
+    method_or_func: llm_build_granite_hybrid.build_attention_layer()
+  - file: src/models/granite-hybrid.cpp
+    line: 157-237
+    method_or_func: llm_build_granite_hybrid.build_layer_ffn()
+  name: Granite-Hybrid 混合架构 —— IBM 的"Mamba2 + 标准注意力 + MoE"
+  'no': 6
+  points:
+  - '**`llm_build_granite_hybrid` 的混合模式**'
+  - '- 与 Nemotron-H 类似的二分结构：`is_recurrent(il)` 判断是 Mamba2 还是 Attention'
+  - '- 但与 Nemotron-H 不同，Granite-Hybrid 的 MoE 在 FFN 中处理，不与 SSM 层耦合'
+  - '- 这种「线性层（SSM/Attn） + FFN（含 MoE）」的二段设计更接近标准 Transformer 风格'
+  - ''
+  - '**`rope_finetuned` 标志：按需启用 RoPE**'
+  - '- `if (hparams.rope_finetuned)` 才构建 `inp_pos`'
+  - '- 通过 `model.get_rope_factors(cparams, il)` 取得每层的 rope 缩放因子'
+  - '- 这种「条件 RoPE」设计适配了 Granite 系列不同版本的多种位置编码策略'
+  - ''
+  - '**`build_attention_layer` 的 RoPE 与 bias 处理**'
+  - '- 只有 `use_rope = hparams.rope_finetuned` 为真时才应用 RoPE'
+  - '- `ggml_rope_ext` 传入 `rope_factors`，支持 YaRN 等缩放策略'
+  - '- Q/K/V 的 bias 可选添加，最后输出层 `wo` + `bo` 可选加 bias'
+  - ''
+  - '**`build_layer_ffn`：Granite 风格的残差缩放与 MoE 共享专家**'
+  - '- `hparams.f_residual_scale != 0` 时对残差进行缩放（Granite 特色）'
+  - '- 普通 FFN：SwiGLU 激活 + PAR 并行模式 + 可选 bias'
+  - '- MoE FFN：使用 `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX` 门控'
+  - '- MoE + 共享专家（`ffn_shexp`）：当 `hparams.n_ff_shexp > 0` 时启用'
+  - '- 输出前再次 `ggml_scale(cur, hparams.f_residual_scale)` 缩放残差'
+  - ''
+  - '**`f_logit_scale`：输出 logits 的最终缩放**'
+  - '- 在 `build_lora_mm(model.output, cur)` 之后检查 `hparams.f_logit_scale`'
+  - '- 若配置了缩放因子，则 `ggml_scale(ctx0, cur, 1.0f / hparams.f_logit_scale)`'
+  - '- 这是 Granite 架构特有的 logits 调整策略，用于控制输出分布的方差'
+  - ''
+  - '**残差结构：attention/SSM 残差 + FFN 残差**'
+  - '- `inpSA = inpL` 保存进入层时的输入'
+  - '- `build_layer_ffn` 内部 `ggml_add(ctx0, cur, inpSA)` 完成 FFN 残差'
+  - '- 与标准 Transformer 完全一致的两段残差结构'
+- codes:
+  - file: src/models/plamo2.cpp
+    line: 1-100
+    method_or_func: llm_build_plamo2.llm_build_plamo2()
+  - file: src/models/plamo2.cpp
+    line: 102-160
+    method_or_func: llm_build_plamo2.build_plamo2_attn_layer()
+  - file: src/models/plamo2.cpp
+    line: 162-310
+    method_or_func: llm_build_plamo2.build_plamo2_mamba_layer()
+  name: PLaMo2 混合架构 —— 日本模型的"Mamba + 自定义注意力"
+  'no': 7
+  points:
+  - '**`llm_build_plamo2` 的独特结构：双残差 + 后归一化**'
+  - '- 与 Falcon-H1/Jamba 不同，PLaMo2 实现了「pre-mixer-norm + post-mixer-norm」'
+  - '- 每个 block 由两个子层组成：mixer（SSM 或 Attn）和 FFN，每个子层都前后归一化'
+  - '- 这种结构类似于 LLaMA 的 RMSNorm 设计，但 mixer 也有独立的 post_norm'
+  - ''
+  - '**`is_mamba_layer = hparams.is_recurrent(il)` 的层类型判断**'
+  - '- 通过超参数判断该层是 Mamba 还是 Attention'
+  - '- 调用 `build_plamo2_mamba_layer` 或 `build_plamo2_attn_layer`'
+  - '- 两种层共享 `residual` 残差基线，但内部结构差异巨大'
+  - ''
+  - '**`build_plamo2_attn_layer`：组合 QKV + Q/K 归一化**'
+  - '- 使用单一 `wqkv` 张量，通过 `ggml_view_3d` 拆分为 Q/K/V'
+  - '- 与多数 Transformer 不同，PLaMo2 对 Q 和 K 做了独立的 RMS Norm'
+  - '- Norm 后才应用 RoPE：`ggml_rope_ext`'
+  - '- 这种「norm-then-rope」是某些模型（如 StableLM 系）的特殊设计'
+  - ''
+  - '**`build_plamo2_mamba_layer`：定制化 Mamba2 变体**'
+  - '- 与基类 `build_mamba2_layer` 不同，PLaMo2 的实现有自己的特点：'
+  - '  - `zx` 通过 `ggml_permute + ggml_cont_4d` 重新布局为 `(head_dim*2, n_heads, n_seq_tokens,
+    n_seqs)`'
+  - '  - `dt_dim = std::max(64, int(hparams.n_embd / 16))`：动态 dt 维度'
+  - '  - 在 SSM 前对 B/C/dt 都做 RMS Norm'
+  - '- `get_ssm_rows` lambda 复用基类的 SSM 扫描逻辑'
+  - '- 状态保存：`ggml_view_1d` 精确定位状态切片'
+  - ''
+  - '**`ggml_swiglu_split` 与「y + D*x」的门控融合**'
+  - '- `y = ggml_add(ctx0, y, ggml_mul(ctx0, x, D))`：跳跃连接加 D 参数'
+  - '- `D = ggml_reshape_2d(ctx0, model.layers[il].ssm_d, 1, n_heads)`：D 广播成多头'
+  - '- 最后 `ggml_swiglu_split(ctx0, ggml_cont(ctx0, z), y)`：z 与 y 门控融合'
+  - ''
+  - '**FFN 子层：SwiGLU + SEQ 串行**'
+  - '- `build_ffn` 使用 `LLM_FFN_SWIGLU` 激活 + `LLM_FFN_SEQ` 串行布局'
+  - '- 与并行 PAR 模式不同，SEQ 模式先 gate 再 up 再 down'
+  - '- 这是 PLaMo2 区别于其他模型的 FFN 设计选择'
+- codes:
+  - file: src/models/plamo3.cpp
+    line: 1-120
+    method_or_func: llm_build_plamo3<iswa>.llm_build_plamo3()
+  - file: src/models/plamo3.cpp
+    line: 1-120
+    method_or_func: __main__
+  name: PLaMo3 模板化架构 —— 显式实例化的"ISWA 复用术"
+  'no': 8
+  points:
+  - '**`llm_build_plamo3<iswa>` 的模板化设计**'
+  - '- 通过 `template <bool iswa>` 模板参数，让同一份代码既能生成标准版也能生成 ISWA 版'
+  - '- 文件末尾 `template struct llm_build_plamo3<false>;` 和 `template struct llm_build_plamo3<true>;`
+    显式实例化'
+  - '- 这种方式让 C++ 编译器自动为不同模板参数生成两份独立的类，零运行时开销'
+  - ''
+  - '**`std::conditional_t<iswa, llm_graph_input_attn_kv_iswa, llm_graph_input_attn_kv>`
+    的类型分支**'
+  - '- `inp_attn_type` 根据模板参数决定实际类型'
+  - '- 这允许在 KV Cache 和 ISWA KV Cache 之间无缝切换'
+  - '- `if constexpr (iswa)` 在编译期决定调用 `build_attn_inp_kv_iswa()` 或 `build_attn_inp_kv()`'
+  - ''
+  - '**每层 RoPE 参数的差异化**'
+  - '- `freq_base_l` 和 `freq_scale_l` 根据模板参数决定来源'
+  - '- ISWA 模式下使用 `model.get_rope_freq_base(cparams, il)`（每层可配置）'
+  - '- 标准模式使用全局的 `freq_base` 和 `freq_scale`'
+  - '- 这种设计允许 ISWA 模型在不同层使用不同的 RoPE 频率'
+  - ''
+  - '**`Qcur` 与 `Kcur` 的预归一化 + RoPE**'
+  - '- 与 PLaMo2 类似，PLaMo3 也在 RoPE 之前对 Q/K 做 RMS Norm'
+  - '- `attn_q_norm` 与 `attn_k_norm` 是每层独立的归一化权重'
+  - '- 这种「Q/K Norm → RoPE」是 StableLM 之后流行的现代 Transformer 设计'
+  - ''
+  - '**双残差 + 后归一化的标准化结构**'
+  - '- `attn_residual = ggml_add(ctx0, cur, residual)`：注意力残差'
+  - '- `ffn_residual = ggml_add(ctx0, cur, residual)`：FFN 残差'
+  - '- 每个子层前后都有独立的 RMS Norm（attn_norm/attn_post_norm/ffn_norm/ffn_post_norm）'
+  - '- 这是 PLaMo 系列的标志性架构，PLaMo3 延续了这一设计'
+  - ''
+  - '**为什么显式模板实例化？**'
+  - '- 与函数模板不同，类模板需要在使用前显式实例化'
+  - '- 文件末尾的两行 `template struct ...` 让编译器生成对应类型的二进制代码'
+  - '- 这种方式避免了隐式实例化在不同编译单元间的链接问题'
+  - '- 是大型 C++ 项目处理模板的标准实践'

@@ -1,0 +1,684 @@
+code_map:
+- src/llama-impl.h
+- ├── LLAMA_ATTRIBUTE_FORMAT 宏
+- │   ├── __GNUC__ 平台分支（gnu_printf vs printf）
+- │   └── 编译期 printf 格式字符串校验
+- ├── LLAMA_LOG_* 宏家族
+- │   ├── LLAMA_LOG       (NONE 级别)
+- │   ├── LLAMA_LOG_INFO  (INFO 级别)
+- │   ├── LLAMA_LOG_WARN  (WARN 级别)
+- │   ├── LLAMA_LOG_ERROR (ERROR 级别)
+- │   ├── LLAMA_LOG_DEBUG (DEBUG 级别)
+- │   └── LLAMA_LOG_CONT  (CONT 续行级别)
+- '├── no_init<T> 模板       # 跳过值初始化的包装'
+- '├── time_meas 结构体      # RAII 计时器'
+- '│   ├── time_meas()      # 构造：disable 时 t_start_us=-1'
+- '│   └── ~time_meas()     # 析构：累加差值到 t_acc'
+- '├── buffer_view<T> 结构体 # 缓冲区视图（含 has_data）'
+- '├── replace_all()         # 字符串就地替换'
+- '├── format()              # printf 风格格式化（两次 vsnprintf）'
+- '├── llama_format_tensor_shape() # 张量形状格式化（两个重载）'
+- '├── gguf_kv_to_str()      # GGUF KV 转字符串'
+- '└── LLAMA_TENSOR_NAME_FATTN / FGDN_AR / FGDN_CH  # 特殊张量名常量'
+- src/llama-impl.cpp
+- '├── __main__                          # 全局代码：声明 llama_logger_state 与 g_logger_state'
+- '├── llama_logger_state 结构体         # 日志回调保存'
+- ├── g_logger_state 全局实例
+- '├── time_meas::time_meas()            # 构造：记录起始时间（disable 时 t_start_us=-1）'
+- '├── time_meas::~time_meas()           # 析构：累加差值到 t_acc'
+- '├── llama_log_get()                   # 获取当前回调'
+- '├── llama_log_set()                   # 注册回调（默认回退）'
+- '├── llama_log_internal_v()            # 变长参数版（栈缓冲 128 字节 + 堆扩容）'
+- '├── llama_log_internal()              # 公开入口（va_start/end 包装）'
+- '├── llama_log_callback_default()      # 默认实现：stderr 输出 + fflush'
+- '├── replace_all()                     # 字符串替换（空 search 边界处理）'
+- '├── format()                          # 两次 vsnprintf（先测长度再填充）'
+- '├── llama_format_tensor_shape()       # 向量重载'
+- '├── llama_format_tensor_shape()       # ggml_tensor* 重载（遍历 GGML_MAX_DIMS）'
+- '├── gguf_data_to_str()                # 基础类型分支（UINT8/INT8/FLOAT32/BOOL 等）'
+- '└── gguf_kv_to_str()                  # 顶层入口（STRING/ARRAY/基础类型）'
+- src/llama-io.h
+- '├── class llama_io_write_i            # 写抽象基类'
+- '│   ├── llama_io_write_i()            # 默认构造'
+- '│   ├── ~llama_io_write_i()           # 虚析构'
+- '│   ├── write()                       # 写原始字节（纯虚）'
+- '│   ├── write_tensor()                # 写张量数据（offset+size，纯虚）'
+- '│   ├── n_bytes()                     # 已写入字节数（纯虚）'
+- '│   └── write_string()                # 便捷实现：4 字节长度 + 字节内容'
+- '└── class llama_io_read_i             # 读抽象基类'
+- '    ├── llama_io_read_i()             # 默认构造'
+- '    ├── ~llama_io_read_i()            # 虚析构'
+- '    ├── read()                        # 读取 size 字节指针（纯虚）'
+- '    ├── read_to()                     # 拷贝到 dst（纯虚）'
+- '    ├── n_bytes()                     # 已读取字节数（纯虚）'
+- '    └── read_string()                 # 便捷实现：反向操作'
+- src/llama-io.cpp
+- '├── llama_io_write_i::write_string()  # uint32_t 长度 + 字节写入'
+- '└── llama_io_read_i::read_string()    # 读取 uint32_t + assign 字节'
+- src/llama.cpp
+- '├── llama_supports_mmap()             # 返回 llama_mmap::SUPPORTED'
+- '├── llama_supports_mlock()            # 返回 llama_mlock::SUPPORTED'
+- '├── llama_supports_gpu_offload()      # 检查 GPU/IGPU/RPC 后端'
+- '├── llama_supports_rpc()              # 按名称查找 RPC 后端'
+- '├── llama_backend_init()              # ggml_time_init + 初始化 f16 表'
+- '├── llama_numa_init()                 # 动态获取 NUMA 初始化函数'
+- '├── llama_backend_free()              # ggml_quantize_free'
+- '├── llama_time_us()                   # 包装 ggml_time_us'
+- '├── llama_model_load()                # 内部：time_meas tm(model.t_load_us) 自动计时'
+- '├── llama_model_load_from_file_impl() # 模型加载主入口（设备选择 + 进度回调）'
+- '├── llama_model_init_from_user()      # 从已有 GGUF 元数据初始化模型'
+- '├── llama_load_model_from_file()      # 旧接口，包装 llama_model_load_from_file'
+- '├── llama_model_load_from_file()      # 从文件路径加载'
+- '├── llama_model_load_from_splits()    # 从多分片 GGUF 加载'
+- '├── llama_model_load_from_file_ptr()  # 从 FILE* 句柄加载'
+- '├── llama_model_save_to_file()        # 保存模型到 GGUF 文件'
+- '├── llama_flash_attn_type_name()      # flash attention 枚举转字符串'
+- '├── llama_max_devices()               # 最大设备数（16）'
+- '├── llama_max_tensor_buft_overrides() # 最大张量 buffer type 覆盖数（4096）'
+- '├── llama_sampler_chain_default_params() # 采样链默认参数'
+- '├── llama_chat_apply_template()       # 应用聊天模板到消息列表'
+- '├── llama_split_path()                # 生成分片路径 (%s-%05d-of-%05d.gguf)'
+- '├── llama_split_prefix()              # 提取分片前缀'
+- '├── llama_params_fit()                # 自动参数拟合公共入口'
+- '├── llama_params_fit_impl()           # 多设备层分配详细算法'
+- '├── llama_get_device_memory_data()    # 计算每设备内存使用数据'
+- '├── llama_device_memory_data 结构体   # 设备内存 + 模型/上下文/计算分解'
+- '├── layer_fraction_t 枚举             # 层分数类型（ATTN/UP/GATE/MOE）'
+- '├── llama_params_fit_exception         # 异常类'
+- '└── llama_print_system_info()         # 静态 std::string s 跨调用复用'
+- '    ├── ggml_backend_reg_count() 循环'
+- '    ├── ggml_backend_reg_get_proc_address 动态获取 get_features'
+- '    └── 拼接 reg_name : feature.name = feature.value | '
+exercises:
+- contents:
+  - 阅读 `src/llama-impl.h` 第 18-31 行与 `src/llama-impl.cpp` 第 30-73 行，理解日志系统：
+  - 1. `LLAMA_LOG_INFO` 宏的展开过程
+  - 2. `llama_log_internal_v` 中栈缓冲 128 字节的作用
+  - 3. `g_logger_state` 全局变量的角色
+  - 4. `llama_log_callback_default` 的默认行为
+  - 回答问题：
+  - '- 为什么日志宏使用 `__attribute__((format))` 而不是手动校验？'
+  - '- 当格式化后的消息长度超过 128 字节时，代码如何处理？这种设计的优势是什么？'
+  - '- `llama_log_set` 第二个参数 `user_data` 的作用是什么？'
+  - '- `llama_log_get` 与 `llama_log_set` 的对称性如何体现？'
+  'no': 1
+  title: 阅读 llama.cpp 日志系统的实现
+- contents:
+  - 阅读 `src/llama-impl.h` 第 49-58 行与 `src/llama-impl.cpp` 第 21-28 行，理解 time_meas：
+  - '1. 构造函数中的 `t_start_us(disable ? -1 : ggml_time_us())` 三元表达式'
+  - 2. 析构函数中 `if (t_start_us >= 0)` 的条件判断
+  - 3. 在 `src/llama.cpp` 中 `llama_model_load` 函数中的 time_meas 应用
+  - 回答问题：
+  - '- 为什么 `disable=true` 时要把 `t_start_us` 设为 -1 而不是 0？'
+  - '- 如果在 time_meas 作用域内发生异常，析构函数是否仍会被调用？'
+  - '- 在 `llama_model_load` 中，`time_meas tm(model.t_load_us)` 这一行的语义是什么？它会把耗时记录到哪个成员变量？'
+  - '- 为什么需要 `t_start_us` 作为成员变量保存？'
+  'no': 2
+  title: 分析 time_meas 的 RAII 计时模式
+- contents:
+  - 阅读 `src/llama-impl.cpp` 第 124-175 行，理解 GGUF 元数据转换：
+  - 1. `gguf_data_to_str` 中的 switch-case 分发
+  - 2. `gguf_kv_to_str` 对 STRING / ARRAY / 默认类型的三种处理
+  - 3. STRING 数组元素中 `replace_all(val, "", "")` 与 `replace_all(val, """, """)` 的双重转义
+  - 4. 嵌套 ARRAY 输出 "???" 占位的考量
+  - 回答问题：
+  - '- 为什么 STRING 元素需要先转义反斜杠 `""` 再转义引号 `"""`？两者顺序能否颠倒？'
+  - '- `gguf_get_val_str` 与 `gguf_get_arr_data` 在 STRING 类型上的返回差异是什么？'
+  - '- 如果未来要支持 ARRAY of ARRAY，代码架构应如何改造（递归 vs 扁平化）？'
+  'no': 3
+  title: 理解 GGUF 元数据的字符串化
+- contents:
+  - 阅读 `src/llama-io.h` 第 10-34 行与 `src/llama-io.cpp` 第 1-14 行，理解 llama_io 抽象：
+  - 1. `llama_io_write_i` 三个纯虚函数 `write` / `write_tensor` / `n_bytes` 的语义
+  - 2. `write_string` 的两步协议：先写 `uint32_t str_size` 再写字节
+  - 3. `write_tensor` 相比 `write` 多出 `offset + size` 参数的设计意图
+  - 4. `llama_io_read_i` 与 `llama_io_write_i` 的对称关系
+  - 5. `read` 与 `read_to` 的语义差异（返回指针 vs 拷贝到 dst）
+  - 回答问题：
+  - '- 为什么 `write_tensor` 需要 `offset` 与 `size` 参数，而 `write` 不需要？'
+  - '- `n_bytes()` 返回「已写入/已读取字节数」对上层调用者有什么价值？'
+  - '- 通过这种抽象，理论上可以支持哪些不同的 I/O 后端（请列出至少 3 种）？'
+  - '- `read` 与 `read_to` 各适用于什么场景？'
+  'no': 4
+  title: I/O 抽象接口的设计分析
+- contents:
+  - 阅读 `src/llama.cpp` 第 1054-1066 行的能力查询函数与第 1163-1183 行的 `llama_print_system_info`：
+  - 1. `llama_supports_gpu_offload` 综合检查三类设备的逻辑
+  - 2. `llama_print_system_info` 中 `static std::string s` 的跨调用复用
+  - 3. `ggml_backend_reg_get_proc_address` 动态获取 `ggml_backend_get_features` 的作用
+  - 回答问题：
+  - '- 为什么 `llama_supports_gpu_offload` 要把 RPC 也算作 GPU 卸载支持？'
+  - '- `llama_print_system_info` 中为什么用 `s.clear()` 而不是每次新声明？'
+  - '- 如果某个后端没有导出 `ggml_backend_get_features` 函数指针，代码会发生什么？'
+  'no': 5
+  title: 后端能力探测的系统阅读
+- contents:
+  - 阅读 `src/llama.cpp` 中 `llama_model_load_from_file_impl`（约 1250 行起）的设备选择逻辑：
+  - 1. 默认进度回调的实现（progress_callback 的 lambda 闭包）
+  - 2. RPC/GPU/IGPU 三类设备的分类与排序
+  - 3. 同 device_id 的 GPU 去重逻辑
+  - 4. 单 GPU 模式 (LLAMA_SPLIT_MODE_NONE) 下 `main_gpu` 的处理
+  - 5. 各加载入口（file / splits / file_ptr / from_user）的差异
+  - 回答问题：
+  - '- 为什么 RPC 服务器要放在设备列表的最前面？'
+  - '- 集显 (IGPU) 在什么情况下会被加入设备列表？'
+  - '- `llama_model_init_from_user` 为什么强制关闭 `use_mmap` 与 `use_extra_bufts`？'
+  - '- 比较 `llama_model_load_from_file` 与 `llama_model_load_from_splits` 在 splits 处理上的区别。'
+  'no': 6
+  title: 设备选择与多入口模型加载
+- contents:
+  - 阅读 `src/llama.cpp` 中 `llama_params_fit_impl` 的完整实现（约 180-935 行）：
+  - 1. `layer_fraction_t` 枚举与四种溢出策略
+  - 2. `get_overflow_pattern` 静态模式生成
+  - 3. `set_ngl_tensor_split_tbo` 工具函数如何同时设置 n_gpu_layers / tensor_split / overrides
+  - 4. 假位法（false position）迭代过程
+  - 5. 步骤 4：MoE 场景下的反向稠密层→满层转换
+  - 回答问题：
+  - '- 为什么第一部分层可以使用 ATTN/UP/GATE 三种溢出策略，而后续层只允许 MOE？'
+  - '- 当模型是 MoE 时为什么要把所有 MoE 张量先移到系统内存再计算？'
+  - '- `global_surplus_cpu_moe` 这个全局剩余量代表什么？它在步骤 3 与步骤 4 之间起什么连接作用？'
+  - '- `ngl_per_device_high[id].overflow_type = LAYER_FRACTION_MOE` 为什么不能用于第一个部分层？'
+  'no': 7
+  title: llama_params_fit 自动参数拟合算法
+learning_targets:
+- 理解 llama.cpp 日志系统的实现：宏家族、回调注册、可变参数处理与 format 属性校验
+- 掌握 time_meas 作用域计时器的 RAII 设计思路与应用场景
+- 了解字符串处理工具集（replace_all、format、llama_format_tensor_shape）的零分配优化策略
+- 理解 GGUF 元数据到可读字符串的转换机制（gguf_data_to_str、gguf_kv_to_str）
+- 掌握 llama_io_write_i / llama_io_read_i 抽象 I/O 接口的设计哲学与字符串序列化协议
+- 了解后端能力探测（llama_supports_mmap/mlock/gpu_offload/rpc）与系统信息汇总（llama_print_system_info）的工作机制
+- 掌握 llama_params_fit 自动参数拟合的整体流程与 llama_params_fit_impl 的多设备层分配策略
+- 理解 llama_model_load_from_file_impl 的设备选择逻辑（RPC/GPU/IGPU 去重与排序）
+- 了解 chat 模板应用接口 llama_chat_apply_template 与模型路径分片工具 llama_split_path / llama_split_prefix
+  的实现
+life_analogy:
+- 想象 llama.cpp 的内部基础设施是一座**精密工厂的「后勤保障部」**：
+- '- **日志系统** = 工厂的播音室与传声筒'
+- '  - LLAMA_LOG_* 宏 = 各色话筒（普通播报、警告、事故警报、调试私密频道、续行补充）'
+- '  - llama_log_set = 客户可指定接收频道（默认走 stderr 大喇叭）'
+- '  - va_list 栈缓冲 128 字节 + 堆扩容 = 先用小型传声筒，长消息自动切换大功率喇叭'
+- '- **作用域计时器** = 工厂的自动秒表'
+- '  - 进入车间（构造）自动开始计时，离开车间（析构）自动累加到车间台账 t_acc'
+- '  - disable=true = 关闭秒表（某些车间不需要计工时）'
+- '- **字符串与格式化工具** = 工厂的「万能翻译机」'
+- '  - replace_all = 批量替换铭牌上的旧型号为新型号'
+- '  - format = 按指定模板生成报告（先测量纸张大小再裁切，避免浪费）'
+- '  - llama_format_tensor_shape = 把张量尺寸 `[4096, 4096, 1, 1]` 翻译成固定宽度的对账单'
+- '- **GGUF 元数据解码** = 工厂的「铭牌翻译官」'
+- '  - 把 GGUF 文件里的二进制键值（UINT8/INT32/FLOAT/BOOL/STRING/ARRAY）翻成人话'
+- '  - STRING 数组需要给引号与反斜杠加转义符（防止误读）'
+- '  - 嵌套数组（ARRAY of ARRAY）暂时输出 ??? 占位（防止递归死循环）'
+- '- **I/O 抽象接口** = 工厂的「万能插座」'
+- '  - llama_io_write_i / llama_io_read_i = 标准化电源接口'
+- '  - write_string 先写 4 字节长度再写内容 = 快递包裹的标准格式（先说多重，再装东西）'
+- '  - buffer/file/dummy 等不同后端都能插上同一个插座（多态）'
+- '- **设备选择与模型加载** = 工厂的「设备调度室」'
+- '  - llama_model_load_from_file_impl = 调度室主任，先挑出 RPC/GPU/IGPU 三类设备'
+- '  - 同 device_id 的 GPU 去重 = 同一厂牌不能重复登记（避免资源争抢）'
+- '  - RPC 放在列表最前 = 远程设备优先排队（减少网络传输）'
+- '  - 单 GPU 模式 = 厂长指定主 GPU（main_gpu），其他设备下放'
+- '- **自动参数拟合** = 工厂的「智能裁缝」'
+- '  - llama_params_fit = 自动量体裁衣，根据显存大小裁剪模型的层数'
+- '  - layer_fraction_t = 不同裁剪策略（只裁 FFN、保留 ATTN、保留 GATE/UP、把 MoE 溢出到系统内存）'
+- '  - 假位法（false position）= 用二分思想在「刚好放得下」和「明显放不下」之间找最佳裁剪点'
+- '  - llama_params_fit_exception = 客户要求太离谱时，裁缝礼貌拒绝并解释原因'
+- '- **系统信息汇总** = 工厂的「体检报告打印机」'
+- '  - llama_print_system_info = 体检仪，按厂家（Metal/CUDA/Vulkan）扫描并打印能力清单'
+- '  - llama_supports_mmap/mlock/gpu_offload/rpc = 给上层 CLI/Server 的「我能干啥」能力声明'
+- '- **模型路径与分片** = 工厂的「快递分拣中心」'
+- '  - llama_split_path = 给超大型模型生成编号快递单（model-00001-of-00010.gguf）'
+- '  - llama_split_prefix = 扫描快递单据，提取发件人信息（路径前缀）'
+- 就像后勤保障部不直接生产产品，但缺了它整座工厂就无法有序运转，这些基础设施就是 llama.cpp 的「无名英雄」——它们默默记录每一步操作、统计每一毫秒、翻译每一段元数据、接通每一根数据线，并智能调度每台设备、合理裁剪每件产品。
+'no': 23
+summary:
+- concept: LLAMA_LOG_* 宏家族
+  desc: 五个级别的日志宏统一调用 llama_log_internal，屏蔽 va_args
+- concept: LLAMA_ATTRIBUTE_FORMAT
+  desc: 编译期校验 printf 格式字符串，避免运行时崩溃
+- concept: llama_logger_state
+  desc: 全局日志状态保存结构（回调指针 + user_data）
+- concept: g_logger_state
+  desc: 静态全局实例，唯一存储用户回调
+- concept: llama_log_set / g_logger_state
+  desc: 全局日志回调注册，支持用户替换默认 stderr 输出
+- concept: llama_log_get
+  desc: 查询当前全局日志回调及用户数据
+- concept: llama_log_internal_v
+  desc: 变长参数处理：栈缓冲 128 字节 + 堆自动扩容，长消息不丢失
+- concept: llama_log_internal
+  desc: 公开入口，va_start/end 包装并调用 llama_log_internal_v
+- concept: llama_log_callback_default
+  desc: 默认日志回写：将内容写入 stderr 并立即 fflush
+- concept: time_meas RAII 计时器
+  desc: 构造记录 ggml_time_us()，析构累加差值到 t_acc，disable 模式可关闭
+- concept: time_meas::time_meas
+  desc: 构造函数，初始化 t_start_us 为 -1（disable）或 ggml_time_us()
+- concept: time_meas::~time_meas
+  desc: 析构函数，条件累加差值到 t_acc
+- concept: no_init<T>
+  desc: 跳过值初始化的包装模板，用于性能敏感路径
+- concept: no_init<T>::no_init
+  desc: 默认构造，包装裸字段
+- concept: buffer_view<T>
+  desc: 持有指针+长度的轻量视图，含 has_data 判空
+- concept: buffer_view<T>::has_data
+  desc: 判空辅助：data 非空且 size>0
+- concept: replace_all
+  desc: std::string + builder 模式实现就地字符串替换，空 search 边界保护
+- concept: format
+  desc: 两次 vsnprintf 精确无浪费格式化，先测长度再分配填充
+- concept: llama_format_tensor_shape
+  desc: 两种重载：vector<int64_t> 与 ggml_tensor*，输出 `%6d` 对齐
+- concept: gguf_data_to_str
+  desc: switch-case 分发 GGUF 基本类型到 std::to_string 或 "true"/"false"
+- concept: gguf_kv_to_str
+  desc: 顶层入口：STRING 直读、ARRAY 遍历元素、STRING 元素加引号与反斜杠转义
+- concept: llama_io_write_i
+  desc: 抽象基类，三个纯虚函数 + write_string 默认实现
+- concept: llama_io_write_i::llama_io_write_i
+  desc: 默认构造
+- concept: llama_io_write_i::~llama_io_write_i
+  desc: 虚析构保证子类正确释放
+- concept: llama_io_write_i::write
+  desc: 纯虚函数，写入 size 字节原始数据
+- concept: llama_io_write_i::write_tensor
+  desc: 纯虚函数，写张量（offset + size 支持部分写入）
+- concept: llama_io_write_i::n_bytes
+  desc: 纯虚函数，返回已写入字节数
+- concept: llama_io_write_i::write_string
+  desc: 便捷实现：先写 uint32_t 长度，再写字节内容
+- concept: llama_io_read_i
+  desc: 抽象基类，三个纯虚函数 + read_string 默认实现
+- concept: llama_io_read_i::llama_io_read_i
+  desc: 默认构造
+- concept: llama_io_read_i::~llama_io_read_i
+  desc: 虚析构保证子类正确释放
+- concept: llama_io_read_i::read
+  desc: 纯虚函数，返回 size 字节指针
+- concept: llama_io_read_i::read_to
+  desc: 纯虚函数，拷贝 size 字节到 dst
+- concept: llama_io_read_i::n_bytes
+  desc: 纯虚函数，返回已读取字节数
+- concept: llama_io_read_i::read_string
+  desc: 便捷实现：读取 uint32_t + assign 字节
+- concept: write_string / read_string 协议
+  desc: 先 4 字节 uint32_t 长度，再原始字节；read 反向 assign
+- concept: write_tensor 特殊性
+  desc: 相比 write 多 offset + size 参数，支持 GGUF 张量数据按需写入
+- concept: llama_supports_* 系列
+  desc: 能力声明接口：mmap/mlock/gpu_offload/rpc，返回布尔
+- concept: llama_supports_gpu_offload
+  desc: 综合 GPU + IGPU + RPC 三类设备的可用性判定
+- concept: llama_print_system_info
+  desc: 静态 std::string 跨调用复用，动态获取后端 get_features 拼接报告
+- concept: ggml_backend_reg_get_proc_address
+  desc: 运行时动态加载后端函数指针，避免硬链接依赖
+- concept: __main__ (llama-impl.cpp)
+  desc: 全局代码：声明 llama_logger_state 结构体和 g_logger_state 实例
+- concept: llama_model_load
+  desc: 内部包装 time_meas，自动累加加载耗时到 model.t_load_us
+- concept: llama_model_load_from_file_impl
+  desc: 模型加载总入口：默认进度回调 + RPC/GPU/IGPU 设备分类与去重 + 单 GPU 模式过滤
+- concept: llama_model_init_from_user
+  desc: 从已有 GGUF 元数据初始化模型，禁用 mmap 与 extra_bufts
+- concept: llama_load_model_from_file
+  desc: 旧版兼容接口，包装 llama_model_load_from_file
+- concept: llama_model_load_from_splits
+  desc: 从多分片路径列表加载 GGUF 模型
+- concept: llama_model_load_from_file_ptr
+  desc: 从已打开的 FILE* 句柄加载模型（常用于测试/嵌入式）
+- concept: llama_model_save_to_file
+  desc: 通过 llama_model_saver 把模型写回 GGUF 文件
+- concept: llama_flash_attn_type_name
+  desc: 把 flash attention 枚举映射为字符串（auto/disabled/enabled）
+- concept: llama_max_devices
+  desc: 硬编码最大设备数 16
+- concept: llama_max_tensor_buft_overrides
+  desc: 硬编码最大张量 buffer type 覆盖数 4096
+- concept: llama_sampler_chain_default_params
+  desc: 采样链默认参数：no_perf=true（不收集性能统计）
+- concept: llama_chat_apply_template
+  desc: C 接口：检测 chat 模板并把消息列表渲染成字符串
+- concept: llama_split_path / llama_split_prefix
+  desc: 生成分片路径（%s-%05d-of-%05d.gguf）与提取前缀
+- concept: llama_params_fit
+  desc: 根据显存自动调整 n_gpu_layers / tensor_split / tensor_buft_overrides 的公共入口
+- concept: llama_params_fit_impl
+  desc: 三步走：检查现状 → 缩小上下文 → 用假位法从后往前分配层
+- concept: llama_get_device_memory_data
+  desc: 临时加载模型并枚举各设备的 model/context/compute 内存细分
+- concept: llama_device_memory_data
+  desc: 设备内存 + 模型/上下文/计算分解结构体
+- concept: layer_fraction_t
+  desc: 层分数枚举：ATTN/UP/GATE/MOE，决定溢出到系统内存的张量子集
+- concept: llama_params_fit_exception
+  desc: 参数拟合异常类：用户已设置参数或 buffer 不够时抛出
+units:
+- codes:
+  - file: src/llama-impl.h
+    line: 26-31
+    method_or_func: LLAMA_LOG_INFO()
+  - file: src/llama-impl.h
+    line: 9-15
+    method_or_func: LLAMA_ATTRIBUTE_FORMAT
+  - file: src/llama-impl.h
+    line: '22'
+    method_or_func: llama_log_internal()
+  - file: src/llama-impl.h
+    line: '23'
+    method_or_func: llama_log_callback_default()
+  - file: src/llama-impl.h
+    line: 38-41
+    method_or_func: no_init<T>
+  - file: src/llama-impl.h
+    line: 38-41
+    method_or_func: no_init<T>.no_init()
+  - file: src/llama-impl.h
+    line: 61-68
+    method_or_func: buffer_view<T>
+  - file: src/llama-impl.h
+    line: 65-67
+    method_or_func: buffer_view<T>.has_data()
+  - file: src/llama-impl.cpp
+    line: 9-14
+    method_or_func: __main__
+  - file: src/llama-impl.cpp
+    line: 9-12
+    method_or_func: llama_logger_state
+  - file: src/llama-impl.cpp
+    line: 30-33
+    method_or_func: llama_log_get()
+  - file: src/llama-impl.cpp
+    line: 35-40
+    method_or_func: llama_log_set()
+  - file: src/llama-impl.cpp
+    line: 42-58
+    method_or_func: llama_log_internal_v()
+  - file: src/llama-impl.cpp
+    line: 60-65
+    method_or_func: llama_log_internal()
+  - file: src/llama-impl.cpp
+    line: 67-73
+    method_or_func: llama_log_callback_default()
+  name: 日志系统探微 —— 引擎的「传声筒」与「播报员」
+  'no': 1
+  points:
+  - '**为什么需要日志系统？**作为底层推理引擎，llama.cpp 需要把内部状态（加载进度、量化信息、内存告警等）暴露给上层 CLI、Server 和工具'
+  - '**LLAMA_LOG 宏家族**：通过 `LLAMA_LOG_INFO/WARN/ERROR/DEBUG/CONT` 五个宏统一调用 `llama_log_internal`，屏蔽可变参数与日志级别'
+  - '**LLAMA_ATTRIBUTE_FORMAT 编译期校验**：通过 GCC/Clang 的 `__attribute__((format))` 在编译阶段校验
+    printf 格式字符串，避免运行时崩溃'
+  - '**日志状态结构 `llama_logger_state`**：保存当前回调函数指针与 user_data，全局唯一实例 `g_logger_state`
+    位于 `llama-impl.cpp` 的全局代码段'
+  - '**日志回调注册机制**：`llama_log_set` 通过全局静态变量 `g_logger_state` 保存用户回调，默认实现 `llama_log_callback_default`
+    将内容写入 stderr'
+  - '**日志回调查询接口**：`llama_log_get` 用于获取当前注册的回调与 user_data，与 `llama_log_set` 构成对称 API'
+  - '**变长参数优雅处理**：`llama_log_internal_v` 内部使用栈缓冲（128 字节）与堆缓冲自动扩容，确保长消息不丢内容'
+  - '**公开入口封装**：`llama_log_internal` 通过 va_start/va_end 包装变长参数并转发到 `_v` 版本'
+  - '**辅助模板与结构**：`no_init<T>` 用于跳过值初始化（性能敏感路径），`buffer_view<T>` 提供指针+长度的轻量视图（含 `has_data`
+    判空）'
+  - '**特殊张量名常量**：`LLAMA_TENSOR_NAME_FATTN / FGDN_AR / FGDN_CH` 用于标记特殊计算节点的输出张量'
+- codes:
+  - file: src/llama-impl.h
+    line: 44-49
+    method_or_func: time_meas
+  - file: src/llama-impl.h
+    line: 44-49
+    method_or_func: time_meas.time_meas()
+  - file: src/llama-impl.h
+    line: 44-49
+    method_or_func: time_meas.~time_meas()
+  - file: src/llama-impl.cpp
+    line: 21-22
+    method_or_func: time_meas.time_meas()
+  - file: src/llama-impl.cpp
+    line: 24-28
+    method_or_func: time_meas.~time_meas()
+  name: 作用域计时器 —— 代码块的「秒表医生」
+  'no': 2
+  points:
+  - '**RAII 风格的耗时统计**：`time_meas` 构造时记录起始时间（`ggml_time_us()`），析构时自动累加差值到外部传入的 `t_acc`
+    引用'
+  - '**构造函数细节**：通过初始化列表 `t_start_us(disable ? -1 : ggml_time_us())` 实现禁用模式开关'
+  - '**支持禁用模式**：通过 `disable=true` 将 `t_start_us` 设为 -1，析构时跳过累加，常用于条件性计时'
+  - '**析构条件累加**：`if (t_start_us >= 0) t_acc += ggml_time_us() - t_start_us`'
+  - '**微秒级精度**：底层依赖 `ggml_time_us()`，提供比毫秒更细粒度的性能采样'
+  - '**典型应用**：`llama_model_load` 中通过 `time_meas tm(model.t_load_us)` 自动记录整个加载过程的耗时'
+- codes:
+  - file: src/llama-impl.h
+    line: '75'
+    method_or_func: replace_all()
+  - file: src/llama-impl.h
+    line: 79-80
+    method_or_func: format()
+  - file: src/llama-impl.h
+    line: 82-83
+    method_or_func: llama_format_tensor_shape()
+  - file: src/llama-impl.cpp
+    line: 75-93
+    method_or_func: replace_all()
+  - file: src/llama-impl.cpp
+    line: 95-107
+    method_or_func: format()
+  - file: src/llama-impl.cpp
+    line: 109-122
+    method_or_func: llama_format_tensor_shape()
+  name: 字符串处理与格式化 —— 「瑞士军刀」级文本工具集
+  'no': 3
+  points:
+  - '**`replace_all` 字符串替换**：使用 `std::string` + 临时 builder 模式实现就地替换，自动处理空 search 边界'
+  - '**`format` 通用格式化**：通过两次 `vsnprintf` 调用（一次测量长度，一次填充）实现精确无浪费的格式化'
+  - '**`llama_format_tensor_shape` 张量形状**：两种重载支持 `vector<int64_t>` 与 `ggml_tensor
+    *`，输出固定宽度对齐的 `[n, n, n, n]` 风格字符串'
+  - '**设计哲学**：所有格式化工具避免堆分配（使用栈上 `char[256]`）以保证零额外开销'
+- codes:
+  - file: src/llama-impl.cpp
+    line: 124-141
+    method_or_func: gguf_data_to_str()
+  - file: src/llama-impl.cpp
+    line: 143-175
+    method_or_func: gguf_kv_to_str()
+  - file: src/llama-impl.h
+    line: '86'
+    method_or_func: gguf_kv_to_str()
+  name: GGUF 元数据转字符串 —— 模型信息的「解码翻译官」
+  'no': 4
+  points:
+  - '**`gguf_data_to_str` 类型分发**：通过 switch-case 将 GGUF 基本类型（UINT8/INT8/FLOAT32/BOOL
+    等）转换为可读字符串'
+  - '**`gguf_kv_to_str` 顶层入口**：处理 STRING、ARRAY 与其他基础类型的统一字符串化'
+  - '**ARRAY 类型特殊处理**：通过 `gguf_get_arr_type` + `gguf_get_arr_n` 遍历数组元素，STRING 元素需要
+    `"` 与 `\` 转义以保证可读'
+  - '**嵌套 ARRAY 限制**：当前实现对 `GGUF_TYPE_ARRAY` 的数组（嵌套数组）输出 `???` 占位，避免递归复杂度'
+  - '**应用场景**：模型信息打印、调试日志、CLI 输出等场景将任意 GGUF KV 转化为人类可读文本'
+- codes:
+  - file: src/llama-io.h
+    line: 9-21
+    method_or_func: llama_io_write_i
+  - file: src/llama-io.h
+    line: '10'
+    method_or_func: llama_io_write_i.llama_io_write_i()
+  - file: src/llama-io.h
+    line: '11'
+    method_or_func: llama_io_write_i.~llama_io_write_i()
+  - file: src/llama-io.h
+    line: '13'
+    method_or_func: llama_io_write_i.write()
+  - file: src/llama-io.h
+    line: '14'
+    method_or_func: llama_io_write_i.write_tensor()
+  - file: src/llama-io.h
+    line: '16'
+    method_or_func: llama_io_write_i.n_bytes()
+  - file: src/llama-io.h
+    line: '18'
+    method_or_func: llama_io_write_i.write_string()
+  - file: src/llama-io.h
+    line: 23-35
+    method_or_func: llama_io_read_i
+  - file: src/llama-io.h
+    line: '24'
+    method_or_func: llama_io_read_i.llama_io_read_i()
+  - file: src/llama-io.h
+    line: '25'
+    method_or_func: llama_io_read_i.~llama_io_read_i()
+  - file: src/llama-io.h
+    line: '27'
+    method_or_func: llama_io_read_i.read()
+  - file: src/llama-io.h
+    line: '28'
+    method_or_func: llama_io_read_i.read_to()
+  - file: src/llama-io.h
+    line: '30'
+    method_or_func: llama_io_read_i.n_bytes()
+  - file: src/llama-io.h
+    line: '32'
+    method_or_func: llama_io_read_i.read_string()
+  - file: src/llama-io.cpp
+    line: 3-7
+    method_or_func: llama_io_write_i.write_string()
+  - file: src/llama-io.cpp
+    line: 9-14
+    method_or_func: llama_io_read_i.read_string()
+  name: I/O 抽象接口 —— 序列化与反序列化的「通用插座」
+  'no': 5
+  points:
+  - '**`llama_io_write_i` 抽象基类**：定义三个纯虚函数 `write`、`write_tensor`、`n_bytes`，加上便捷的 `write_string`
+    默认实现'
+  - '**`llama_io_read_i` 抽象基类**：对应定义 `read`、`read_to`、`n_bytes`，提供 `read_string` 默认实现'
+  - '**字符串序列化协议**：`write_string` 先写 4 字节 `uint32_t` 长度，再写原始字节；`read_string` 反向操作'
+  - '**设计意图**：通过接口抽象让 buffer、file、dummy 等不同 I/O 后端能统一接入，支持序列化、内存映射、网络传输等场景'
+  - '**`write_tensor` 的特殊性**：相比 `write` 多出 `offset + size` 参数，专门处理 GGUF 张量数据按需写入（部分写入场景）'
+  - '**`read` vs `read_to` 语义**：`read` 返回内存指针（适用于零拷贝场景），`read_to` 拷贝到目标缓冲区（适用于外部存储）'
+  - '**虚析构保证**：`llama_io_write_i` 和 `llama_io_read_i` 都通过 `virtual ~xxx()` 保证子类正确释放'
+- codes:
+  - file: src/llama.cpp
+    line: 1632-1652
+    method_or_func: llama_print_system_info()
+  - file: src/llama.cpp
+    line: 1533-1535
+    method_or_func: llama_supports_mmap()
+  - file: src/llama.cpp
+    line: 1537-1539
+    method_or_func: llama_supports_mlock()
+  - file: src/llama.cpp
+    line: 1541-1545
+    method_or_func: llama_supports_gpu_offload()
+  - file: src/llama.cpp
+    line: 1547-1550
+    method_or_func: llama_supports_rpc()
+  - file: src/llama.cpp
+    line: 1552-1560
+    method_or_func: llama_backend_init()
+  - file: src/llama.cpp
+    line: 1562-1573
+    method_or_func: llama_numa_init()
+  - file: src/llama.cpp
+    line: 1575-1577
+    method_or_func: llama_backend_free()
+  - file: src/llama.cpp
+    line: 1579-1581
+    method_or_func: llama_time_us()
+  name: 系统信息汇总与后端能力探测 —— 「体检报告」生成器
+  'no': 6
+  points:
+  - '**`llama_print_system_info` 静态字符串累加**：通过 `static std::string s` 跨调用复用，每次调用先 `clear()`
+    防止累积'
+  - '**后端特性枚举**：通过 `ggml_backend_reg_get_proc_address` 动态获取各注册后端的 `ggml_backend_get_features`
+    函数指针'
+  - '**特性列表拼接**：将后端名 + 特性键值对用 ` | ` 连接，形成类似 `Metal : feature1 = value1 | feature2
+    = value2` 的报告'
+  - '**能力查询系列**：`llama_supports_mmap`、`llama_supports_mlock`、`llama_supports_gpu_offload`、`llama_supports_rpc`
+    提供能力声明'
+  - '**GPU 卸载判定逻辑**：综合 GPU、IGPU、RPC 三类设备的可用性来推断 GPU 卸载支持'
+  - '**基础工具函数**：`llama_backend_init`（f16 表初始化）、`llama_numa_init`（动态获取 NUMA 函数）、`llama_time_us`、`llama_backend_free`
+    等基础设施入口'
+- codes:
+  - file: src/llama.cpp
+    line: 1585-1631
+    method_or_func: llama_model_load()
+  - file: src/llama.cpp
+    line: 1655-1808
+    method_or_func: llama_model_load_from_file_impl()
+  - file: src/llama.cpp
+    line: 1810-1819
+    method_or_func: llama_model_init_from_user()
+  - file: src/llama.cpp
+    line: 1822-1825
+    method_or_func: llama_load_model_from_file()
+  - file: src/llama.cpp
+    line: 1827-1831
+    method_or_func: llama_model_load_from_file()
+  - file: src/llama.cpp
+    line: 1833-1846
+    method_or_func: llama_model_load_from_splits()
+  - file: src/llama.cpp
+    line: 1848-1855
+    method_or_func: llama_model_load_from_file_ptr()
+  - file: src/llama.cpp
+    line: 1857-1862
+    method_or_func: llama_model_save_to_file()
+  - file: src/llama.cpp
+    line: 27-37
+    method_or_func: llama_flash_attn_type_name()
+  - file: src/llama.cpp
+    line: 1525-1527
+    method_or_func: llama_max_devices()
+  - file: src/llama.cpp
+    line: 1529-1531
+    method_or_func: llama_max_tensor_buft_overrides()
+  - file: src/llama.cpp
+    line: 1517-1522
+    method_or_func: llama_sampler_chain_default_params()
+  - file: src/llama.cpp
+    line: 1867-1897
+    method_or_func: llama_chat_apply_template()
+  - file: src/llama.cpp
+    line: 1902-1919
+    method_or_func: llama_split_path()
+  - file: src/llama.cpp
+    line: 1921-1948
+    method_or_func: llama_split_prefix()
+  name: 模型加载与设备调度 —— 「智能调度室」的多入口管理
+  'no': 7
+  points:
+  - '**多入口加载架构**：`llama_model_load_from_file_impl` 作为统一入口，承接 file / splits / file_ptr
+    / from_user 四种调用方式'
+  - '**默认进度回调**：若用户未提供，进度回调自动通过 `LLAMA_LOG_CONT` 输出 `.` 进度条'
+  - '**设备选择策略**：枚举所有后端设备，按 RPC → GPU → IGPU 顺序归类，同 device_id 的 GPU 去重'
+  - '**单 GPU 模式过滤**：`main_gpu` 指定主 GPU，其他设备下放；`LLAMA_SPLIT_MODE_NONE` 时只保留一台'
+  - '**特殊路径处理**：`llama_split_path` / `llama_split_prefix` 处理多分片模型的文件名规则'
+  - '**模型保存**：`llama_model_save_to_file` 通过 llama_model_saver 把内存模型写回 GGUF'
+  - '**其它实用函数**：`llama_flash_attn_type_name`（枚举→字符串）、`llama_max_devices`（硬编码 16）、`llama_max_tensor_buft_overrides`（硬编码
+    4096）、`llama_sampler_chain_default_params`、`llama_chat_apply_template`'
+  - '**自动耗时统计**：`llama_model_load` 内部用 `time_meas tm(model.t_load_us)` 自动记录加载耗时'
+- codes:
+  - file: src/llama.cpp
+    line: 1422-1443
+    method_or_func: llama_params_fit()
+  - file: src/llama.cpp
+    line: 141-1419
+    method_or_func: llama_params_fit_impl()
+  - file: src/llama.cpp
+    line: 48-138
+    method_or_func: llama_get_device_memory_data()
+  - file: src/llama.cpp
+    line: 40-44
+    method_or_func: llama_device_memory_data
+  - file: src/llama.cpp
+    line: '139'
+    method_or_func: llama_params_fit_exception
+  name: 自动参数拟合 —— 给模型「量体裁衣」的智能算法
+  'no': 8
+  points:
+  - '**`llama_params_fit` 公共入口**：调用 `llama_params_fit_impl`，根据返回状态（SUCCESS/FAILURE/ERROR）记录不同级别日志'
+  - '**`llama_params_fit_impl` 三阶段流程**：① 检查默认参数是否能满足内存；② 通过缩小 n_ctx 释放内存；③ 用假位法从后往前给各设备分配
+    ngl'
+  - '**`layer_fraction_t` 溢出策略**：ATTN/UP/GATE/MOE 四种层分数，分别对应保留 attn、保留 attn+up、保留
+    attn+up+gate、只切 MoE 张量到系统内存'
+  - '**`llama_get_device_memory_data` 内存细分**：临时加载模型，统计每个 buft 的 model/context/compute
+    三段内存'
+  - '**`llama_device_memory_data` 结构**：total + free + model/context/compute 分解'
+  - '**`llama_params_fit_exception` 异常处理**：用户已设置参数时主动抛出，避免覆盖用户意图'
+  - '**假位法（false position）迭代**：维护 ngl_per_device（low）和 ngl_per_device_high（high），按目标内存线性插值逼近最优层数'
+  - '**MoE 特殊处理**：步骤 4 将后端 dense-only 层转换为前端 full 层，让更多稠密权重进入显存以提升吞吐'
+  - '**多设备部分层溢出**：`LAYER_FRACTION_UP/GATE/ATTN` 三级尝试把部分层的 FFN 子模块溢出到系统内存或下一设备'

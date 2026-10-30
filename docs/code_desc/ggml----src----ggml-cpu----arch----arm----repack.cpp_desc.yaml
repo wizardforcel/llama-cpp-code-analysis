@@ -1,0 +1,1830 @@
+classes: []
+desc: 该文件是 ggml 库中针对 ARM 架构（AArch64）优化的量化矩阵向量乘法（GEMV）和量化矩阵函数（如 Q8_0、Q4_0、Q4_K 等）的实现。它利用
+  ARM NEON 和 SVE 指令集，通过数据交错和点积指令来高效地计算量化数据的点积，并针对不同块大小（如 4x4, 4x8, 8x8）提供了内联的 SIMD
+  加速路径，同时在非支持环境下回退到通用实现。该文件不定义类，主要包含全局函数和一些静态辅助函数。该文件是ggml库在ARM架构下的量化矩阵-向量乘法（GEMV）实现，专注于Q4_K、Q5_K、Q6_K等量化格式与Q8_K格式的乘积运算。它利用ARM
+  NEON SIMD指令集和点积（dot product）功能进行高度优化的并行计算，包含多个针对不同量化格式和块大小的专用函数，以提高推理性能。该文件是 ggml
+  项目在 ARM 架构下的 CPU 推理优化实现，专注于量化矩阵乘法的 repack（重新打包）内核。文件实现了多种针对不同量化格式（如 q8_0, q6_K）和不同列交织宽度（如
+  4x4, 4x8, 8x4, 8x8）的高性能 GEMV（矩阵-向量乘法）或 GEMM（矩阵-矩阵乘法）函数。这些函数充分利用了 ARMv8.2 的 NEON
+  SIMD 指令和 DOTPROD（点积）扩展，通过将多个权重列交织存储（interleaving）来提高内存访问效率和 SIMD 利用率，从而加速深度学习模型的推理过程。文件中的实现通常包含一个使用
+  NEON 内建函数或内联汇编的高度优化的快速路径，以及在非支持平台或条件不满足时回退到通用实现的慢速路径。该文件实现了针对ARM架构优化的量化矩阵乘法内核，具体为ggml_gemm_q4_0_4x4_q8_0、ggml_gemm_q4_0_4x8_q8_0和ggml_gemm_q4_0_8x8_q8_0函数，利用NEON和SVE指令集进行高性能计算。The
+  file `repack.cpp` in the ARM architecture directory of the GGML CPU backend provides
+  optimized matrix multiplication kernels for quantized types on ARM platforms. It
+  includes both generic reference implementations and NEON/SVE-optimized variants
+  for operations like Q4_0xQ8_0, IQ4_NLxQ8_0, MXFP4xQ8_0, Q4_KxQ8_K, and Q5_KxQ8_K.
+  The code uses SIMD instructions (NEON and SVE) to accelerate the dot-product computations,
+  and inlined assembly (e.g., SVE `smmla` instructions) for the most performance-critical
+  routines. The file contains the main GEMM entry points (`ggml_gemm_*` functions)
+  that conditionally dispatch to hardware-accelerated paths or generic fallbacks.该文件是GGML库中ARM架构下的矩阵乘法内核实现，针对量化矩阵乘法进行了深度优化。文件中实现了多种针对不同量化类型（Q5_K、Q4_K）与Q8_K（8位量化）矩阵相乘的高性能算法，利用ARM的NEON、SVE及i8mm等SIMD指令集进行加速。每个函数针对特定的量化组合和矩阵分块策略进行优化，以实现最优的计算性能。该文件是
+  ggml 项目中针对 ARM 架构的量化矩阵乘法（GEMM）内核实现，包含多种量化类型（Q4_K、Q5_K、Q6_K）与 Q8_K 的组合计算，通过 NEON
+  指令集（包括 i8mm 和 dotprod 扩展）进行高优化的 8x8 或 8x4 分块矩阵乘加运算，并根据目标 CPU 特性自动选择最优的内核实现。文件中的函数接收以特定内存布局存储的量化权重矩阵，执行大批量、高吞吐的矩阵乘法，并将结果以浮点数形式写入输出矩阵。代码中大量使用
+  NEON 内建函数，包括 vmmlaq_s32、vdotq_laneq_s32 等，实现 SIMD 并行计算，同时包含了针对不同权重块重排、缩放、偏置调整的复杂逻辑，最后通过宏条件编译确保在支持不同特性的硬件上都能正确运行，并提供了通用的回退函数以确保兼容性。This
+  file implements ARM NEON optimized matrix multiplication kernels for quantized GGML
+  tensors, specifically providing specialized 8x8 and 4x8 GEMM (General Matrix Multiply)
+  operations for Q6_K and Q8_0 quantized data formats using ARMv8.2+ SIMD instructions
+  including i8mm (integer matrix multiply) and dotprod extensions.
+file: ggml/src/ggml-cpu/arch/arm/repack.cpp
+funcs:
+- code:
+  - static inline void decode_q_Kx8_6bit_scales(const uint8_t * scales_in, int16x8_t
+    * out_mins, int8_t * out_scales) {
+  - '    constexpr uint32_t kmask1 = 0x3f3f3f3f;'
+  - '    constexpr uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    constexpr uint32_t kmask3 = 0x03030303;'
+  - '    constexpr uint8_t  scales_size = 12;'
+  - '    uint32_t sm[3];'
+  - '    memcpy(sm, scales_in, scales_size);'
+  - '    const uint32_t   mins_0_3 = sm[1] & kmask1;'
+  - '    const uint32_t   mins_4_7 = ((sm[2] >> 4) & kmask2) | (((sm[1] >> 6) & kmask3)
+    << 4);'
+  - '    const uint32x2_t mins_u32 = { mins_0_3, mins_4_7 };'
+  - '    *out_mins = vreinterpretq_s16_u16(vmovl_u8(vreinterpret_u8_u32(mins_u32)));'
+  - '    uint32_t scales_u32[2];'
+  - '    scales_u32[0] = sm[0] & kmask1;'
+  - '    scales_u32[1] = (sm[2] & kmask2) | (((sm[0] >> 6) & kmask3) << 4);'
+  - '    memcpy(out_scales, scales_u32, 8);'
+  - '}'
+  desc: 一个静态内联辅助函数，用于解码 Q4_K 和 Q5_K 块格式中的 6 位缩放因子和最小值，使用 NEON 向量操作提取并重组数据。
+  line: 50-72
+  name: decode_q_Kx8_6bit_scales
+- code:
+  - void ggml_quantize_mat_q8_0_4x4(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t k) {
+  - '    assert(QK8_0 == 32);'
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    block_q8_0x4 * GGML_RESTRICT y = (block_q8_0x4 *) vy;'
+  - '#if defined(__ARM_NEON)'
+  - '    float32x4_t srcv[4][8];'
+  - '    float id[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float32x4_t asrcv[8];'
+  - '        float32x4_t amaxv[8];'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            for (int j = 0; j < 8; j++) srcv[row_iter][j] = vld1q_f32(x + row_iter
+    * k + i * 32 + 4 * j);'
+  - '            for (int j = 0; j < 8; j++) asrcv[j] = vabsq_f32(srcv[row_iter][j]);'
+  - '            for (int j = 0; j < 4; j++) amaxv[2 * j] = vmaxq_f32(asrcv[2 * j],
+    asrcv[2 * j + 1]);'
+  - '            for (int j = 0; j < 2; j++) amaxv[4 * j] = vmaxq_f32(amaxv[4 * j],
+    amaxv[4 * j + 2]);'
+  - '            for (int j = 0; j < 1; j++) amaxv[8 * j] = vmaxq_f32(amaxv[8 * j],
+    amaxv[8 * j + 4]);'
+  - '            const float amax = vmaxvq_f32(amaxv[0]);'
+  - '            const float d = amax / ((1 << 7) - 1);'
+  - '            id[row_iter] = d ? 1.0f / d : 0.0f;'
+  - '            y[i].d[row_iter] = GGML_CPU_FP32_TO_FP16(d);'
+  - '        }'
+  - '        for (int j = 0; j < 8; j++) {'
+  - '            float32x4_t v = vmulq_n_f32(srcv[0][j], id[0]);'
+  - '            int32x4_t vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[16 * j + 0] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[16 * j + 1] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[16 * j + 2] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[16 * j + 3] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[1][j], id[1]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[16 * j + 4] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[16 * j + 5] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[16 * j + 6] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[16 * j + 7] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[2][j], id[2]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[16 * j + 8] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[16 * j + 9] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[16 * j + 10] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[16 * j + 11] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[3][j], id[3]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[16 * j + 12] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[16 * j + 13] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[16 * j + 14] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[16 * j + 15] = vgetq_lane_s32(vi, 3);'
+  - '        }'
+  - '    }'
+  - '#else'
+  - '    UNUSED(nb);'
+  - '    UNUSED(y);'
+  - '    ggml_quantize_mat_q8_0_4x4_generic(x, vy, k);'
+  - '#endif'
+  - '}'
+  desc: 使用 ARM NEON 指令将浮点矩阵量化为 Q8_0 格式，数据以 4x4 粒度交错，一个指针对应四个数据列。若平台不支持 NEON，则回退到通用实现。
+  line: 76-122
+  name: ggml_quantize_mat_q8_0_4x4
+- code:
+  - void ggml_quantize_mat_q8_0_4x8(const float * GGML_RESTRICT x, void * GGML_RESTRICT
+    vy, int64_t k) {
+  - '    assert(QK8_0 == 32);'
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    block_q8_0x4 * GGML_RESTRICT y = (block_q8_0x4 *) vy;'
+  - '#if defined(__ARM_NEON)'
+  - '    float32x4_t srcv[4][8];'
+  - '    float id[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        float32x4_t asrcv[8];'
+  - '        float32x4_t amaxv[8];'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            for (int j = 0; j < 8; j++) srcv[row_iter][j] = vld1q_f32(x + row_iter
+    * k + i * 32 + 4 * j);'
+  - '            for (int j = 0; j < 8; j++) asrcv[j] = vabsq_f32(srcv[row_iter][j]);'
+  - '            for (int j = 0; j < 4; j++) amaxv[2 * j] = vmaxq_f32(asrcv[2 * j],
+    asrcv[2 * j + 1]);'
+  - '            for (int j = 0; j < 2; j++) amaxv[4 * j] = vmaxq_f32(amaxv[4 * j],
+    amaxv[4 * j + 2]);'
+  - '            for (int j = 0; j < 1; j++) amaxv[8 * j] = vmaxq_f32(amaxv[8 * j],
+    amaxv[8 * j + 4]);'
+  - '            const float amax = vmaxvq_f32(amaxv[0]);'
+  - '            const float d = amax / ((1 << 7) - 1);'
+  - '            id[row_iter] = d ? 1.0f / d : 0.0f;'
+  - '            y[i].d[row_iter] = GGML_CPU_FP32_TO_FP16(d);'
+  - '        }'
+  - '        for (int j = 0; j < 4; j++) {'
+  - '            float32x4_t v = vmulq_n_f32(srcv[0][2 * j], id[0]);'
+  - '            int32x4_t vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 0] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 1] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 2] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 3] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[0][2 * j + 1], id[0]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 4] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 5] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 6] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 7] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[1][2 * j], id[1]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 8] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 9] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 10] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 11] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[1][2 * j + 1], id[1]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 12] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 13] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 14] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 15] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[2][2 * j], id[2]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 16] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 17] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 18] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 19] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[2][2 * j + 1], id[2]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 20] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 21] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 22] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 23] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[3][2 * j], id[3]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 24] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 25] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 26] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 27] = vgetq_lane_s32(vi, 3);'
+  - '            v = vmulq_n_f32(srcv[3][2 * j + 1], id[3]);'
+  - '            vi = vcvtnq_s32_f32(v);'
+  - '            y[i].qs[32 * j + 28] = vgetq_lane_s32(vi, 0);'
+  - '            y[i].qs[32 * j + 29] = vgetq_lane_s32(vi, 1);'
+  - '            y[i].qs[32 * j + 30] = vgetq_lane_s32(vi, 2);'
+  - '            y[i].qs[32 * j + 31] = vgetq_lane_s32(vi, 3);'
+  - '        }'
+  - '    }'
+  - '#else'
+  - '    UNUSED(nb);'
+  - '    UNUSED(y);'
+  - '    ggml_quantize_mat_q8_0_4x8_generic(x, vy, k);'
+  - '#endif'
+  - '}'
+  desc: 使用 ARM NEON 指令将浮点矩阵量化为 Q8_0 格式，数据以 4x8 粒度交错（四个数据列，八个量化元素），提供另一种量化布局。若无 NEON
+    支持则回退到通用实现。
+  line: 124-200
+  name: ggml_quantize_mat_q8_0_4x8
+- code:
+  - void ggml_gemv_q4_0_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx;'
+  - '    for (int c = 0; c < nc; c += ncols_interleaved) {'
+  - '        const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '        float32x4_t acc = vdupq_n_f32(0);'
+  - '        for (int b = 0; b < nb; b++) {'
+  - '            int8x16_t b0 = vld1q_s8((const int8_t *) b_ptr->qs);'
+  - '            int8x16_t b1 = vld1q_s8((const int8_t *) b_ptr->qs + 16);'
+  - '            int8x16_t b2 = vld1q_s8((const int8_t *) b_ptr->qs + 32);'
+  - '            int8x16_t b3 = vld1q_s8((const int8_t *) b_ptr->qs + 48);'
+  - '            float16x4_t bd = vld1_f16((const __fp16 *) b_ptr->d);'
+  - '            int8x16_t a0 = vld1q_s8(a_ptr->qs);'
+  - '            int8x16_t a1 = vld1q_s8(a_ptr->qs + qk/2);'
+  - '            float16x4_t ad = vld1_dup_f16((const __fp16 *) &a_ptr->d);'
+  - '            int32x4_t ret = vdupq_n_s32(0);'
+  - '            ret = vdotq_laneq_s32(ret, b0 << 4, a0, 0);'
+  - '            ret = vdotq_laneq_s32(ret, b1 << 4, a0, 1);'
+  - '            ret = vdotq_laneq_s32(ret, b2 << 4, a0, 2);'
+  - '            ret = vdotq_laneq_s32(ret, b3 << 4, a0, 3);'
+  - '            ret = vdotq_laneq_s32(ret, b0 & 0xf0U, a1, 0);'
+  - '            ret = vdotq_laneq_s32(ret, b1 & 0xf0U, a1, 1);'
+  - '            ret = vdotq_laneq_s32(ret, b2 & 0xf0U, a1, 2);'
+  - '            ret = vdotq_laneq_s32(ret, b3 & 0xf0U, a1, 3);'
+  - '            acc = vfmaq_f32(acc, vcvtq_n_f32_s32(ret, 4),'
+  - '                            vmulq_f32(vcvt_f32_f16(ad), vcvt_f32_f16(bd)));'
+  - '            a_ptr++;'
+  - '            b_ptr++;'
+  - '        }'
+  - '        vst1q_f32(s, acc);'
+  - '        s += ncols_interleaved;'
+  - '    }'
+  - '    return;'
+  - '#endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    ggml_gemv_q4_0_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 Q4_0 量化矩阵与 Q8_0 量化向量的点积，块大小 4x4，利用 ARM NEON DP 指令。在 MSVC 或非 aarch64/NEON
+    平台上回退到通用实现。
+  line: 202-264
+  name: ggml_gemv_q4_0_4x4_q8_0
+- code:
+  - void ggml_gemv_q4_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx;'
+  - '    for (int c = 0; c < nc; c += ncols_interleaved) {'
+  - '        const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '        float32x4_t acc = vdupq_n_f32(0);'
+  - '        for (int b = 0; b < nb; b++) {'
+  - '            int8x16_t b0 = vld1q_s8((const int8_t *) b_ptr->qs);'
+  - '            int8x16_t b1 = vld1q_s8((const int8_t *) b_ptr->qs + 16);'
+  - '            int8x16_t b2 = vld1q_s8((const int8_t *) b_ptr->qs + 32);'
+  - '            int8x16_t b3 = vld1q_s8((const int8_t *) b_ptr->qs + 48);'
+  - '            float16x4_t bd = vld1_f16((const __fp16 *) b_ptr->d);'
+  - '            int8x16_t a0 = (int8x16_t) vld1q_dup_s64((const int64_t *) a_ptr->qs);'
+  - '            int8x16_t a1 = (int8x16_t) vld1q_dup_s64((const int64_t *) a_ptr->qs
+    + 1);'
+  - '            int8x16_t a2 = (int8x16_t) vld1q_dup_s64((const int64_t *) a_ptr->qs
+    + 2);'
+  - '            int8x16_t a3 = (int8x16_t) vld1q_dup_s64((const int64_t *) a_ptr->qs
+    + 3);'
+  - '            float16x4_t ad = vld1_dup_f16((const __fp16 *) &a_ptr->d);'
+  - '            int32x4_t ret0 = vdupq_n_s32(0);'
+  - '            int32x4_t ret1 = vdupq_n_s32(0);'
+  - '            ret0 = vdotq_s32(ret0, b0 << 4, a0);'
+  - '            ret1 = vdotq_s32(ret1, b1 << 4, a0);'
+  - '            ret0 = vdotq_s32(ret0, b2 << 4, a1);'
+  - '            ret1 = vdotq_s32(ret1, b3 << 4, a1);'
+  - '            ret0 = vdotq_s32(ret0, b0 & 0xf0U, a2);'
+  - '            ret1 = vdotq_s32(ret1, b1 & 0xf0U, a2);'
+  - '            ret0 = vdotq_s32(ret0, b2 & 0xf0U, a3);'
+  - '            ret1 = vdotq_s32(ret1, b3 & 0xf0U, a3);'
+  - '            int32x4_t ret = vpaddq_s32(ret0, ret1);'
+  - '            acc = vfmaq_f32(acc, vcvtq_n_f32_s32(ret, 4),'
+  - '                    vmulq_f32(vcvt_f32_f16(ad), vcvt_f32_f16(bd)));'
+  - '            a_ptr++;'
+  - '            b_ptr++;'
+  - '        }'
+  - '        vst1q_f32(s, acc);'
+  - '        s += ncols_interleaved;'
+  - '    }'
+  - '    return;'
+  - '#endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    ggml_gemv_q4_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 Q4_0 量化矩阵与 Q8_0 量化向量的点积，块大小 4x8。使用 NEON DP 指令优化，将乘法结果打包以提高缓存效率。若非 aarch64
+    或缺少 DP 指令，则回退到通用实现。
+  line: 266-335
+  name: ggml_gemv_q4_0_4x8_q8_0
+- code:
+  - void ggml_gemv_q4_0_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)'
+  - '#if defined(__ARM_FEATURE_SVE)'
+  - '    if (ggml_cpu_get_sve_cnt() == QK8_0) {'
+  - '        const void * b_ptr = vx;'
+  - '        const void * a_ptr = vy;'
+  - '        float * res_ptr = s;'
+  - '        __asm__ __volatile__('
+  - '            "ptrue p0.b\n"'
+  - '            "add %x[b_ptr], %x[b_ptr], #0x10\n"'
+  - '            "1:"  // Column loop'
+  - '            "add x22, %x[a_ptr], #0x2\n"'
+  - '            "mov z31.b, #0x0\n"'
+  - '            "mov x21, %x[nb]\n"'
+  - '            "2:"  // Block loop'
+  - '            "ld1b { z30.b }, p0/Z, [%x[b_ptr]]\n"'
+  - '            "ld1b { z29.b }, p0/Z, [%x[b_ptr], #1, MUL VL]\n"'
+  - '            "mov z28.s, #0x0\n"'
+  - '            "mov z27.s, #0x0\n"'
+  - '            "ld1rd { z26.d }, p0/Z, [x22]\n"'
+  - '            "ld1b { z25.b }, p0/Z, [%x[b_ptr], #2, MUL VL]\n"'
+  - '            "sub x20, x22, #0x2\n"'
+  - '            "sub x21, x21, #0x1\n"'
+  - '            "ld1b { z24.b }, p0/Z, [%x[b_ptr], #3, MUL VL]\n"'
+  - '            "ld1rd { z23.d }, p0/Z, [x22, #8]\n"'
+  - '            "lsl z22.b, z30.b, #0x4\n"'
+  - '            "lsl z16.b, z29.b, #0x4\n"'
+  - '            "and z30.b, z30.b, #0xf0\n"'
+  - '            "and z29.b, z29.b, #0xf0\n"'
+  - '            "ld1rd { z21.d }, p0/Z, [x22, #16]\n"'
+  - '            "ld1rd { z20.d }, p0/Z, [x22, #24]\n"'
+  - '            "lsl z19.b, z25.b, #0x4\n"'
+  - '            "and z25.b, z25.b, #0xf0\n"'
+  - '            "ld1rh { z17.h }, p0/Z, [x20]\n"'
+  - '            "ld1h { z18.s }, p0/Z, [%x[b_ptr], #-1, MUL VL]\n"'
+  - '            "sdot z28.s, z22.b, z26.b\n"'
+  - '            "sdot z27.s, z16.b, z26.b\n"'
+  - '            "lsl z16.b, z24.b, #0x4\n"'
+  - '            "add x22, x22, #0x22\n"'
+  - '            "and z24.b, z24.b, #0xf0\n"'
+  - '            "add %x[b_ptr], %x[b_ptr], #0x90\n"'
+  - '            "fcvt z17.s, p0/m, z17.h\n"'
+  - '            "fcvt z18.s, p0/m, z18.h\n"'
+  - '            "sdot z28.s, z19.b, z23.b\n"'
+  - '            "sdot z27.s, z16.b, z23.b\n"'
+  - '            "fmul z18.s, z18.s, z17.s\n"'
+  - '            "sdot z28.s, z30.b, z21.b\n"'
+  - '            "sdot z27.s, z29.b, z21.b\n"'
+  - '            "sdot z28.s, z25.b, z20.b\n"'
+  - '            "sdot z27.s, z24.b, z20.b\n"'
+  - '            "uzp1 z17.s, z28.s, z27.s\n"'
+  - '            "uzp2 z16.s, z28.s, z27.s\n"'
+  - '            "add z17.s, z17.s, z16.s\n"'
+  - '            "asr z17.s, z17.s, #0x4\n"'
+  - '            "scvtf z17.s, p0/m, z17.s\n"'
+  - '            "fmla z31.s, p0/M, z17.s, z18.s\n"'
+  - '            "cbnz x21, 2b\n"'
+  - '            "sub %x[nc], %x[nc], #0x8\n"'
+  - '            "st1w { z31.s }, p0, [%x[res_ptr]]\n"'
+  - '            "add %x[res_ptr], %x[res_ptr], #0x20\n"'
+  - '            "cbnz %x[nc], 1b\n"'
+  - '            : [b_ptr] "+&r" (b_ptr), [res_ptr] "+&r" (res_ptr), [nc] "+&r" (nc)'
+  - '            : [a_ptr] "r" (a_ptr), [nb] "r" (nb)'
+  - '            : "memory", "p0", "x20", "x21", "x22", "z16", "z17", "z18", "z19",
+    "z20", "z21", "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31"'
+  - '        );'
+  - '        return;'
+  - '    }'
+  - '#endif // #if defined(__ARM_FEATURE_SVE)'
+  - '#endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)'
+  - '    ggml_gemv_q4_0_8x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 Q4_0 量化矩阵与 Q8_0 量化向量的点积，块大小 8x8。在 AArch64 上若支持 SVE 且向量长度合适，则使用手写 SVE 内联汇编加速，否则回退到通用实现。
+  line: 337-408
+  name: ggml_gemv_q4_0_8x8_q8_0
+- code:
+  - void ggml_gemv_iq4_nl_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    const int8x16_t kvalues = vld1q_s8(kvalues_iq4nl);'
+  - '    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '    float * res_ptr = s;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_iq4_nlx4 * b_ptr = (const block_iq4_nlx4 *) vx + (x * nb);'
+  - '        float32x4_t sumf = vdupq_n_f32(0);'
+  - '        for (int l = 0; l < nb; l++) {'
+  - '            uint8x16_t b_0 = vld1q_u8(b_ptr[l].qs + 0);'
+  - '            uint8x16_t b_1 = vld1q_u8(b_ptr[l].qs + 16);'
+  - '            uint8x16_t b_2 = vld1q_u8(b_ptr[l].qs + 32);'
+  - '            uint8x16_t b_3 = vld1q_u8(b_ptr[l].qs + 48);'
+  - '            int8x16_t b_0_hi = vqtbl1q_s8(kvalues, b_0 >> 4);'
+  - '            int8x16_t b_0_lo = vqtbl1q_s8(kvalues, b_0 & 0x0F);'
+  - '            int8x16_t b_1_hi = vqtbl1q_s8(kvalues, b_1 >> 4);'
+  - '            int8x16_t b_1_lo = vqtbl1q_s8(kvalues, b_1 & 0x0F);'
+  - '            int8x16_t b_2_hi = vqtbl1q_s8(kvalues, b_2 >> 4);'
+  - '            int8x16_t b_2_lo = vqtbl1q_s8(kvalues, b_2 & 0x0F);'
+  - '            int8x16_t b_3_hi = vqtbl1q_s8(kvalues, b_3 >> 4);'
+  - '            int8x16_t b_3_lo = vqtbl1q_s8(kvalues, b_3 & 0x0F);'
+  - '            int8x16_t a_0 = vld1q_s8(a_ptr[l].qs + 0);'
+  - '            int8x16_t a_1 = vld1q_s8(a_ptr[l].qs + 16);'
+  - '            int32x4_t sumi = vdupq_n_s32(0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_0_lo, a_0, 0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_0_hi, a_1, 0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_1_lo, a_0, 1);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_1_hi, a_1, 1);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_2_lo, a_0, 2);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_2_hi, a_1, 2);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_3_lo, a_0, 3);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_3_hi, a_1, 3);'
+  - '            float32x4_t a_d = vcvt_f32_f16(vld1_dup_f16((const float16_t *)&a_ptr[l].d));'
+  - '            float32x4_t b_d = vcvt_f32_f16(vld1_f16((const float16_t *)b_ptr[l].d));'
+  - '            float32x4_t d = a_d * b_d;'
+  - '            sumf = vmlaq_f32(sumf, d, vcvtq_f32_s32(sumi));'
+  - '        }'
+  - '        vst1q_f32(res_ptr + x * 4, sumf);'
+  - '    }'
+  - '    return;'
+  - '#endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON)'
+  - '    ggml_gemv_iq4_nl_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 IQ4_NL 量化矩阵与 Q8_0 量化向量的点积，块大小 4x4。使用 NEON 和查表法（kvalues_iq4nl）进行非线性反量化，若无
+    DP 指令支持则回退到通用实现。
+  line: 410-466
+  name: ggml_gemv_iq4_nl_4x4_q8_0
+- code:
+  - void ggml_gemv_mxfp4_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    const int8x16_t kvalues = vld1q_s8(kvalues_mxfp4);'
+  - '    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '    float * res_ptr = s;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_mxfp4x4 * b_ptr = (const block_mxfp4x4 *) vx + (x * nb);'
+  - '        float32x4_t sumf = vdupq_n_f32(0);'
+  - '        for (int l = 0; l < nb; l++) {'
+  - '            uint8x16_t b_0 = vld1q_u8(b_ptr[l].qs + 0);'
+  - '            uint8x16_t b_1 = vld1q_u8(b_ptr[l].qs + 16);'
+  - '            uint8x16_t b_2 = vld1q_u8(b_ptr[l].qs + 32);'
+  - '            uint8x16_t b_3 = vld1q_u8(b_ptr[l].qs + 48);'
+  - '            int8x16_t b_0_hi = vqtbl1q_s8(kvalues, b_0 >> 4);'
+  - '            int8x16_t b_0_lo = vqtbl1q_s8(kvalues, b_0 & 0x0F);'
+  - '            int8x16_t b_1_hi = vqtbl1q_s8(kvalues, b_1 >> 4);'
+  - '            int8x16_t b_1_lo = vqtbl1q_s8(kvalues, b_1 & 0x0F);'
+  - '            int8x16_t b_2_hi = vqtbl1q_s8(kvalues, b_2 >> 4);'
+  - '            int8x16_t b_2_lo = vqtbl1q_s8(kvalues, b_2 & 0x0F);'
+  - '            int8x16_t b_3_hi = vqtbl1q_s8(kvalues, b_3 >> 4);'
+  - '            int8x16_t b_3_lo = vqtbl1q_s8(kvalues, b_3 & 0x0F);'
+  - '            int8x16_t a_0 = vld1q_s8(a_ptr[l].qs + 0);'
+  - '            int8x16_t a_1 = vld1q_s8(a_ptr[l].qs + 16);'
+  - '            int32x4_t sumi = vdupq_n_s32(0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_0_lo, a_0, 0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_0_hi, a_1, 0);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_1_lo, a_0, 1);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_1_hi, a_1, 1);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_2_lo, a_0, 2);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_2_hi, a_1, 2);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_3_lo, a_0, 3);'
+  - '            sumi = vdotq_laneq_s32(sumi, b_3_hi, a_1, 3);'
+  - '            float32x4_t a_d = vcvt_f32_f16(vld1_dup_f16((const float16_t *)&a_ptr[l].d));'
+  - '            float32x4_t b_d = {'
+  - '                GGML_CPU_E8M0_TO_FP32_HALF(b_ptr[l].e[0]),'
+  - '                GGML_CPU_E8M0_TO_FP32_HALF(b_ptr[l].e[1]),'
+  - '                GGML_CPU_E8M0_TO_FP32_HALF(b_ptr[l].e[2]),'
+  - '                GGML_CPU_E8M0_TO_FP32_HALF(b_ptr[l].e[3]),'
+  - '            };'
+  - '            float32x4_t d = a_d * b_d;'
+  - '            sumf = vmlaq_f32(sumf, d, vcvtq_f32_s32(sumi));'
+  - '        }'
+  - '        vst1q_f32(res_ptr + x * 4, sumf);'
+  - '    }'
+  - '    return;'
+  - '#endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON)'
+  - '    ggml_gemv_mxfp4_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 MXFP4 量化矩阵与 Q8_0 量化向量的点积，块大小 4x4。使用 NEON 和查表法（kvalues_mxfp4）进行反量化，指数部分通过
+    E8M0 转换，若非 aarch64 或缺少 DP 指令则回退到通用实现。
+  line: 468-525
+  name: ggml_gemv_mxfp4_4x4_q8_0
+- code:
+  - void ggml_gemv_q4_K_8x4_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    constexpr int    col_groups = ncols_interleaved / 4; // 0123 and 4567'
+  - '    const uint8x16_t m4b        = vdupq_n_u8(0x0f);'
+  - '    float32x4_t acc_f32[col_groups];'
+  - '    const block_q8_K * GGML_RESTRICT q8_ptr = (const block_q8_K *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_Kx8 * GGML_RESTRICT q4_ptr = (const block_q4_Kx8 *) vx
+    + (x * nb);'
+  - '        for (int i = 0; i < col_groups; i++) {'
+  - '            acc_f32[i] = vdupq_n_f32(0);'
+  - '        }'
+  - '        for (int b = 0; b < nb; b++) {'
+  - '            float32x4_t q4_d_0        = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q4_ptr[b].d));      // d0 d1 d2 d3'
+  - '            float32x4_t q4_d_1        = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q4_ptr[b].d + 4));  // d4 d5 d6 d7'
+  - '            float32x4_t q8_d          = vdupq_n_f32(q8_ptr[b].d);'
+  - '            float32x4_t sb_scale_0123 = vmulq_f32(q4_d_0, q8_d);'
+  - '            float32x4_t sb_scale_4567 = vmulq_f32(q4_d_1, q8_d);'
+  - '            float32x4_t q4_dmin_0     = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q4_ptr[b].dmin));      // dmin 0..3'
+  - '            float32x4_t q4_dmin_1     = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q4_ptr[b].dmin + 4));  // dmin 4..7'
+  - '            float32x4_t sb_min_0123   = vmulq_f32(q4_dmin_0, q8_d);'
+  - '            float32x4_t sb_min_4567   = vmulq_f32(q4_dmin_1, q8_d);'
+  - '            int32x4_t bias_acc[2] = { vdupq_n_s32(0), vdupq_n_s32(0) };'
+  - '            int32x4_t acc_lo[col_groups];'
+  - '            int32x4_t acc_hi[col_groups];'
+  - '            const int16x8_t bsums = vpaddq_s16(vld1q_s16(q8_ptr[b].bsums), vld1q_s16(q8_ptr[b].bsums
+    + 8));'
+  - '            int16_t         bsums_arr[8];'
+  - '            vst1q_s16(bsums_arr, bsums);'
+  - '            for (int sb = 0; sb < QK_K / 64; sb++) {'
+  - '                for (int i = 0; i < col_groups; i++) {'
+  - '                    acc_lo[i] = vdupq_n_s32(0);'
+  - '                    acc_hi[i] = vdupq_n_s32(0);'
+  - '                }'
+  - '                int16x8_t q4sb_mins[2];'
+  - '                int16x8_t q4sb_scales[2];'
+  - '                for (int i = 0; i < 2; i++) {'
+  - '                    int8_t    aux_q4sb[8];'
+  - '                    const int offset = sb * 24 + i * 12;'
+  - '                    decode_q_Kx8_6bit_scales(&q4_ptr[b].scales[offset], &q4sb_mins[i],
+    aux_q4sb);'
+  - '                    q4sb_scales[i] = vmovl_s8(vld1_s8(aux_q4sb));'
+  - '                }'
+  - '                int8x16_t q8_qs[64 / 16];'
+  - '                for (int i = 0; i < 64 / 16; i++) {'
+  - '                    q8_qs[i] = vld1q_s8(q8_ptr[b].qs + sb * 64 + i * 16);'
+  - '                }'
+  - '                for (int c = 0; c < col_groups; c++) {'
+  - '                    uint8x16_t q4_cols[8];'
+  - '                    for (int i = 0; i < 8; i++) {'
+  - '                        q4_cols[i] = vld1q_u8(q4_ptr[b].qs + sb * QK_K + i *
+    32 + 16 * c);'
+  - '                    }'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[0],
+    m4b)), q8_qs[0], 0);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[1],
+    m4b)), q8_qs[0], 1);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[2],
+    m4b)), q8_qs[0], 2);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[3],
+    m4b)), q8_qs[0], 3);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[4],
+    m4b)), q8_qs[1], 0);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[5],
+    m4b)), q8_qs[1], 1);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[6],
+    m4b)), q8_qs[1], 2);'
+  - '                    acc_lo[c] = vdotq_laneq_s32(acc_lo[c], vreinterpretq_s8_u8(vandq_u8(q4_cols[7],
+    m4b)), q8_qs[1], 3);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[0],
+    4)), q8_qs[2], 0);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[1],
+    4)), q8_qs[2], 1);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[2],
+    4)), q8_qs[2], 2);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[3],
+    4)), q8_qs[2], 3);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[4],
+    4)), q8_qs[3], 0);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[5],
+    4)), q8_qs[3], 1);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[6],
+    4)), q8_qs[3], 2);'
+  - '                    acc_hi[c] = vdotq_laneq_s32(acc_hi[c], vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[7],
+    4)), q8_qs[3], 3);'
+  - '                }'
+  - '                const int16x4_t   sc_0123_lo = vget_low_s16(q4sb_scales[0]);'
+  - '                const int16x4_t   sc_0123_hi = vget_low_s16(q4sb_scales[1]);'
+  - '                const float32x4_t sumf_0123  = vcvtq_f32_s32(vaddq_s32(vmulq_s32(vmovl_s16(sc_0123_lo),
+    acc_lo[0]),'
+  - '                                                                       vmulq_s32(vmovl_s16(sc_0123_hi),
+    acc_hi[0])));'
+  - '                acc_f32[0]                   = vfmaq_f32(acc_f32[0], sb_scale_0123,
+    sumf_0123);'
+  - '                const int16x4_t   sc_4567_lo = vget_high_s16(q4sb_scales[0]);'
+  - '                const int16x4_t   sc_4567_hi = vget_high_s16(q4sb_scales[1]);'
+  - '                const float32x4_t sumf_4567  = vcvtq_f32_s32(vaddq_s32(vmulq_s32(vmovl_s16(sc_4567_lo),
+    acc_lo[1]),'
+  - '                                                                       vmulq_s32(vmovl_s16(sc_4567_hi),
+    acc_hi[1])));'
+  - '                acc_f32[1]                   = vfmaq_f32(acc_f32[1], sb_scale_4567,
+    sumf_4567);'
+  - '                const int16x4_t bsums_vec_lo = vdup_n_s16(bsums_arr[2 * sb +
+    0]);'
+  - '                const int16x4_t bsums_vec_hi = vdup_n_s16(bsums_arr[2 * sb +
+    1]);'
+  - '                bias_acc[0] = vmlal_s16(bias_acc[0], bsums_vec_lo, vget_low_s16(q4sb_mins[0]));'
+  - '                bias_acc[0] = vmlal_s16(bias_acc[0], bsums_vec_hi, vget_low_s16(q4sb_mins[1]));'
+  - '                bias_acc[1] = vmlal_s16(bias_acc[1], bsums_vec_lo, vget_high_s16(q4sb_mins[0]));'
+  - '                bias_acc[1] = vmlal_s16(bias_acc[1], bsums_vec_hi, vget_high_s16(q4sb_mins[1]));'
+  - '            }  // for sb'
+  - '            acc_f32[0] = vmlsq_f32(acc_f32[0], vcvtq_f32_s32(bias_acc[0]), sb_min_0123);'
+  - '            acc_f32[1] = vmlsq_f32(acc_f32[1], vcvtq_f32_s32(bias_acc[1]), sb_min_4567);'
+  - '        }  // for b'
+  - '        int base = x * ncols_interleaved;'
+  - '        vst1q_f32(s + base, acc_f32[0]);'
+  - '        vst1q_f32(s + base + 4, acc_f32[1]);'
+  - '    }  // for x'
+  - '    return;'
+  - '#endif  // #if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    ggml_gemv_q4_K_8x4_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 计算 Q4_K 量化矩阵与 Q8_K 量化向量的点积，块大小为 8x4（8 个列，4 个量化组）。使用 NEON DP 指令和 6 位缩放因子解码，并结合偏置校正。若非
+    aarch64 或缺少 DP 指令则回退到通用实现。
+  line: 527-648
+  name: ggml_gemv_q4_K_8x4_q8_K
+- code:
+  - void ggml_gemv_q4_K_8x8_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    constexpr int    col_pairs = ncols_interleaved / 2;'
+  - '    const uint8x16_t m4b       = vdupq_n_u8(0x0f);'
+  - '    float32x4_t acc_f32[ncols_interleaved / 4];'
+  - '    const block_q8_K * GGML_RESTRICT q8_ptr = (const block_q8_K *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_Kx8 * GGML_RESTRICT q4_ptr = (const block_q4_Kx8 *) vx
+    + (x * nb);'
+  - '        for (int i = 0; i < ncols_interleaved / 4; i++) {'
+  - '            acc_f32[i] = vdupq_n_f32(0);'
+  - '        }'
+  - '        for (int b = 0; b < nb; b++) {'
+  - '            float32x4_t q4_d_0     = vcvt_f32_f16(vld1_f16((const __fp16 *) q4_ptr[b].d));      //
+    d0 d1 d2 d3'
+  - '            float32x4_t q4_d_1     = vcvt_f32_f16(vld1_f16((const __fp16 *) q4_ptr[b].d
+    + 4));  // d4 d5 d6 d7'
+  - '            float32x4_t q8_d       = vdupq_n_f32(q8_ptr[b].d);'
+  - '            float32x4_t sb_scale_0 = vmulq_f32(q4_d_0, q8_d);'
+  - '            float32x4_t sb_scale_1 = vmulq_f32(q4_d_1, q8_d);'
+  - '            float32x4_t q4_dmin_0  = vcvt_f32_f16(vld1_f16((const __fp16 *) q4_ptr[b].dmin));      //
+    dmin 0..3'
+  - '            float32x4_t q4_dmin_1  = vcvt_f32_f16(vld1_f16((const __fp16 *) q4_ptr[b].dmin
+    + 4));  // dmin 4..7'
+  - '            float32x4_t sb_min_0   = vmulq_f32(q4_dmin_0, q8_d);'
+  - '            float32x4_t sb_min_1   = vmulq_f32(q4_dmin_1, q8_d);'
+  - '            int32x4_t bias_acc[2] = { vdupq_n_s32(0), vdupq_n_s32(0) };'
+  - '            int32x4_t acc_lo[col_pairs];'
+  - '            int32x4_t acc_hi[col_pairs];'
+  - '            const int16x8_t bsums = vpaddq_s16(vld1q_s16(q8_ptr[b].bsums), vld1q_s16(q8_ptr[b].bsums
+    + 8));'
+  - '            int16_t         bsums_arr[8];'
+  - '            vst1q_s16(bsums_arr, bsums);'
+  - '            for (int sb = 0; sb < QK_K / 64; sb++) {'
+  - '                for (int i = 0; i < col_pairs; i++) {'
+  - '                    acc_lo[i] = vdupq_n_s32(0);'
+  - '                    acc_hi[i] = vdupq_n_s32(0);'
+  - '                }'
+  - '                int16x8_t q4sb_mins[2];  // int16 as its needed for bias_acc
+    later'
+  - '                int16x8_t q4sb_scales[2];'
+  - '                for (int i = 0; i < 2; i++) {'
+  - '                    int8_t    aux_q4sb[8];'
+  - '                    const int offset = sb * 24 + i * 12;'
+  - '                    decode_q_Kx8_6bit_scales(&q4_ptr[b].scales[offset], &q4sb_mins[i],
+    aux_q4sb);'
+  - '                    q4sb_scales[i] = vmovl_s8(vld1_s8(aux_q4sb));'
+  - '                }'
+  - '                const uint8_t * q4_base = q4_ptr[b].qs + sb * QK_K;'
+  - '                const int8_t * q8_base = q8_ptr[b].qs + sb * 64;'
+  - '                int8x16_t      q8_qs[8];'
+  - '                for (int i = 0; i < 8; i++) {'
+  - '                    q8_qs[i] = (int8x16_t) vld1q_dup_s64((const int64_t *) (q8_base
+    + i * 8));'
+  - '                }'
+  - '                for (int cp = 0; cp < col_pairs; cp++) {'
+  - '                    uint8x16_t q4_qs_cp_0 = vld1q_u8(q4_base + 16 * cp);'
+  - '                    uint8x16_t q4_qs_cp_1 = vld1q_u8(q4_base + 16 * cp + 64);'
+  - '                    uint8x16_t q4_qs_cp_2 = vld1q_u8(q4_base + 16 * cp + 128);'
+  - '                    uint8x16_t q4_qs_cp_3 = vld1q_u8(q4_base + 16 * cp + 192);'
+  - '                    acc_lo[cp] ='
+  - '                        ggml_vdotq_s32(acc_lo[cp], vreinterpretq_s8_u8(vandq_u8(q4_qs_cp_0,
+    m4b)), q8_qs[0]);  // 0 .. 7'
+  - '                    acc_lo[cp] ='
+  - '                        ggml_vdotq_s32(acc_lo[cp], vreinterpretq_s8_u8(vandq_u8(q4'
+  - '                    // ... (code truncated in the provided source)'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '#endif'
+  - '}'
+  desc: 计算 Q4_K 量化矩阵与 Q8_K 量化向量的点积，块大小为 8x8。使用 NEON 和 DP 指令优化，通过列对方式处理 8 列数据，并利用 6
+    位缩放因子解码和偏置校正。若非 aarch64 或缺少 DP 指令则回退到通用实现。该函数代码在提供的片段中未完整，此处为部分实现。
+  line: 650-743 (部分)
+  name: ggml_gemv_q4_K_8x8_q8_K
+- code:
+  - void ggml_gemv_q4_K_8x8_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    ...'
+  - '}'
+  desc: 实现Q4_K格式的8x8块量化GEMV运算，利用ARM NEON指令集进行优化。
+  line: 1-140
+  name: ggml_gemv_q4_K_8x8_q8_K
+- code:
+  - void ggml_gemv_q5_K_8x4_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    ...'
+  - '}'
+  desc: 实现Q5_K格式的8x4块量化GEMV运算，利用ARM NEON指令集进行优化。
+  line: 141-300
+  name: ggml_gemv_q5_K_8x4_q8_K
+- code:
+  - void ggml_gemv_q5_K_8x8_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    ...'
+  - '}'
+  desc: 实现Q5_K格式的8x8块量化GEMV运算，利用ARM NEON指令集进行优化。
+  line: 301-600
+  name: ggml_gemv_q5_K_8x8_q8_K
+- code:
+  - void ggml_gemv_q6_K_8x4_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    ...'
+  - '}'
+  desc: 实现Q6_K格式的8x4块量化GEMV运算，利用ARM NEON指令集进行优化。
+  line: 601-802
+  name: ggml_gemv_q6_K_8x4_q8_K
+- code:
+  - void ggml_gemv_q6_K_8x4_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    ...'
+  - '    // 使用 NEON 和 DOTPROD 的优化路径'
+  - '    ...'
+  - '    ggml_gemv_q6_K_8x4_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行 q6_K 与 q8_K 格式的矩阵-向量乘法，使用 8 行 x 4 列的交织块。该函数针对 ARMv8.2-A 架构使用 NEON 和 DOTPROD
+    指令进行优化，并包含一个通用实现作为回退路径。优化路径通过将量化的 q6_K 权重解包为高低两部分，并使用点积指令加速累加，最后通过预计算的缩放因子和偏置项进行修正。
+  line: 1-260
+  name: ggml_gemv_q6_K_8x4_q8_K
+- code:
+  - void ggml_gemv_q6_K_8x8_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    ...'
+  - '    // 使用 NEON 和 DOTPROD 的优化路径'
+  - '    ...'
+  - '    ggml_gemv_q6_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行 q6_K 与 q8_K 格式的矩阵-向量乘法，使用 8 行 x 8 列的交织块。函数包含一个基于 ARM NEON 和 DOTPROD 指令的高度优化实现，通过复杂的向量化操作处理量化的权重，并利用预加载的缩放和偏置来减少计算量。若平台不支持相关指令，则回退到通用实现。
+  line: 262-600
+  name: ggml_gemv_q6_K_8x8_q8_K
+- code:
+  - void ggml_gemv_q8_0_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    ...'
+  - '    // 使用 NEON 和 DOTPROD 的优化路径'
+  - '    ...'
+  - '    ggml_gemv_q8_0_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行 q8_0 格式的矩阵-向量乘法，使用 4 行 x 4 列的交织块。该函数使用 NEON 内建函数和 DOTPROD 指令对 ARMv8.2-A
+    进行优化，通过向量化加载和点积运算加速计算。若非 ARM 平台或缺少 DOTPROD 支持，则调用通用实现。
+  line: 602-720
+  name: ggml_gemv_q8_0_4x4_q8_0
+- code:
+  - void ggml_gemv_q8_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    ...'
+  - '    // 使用 NEON 和 DOTPROD 的优化路径'
+  - '    ...'
+  - '    ggml_gemv_q8_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行 q8_0 格式的矩阵-向量乘法，使用 4 行 x 8 列的交织块。与 4x4 版本类似，此函数使用 NEON 和 DOTPROD 指令进行优化，但针对更宽的列交织进行了调整，以提高缓存利用率和计算并行度。包含通用回退路径。
+  line: 722-850
+  name: ggml_gemv_q8_0_4x8_q8_0
+- code:
+  - void ggml_gemm_q4_0_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    ...'
+  - '    __asm__ __volatile__('
+  - '        "mov x10, %x[nr]\n"'
+  - '        ...'
+  - '    );'
+  - '}'
+  desc: 执行 q4_0 与 q8_0 格式的矩阵-矩阵乘法，使用 4 行 x 4 列的输出块。在支持 DOTPROD 的 ARMv8.2-A 架构上，此函数使用手写内联汇编实现，以最大化指令调度和寄存器利用率，实现极高的计算性能。在其他平台上，该函数不执行任何操作（空函数）。
+  line: 852-1439
+  name: ggml_gemm_q4_0_4x4_q8_0
+- code:
+  - void ggml_gemm_q4_0_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON)'
+  - '    const void * b_ptr = vx;'
+  - '    const void * a_ptr = vy;'
+  - '    float * res_ptr = s;'
+  - '    size_t res_stride = bs * sizeof(float);'
+  - '    __asm__ __volatile__(...);'
+  - '    return;'
+  - '#endif'
+  - '    ggml_gemm_q4_0_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行Q4_0和Q8_0量化矩阵乘法，针对4x4块大小优化，使用NEON内联汇编实现。
+  line: 1-100
+  name: ggml_gemm_q4_0_4x4_q8_0
+- code:
+  - void ggml_gemm_q4_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) &&
+    defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '    const void * b_ptr = vx;'
+  - '    const void * a_ptr = vy;'
+  - '    float * res_ptr = s;'
+  - '    size_t res_stride = bs * sizeof(float);'
+  - '    __asm__ __volatile__(...);'
+  - '    return;'
+  - '#endif'
+  - '    ggml_gemm_q4_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行Q4_0和Q8_0量化矩阵乘法，针对4x8块大小优化，使用NEON内联汇编实现。
+  line: 101-200
+  name: ggml_gemm_q4_0_4x8_q8_0
+- code:
+  - void ggml_gemm_q4_0_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(vx);'
+  - '    UNUSED(vy);'
+  - '    UNUSED(nr);'
+  - '    UNUSED(nc);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)'
+  - '    #if defined(__ARM_FEATURE_SVE) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '        if (ggml_cpu_get_sve_cnt() == QK8_0) {'
+  - '            const void * b_ptr = vx;'
+  - '            const void * a_ptr = vy;'
+  - '            float * res_ptr = s;'
+  - '            size_t res_stride = bs * sizeof(float);'
+  - '            __asm__ __volatile__(...);'
+  - '            return;'
+  - '        }'
+  - '    #endif'
+  - '#endif'
+  - '    ggml_gemm_q4_0_8x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 执行Q4_0和Q8_0量化矩阵乘法，针对8x8块大小优化，使用SVE内联汇编实现。
+  line: 201-2175
+  name: ggml_gemm_q4_0_8x8_q8_0
+- code: []
+  desc: This is the main file entry point containing all the GEMM kernels.
+  line: 1-3006
+  name: __main__
+- code:
+  - void ggml_gemm_q4_0_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 8 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);   UNUSED(bs);   UNUSED(vx);   UNUSED(vy);   UNUSED(nr);   UNUSED(nc);   UNUSED(nb);   UNUSED(ncols_interleaved);   UNUSED(blocklen);'
+  - '    #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)'
+  - '    #if defined(__ARM_FEATURE_SVE) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '    // SVE and MATMUL_INT8-specific code with inline asm.'
+  - '    return;'
+  - '    #endif // #if defined(__ARM_FEATURE_SVE) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '    #endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)'
+  - '    ggml_gemm_q4_0_8x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: A matrix multiply kernel for Q4_0 8x8 blocks multiplied by Q8_0 weights, with
+    an optimized SVE implementation and a generic fallback.
+  line: 1-103
+  name: ggml_gemm_q4_0_8x8_q8_0
+- code:
+  - void ggml_gemm_iq4_nl_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);   UNUSED(bs);   UNUSED(vx);   UNUSED(vy);   UNUSED(nr);   UNUSED(nc);   UNUSED(nb);   UNUSED(ncols_interleaved);   UNUSED(blocklen);'
+  - '    #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    // NEON and DOTPROD-specific code.'
+  - '    return;'
+  - '    #endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON)'
+  - '    ggml_gemm_iq4_nl_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: A matrix multiply kernel for IQ4_NL 4x4 blocks multiplied by Q8_0 weights,
+    implemented with NEON dot product instructions and a generic fallback.
+  line: 104-200
+  name: ggml_gemm_iq4_nl_4x4_q8_0
+- code:
+  - void ggml_gemm_mxfp4_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    UNUSED(s);   UNUSED(bs);   UNUSED(vx);   UNUSED(vy);   UNUSED(nr);   UNUSED(nc);   UNUSED(nb);   UNUSED(ncols_interleaved);   UNUSED(blocklen);'
+  - '    #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    // NEON and DOTPROD-specific code.'
+  - '    return;'
+  - '    #endif // #if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__)
+    && defined(__ARM_NEON)'
+  - '    ggml_gemm_mxfp4_4x4_q8_0_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: A matrix multiply kernel for MXFP4 4x4 blocks multiplied by Q8_0 weights,
+    implemented with NEON dot product instructions and a generic fallback.
+  line: 201-297
+  name: ggml_gemm_mxfp4_4x4_q8_0
+- code:
+  - void ggml_gemm_q4_K_8x4_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const
+    void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 4;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);   UNUSED(ncols_interleaved);   UNUSED(blocklen);'
+  - '    #if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    // NEON and DOTPROD-specific code.'
+  - '    return;'
+  - '    #endif  // defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    ggml_gemm_q4_K_8x4_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: A matrix multiply kernel for Q4_K 8x4 blocks multiplied by Q8_K weights, with
+    a NEON DOTPROD optimization and a generic fallback.
+  line: 298-400
+  name: ggml_gemm_q4_K_8x4_q8_K
+- code:
+  - void ggml_gemm_q5_K_8x4_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 4;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);   UNUSED(ncols_interleaved);   UNUSED(blocklen);'
+  - '    #if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    // NEON and DOTPROD-specific code.'
+  - '    return;'
+  - '    #endif  // defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    ggml_gemm_q5_K_8x4_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: A matrix multiply kernel for Q5_K 8x4 blocks multiplied by Q8_K weights, with
+    a NEON DOTPROD optimization and a generic fallback.
+  line: 401-500
+  name: ggml_gemm_q5_K_8x4_q8_K
+- code:
+  - void ggml_gemm_q5_K_8x4_q8_K(int n, float * GGML_RESTRICT s, size_t bs,
+  - '                             const void * GGML_RESTRICT vx, const void * GGML_RESTRICT
+    vy,'
+  - '                             int nr, int nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 4;'
+  - '    ...'
+  - '    for (int y = 0; y < nr / q8_k_blocklen; y++) {'
+  - '        ...'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            ...'
+  - '            // 详细的NEON SIMD优化计算循环'
+  - '            for (int b = 0; b < nb; b++) {'
+  - '                ...'
+  - '                // Q5数据的解包、NEON点积运算、缩放和偏置应用'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  - ''
+  - // 紧接的备用实现路径
+  - void ggml_gemm_q4_K_8x8_q8_K(int n, float * s, size_t bs,
+  - '                             const void * vx, const void * vy, int nr, int nc)
+    {'
+  - '    ...'
+  desc: 实现Q5_K（5位量化）与Q8_K（8位量化）矩阵乘法，使用NEON指令集进行8x4分块的矩阵乘法加速。该函数充分利用ARM的vdotq_laneq_s32指令进行点积运算，并针对Q5_K的压缩格式进行了专门的数据解包和缩放处理，以支持不同规模的矩阵乘法。
+  line: 3707-4100
+  name: ggml_gemm_q5_K_8x4_q8_K
+- code:
+  - void ggml_gemm_q4_K_8x8_q8_K(int n, float * GGML_RESTRICT s, size_t bs,
+  - '                             const void * GGML_RESTRICT vx, const void * GGML_RESTRICT
+    vy,'
+  - '                             int nr, int nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 8;'
+  - '    ...'
+  - '    // SVE优化路径（当支持SVE和Matmul I8时）'
+  - '    if (svcntb() * 8 == 256) {'
+  - '        ...'
+  - '        // 使用SVE的svmmla_s32指令进行计算'
+  - '        for (int b = 0; b < nb; b++) {'
+  - '            ...'
+  - '            // 复杂的量化数据解码和SVE矩阵乘法运算'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // NEON i8mm优化路径'
+  - '    ...'
+  - '    // 使用NEON的vmmlaq_s32指令进行计算'
+  - '    for (int b = 0; b < nb; b++) {'
+  - '        ...'
+  - '        // Q4数据解码、NEON矩阵乘法、缩放和偏置处理'
+  - '    }'
+  - '}'
+  desc: 实现Q4_K（4位量化）与Q8_K（8位量化）矩阵乘法，使用SVE（可扩展向量扩展）和NEON指令集进行优化。该函数支持8x8分块策略，并使用SVE的svmmla_s32指令进行矩阵乘法加速，同时处理Q4_K的压缩格式，包括位提取、缩放因子解码和偏置修正等复杂操作。函数根据不同的硬件支持情况提供了多个实现路径。
+  line: 4100-4600
+  name: ggml_gemm_q4_K_8x8_q8_K
+- code:
+  - for (int i = 0; i < q8_k_blocklen; i++) {
+  - '    for (int j = 0; j < 2; j++) {'
+  - '        float32x4_t       q8_d    = vdupq_n_f32(q8_ptr[b].d[i]);'
+  - '        float32x4_t       q4_dmin = vcvt_f32_f16(vld1_f16((const __fp16 *) (q4_ptr[b].dmin
+    + j * 4)));'
+  - '        const float32x4_t dmins   = vmulq_f32(q4_dmin, q8_d);'
+  - '        float32x4_t       q4_d  = vcvt_f32_f16(vld1_f16((const __fp16 *) (q4_ptr[b].d
+    + j * 4)));'
+  - '        const float32x4_t scale = vmulq_f32(q4_d, q8_d);'
+  - '        acc_f32[2 * i + j] = vmlsq_f32(acc_f32[2 * i + j], vcvtq_f32_s32(bias_acc[2
+    * i + j]), dmins);'
+  - '        acc_f32[2 * i + j] = vmlaq_f32(acc_f32[2 * i + j], vcvtq_f32_s32(reorder_acc[2
+    * i + j]), scale);'
+  - '    }'
+  - '}'
+  - for (int i = 0; i < q8_k_blocklen; i++) {
+  - '    int row = y * q8_k_blocklen + i;'
+  - '    for (int j = 0; j < 2; j++) {'
+  - '        int col    = x * ncols_interleaved + j * 4;'
+  - '        int offset = row * bs + col;'
+  - '        vst1q_f32(s + offset, acc_f32[2 * i + j]);'
+  - '    }'
+  - '}'
+  - ggml_gemm_q4_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
+  - void ggml_gemm_q5_K_8x8_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '    constexpr int    q8_k_blocklen = 4;'
+  - '    constexpr int    col_pairs     = ncols_interleaved / 2;'
+  - '    const uint8x16_t m4b           = vdupq_n_u8(0x0f);'
+  - '    const uint8x16_t mone          = vdupq_n_u8(1);'
+  - '    const uint8x16_t mtwo          = vdupq_n_u8(2);'
+  - '    float32x4_t acc_f32[blocklen];'
+  - '    for (int y = 0; y < nr / q8_k_blocklen; y++) {'
+  - '        const block_q8_Kx4 * GGML_RESTRICT q8_ptr = (const block_q8_Kx4 *) vy
+    + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q5_Kx8 * GGML_RESTRICT q5_ptr = (const block_q5_Kx8 *)
+    vx + (x * nb);'
+  - '            for (int i = 0; i < blocklen; i++) {'
+  - '                acc_f32[i] = vdupq_n_f32(0);'
+  - '            }'
+  - '            for (int b = 0; b < nb; b++) {'
+  - '                const int16x8_t bsums[4]{'
+  - '                    vpaddq_s16(vld1q_s16(q8_ptr[b].bsums + 16 * 0), vld1q_s16(q8_ptr[b].bsums
+    + 16 * 0 + 8)),'
+  - '                    vpaddq_s16(vld1q_s16(q8_ptr[b].bsums + 16 * 1), vld1q_s16(q8_ptr[b].bsums
+    + 16 * 1 + 8)),'
+  - '                    vpaddq_s16(vld1q_s16(q8_ptr[b].bsums + 16 * 2), vld1q_s16(q8_ptr[b].bsums
+    + 16 * 2 + 8)),'
+  - '                    vpaddq_s16(vld1q_s16(q8_ptr[b].bsums + 16 * 3), vld1q_s16(q8_ptr[b].bsums
+    + 16 * 3 + 8)),'
+  - '                };'
+  - '                int16_t bsums_arr[4][8];'
+  - '                for (int q8_row = 0; q8_row < 4; q8_row++) {'
+  - '                    vst1q_s16(bsums_arr[q8_row], bsums[q8_row]);'
+  - '                }'
+  - '                int32x4_t sb_acc[4];'
+  - '                int32x4_t acc[8];'
+  - '                int32x4_t bias_acc[8];'
+  - '                for (int i = 0; i < 8; i++) {'
+  - '                    acc[i]      = vdupq_n_s32(0);'
+  - '                    bias_acc[i] = vdupq_n_s32(0);'
+  - '                }'
+  - '                const uint8_t * qh_base = q5_ptr[b].qh;'
+  - '                uint8x16_t      qh[col_pairs][4];'
+  - '                for (int cp = 0; cp < col_pairs; cp++) {'
+  - '                    qh[cp][0] = vld1q_u8(qh_base + 16 * cp);'
+  - '                    qh[cp][1] = vld1q_u8(qh_base + 16 * cp + 64);'
+  - '                    qh[cp][2] = vld1q_u8(qh_base + 16 * cp + 128);'
+  - '                    qh[cp][3] = vld1q_u8(qh_base + 16 * cp + 192);'
+  - '                }'
+  - '                for (int sb = 0; sb < QK_K / 64; sb++) {'
+  - '                    int8_t    q5sb_scales[2][8];'
+  - '                    int16x8_t q5sb_mins[2];'
+  - '                    for (int i = 0; i < 2; i++) {'
+  - '                        const int offset = sb * 24 + i * 12;'
+  - '                        decode_q_Kx8_6bit_scales(&q5_ptr[b].scales[offset], &q5sb_mins[i],
+    q5sb_scales[i]);'
+  - '                    }'
+  - '                    const int8_t * q8_base = q8_ptr[b].qs + sb * 256;'
+  - '                    int8x16_t q8_qs_01[8];'
+  - '                    int8x16_t q8_qs_23[8];'
+  - '                    for (int i = 0; i < 8; i++) {'
+  - '                        const int offset = i * 32;'
+  - '                        q8_qs_01[i]      = vld1q_s8(q8_base + offset);'
+  - '                        q8_qs_23[i]      = vld1q_s8(q8_base + offset + 16);'
+  - '                    }'
+  - '                    const int8x16_t q8s[2][8] = {'
+  - '                        { q8_qs_01[0], q8_qs_01[1], q8_qs_01[2], q8_qs_01[3],
+    q8_qs_01[4], q8_qs_01[5], q8_qs_01[6], q8_qs_01[7] },'
+  - '                        { q8_qs_23[0], q8_qs_23[1], q8_qs_23[2], q8_qs_23[3],
+    q8_qs_23[4], q8_qs_23[5], q8_qs_23[6], q8_qs_23[7] },'
+  - '                    };'
+  - '                    for (int cp = 0; cp < col_pairs; cp++) {'
+  - '                        for (int i = 0; i < 4; i++) {'
+  - '                            sb_acc[i] = vdupq_n_s32(0);'
+  - '                        }'
+  - '                        uint8x16_t qs_cp_0 = vld1q_u8(q5_ptr[b].qs + sb * QK_K
+    + 16 * cp + 0);'
+  - '                        uint8x16_t qs_cp_1 = vld1q_u8(q5_ptr[b].qs + sb * QK_K
+    + 16 * cp + 64);'
+  - '                        uint8x16_t qs_cp_2 = vld1q_u8(q5_ptr[b].qs + sb * QK_K
+    + 16 * cp + 128);'
+  - '                        uint8x16_t qs_cp_3 = vld1q_u8(q5_ptr[b].qs + sb * QK_K
+    + 16 * cp + 192);'
+  - '                        uint8x16_t hbit_lo_0    = vandq_u8(qh[cp][0], mone);'
+  - '                        uint8x16_t hbit_hi_0    = vshlq_n_u8(vandq_u8(qh[cp][0],
+    mtwo), 3);'
+  - '                        qh[cp][0]               = vshrq_n_u8(qh[cp][0], 2);'
+  - '                        const int8x16_t qs_lo_0 = vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(qs_cp_0,
+    m4b), hbit_lo_0, 4));'
+  - '                        int32x4_t       acc_0   = sb_acc[0];'
+  - '                        acc_0                   = vmmlaq_s32(acc_0, qs_lo_0,
+    q8s[0][0]);'
+  - '                        int32x4_t acc_2         = sb_acc[2];'
+  - '                        acc_2                   = vmmlaq_s32(acc_2, qs_lo_0,
+    q8s[1][0]);'
+  - '                        const int8x16_t qs_hi_0 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(qs_cp_0,
+    4), hbit_hi_0));'
+  - '                        int32x4_t       acc_1   = sb_acc[1];'
+  - '                        acc_1                   = vmmlaq_s32(acc_1, qs_hi_0,
+    q8s[0][4]);'
+  - '                        int32x4_t acc_3         = sb_acc[3];'
+  - '                        acc_3                   = vmmlaq_s32(acc_3, qs_hi_0,
+    q8s[1][4]);'
+  - '                        uint8x16_t hbit_hi_1    = vshlq_n_u8(vandq_u8(qh[cp][1],
+    mtwo), 3);'
+  - '                        uint8x16_t hbit_lo_1    = vandq_u8(qh[cp][1], mone);'
+  - '                        qh[cp][1]               = vshrq_n_u8(qh[cp][1], 2);'
+  - '                        const int8x16_t qs_lo_1 = vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(qs_cp_1,
+    m4b), hbit_lo_1, 4));'
+  - '                        acc_0                   = vmmlaq_s32(acc_0, qs_lo_1,
+    q8s[0][1]);'
+  - '                        acc_2                   = vmmlaq_s32(acc_2, qs_lo_1,
+    q8s[1][1]);'
+  - '                        const int8x16_t qs_hi_1 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(qs_cp_1,
+    4), hbit_hi_1));'
+  - '                        acc_1                   = vmmlaq_s32(acc_1, qs_hi_1,
+    q8s[0][5]);'
+  - '                        acc_3                   = vmmlaq_s32(acc_3, qs_hi_1,
+    q8s[1][5]);'
+  - '                        uint8x16_t hbit_hi_2    = vshlq_n_u8(vandq_u8(qh[cp][2],
+    mtwo), 3);'
+  - '                        uint8x16_t hbit_lo_2    = vandq_u8(qh[cp][2], mone);'
+  - '                        qh[cp][2]               = vshrq_n_u8(qh[cp][2], 2);'
+  - '                        const int8x16_t qs_lo_2 = vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(qs_cp_2,
+    m4b), hbit_lo_2, 4));'
+  - '                        acc_0                   = vmmlaq_s32(acc_0, qs_lo_2,
+    q8s[0][2]);'
+  - '                        acc_2                   = vmmlaq_s32(acc_2, qs_lo_2,
+    q8s[1][2]);'
+  - '                        const int8x16_t qs_hi_2 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(qs_cp_2,
+    4), hbit_hi_2));'
+  - '                        acc_1                   = vmmlaq_s32(acc_1, qs_hi_2,
+    q8s[0][6]);'
+  - '                        acc_3                   = vmmlaq_s32(acc_3, qs_hi_2,
+    q8s[1][6]);'
+  - '                        uint8x16_t hbit_lo_3    = vandq_u8(qh[cp][3], mone);'
+  - '                        uint8x16_t hbit_hi_3    = vshlq_n_u8(vandq_u8(qh[cp][3],
+    mtwo), 3);'
+  - '                        qh[cp][3]               = vshrq_n_u8(qh[cp][3], 2);'
+  - '                        const int8x16_t qs_lo_3 = vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(qs_cp_3,
+    m4b), hbit_lo_3, 4));'
+  - '                        acc_0                   = vmmlaq_s32(acc_0, qs_lo_3,
+    q8s[0][3]);'
+  - '                        sb_acc[0]               = acc_0;'
+  - '                        acc_2                   = vmmlaq_s32(acc_2, qs_lo_3,
+    q8s[1][3]);'
+  - '                        sb_acc[2]               = acc_2;'
+  - '                        const int       scale_offset = cp * 2;'
+  - '                        const int32_t   s0           = q5sb_scales[0][scale_offset];'
+  - '                        const int32_t   s1           = q5sb_scales[0][scale_offset
+    + 1];'
+  - '                        const int32x4_t block_scale  = vcombine_s32(vdup_n_s32(s0),
+    vdup_n_s32(s1));'
+  - '                        acc[cp]                      = vmlaq_s32(acc[cp], sb_acc[0],
+    block_scale);'
+  - '                        acc[cp + 4]                  = vmlaq_s32(acc[cp + 4],
+    sb_acc[2], block_scale);'
+  - '                        const int8x16_t qs_hi_3 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(qs_cp_3,
+    4), hbit_hi_3));'
+  - '                        acc_1                   = vmmlaq_s32(acc_1, qs_hi_3,
+    q8s[0][7]);'
+  - '                        sb_acc[1]               = acc_1;'
+  - '                        acc_3                   = vmmlaq_s32(acc_3, qs_hi_3,
+    q8s[1][7]);'
+  - '                        sb_acc[3]               = acc_3;'
+  - '                        const int32_t   s2           = q5sb_scales[1][scale_offset];'
+  - '                        const int32_t   s3           = q5sb_scales[1][scale_offset
+    + 1];'
+  - '                        const int32x4_t block_scale2 = vcombine_s32(vdup_n_s32(s2),
+    vdup_n_s32(s3));'
+  - '                        acc[cp]                      = vmlaq_s32(acc[cp], sb_acc[1],
+    block_scale2);'
+  - '                        acc[cp + 4]                  = vmlaq_s32(acc[cp + 4],
+    sb_acc[3], block_scale2);'
+  - '                    }'
+  - '                    for (int q8_row = 0; q8_row < 4; q8_row++) {'
+  - '                        int16x4_t bsums_vec_lo = vdup_n_s16(bsums_arr[sb][q8_row
+    * 2]);'
+  - '                        int16x4_t bsums_vec_hi = vdup_n_s16(bsums_arr[sb][q8_row
+    * 2 + 1]);'
+  - '                        bias_acc[2 * q8_row] ='
+  - '                            vmlal_s16(bias_acc[2 * q8_row], bsums_vec_lo, vget_low_s16(q5sb_mins[0]));'
+  - '                        bias_acc[2 * q8_row] ='
+  - '                            vmlal_s16(bias_acc[2 * q8_row], bsums_vec_hi, vget_low_s16(q5sb_mins[1]));'
+  - '                        bias_acc[2 * q8_row + 1] ='
+  - '                            vmlal_s16(bias_acc[2 * q8_row + 1], bsums_vec_lo,
+    vget_high_s16(q5sb_mins[0]));'
+  - '                        bias_acc[2 * q8_row + 1] ='
+  - '                            vmlal_s16(bias_acc[2 * q8_row + 1], bsums_vec_hi,
+    vget_high_s16(q5sb_mins[1]));'
+  - '                    }'
+  - '                }'
+  - '                for (int i = 0; i < 8; i++) {'
+  - '                    int32x2x2_t aux = vzip_s32(vget_low_s32(acc[i]), vget_high_s32(acc[i]));'
+  - '                    acc[i]          = vcombine_s32(aux.val[0], aux.val[1]);'
+  - '                }'
+  - '                int32x4_t reorder_acc[8] = {'
+  - '                    vcombine_s32(vget_low_s32(acc[0]), vget_low_s32(acc[1])),'
+  - '                    vcombine_s32(vget_low_s32(acc[2]), vget_low_s32(acc[3])),'
+  - '                    vcombine_s32(vget_high_s32(acc[0]), vget_high_s32(acc[1])),'
+  - '                    vcombine_s32(vget_high_s32(acc[2]), vget_high_s32(acc[3])),'
+  - '                    vcombine_s32(vget_low_s32(acc[4]), vget_low_s32(acc[5])),'
+  - '                    vcombine_s32(vget_low_s32(acc[6]), vget_low_s32(acc[7])),'
+  - '                    vcombine_s32(vget_high_s32(acc[4]), vget_high_s32(acc[5])),'
+  - '                    vcombine_s32(vget_high_s32(acc[6]), vget_high_s32(acc[7])),'
+  - '                };'
+  - '                for (int i = 0; i < q8_k_blocklen; i++) {'
+  - '                    for (int j = 0; j < 2; j++) {'
+  - '                        float32x4_t       q8_d    = vdupq_n_f32(q8_ptr[b].d[i]);'
+  - '                        float32x4_t       q5_dmin = vcvt_f32_f16(vld1_f16((const
+    __fp16 *) (q5_ptr[b].dmin + j * 4)));'
+  - '                        const float32x4_t dmins   = vmulq_f32(q5_dmin, q8_d);'
+  - '                        float32x4_t       q5_d  = vcvt_f32_f16(vld1_f16((const
+    __fp16 *) (q5_ptr[b].d + j * 4)));'
+  - '                        const float32x4_t scale = vmulq_f32(q5_d, q8_d);'
+  - '                        acc_f32[2 * i + j] = vmlsq_f32(acc_f32[2 * i + j], vcvtq_f32_s32(bias_acc[2
+    * i + j]), dmins);'
+  - '                        acc_f32[2 * i + j] = vmlaq_f32(acc_f32[2 * i + j], vcvtq_f32_s32(reorder_acc[2
+    * i + j]), scale);'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '            for (int i = 0; i < q8_k_blocklen; i++) {'
+  - '                int row = y * q8_k_blocklen + i;'
+  - '                for (int j = 0; j < 2; j++) {'
+  - '                    int col    = x * ncols_interleaved + j * 4;'
+  - '                    int offset = row * bs + col;'
+  - '                    vst1q_f32(s + offset, acc_f32[2 * i + j]);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return;'
+  - '#endif'
+  - '    ggml_gemm_q5_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  - void ggml_gemm_q6_K_8x4_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 4;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)'
+  - '    constexpr int    q8_k_blocklen = 4;'
+  - '    constexpr int    col_groups    = ncols_interleaved / 4;'
+  - '    constexpr int    acc_size      = q8_k_blocklen * col_groups;'
+  - '    const uint8x16_t m4b           = vdupq_n_u8(0x0f);'
+  - '    const uint8x16_t mask_lo       = vdupq_n_u8(0x03);'
+  - '    const uint8x16_t mask_hi       = vdupq_n_u8(0x30);'
+  - '    const int8x16_t  m32s          = vdupq_n_s8(32);'
+  - '    float32x4_t acc_f32[acc_size];'
+  - '    for (int y = 0; y < nr / q8_k_blocklen; y++) {'
+  - '        const block_q8_Kx4 * GGML_RESTRICT q8_ptr = (const block_q8_Kx4 *) vy
+    + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q6_Kx8 * GGML_RESTRICT q6_ptr = (const block_q6_Kx8 *)
+    vx + (x * nb);'
+  - '            for (int i = 0; i < acc_size; i++) {'
+  - '                acc_f32[i] = vdupq_n_f32(0);'
+  - '            }'
+  - '            for (int b = 0; b < nb; b++) {'
+  - '                float32x4_t q6_d_0123 = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q6_ptr[b].d));'
+  - '                float32x4_t q6_d_4567 = vcvt_f32_f16(vld1_f16((const __fp16 *)
+    q6_ptr[b].d + 4));'
+  - '                float32x4_t q8_d_0123 = vld1q_f32(q8_ptr[b].d);'
+  - '                float32x4_t sbd_scale_0123[q8_k_blocklen];'
+  - '                float32x4_t sbd_scale_4567[q8_k_blocklen];'
+  - '                sbd_scale_0123[0] = vmulq_laneq_f32(q6_d_0123, q8_d_0123, 0);'
+  - '                sbd_scale_4567[0] = vmulq_laneq_f32(q6_d_4567, q8_d_0123, 0);'
+  - '                sbd_scale_0123[1] = vmulq_laneq_f32(q6_d_0123, q8_d_0123, 1);'
+  - '                sbd_scale_4567[1] = vmulq_laneq_f32(q6_d_4567, q8_d_0123, 1);'
+  - '                sbd_scale_0123[2] = vmulq_laneq_f32(q6_d_0123, q8_d_0123, 2);'
+  - '                sbd_scale_4567[2] = vmulq_laneq_f32(q6_d_4567, q8_d_0123, 2);'
+  - '                sbd_scale_0123[3] = vmulq_laneq_f32(q6_d_0123, q8_d_0123, 3);'
+  - '                sbd_scale_4567[3] = vmulq_laneq_f32(q6_d_4567, q8_d_0123, 3);'
+  - '                int32x4_t acc_s32[acc_size];'
+  - '                for (int i = 0; i < acc_size; i++) {'
+  - '                    acc_s32[i] = vdupq_n_s32(0);'
+  - '                }'
+  - '                int16_t q6_scales[8 * 16];'
+  - '                for (int i = 0; i < 16; i++) {'
+  - '                    int16x8_t scales = vmovl_s8(vld1_s8(q6_ptr[b].scales + i
+    * 8));'
+  - '                    vst1q_s16(q6_scales + i * 8, scales);'
+  - '                }'
+  - '                for (int half = 0; half < 2; half++) {'
+  - '                    const uint8_t * ql_base = q6_ptr[b].ql + half * 512;'
+  - '                    const uint8_t * qh_base = q6_ptr[b].qh + half * 256;'
+  - '                    for (int sb = 0; sb < QK_K / 64; sb++) {'
+  - '                        int32x4_t acc_lo[acc_size];'
+  - '                        int32x4_t acc_hi[acc_size];'
+  - '                        for (int i = 0; i < acc_size; i++) {'
+  - '                            acc_lo[i] = vdupq_n_s32(0);'
+  - '                            acc_hi[i] = vdupq_n_s32(0);'
+  - '                        }'
+  - '                        const int8_t * q8_base_l = q8_ptr[b].qs + half * 512
+    + sb * 64;'
+  - '                        const int8_t * q8_base_h = q8_ptr[b].qs + half * 512
+    + 256 + sb * 64;'
+  - '                        constexpr int reads_per_sb = 4;'
+  - '                        int8x16_t     q8_l[reads_per_sb];'
+  - '                        int8x16_t     q8_h[reads_per_sb];'
+  - '                        for (int k = 0; k < reads_per_sb; k++) {'
+  - '                            q8_l[k] = vld1q_s8(q8_base_l + 16 * k);'
+  - '                            q8_h[k] = vld1q_s8(q8_base_h + 16 * k);'
+  - '                        }'
+  - '                        const int ql_off_base = sb * QK_K / 2;'
+  - '                        const int qh_off_base = ql_off_base & 255;'
+  - '                        uint8x16_t q6_ql_0123[reads_per_sb];'
+  - '                        uint8x16_t q6_ql_4567[reads_per_sb];'
+  - '                        uint8x16_t q6_qh_0123[reads_per_sb];'
+  - '                        uint8x16_t q6_qh_4567[reads_per_sb];'
+  - '                        for (int k = 0; k < reads_per_sb; k++) {'
+  - '                            q6_ql_0123[k] = vld1q_u8(ql_base + ql_off_base +
+    k * 32);'
+  - '                            q6_ql_4567[k] = vld1q_u8(ql_base + ql_off_base +
+    k * 32 + 16);'
+  - '                            q6_qh_0123[k] = vld1q_u8(qh_base + qh_off_base +
+    k * 32);'
+  - '                            q6_qh_4567[k] = vld1q_u8(qh_base + qh_off_base +
+    k * 32 + 16);'
+  - '                        }'
+  - '                        if (sb > 1) {'
+  - '                            for (int k = 0; k < reads_per_sb; k++) {'
+  - '                                q6_qh_0123[k] = vshrq_n_u8(q6_qh_0123[k], 2);'
+  - '                                q6_qh_4567[k] = vshrq_n_u8(q6_qh_4567[k], 2);'
+  - '                            }'
+  - '                        }'
+  - '                        for (int k = 0; k < reads_per_sb; k++) {'
+  - '                            const uint8x16_t hbit_lo_0123 = vandq_u8(q6_qh_0123[k],
+    mask_lo);'
+  - '                            const uint8x16_t hbit_hi_0123 = vandq_u8(q6_qh_0123[k],
+    mask_hi);'
+  - '                            const uint8x16_t hbit_lo_4567 = vandq_u8(q6_qh_4567[k],
+    mask_lo);'
+  - '                            const uint8x16_t hbit_hi_4567 = vandq_u8(q6_qh_4567[k],
+    mask_hi);'
+  - '                            const int8x16_t q6_0123_lo = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(q6_ql_0123[k],
+    m4b), hbit_lo_0123, 4)), m32s);'
+  - '                            const int8x16_t q6_0123_hi = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q6_ql_0123[k],
+    4), hbit_hi_0123)), m32s);'
+  - '                            acc_lo[0] = vdotq_laneq_s32(acc_lo[0], q6_0123_lo,
+    q8_l[k], 0);'
+  - '                            acc_lo[1] = vdotq_laneq_s32(acc_lo[1], q6_0123_lo,
+    q8_l[k], 1);'
+  - '                            acc_lo[2] = vdotq_laneq_s32(acc_lo[2], q6_0123_lo,
+    q8_l[k], 2);'
+  - '                            acc_lo[3] = vdotq_laneq_s32(acc_lo[3], q6_0123_lo,
+    q8_l[k], 3);'
+  - '                            acc_hi[0] = vdotq_laneq_s32(acc_hi[0], q6_0123_hi,
+    q8_h[k], 0);'
+  - '                            acc_hi[1] = vdotq_laneq_s32(acc_hi[1], q6_0123_hi,
+    q8_h[k], 1);'
+  - '                            acc_hi[2] = vdotq_laneq_s32(acc_hi[2], q6_0123_hi,
+    q8_h[k], 2);'
+  - '                            acc_hi[3] = vdotq_laneq_s32(acc_hi[3], q6_0123_hi,
+    q8_h[k], 3);'
+  - '                            const int8x16_t q6_4567_lo = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(q6_ql_4567[k],
+    m4b), hbit_lo_4567, 4)), m32s);'
+  - '                            const int8x16_t q6_4567_hi = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q6_ql_4567[k],
+    4), hbit_hi_4567)), m32s);'
+  - '                            acc_lo[4] = vdotq_laneq_s32(acc_lo[4], q6_4567_lo,
+    q8_l[k], 0);'
+  - '                            acc_lo[5] = vdotq_laneq_s32(acc_lo[5], q6_4567_lo,
+    q8_l[k], 1);'
+  - '                            acc_lo[6] = vdotq_laneq_s32(acc_lo[6], q6_4567_lo,
+    q8_l[k], 2);'
+  - '                            acc_lo[7] = vdotq_laneq_s32(acc_lo[7], q6_4567_lo,
+    q8_l[k], 3);'
+  - '                            acc_hi[4] = vdotq_laneq_s32(acc_hi[4], q6_4567_hi,
+    q8_h[k], 0);'
+  - '                            acc_hi[5] = vdotq_laneq_s32(acc_hi[5], q6_4567_hi,
+    q8_h[k], 1);'
+  - '                            acc_hi[6] = vdotq_laneq_s32(acc_hi[6], q6_4567_hi,
+    q8_h[k], 2);'
+  - '                            acc_hi[7] = vdotq_laneq_s32(acc_hi[7], q6_4567_hi,
+    q8_h[k], 3);'
+  - '                        }'
+  - '                        const int scale_idx_l = half * 8 + sb;'
+  - '                        const int scale_idx_h = half * 8 + sb + 4;'
+  - '                        for (int g = 0; g < col_groups; g++) {'
+  - '                            const int16x4_t scales_l16  = vld1_s16(q6_scales
+    + scale_idx_l * 8 + g * 4);'
+  - '                            const int16x4_t scales_h16  = vld1_s16(q6_scales
+    + scale_idx_h * 8 + g * 4);'
+  - '                            const int32x4_t scale_vec_l = vmovl_s16(scales_l16);'
+  - '                            const int32x4_t scale_vec_h = vmovl_s16(scales_h16);'
+  - '                            const int       acc_offset  = g * q8_k_blocklen;'
+  - '                            for (int row = 0; row < q8_k_blocklen; row++) {'
+  - '                                const int idx = row * 2 + g;'
+  - '                                acc_s32[idx]  = vmlaq_s32(acc_s32[idx], acc_lo[acc_offset
+    + row], scale_vec_l);'
+  - '                                acc_s32[idx]  = vmlaq_s32(acc_s32[idx], acc_hi[acc_offset
+    + row], scale_vec_h);'
+  - '                            }'
+  - '                        }'
+  - '                    }'
+  - '                }'
+  - '                for (int row = 0; row < q8_k_blocklen; row++) {'
+  - '                    const int       idx0     = 2 * row;'
+  - '                    const int       idx1     = 2 * row + 1;'
+  - '                    const int32x4_t acc_0123 = acc_s32[idx0];'
+  - '                    const int32x4_t acc_4567 = acc_s32[idx1];'
+  - '                    acc_f32[idx0] = vmlaq_f32(acc_f32[idx0], vcvtq_f32_s32(acc_0123),
+    sbd_scale_0123[row]);'
+  - '                    acc_f32[idx1] = vmlaq_f32(acc_f32[idx1], vcvtq_f32_s32(acc_4567),
+    sbd_scale_4567[row]);'
+  - '                }'
+  - '            }'
+  - '            for (int i = 0; i < q8_k_blocklen; i++) {'
+  - '                int row = y * q8_k_blocklen + i;'
+  - '                for (int j = 0; j < 2; j++) {'
+  - '                    int col    = x * ncols_interleaved + j * 4;'
+  - '                    int offset = row * bs + col;'
+  - '                    vst1q_f32(s + offset, acc_f32[2 * i + j]);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return;'
+  - '#endif'
+  - '    ggml_gemm_q6_K_8x4_q8_K_generic(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  - void ggml_gemm_q6_K_8x8_q8_K(int                        n,
+  - '                             float * GGML_RESTRICT      s,'
+  - '                             size_t                     bs,'
+  - '                             const void * GGML_RESTRICT vx,'
+  - '                             const void * GGML_RESTRICT vy,'
+  - '                             int                        nr,'
+  - '                             int                        nc) {'
+  - '    constexpr int qk = QK_K;'
+  - '    const int     nb = n / qk;'
+  - '    constexpr int ncols_interleaved = 8;'
+  - '    constexpr int blocklen          = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(nb);'
+  - '    UNUSED(ncols_interleaved);'
+  - '    UNUSED(blocklen);'
+  - '#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)'
+  - '    constexpr int    q8_k_blocklen = 4;'
+  - '    const uint8x16_t m4b           = vdupq_n_u8(0x0f);'
+  - '    const uint8x16_t mask_lo       = vdupq_n_u8(0x03);'
+  - '    const uint8x16_t mask_hi       = vdupq_n_u8(0x30);'
+  - '    const int8x16_t  m32s          = vdupq_n_s8(32);'
+  - '    float32x4_t acc_f32[blocklen];'
+  - '    for (int y = 0; y < nr / q8_k_blocklen; y++) {'
+  - '        const block_q8_Kx4 * GGML_RESTRICT q8_ptr = (const block_q8_Kx4 *) vy
+    + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q6_Kx8 * GGML_RESTRICT q6_ptr = (const block_q6_Kx8 *)
+    vx + (x * nb);'
+  - '            for (int i = 0; i < blocklen; i++) {'
+  - '                acc_f32[i] = vdupq_n_f32(0);'
+  - '            }'
+  - '            for (int b = 0; b < nb; b++) {'
+  - '                int32x4_t acc[8];'
+  - '                for (int i = 0; i < 8; i++) {'
+  - '                    acc[i] = vdupq_n_s32(0);'
+  - '                }'
+  - '                int16_t q6_scales[16 * 8];'
+  - '                for (int i = 0; i < 16; ++i) {'
+  - '                    int16x8_t s16 = vmovl_s8(vld1_s8(q6_ptr[b].scales + i * 8));'
+  - '                    vst1q_s16(q6_scales + i * 8, s16);'
+  - '                }'
+  - '                for (int half = 0; half < 2; half++) {'
+  - '                    const uint8_t * ql_base = q6_ptr[b].ql + half * 512;'
+  - '                    const uint8_t * qh_base = q6_ptr[b].qh + half * 256;'
+  - '                    for (int sb = 0; sb < QK_K / 64; sb++) {'
+  - '                        const int8_t * q8_base_l = q8_ptr[b].qs + half * 512
+    + sb * 64;'
+  - '                        const int8_t * q8_base_h = q8_ptr[b].qs + half * 512
+    + 256 + sb * 64;'
+  - '                        int8x16_t q8_l_01[2];'
+  - '                        int8x16_t q8_l_23[2];'
+  - '                        for (int i = 0; i < 2; i++) {'
+  - '                            const int offset = i * 32;'
+  - '                            q8_l_01[i]       = vld1q_s8(q8_base_l + offset);'
+  - '                            q8_l_23[i]       = vld1q_s8(q8_base_l + offset +
+    16);'
+  - '                        }'
+  - '                        int8x16_t q8_h_01[2];'
+  - '                        int8x16_t q8_h_23[2];'
+  - '                        for (int i = 0; i < 2; i++) {'
+  - '                            const int offset = i * 32;'
+  - '                            q8_h_01[i]       = vld1q_s8(q8_base_h + offset);'
+  - '                            q8_h_23[i]       = vld1q_s8(q8_base_h + offset +
+    16);'
+  - '                        }'
+  - '                        const int ql_off_base = sb * QK_K / 2;'
+  - '                        uint8x16_t q6_ql_0[4];'
+  - '                        uint8x16_t q6_ql_1[4];'
+  - '                        for (int k = 0; k < 4; k++) {'
+  - '                            q6_ql_0[k] = vld1q_u8(ql_base + ql_off_base + 16
+    * k);'
+  - '                            q6_ql_1[k] = vld1q_u8(ql_base + ql_off_base + 64
+    + 16 * k);'
+  - '                        }'
+  - '                        const int  qh_off_base = (sb * QK_K / 2) & 255;'
+  - '                        uint8x16_t q6_qh_0[4];'
+  - '                        uint8x16_t q6_qh_1[4];'
+  - '                        for (int k = 0; k < 4; k++) {'
+  - '                            q6_qh_0[k] = vld1q_u8(qh_base + qh_off_base + 16
+    * k);'
+  - '                            q6_qh_1[k] = vld1q_u8(qh_base + qh_off_base + 64
+    + 16 * k);'
+  - '                        }'
+  - '                        if (sb > 1) {'
+  - '                            for (int k = 0; k < 4; k++) {'
+  - '                                q6_qh_0[k] = vshrq_n_u8(q6_qh_0[k], 2);'
+  - '                                q6_qh_1[k] = vshrq_n_u8(q6_qh_1[k], 2);'
+  - '                            }'
+  - '                        }'
+  - '                        for (int cp = 0; cp < ncols_interleaved / 2; cp++) {'
+  - '                            const uint8x16_t q6_qs_cp_0_l = q6_ql_0[cp];'
+  - '                            const uint8x16_t q6_qs_cp_1_l = q6_ql_1[cp];'
+  - '                            const uint8x16_t q6_qs_cp_0_h = q6_qh_0[cp];'
+  - '                            const uint8x16_t q6_qs_cp_1_h = q6_qh_1[cp];'
+  - '                            const uint8x16_t q6_qs_cp_0_hh = vandq_u8(q6_qs_cp_0_h,
+    mask_hi);'
+  - '                            const uint8x16_t q6_qs_cp_1_hh = vandq_u8(q6_qs_cp_1_h,
+    mask_hi);'
+  - '                            const int8x16_t q6_l0 = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(q6_qs_cp_0_l,
+    m4b), vandq_u8(q6_qs_cp_0_h, mask_lo), 4)),'
+  - '                                m32s);'
+  - '                            const int8x16_t q6_l1 = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vsliq_n_u8(vandq_u8(q6_qs_cp_1_l,
+    m4b), vandq_u8(q6_qs_cp_1_h, mask_lo), 4)),'
+  - '                                m32s);'
+  - '                            const int8x16_t q6_h0 = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q6_qs_cp_0_l,
+    4), q6_qs_cp_0_hh)), m32s);'
+  - '                            const int8x16_t q6_h1 = vsubq_s8('
+  - '                                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q6_qs_cp_1_l,
+    4), q6_qs_cp_1_hh)), m32s);'
+  - '                            int32x4_t sb_acc_0l = vmmlaq_s32(vdupq_n_s32(0),
+    q6_l0, q8_l_01[0]);'
+  - '                            sb_acc_0l           = vmmlaq_s32(sb_acc_0l, q6_l1,
+    q8_l_01[1]);'
+  - '                            int32x4_t sb_acc_0h = vmmlaq_s32(vdupq_n_s32(0),
+    q6_h0, q8_h_01[0]);'
+  - '                            sb_acc_0h           = vmmlaq_s32(sb_acc_0h, q6_h1,
+    q8_h_01[1]);'
+  - '                            int32x4_t sb_acc_1l = vmmlaq_s32(vdupq_n_s32(0),
+    q6_l0, q8_l_23[0]);'
+  - '                            sb_acc_1l           = vmmlaq_s32(sb_acc_1l, q6_l1,
+    q8_l_23[1]);'
+  - '                            int32x4_t sb_acc_1h = vmmlaq_s32(vdupq_n_s32(0),
+    q6_h0, q8_h_23[0]);'
+  - '                            sb_acc_1h           = vmmlaq_s32(sb_acc_1h, q6_h1,
+    q8_h_23[1]);'
+  - '                            const int scale_idx_l = half * 8 + sb;'
+  - '                            const int scale_idx_h = half * 8 + sb + 4;'
+  desc: 文件的主要执行入口，包含多个条件编译的 GEMM 函数定义，包括将 NEON 优化代码与通用回退代码结合的层次结构，以及对应的数据解码、缩放和累加操作。
+  line: 4290-5000
+  name: __main__
+- code:
+  - void ggml_gemm_q6_K_8x8_q8_K(uint64_t n, int64_t bs, float * vx, float * vy, float
+    * s, int nr, int nc) {
+  - '    // ... (kernel implementation with i8mm matrix multiply and q6_K/q8_K scale
+    handling)'
+  - '    // ... (contains nested loops for 8x8 blocks, i8mm accumulation, vzip/vcombine
+    reordering)'
+  - '    // ... (applies superblock scales via float32x4_t operations)'
+  - '    // ... (stores results with vst1q_f32)'
+  - '}'
+  desc: Performs 8x8 blocked GEMM operation combining Q6_K symmetric quantized weights
+    with Q8_K quantized activations, utilizing ARM i8mm instructions with q6_K superblock
+    scale application and output interleaving for SIMD efficiency.
+  line: 4922-5120
+  name: ggml_gemm_q6_K_8x8_q8_K
+- code:
+  - void ggml_gemm_q8_0_4x4_q8_0(int n, float * s, size_t bs, const void * vx, const
+    void * vy, int nr, int nc) {
+  - '    // ... (asserts block alignment, defines 4x4 block parameters)'
+  - '    // ... (uses vdotq_laneq_s32 for dot product accumulation with 4 rows/cols)'
+  - '    // ... (handles b_d/a_d scaling multiplication and vst1q_f32 output storage)'
+  - '}'
+  desc: Executes 4x4 blocked GEMM kernel for Q8_0 quantized data using ARM NEON dotprod
+    instructions, processing 4 columns of activations with 4 rows of weights per iteration
+    and supporting vectorized dot product operations.
+  line: 5121-5288
+  name: ggml_gemm_q8_0_4x4_q8_0
+- code:
+  - void ggml_gemm_q8_0_4x8_q8_0(int n, float * s, size_t bs, const void * vx, const
+    void * vy, int nr, int nc) {
+  - '    // ... (uses vmmlaq_s32 for i8mm matrix multiply with 4x8 block processing)'
+  - '    // ... (implements vcombine_s32 tile reordering for row-major output)'
+  - '    // ... (applies a_d/b_d scaling via vfmaq_f32 and vmulq_laneq_f32)'
+  - '    // ... (stores results as 4 float32x4 vectors)'
+  - '}'
+  desc: Implements 4x8 blocked GEMM kernel for Q8_0 quantized data leveraging ARM
+    i8mm (integer matrix multiply) instructions, processing 4 rows and 8 columns per
+    computation with specialized 2x2 tile reordering and lane-wise scaling.
+  line: 5289-5480
+  name: ggml_gemm_q8_0_4x8_q8_0

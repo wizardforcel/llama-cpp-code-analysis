@@ -1,0 +1,242 @@
+code_map:
+- tools/rpc/rpc-server.cpp
+- ├── 头文件与宏定义（1-24行）
+- '│   ├── ggml-rpc.h               # RPC后端公共头文件'
+- '│   ├── DIRECTORY_SEPARATOR      # 跨平台目录分隔符宏（''\\'' / ''/''）'
+- '│   ├── Windows: windows.h, fcntl.h, io.h'
+- '│   └── Unix: unistd.h, sys/stat.h, pwd.h'
+- ├── rpc_server_params 结构体（27-32行）
+- '│   ├── host        = "127.0.0.1"          # 默认仅监听本地回环'
+- '│   ├── port        = 50052                  # 默认RPC端口'
+- '│   ├── use_cache   = false                  # 本地文件缓存开关'
+- '│   ├── n_threads   = hardware_concurrency()/2  # 保守线程数策略'
+- '│   └── devices     = {}                     # 设备名称列表'
+- ├── 跨平台工具函数（43-133行）
+- '│   ├── utf8_to_wstring()        # [Win] UTF-8 → wstring 转换（43-63行）'
+- '│   │   ├── MultiByteToWideChar()   # 第一次调用获取所需缓冲区大小'
+- '│   │   └── MultiByteToWideChar()   # 第二次调用执行实际转换'
+- '│   ├── fs_create_directory_with_parents()  # 递归创建目录（64-133行）'
+- '│   │   ├── GetFileAttributesW()    # [Win] 检查路径是否已存在且为目录'
+- '│   │   ├── CreateDirectoryW()      # [Win] 逐级创建目录，跳过盘符（C:）'
+- '│   │   │   └── ERROR_ALREADY_EXISTS  # 并发安全的重复创建处理'
+- '│   │   ├── stat()                  # [Unix] 检查路径存在性与类型'
+- '│   │   └── mkdir(path, 0755)       # [Unix] 逐级创建目录'
+- ├── 缓存目录获取（134-187行）
+- '│   ├── fs_get_cache_directory()   # 跨平台缓存目录探测（134-187行）'
+- '│   │   ├── ensure_trailing_slash  # Lambda：确保路径以分隔符结尾'
+- '│   │   ├── LLAMA_CACHE            # 最高优先级：用户自定义缓存路径'
+- '│   │   ├── XDG_CACHE_HOME         # [Linux] XDG 规范缓存目录'
+- '│   │   ├── $HOME/.cache/          # [Linux] 标准用户缓存回退'
+- '│   │   ├── getpwuid(getuid())     # [Linux] 终极回退：从passwd数据库获取HOME'
+- '│   │   ├── ~/Library/Caches/      # [macOS] 平台规范缓存目录'
+- '│   │   ├── %LOCALAPPDATA%         # [Windows] 平台规范缓存目录'
+- '│   │   └── + "llama.cpp/"         # 追加项目子目录避免污染系统缓存根'
+- ├── 命令行解析与帮助（188-254行）
+- '│   ├── print_usage()              # 打印帮助信息到 stderr（188-200行）'
+- '│   └── rpc_server_params_parse()  # 参数解析主函数（201-254行）'
+- '│       ├── -H/--host              # 绑定地址'
+- '│       ├── -t/--threads           # 线程数（必须为正整数）'
+- '│       ├── -d/--device            # 设备列表，正则 [,/]+ 分割'
+- '│       │   └── std::regex + sregex_token_iterator  # 兼容逗号/斜杠分隔'
+- '│       ├── -p/--port              # 端口号（1-65535范围校验）'
+- '│       ├── -c/--cache             # 启用本地文件缓存'
+- '│       └── -h/--help              # 打印帮助并退出'
+- ├── 设备发现（255-291行）
+- '│   └── get_devices()              # 三级设备选择策略（255-291行）'
+- │       ├── 第一级：按用户指定名称查找
+- '│       │   ├── ggml_backend_dev_by_name()  # 按名称精确匹配'
+- │       │   └── 失败时列出所有可用设备+显存信息
+- │       ├── 第二级：自动选择所有非CPU设备
+- '│       │   ├── ggml_backend_dev_count()    # 枚举全部设备'
+- '│       │   └── ggml_backend_dev_type() != CPU  # GPU优先策略'
+- │       └── 第三级：回退到CPU设备
+- '│           └── ggml_backend_dev_by_type(CPU)  # 保底可用性'
+- └── 主函数（292-344行）
+- '    ├── std::setlocale(LC_NUMERIC, "C")  # 防止地区设置干扰数值解析'
+- '    ├── ggml_backend_load_all()           # 动态加载所有后端插件'
+- '    ├── rpc_server_params_parse()         # 解析命令行参数'
+- '    ├── 安全警告（host != 127.0.0.1时）    # 醒目标记非本地监听风险'
+- '    ├── get_devices()                     # 获取可用计算设备'
+- '    ├── 缓存目录惰性创建（仅--cache时）    # fs_get_cache_directory() + "rpc/"'
+- '    ├── ggml_backend_reg_by_name("RPC")   # 查找RPC后端注册表'
+- '    ├── ggml_backend_reg_get_proc_address()  # 动态获取启动函数指针'
+- '    │   └── "ggml_backend_rpc_start_server"  # 解耦的插件化启动入口'
+- '    └── start_server_fn(endpoint, cache_dir, n_threads, n_devs, devs)'
+exercises:
+- contents:
+  - 阅读 `tools/rpc/rpc-server.cpp` 第 64-133 行的 `fs_create_directory_with_parents()`
+    函数，回答以下问题：
+  - 1. 在 Windows 平台，当路径为 `C:\\Users\\test\\cache` 时，代码如何跳过 `C:` 盘符？为什么必须跳过？
+  - 2. 当两个线程同时调用此函数创建同一目录时，`ERROR_ALREADY_EXISTS` 分支如何保证线程安全？
+  - 3. 在 Unix 平台，如果路径中间某一级已存在但不是目录（比如是个普通文件），函数会如何处理？
+  - 4. 为什么在 Unix 分支中 `pos_slash` 初始值为 1 而不是 0？
+  'no': 1
+  title: 分析跨平台目录创建的边界情况
+- contents:
+  - 阅读 `tools/rpc/rpc-server.cpp` 第 255-291 行的 `get_devices()` 函数，完成以下分析：
+  - 1. 画出该函数完整的三级回退决策树，标注每级的触发条件
+  - 2. 如果用户通过 `-d cuda0,cuda1` 指定了两个设备但 `cuda1` 不存在，函数的返回结果是什么？为什么这样设计？
+  - 3. 当系统只有 CPU 而无 GPU 时，第二级循环会跳过所有设备，此时 `devices` 为空。第三级如何通过 `ggml_backend_dev_by_type`
+    找到 CPU 设备？
+  - 4. 错误分支中为什么使用 `printf` 而非 `fprintf(stderr, ...)` 打印可用设备列表？这是有意为之还是疏漏？
+  'no': 2
+  title: 追踪设备发现的三级回退逻辑
+- contents:
+  - 阅读 `tools/rpc/rpc-server.cpp` 第 292-344 行的 `main()` 函数，回答以下问题：
+  - 1. `ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_start_server")` 返回的是
+    `void*` 类型的通用指针，代码如何将其安全地转换为函数指针类型？
+  - 2. 为什么不直接调用 `ggml_backend_rpc_start_server()` 函数，而要通过注册表动态获取？这种设计带来什么好处？
+  - 3. 如果将 `ggml_backend_load_all()` 移到 `rpc_server_params_parse()` 之后会有什么影响？
+  - 4. 假设 RPC 后端未编译进项目（`GGML_RPC=OFF`），程序会在哪一步失败？错误信息是什么？
+  'no': 3
+  title: 理解插件化后端启动机制
+- contents:
+  - 针对 `fs_get_cache_directory()`（第 134-187 行），设计一组单元测试用例：
+  - 1. 设计至少 6 个测试场景，覆盖所有环境变量组合（设置/未设置 LLAMA_CACHE、XDG_CACHE_HOME、HOME 等）
+  - 2. 每个测试用例需要说明：预期返回值、需要 mock 的环境变量、验证的不变量（如尾部斜杠）
+  - 3. 思考：如何在不修改全局环境的情况下测试这个函数？提示：考虑 `setenv`/`unsetenv` 或依赖注入
+  - 4. 如果 `LLAMA_CACHE` 指向一个不存在的路径，函数是否会自动创建该目录？为什么？
+  'no': 4
+  title: 设计缓存目录的单元测试
+- contents:
+  - 假设需要为 rpc-server 添加一个 `--max-connections N` 参数，限制最大并发连接数：
+  - 1. 在 `rpc_server_params` 结构体中添加 `max_connections` 字段，选择合适的默认值并解释理由
+  - 2. 在 `rpc_server_params_parse()` 中添加参数解析逻辑，包括范围校验（如 1-1024）
+  - 3. 在 `print_usage()` 中添加对应的帮助文本，保持与现有选项的格式一致
+  - 4. 思考：`start_server_fn` 的函数签名不包含此参数，如何在 ABI 兼容的前提下传递它？
+  'no': 5
+  title: 动手添加一个新的命令行参数
+learning_targets:
+- 理解 rpc_server_params 结构体的设计哲学：值语义、默认线程数策略与引用传递的解析模式
+- 掌握跨平台路径处理的三大技巧：UTF-8到宽字符转换、目录分隔符宏统一、递归目录创建（含Windows盘符跳过）
+- 学会多级回退的缓存目录探测策略：环境变量优先级链（LLAMA_CACHE → XDG_CACHE_HOME → HOME → getpwuid）及macOS/Windows平台规范
+- 理解命令行参数解析的防御式设计：严格数值校验、正则分割设备列表、未识别参数立即报错退出
+- 掌握设备选择的三级火箭策略：显式指定 → GPU优先自动探测 → CPU回退保底
+- 理解动态加载的插件化架构：ggml_backend_load_all、ggml_backend_reg_by_name、ggml_backend_reg_get_proc_address
+  的协作流程
+- 认识RPC服务器的安全边界：无加密协议的风险警告与实验性功能定位
+life_analogy:
+- 想象 rpc-server 是一家**跨城算力快递公司的调度总站**：
+- '- **rpc_server_params** = 快递站的「运营配置表」，写明仓库地址（host）、收货窗口号（port）、快递员人数（threads）、可用车辆列表（devices），一切配置集中在一处，一眼看全'
+- '- **跨平台路径三兄弟**（utf8_to_wstring / DIRECTORY_SEPARATOR / fs_create_directory_with_parents）=
+  不同城市的地址规则翻译官：有的城市用中文地址（UTF-8），有的用拼音（宽字符），有的用斜杠分隔街道，有的用反斜杠——翻译官确保无论哪种格式都能准确找到目的地'
+- '- **fs_get_cache_directory 的多级回退** = 寄包裹时找临时仓储点：先看客户指定的仓库（LLAMA_CACHE），没有就看城市标准仓库（XDG_CACHE_HOME），再找用户家后院（$HOME/.cache），最后实在不行查户口本（getpwuid）——总有一个能放包裹'
+- '- **参数解析的防御式设计** = 快递站的收货检查员：重量（端口号）超出范围立即拒收，看不懂的地址（未知参数）直接退回并附上格式说明（print_usage），绝不含糊放行'
+- '- **设备三级火箭策略** = 快递分拣的车辆调度：优先用客户指定的专车（-d 参数），没指定就派出所有货车（GPU），货车都没了就用自行车（CPU）也得送'
+- '- **动态加载启动函数** = 调度总站不亲自送货，而是通过电话（函数指针）联系各区域车队经理（RPC 后端），让他们自己组织车队出发——总站只负责传达指令'
+- '- **安全警告** = 快递站门口的红色警示牌：「本服务无保险柜（无加密），请勿将贵重物品暴露给外人（非本地绑定）」——醒目、直接、不容忽视'
+'no': 71
+summary:
+- concept: '`rpc_server_params`'
+  desc: RPC 服务器配置中枢：host/port/threads/devices/cache 五要素的值语义封装
+- concept: '`hardware_concurrency()/2`'
+  desc: 保守线程数策略——只用一半核心，为系统和其他进程留喘息空间
+- concept: '`utf8_to_wstring()`'
+  desc: Windows 平台 UTF-8 → wstring 转换桥，解决 MultiByteToWideChar 两步调用
+- concept: '`DIRECTORY_SEPARATOR`'
+  desc: 跨平台路径分隔符宏，编译期消除 '\\' 与 '/' 的平台差异
+- concept: '`fs_create_directory_with_parents()`'
+  desc: 递归 mkdir 实现：逐级检查 + 创建，Windows 跳过盘符（C:），Unix 用 0755 权限
+- concept: '`fs_get_cache_directory()`'
+  desc: 多级回退缓存目录探测：LLAMA_CACHE → XDG_CACHE_HOME → $HOME/.cache → getpwuid → 平台规范路径
+- concept: '`ensure_trailing_slash`'
+  desc: 尾部斜杠归一化 Lambda，消除路径拼接的二义性
+- concept: '`rpc_server_params_parse()`'
+  desc: 防御式参数解析：端口 1-65535 校验、正则 [,/]+ 分割设备列表、未知参数立即报错
+- concept: '`get_devices()`'
+  desc: 三级设备选择：显式指定 → 非 CPU 全选 → CPU 回退保底
+- concept: '`ggml_backend_load_all()`'
+  desc: 动态加载所有计算后端插件，实现后端热插拔架构
+- concept: '`ggml_backend_reg_by_name("RPC")`'
+  desc: 按名称查找 RPC 后端注册表，实现主程序与后端实现的解耦
+- concept: '`ggml_backend_reg_get_proc_address()`'
+  desc: 动态获取后端函数指针，避免硬编码函数调用，支持插件化扩展
+- concept: '`std::setlocale(LC_NUMERIC, "C")`'
+  desc: 强制 C locale，防止欧洲逗号小数点等地区设置导致数值解析错误
+- concept: 安全警告机制
+  desc: 非 127.0.0.1 绑定时打印醒目警告，强调 RPC 无加密、仅限实验用途
+- concept: 缓存目录惰性创建
+  desc: 仅 --cache 启用时才创建 rpc/ 子目录，避免无意义的磁盘 IO
+units:
+- codes:
+  - file: tools/rpc/rpc-server.cpp
+    line: 1-42
+    method_or_func: __main__
+  - file: tools/rpc/rpc-server.cpp
+    line: 43-63
+    method_or_func: utf8_to_wstring()
+  - file: tools/rpc/rpc-server.cpp
+    line: 64-133
+    method_or_func: fs_create_directory_with_parents()
+  name: RPC 服务器参数体系 —— 算力输出的「控制面板」
+  'no': 1
+  points:
+  - '**为什么需要独立的参数结构体 `rpc_server_params`？**'
+  - '- 集中管理主机地址、端口、线程数、设备列表、缓存开关等核心配置'
+  - '- 采用「值语义」设计，解析函数通过引用填充，避免全局状态污染'
+  - '- 线程数默认取 `hardware_concurrency()/2`，为系统保留余量而非占满所有核心'
+  - '**跨平台路径处理的「三叉戟」**'
+  - '- `utf8_to_wstring`：Windows 宽字符 API 的适配层，解决 UTF-8 到 UTF-16 的编码转换'
+  - '- `DIRECTORY_SEPARATOR` 宏：统一 `/` 与 `\` 的分隔符差异，消除平台分支代码'
+  - '- `fs_create_directory_with_parents`：递归创建目录，模拟 `mkdir -p` 行为，支持 Windows 盘符跳过（如
+    `C:`）'
+- codes:
+  - file: tools/rpc/rpc-server.cpp
+    line: 134-187
+    method_or_func: fs_get_cache_directory()
+  name: 跨平台缓存目录 —— 模型数据的「临时仓库」
+  'no': 2
+  points:
+  - '**为什么需要多级回退策略？**'
+  - '- 优先级：`LLAMA_CACHE` > `XDG_CACHE_HOME`（Linux）> `$HOME/.cache` > `getpwuid`（Linux
+    回退）'
+  - '- macOS 使用 `~/Library/Caches`，Windows 使用 `%LOCALAPPDATA%`，遵循各平台规范'
+  - '- 自动追加 `llama.cpp` 子目录，避免污染系统缓存根目录'
+  - '**尾部斜杠的「小细节大作用」**'
+  - '- `ensure_trailing_slash`  Lambda 确保路径以分隔符结尾，简化后续路径拼接逻辑'
+  - '- 避免 `path + "file"` 与 `path + "/file"` 的二义性，统一为 `path + "file"` 格式'
+  - '- 缓存目录最终形态：`~/.cache/llama.cpp/rpc/`（Linux 示例）'
+- codes:
+  - file: tools/rpc/rpc-server.cpp
+    line: 188-200
+    method_or_func: print_usage()
+  - file: tools/rpc/rpc-server.cpp
+    line: 201-254
+    method_or_func: rpc_server_params_parse()
+  - file: tools/rpc/rpc-server.cpp
+    line: 255-291
+    method_or_func: get_devices()
+  name: 命令行解析与设备发现 —— 算力资源的「扫描仪」
+  'no': 3
+  points:
+  - '**参数解析的「防御式设计」**'
+  - '- 严格校验数值范围：端口 1-65535，线程数必须为正整数'
+  - '- 设备列表支持正则分割 `[,/]+`，兼容 `cuda0,cuda1` 与 `cuda0/cuda1` 两种格式'
+  - '- 未识别参数立即报错并打印帮助，避免「静默失败」导致的调试困难'
+  - '**设备选择的「三级火箭」策略**'
+  - '- 第一级：用户显式指定 `-d` 设备列表，精确控制使用的 GPU/CPU'
+  - '- 第二级：自动探测所有非 CPU 设备（GPU 优先），充分利用异构算力'
+  - '- 第三级：回退到 CPU 设备，保证最低限度的可运行性'
+  - '**设备信息的「可视化诊断」**'
+  - '- 错误时自动列出所有可用设备及其显存/内存总量与空闲量'
+  - '- 帮助用户理解「为什么我的设备没找到」，降低支持成本'
+- codes:
+  - file: tools/rpc/rpc-server.cpp
+    line: 292-344
+    method_or_func: main()
+  name: 主函数启动流程 —— 远程算力的「点火序列」
+  'no': 4
+  points:
+  - '**本地化设置的「隐形坑」**'
+  - '- `std::setlocale(LC_NUMERIC, "C")`：强制使用 C  locale 处理数字，避免某些地区设置（如欧洲逗号小数点）导致解析错误'
+  - '**安全警告的「最后防线」**'
+  - '- 非 `127.0.0.1` 绑定触发醒目警告：RPC 协议无加密，暴露到公网等于「裸奔」'
+  - '- 强调「实验性功能」定位，明确安全边界，防止生产环境误用'
+  - '**动态加载的「插件化架构」**'
+  - '- `ggml_backend_load_all()`：加载所有可用后端（CUDA/Metal/Vulkan 等）'
+  - '- `ggml_backend_reg_by_name("RPC")`：获取 RPC 后端注册表'
+  - '- `ggml_backend_reg_get_proc_address`：动态获取 `ggml_backend_rpc_start_server` 函数指针'
+  - '- 这种设计将 RPC 服务器实现与主程序解耦，支持后端热插拔'
+  - '**缓存目录的「惰性创建」**'
+  - '- 仅当 `--cache` 启用时才创建 `rpc/` 子目录，避免无意义的磁盘 IO'
+  - '- 创建失败立即退出，确保后续缓存写入不会因目录不存在而失败'

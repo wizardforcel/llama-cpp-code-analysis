@@ -1,0 +1,96 @@
+classes: []
+desc: 该文件位于ggml虚拟GPU后端，提供tensor和计算图的远程过程调用（RPC）序列化功能，用于将ggml张量及其依赖树转换为跨进程/机器传输的二进制数据，并支持通过缓冲区句柄进行张量数据偏移寻址。
+file: ggml/src/ggml-virtgpu/apir_cs_ggml-rpc-front.cpp
+funcs:
+- code:
+  - apir_rpc_tensor apir_serialize_tensor(const ggml_tensor * tensor) {
+  - '    apir_rpc_tensor result;'
+  - '    result.id   = reinterpret_cast<uint64_t>(tensor);'
+  - '    result.type = tensor->type;'
+  - '    if (tensor->buffer) {'
+  - '        ggml_backend_buffer_t buffer = tensor->buffer;'
+  - '        result.buffer = BUFFER_TO_HOST_HANDLE(buffer);'
+  - '    } else {'
+  - '        result.buffer = 0;'
+  - '    }'
+  - '    for (uint32_t i = 0; i < GGML_MAX_DIMS; i++) {'
+  - '        result.ne[i] = tensor->ne[i];'
+  - '        result.nb[i] = tensor->nb[i];'
+  - '    }'
+  - '    result.op = tensor->op;'
+  - '    for (uint32_t i = 0; i < GGML_MAX_OP_PARAMS / sizeof(int32_t); i++) {'
+  - '        result.op_params[i] = tensor->op_params[i];'
+  - '    }'
+  - '    result.flags = tensor->flags;'
+  - '    for (uint32_t i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        result.src[i] = reinterpret_cast<uint64_t>(tensor->src[i]);'
+  - '    }'
+  - '    result.view_src  = reinterpret_cast<uint64_t>(tensor->view_src);'
+  - '    result.view_offs = tensor->view_offs;'
+  - '    result.data      = reinterpret_cast<uint64_t>(tensor->data);'
+  - '    if (tensor->data) {'
+  - '        if (!tensor->buffer) {'
+  - '            GGML_ABORT("%s: tensor has data but not buffer", __func__);'
+  - '        }'
+  - '        // tensor->data is serialized as an offset to the buffer base address'
+  - '        result.data -= reinterpret_cast<uint64_t>(BUFFER_TO_GGML_CONTEXT(tensor->buffer)->base);'
+  - '    }'
+  - '    snprintf(result.name, GGML_MAX_NAME, "%s", tensor->name);'
+  - '    return result;'
+  - '}'
+  desc: 将单个ggml_tensor序列化为apir_rpc_tensor格式，提取张量的元数据（维度、步长、操作类型、参数、源张量、视图信息等），并将数据地址转换为相对于缓冲区基址的偏移量。
+  line: 14-53
+  name: apir_serialize_tensor
+- code:
+  - void apir_add_tensor(ggml_tensor *                       tensor,
+  - '                     std::vector<apir_rpc_tensor> &      tensors,'
+  - '                     std::unordered_set<ggml_tensor *> & visited) {'
+  - '    if (tensor == nullptr) {'
+  - '        return;'
+  - '    }'
+  - '    if (visited.find(tensor) != visited.end()) {'
+  - '        return;'
+  - '    }'
+  - '    visited.insert(tensor);'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        apir_add_tensor(tensor->src[i], tensors, visited);'
+  - '    }'
+  - '    apir_add_tensor(tensor->view_src, tensors, visited);'
+  - '    tensors.push_back(apir_serialize_tensor(tensor));'
+  - '}'
+  desc: 递归地将张量及其所有依赖（源张量和视图源）添加到序列化列表中，并使用访问集合避免重复添加，最终将每个张量通过apir_serialize_tensor转换为RPC格式。
+  line: 55-71
+  name: apir_add_tensor
+- code:
+  - void apir_serialize_graph(const ggml_cgraph * cgraph, std::vector<uint8_t> & output)
+    {
+  - '    uint32_t                          n_nodes = cgraph->n_nodes;'
+  - '    std::vector<apir_rpc_tensor>      tensors;'
+  - '    std::unordered_set<ggml_tensor *> visited;'
+  - '    for (uint32_t i = 0; i < n_nodes; i++) {'
+  - '        apir_add_tensor(cgraph->nodes[i], tensors, visited);'
+  - '    }'
+  - '    // serialization format:'
+  - '    // | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t) | n_tensors (4
+    bytes) | tensors (n_tensors * sizeof(apir_rpc_tensor)) |'
+  - '    uint32_t n_tensors = tensors.size();'
+  - '    int      output_size ='
+  - '        sizeof(uint32_t) + n_nodes * sizeof(uint64_t) + sizeof(uint32_t) + n_tensors
+    * sizeof(apir_rpc_tensor);'
+  - '    output.resize(output_size, 0);'
+  - '    memcpy(output.data(), &n_nodes, sizeof(n_nodes));'
+  - '    for (uint32_t i = 0; i < n_nodes; i++) {'
+  - '        memcpy(output.data() + sizeof(n_nodes) + i * sizeof(uint64_t), &cgraph->nodes[i],
+    sizeof(uint64_t));'
+  - '    }'
+  - '    uint32_t * out_ntensors = (uint32_t *) (output.data() + sizeof(n_nodes) +
+    n_nodes * sizeof(uint64_t));'
+  - '    *out_ntensors           = n_tensors;'
+  - '    apir_rpc_tensor * out_tensors ='
+  - '        (apir_rpc_tensor *) (output.data() + sizeof(n_nodes) + n_nodes * sizeof(uint64_t)
+    + sizeof(uint32_t));'
+  - '    memcpy(out_tensors, tensors.data(), n_tensors * sizeof(apir_rpc_tensor));'
+  - '}'
+  desc: 将整个计算图序列化为字节流，首先收集所有节点涉及的张量列表，然后按固定格式写入：节点数量、节点指针列表、张量数量、张量序列化数据。
+  line: 73-94
+  name: apir_serialize_graph

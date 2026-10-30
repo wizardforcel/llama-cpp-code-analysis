@@ -1,0 +1,434 @@
+classes:
+- desc: llama_kv_cache_iswa是集成滑动窗口注意力（SWA）的双重KV缓存管理器，内部持有基础KV缓存（kv_base）和SWA KV缓存（kv_swa）两个缓存实例，负责协调两个缓存的操作，并为外部提供统一的接口。
+  methods:
+  - code:
+    - llama_kv_cache_iswa::llama_kv_cache_iswa(
+    - '        const llama_model & model,'
+    - '                ggml_type   type_k,'
+    - '                ggml_type   type_v,'
+    - '                     bool   v_trans,'
+    - '                     bool   offload,'
+    - '                     bool   swa_full,'
+    - '                     bool   unified,'
+    - '                 uint32_t   kv_size,'
+    - '                 uint32_t   n_seq_max,'
+    - '                 uint32_t   n_ubatch,'
+    - '                 uint32_t   n_pad,'
+    - '    const layer_filter_cb & filter,'
+    - '    const  layer_reuse_cb & reuse) : hparams(model.hparams), unified(unified)
+      {'
+    - ''
+    - '    // chain filters'
+    - '    const layer_filter_cb filter_base = [&](int32_t il) {'
+    - '        if (filter && !filter(il)) {'
+    - '            return false;'
+    - '        }'
+    - ''
+    - '        return !model.hparams.is_swa(il);'
+    - '    };'
+    - ''
+    - '    const layer_filter_cb filter_swa  = [&](int32_t il) {'
+    - '        if (filter && !filter(il)) {'
+    - '            return false;'
+    - '        }'
+    - ''
+    - '        return  model.hparams.is_swa(il);'
+    - '    };'
+    - ''
+    - '    const uint32_t size_base = kv_size;'
+    - ''
+    - '    // note: the SWA cache is always padded to 256 for performance'
+    - '    //       https://github.com/ggml-org/llama.cpp/issues/17037'
+    - '    uint32_t size_swa = GGML_PAD(std::min(size_base, hparams.n_swa*(unified
+      ? n_seq_max : 1) + n_ubatch), 256);'
+    - ''
+    - '    // when using full-size SWA cache, we set the SWA cache size to be equal
+      to the base cache size'
+    - '    if (swa_full) {'
+    - '        LLAMA_LOG_WARN("%s: using full-size SWA cache (ref: %s)\n",'
+    - '                __func__, "https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055");'
+    - ''
+    - '        size_swa = size_base;'
+    - '    }'
+    - ''
+    - '    LLAMA_LOG_INFO("%s: creating non-SWA KV cache, size = %u cells\n", __func__,
+      size_base);'
+    - ''
+    - '    kv_base = std::make_unique<llama_kv_cache>('
+    - '            model, type_k, type_v,'
+    - '            v_trans, offload, unified, size_base, n_seq_max, n_pad,'
+    - '            0, LLAMA_SWA_TYPE_NONE, filter_base, reuse);'
+    - ''
+    - '    LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__,
+      size_swa);'
+    - ''
+    - '    kv_swa = std::make_unique<llama_kv_cache>('
+    - '            model, type_k, type_v,'
+    - '            v_trans, offload, unified, size_swa, n_seq_max, n_pad,'
+    - '            hparams.n_swa, hparams.swa_type, filter_swa, reuse);'
+    - '}'
+    desc: 构造函数：根据模型参数创建基础KV缓存和SWA KV缓存实例，根据配置决定SWA缓存的大小和划分策略。
+    line: 26-77
+    name: llama_kv_cache_iswa
+  - code:
+    - void llama_kv_cache_iswa::clear(bool data) {
+    - '    kv_base->clear(data);'
+    - '    kv_swa ->clear(data);'
+    - '}'
+    desc: 清除基础KV缓存和SWA KV缓存中的全部数据。
+    line: 79-82
+    name: clear
+  - code:
+    - bool llama_kv_cache_iswa::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1) {
+    - '    bool res = true;'
+    - ''
+    - '    res = res & kv_base->seq_rm(seq_id, p0, p1);'
+    - '    res = res & kv_swa ->seq_rm(seq_id, p0, p1);'
+    - ''
+    - '    return res;'
+    - '}'
+    desc: 从基础KV缓存和SWA KV缓存中移除指定序列的指定位置范围的数据，并返回操作是否成功。
+    line: 84-92
+    name: seq_rm
+  - code:
+    - void llama_kv_cache_iswa::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst,
+      llama_pos p0, llama_pos p1) {
+    - '    kv_base->seq_cp(seq_id_src, seq_id_dst, p0, p1);'
+    - '    kv_swa ->seq_cp(seq_id_src, seq_id_dst, p0, p1);'
+    - '}'
+    desc: 将指定源序列的位置范围数据从基础KV缓存和SWA KV缓存复制到目标序列。
+    line: 94-97
+    name: seq_cp
+  - code:
+    - void llama_kv_cache_iswa::seq_keep(llama_seq_id seq_id) {
+    - '    kv_base->seq_keep(seq_id);'
+    - '    kv_swa ->seq_keep(seq_id);'
+    - '}'
+    desc: 从基础KV缓存和SWA KV缓存中删除指定序列之外的所有序列数据。
+    line: 99-102
+    name: seq_keep
+  - code:
+    - void llama_kv_cache_iswa::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1, llama_pos shift) {
+    - '    kv_base->seq_add(seq_id, p0, p1, shift);'
+    - '    kv_swa ->seq_add(seq_id, p0, p1, shift);'
+    - '}'
+    desc: 在基础KV缓存和SWA KV缓存中，将指定序列的位置在给定范围内进行偏移移动。
+    line: 104-107
+    name: seq_add
+  - code:
+    - void llama_kv_cache_iswa::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos
+      p1, int d) {
+    - '    kv_base->seq_div(seq_id, p0, p1, d);'
+    - '    kv_swa ->seq_div(seq_id, p0, p1, d);'
+    - '}'
+    desc: 在基础KV缓存和SWA KV缓存中，将指定序列的位置在给定范围内进行除法运算。
+    line: 109-112
+    name: seq_div
+  - code:
+    - llama_pos llama_kv_cache_iswa::seq_pos_min(llama_seq_id seq_id) const {
+    - '    // the base cache is a superset of the SWA cache, so we can just check
+      the SWA cache'
+    - '    return kv_swa->seq_pos_min(seq_id);'
+    - '}'
+    desc: 获取指定序列的最小位置，该值从SWA缓存中获取，因为基础缓存是SWA缓存的超集。
+    line: 114-117
+    name: seq_pos_min
+  - code:
+    - llama_pos llama_kv_cache_iswa::seq_pos_max(llama_seq_id seq_id) const {
+    - '    return kv_swa->seq_pos_max(seq_id);'
+    - '}'
+    desc: 获取指定序列的最大位置，该值从SWA缓存中获取。
+    line: 119-121
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdown()
+      const {
+    - '    std::map<ggml_backend_buffer_type_t, size_t> mb = kv_base->memory_breakdown();'
+    - '    for (const auto & buft_size : kv_swa->memory_breakdown()) {'
+    - '        mb[buft_size.first] += buft_size.second;'
+    - '    }'
+    - '    return mb;'
+    - '}'
+    desc: 返回基础KV缓存和SWA KV缓存的内存占用量按后端缓冲区类型的汇总映射。
+    line: 123-129
+    name: memory_breakdown
+  - code:
+    - llama_memory_context_ptr llama_kv_cache_iswa::init_batch(llama_batch_allocr
+      & balloc, uint32_t n_ubatch, bool embd_all) {
+    - '    GGML_UNUSED(embd_all);'
+    - ''
+    - '    // first try simple split'
+    - '    do {'
+    - '        if (!unified) {'
+    - '            // requires equal splits, so we skip the simple split'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        balloc.split_reset();'
+    - ''
+    - '        std::vector<llama_ubatch> ubatches;'
+    - '        while (true) {'
+    - '            auto ubatch = balloc.split_simple(n_ubatch);'
+    - ''
+    - '            if (ubatch.n_tokens == 0) {'
+    - '                break;'
+    - '            }'
+    - ''
+    - '            ubatches.push_back(std::move(ubatch)); // NOLINT'
+    - '        }'
+    - ''
+    - '        if (balloc.get_n_used() < balloc.get_n_tokens()) {'
+    - '            // failed to find a suitable split'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        auto sinfos_base = kv_base->prepare(ubatches);'
+    - '        if (sinfos_base.empty()) {'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        auto sinfos_swa = kv_swa->prepare(ubatches);'
+    - '        if (sinfos_swa.empty()) {'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        assert(sinfos_base.size() == sinfos_swa.size());'
+    - ''
+    - '        return std::make_unique<llama_kv_cache_iswa_context>('
+    - '                this, std::move(sinfos_base), std::move(sinfos_swa), std::move(ubatches));'
+    - '    } while (false);'
+    - ''
+    - '    // if it fails, try equal split'
+    - '    do {'
+    - '        balloc.split_reset();'
+    - ''
+    - '        std::vector<llama_ubatch> ubatches;'
+    - '        while (true) {'
+    - '            auto ubatch = balloc.split_equal(n_ubatch, !unified);'
+    - ''
+    - '            if (ubatch.n_tokens == 0) {'
+    - '                break;'
+    - '            }'
+    - ''
+    - '            ubatches.push_back(std::move(ubatch)); // NOLINT'
+    - '        }'
+    - ''
+    - '        if (balloc.get_n_used() < balloc.get_n_tokens()) {'
+    - '            // failed to find a suitable split'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        auto sinfos_base = kv_base->prepare(ubatches);'
+    - '        if (sinfos_base.empty()) {'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        auto sinfos_swa = kv_swa->prepare(ubatches);'
+    - '        if (sinfos_swa.empty()) {'
+    - '            break;'
+    - '        }'
+    - ''
+    - '        assert(sinfos_base.size() == sinfos_swa.size());'
+    - ''
+    - '        return std::make_unique<llama_kv_cache_iswa_context>('
+    - '                this, std::move(sinfos_base), std::move(sinfos_swa), std::move(ubatches));'
+    - '    } while (false);'
+    - ''
+    - '    // TODO: if we fail again, we should attempt different splitting strategies'
+    - '    //       but to do that properly, we first have to refactor the batches
+      to be more flexible'
+    - ''
+    - '    return std::make_unique<llama_kv_cache_iswa_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);'
+    - '}'
+    desc: 初始化批次处理上下文，先尝试简单分割，失败后回退到等分分割，并创建双重缓存上下文。
+    line: 131-199
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr llama_kv_cache_iswa::init_full() {
+    - '    return std::make_unique<llama_kv_cache_iswa_context>(this);'
+    - '}'
+    desc: 初始化一个完整缓存上下文（无批次），返回双重缓存上下文实例。
+    line: 201-203
+    name: init_full
+  - code:
+    - llama_memory_context_ptr llama_kv_cache_iswa::init_update(llama_context * lctx,
+      bool optimize) {
+    - '    return std::make_unique<llama_kv_cache_iswa_context>(this, lctx, optimize);'
+    - '}'
+    desc: 初始化一个用于更新的缓存上下文，基于给定的llama_context和优化标志返回双重缓存上下文实例。
+    line: 205-207
+    name: init_update
+  - code:
+    - bool llama_kv_cache_iswa::get_can_shift() const {
+    - '    return kv_base->get_can_shift() &&'
+    - '           kv_swa->get_can_shift() &&'
+    - '           kv_base->get_size() == kv_swa->get_size();'
+    - '}'
+    desc: 检查缓存是否支持位移操作，要求基础缓存和SWA缓存都支持且大小相等。
+    line: 209-214
+    name: get_can_shift
+  - code:
+    - void llama_kv_cache_iswa::state_write(llama_io_write_i & io, llama_seq_id seq_id,
+      llama_state_seq_flags flags) const {
+    - '    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {'
+    - '        kv_base->state_write(io, seq_id, flags);'
+    - '    }'
+    - ''
+    - '    kv_swa->state_write(io, seq_id, flags);'
+    - '}'
+    desc: 将缓存状态及其相关联数据写入到IO接口，支持按序列状态标志选择是否写入基础缓存。
+    line: 216-221
+    name: state_write
+  - code:
+    - void llama_kv_cache_iswa::state_read(llama_io_read_i & io, llama_seq_id seq_id,
+      llama_state_seq_flags flags) {
+    - '    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {'
+    - '        kv_base->state_read(io, seq_id, flags);'
+    - '    }'
+    - ''
+    - '    kv_swa->state_read(io, seq_id, flags);'
+    - '}'
+    desc: 从IO接口读取缓存状态及其相关联数据，支持按序列状态标志选择是否读取基础缓存。
+    line: 223-228
+    name: state_read
+  - code:
+    - llama_kv_cache * llama_kv_cache_iswa::get_base() const {
+    - '    return kv_base.get();'
+    - '}'
+    desc: 返回基础KV缓存的指针。
+    line: 230-232
+    name: get_base
+  - code:
+    - llama_kv_cache * llama_kv_cache_iswa::get_swa() const {
+    - '    return kv_swa.get();'
+    - '}'
+    desc: 返回SWA KV缓存的指针。
+    line: 234-236
+    name: get_swa
+  name: llama_kv_cache_iswa
+- desc: llama_kv_cache_iswa_context是双重KV缓存的批次处理上下文，持有基础缓存上下文（ctx_base）和SWA缓存上下文（ctx_swa），负责协调两个缓存的批次迭代、应用和状态管理。
+  methods:
+  - code:
+    - 'llama_kv_cache_iswa_context::llama_kv_cache_iswa_context(llama_memory_status
+      status) : status(status) {}'
+    desc: 构造函数（状态错误）：根据给定的内存状态创建一个失败的上下文实例。
+    line: '247'
+    name: llama_kv_cache_iswa_context
+  - code:
+    - llama_kv_cache_iswa_context::llama_kv_cache_iswa_context(
+    - '        llama_kv_cache_iswa * kv) :'
+    - '    ctx_base(kv->get_base()->init_full()),'
+    - '    ctx_swa (kv->get_swa ()->init_full()),'
+    - '    status(llama_memory_status_combine(ctx_base->get_status(), ctx_swa->get_status()))
+      {'
+    - '}'
+    desc: 构造函数（完整模式）：基于双重缓存，初始化基础缓存和SWA缓存的完整上下文，并合并它们的状态。
+    line: 249-253
+    name: llama_kv_cache_iswa_context
+  - code:
+    - llama_kv_cache_iswa_context::llama_kv_cache_iswa_context(
+    - '        llama_kv_cache_iswa * kv,'
+    - '        llama_context * lctx,'
+    - '        bool optimize) :'
+    - '    ctx_base(kv->get_base()->init_update(lctx, optimize)),'
+    - '    ctx_swa (kv->get_swa ()->init_update(lctx, optimize)),'
+    - '    status(llama_memory_status_combine(ctx_base->get_status(), ctx_swa->get_status()))
+      {'
+    - '}'
+    desc: 构造函数（更新模式）：基于双重缓存和给定的llama_context，初始化基础缓存和SWA缓存的更新上下文，并合并它们的状态。
+    line: 255-261
+    name: llama_kv_cache_iswa_context
+  - code:
+    - llama_kv_cache_iswa_context::llama_kv_cache_iswa_context(
+    - '        llama_kv_cache_iswa * kv,'
+    - '        slot_info_vec_t sinfos_base,'
+    - '        slot_info_vec_t sinfos_swa,'
+    - '        std::vector<llama_ubatch> ubatches) :'
+    - '    ubatches(std::move(ubatches)),'
+    - '    // note: here we copy the ubatches. not sure if this is ideal'
+    - '    ctx_base(new llama_kv_cache_context(kv->get_base(), std::move(sinfos_base),
+      this->ubatches)),'
+    - '    ctx_swa (new llama_kv_cache_context(kv->get_swa (), std::move(sinfos_swa),  this->ubatches)),'
+    - '    status(llama_memory_status_combine(ctx_base->get_status(), ctx_swa->get_status()))
+      {'
+    - '}'
+    desc: 构造函数（批次模式）：基于双重缓存，使用给定的槽信息和批次数据初始化基础缓存和SWA缓存的批次上下文，并合并它们的状态。
+    line: 263-270
+    name: llama_kv_cache_iswa_context
+  - code:
+    - 'llama_kv_cache_iswa_context:: ~llama_kv_cache_iswa_context() = default;'
+    desc: 析构函数（默认实现）。
+    line: '272'
+    name: ~llama_kv_cache_iswa_context
+  - code:
+    - bool llama_kv_cache_iswa_context::next() {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - ''
+    - '    ctx_base->next();'
+    - '    ctx_swa ->next();'
+    - ''
+    - '    if (++i_next >= ubatches.size()) {'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    return true;'
+    - '}'
+    desc: 将基础缓存上下文和SWA缓存上下文推进到下一批次，并更新批次索引；返回是否还有更多批次可迭代。
+    line: 274-283
+    name: next
+  - code:
+    - bool llama_kv_cache_iswa_context::apply() {
+    - '    assert(!llama_memory_status_is_fail(status));'
+    - ''
+    - '    bool res = true;'
+    - ''
+    - '    res = res & ctx_base->apply();'
+    - '    res = res & ctx_swa ->apply();'
+    - ''
+    - '    return res;'
+    - '}'
+    desc: 将基础缓存上下文和SWA缓存上下文的待处理更新应用到对应的缓存中，返回所有应用操作是否成功。
+    line: 285-293
+    name: apply
+  - code:
+    - llama_memory_status llama_kv_cache_iswa_context::get_status() const {
+    - '    return status;'
+    - '}'
+    desc: 返回当前上下文的内存状态。
+    line: 295-297
+    name: get_status
+  - code:
+    - const llama_ubatch & llama_kv_cache_iswa_context::get_ubatch() const {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - ''
+    - '    return ubatches[i_next];'
+    - '}'
+    desc: 返回当前批次索引对应的llama_ubatch批次数据引用。
+    line: 299-303
+    name: get_ubatch
+  - code:
+    - const llama_kv_cache_context * llama_kv_cache_iswa_context::get_base() const
+      {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - ''
+    - '    return static_cast<const llama_kv_cache_context *>(ctx_base.get());'
+    - '}'
+    desc: 返回基础缓存上下文的指针（类型为llama_kv_cache_context）。
+    line: 305-309
+    name: get_base
+  - code:
+    - const llama_kv_cache_context * llama_kv_cache_iswa_context::get_swa()  const
+      {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - ''
+    - '    return static_cast<const llama_kv_cache_context *>(ctx_swa.get());'
+    - '}'
+    desc: 返回SWA缓存上下文的指针（类型为llama_kv_cache_context）。
+    line: 311-315
+    name: get_swa
+  name: llama_kv_cache_iswa_context
+desc: 该文件实现了llama_kv_cache_iswa类及其上下文类llama_kv_cache_iswa_context。llama_kv_cache_iswa是一个双重KV缓存管理器，将KV缓存分为非SWA（滑动窗口注意力）和SWA两部分，分别存储和管理，以适应支持SWA的模型架构。它提供了缓存初始化、清理、序列操作、批次准备和状态读写等功能，并通过组合基础缓存和SWA缓存来统一管理，实现高效的缓存内存利用和上下文管理。llama_kv_cache_iswa_context则封装了针对该双重缓存的批次上下文管理，协调基础缓存和SWA缓存的初始化、迭代和状态查询。
+file: src/llama-kv-cache-iswa.cpp
+funcs: []

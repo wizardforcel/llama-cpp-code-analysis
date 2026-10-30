@@ -1,0 +1,631 @@
+classes:
+- desc: 负责将 Jinja token 序列解析为程序 AST 的递归下降解析器。
+  methods:
+  - code:
+    - 'parser(const std::vector<token> & t, const std::string & src) : tokens(t),
+      source(src) {}'
+    desc: 初始化解析器，保存待解析的 token 序列和源代码文本。
+    line: 25-25
+    name: parser
+  - code:
+    - program parse() {
+    - '    statements body;'
+    - '    while (current < tokens.size()) {'
+    - '        body.push_back(parse_any());'
+    - '    }'
+    - '    return program(std::move(body));'
+    - '}'
+    desc: 解析整个 token 序列，收集所有顶层语句并构造程序节点。
+    line: 27-34
+    name: parse
+  - code:
+    - template<typename T, typename... Args>
+    - std::unique_ptr<T> mk_stmt(size_t start_pos, Args&&... args) {
+    - '    auto ptr = std::make_unique<T>(std::forward<Args>(args)...);'
+    - '    assert(start_pos < tokens.size());'
+    - '    ptr->pos = tokens[start_pos].pos;'
+    - '    return ptr;'
+    - '}'
+    desc: 创建 AST 语句节点并根据起始 token 设置源代码位置信息。
+    line: 37-44
+    name: mk_stmt
+  - code:
+    - const token & peek(size_t offset = 0) const {
+    - '    if (current + offset >= tokens.size()) {'
+    - '        static const token end_token{token::eof, "", 0};'
+    - '        return end_token;'
+    - '    }'
+    - '    return tokens[current + offset];'
+    - '}'
+    desc: 查看当前位置或指定偏移位置的 token，越过末尾时返回静态 EOF token。
+    line: 47-54
+    name: peek
+  - code:
+    - const token & next() {
+    - '    if (current >= tokens.size()) {'
+    - '        throw parser_exception("Parser Error: Unexpected EOF", source, tokens.empty()
+      ? 0 : tokens.back().pos);'
+    - '    }'
+    - '    return tokens[current++];'
+    - '}'
+    desc: 消费并返回当前 token，在 token 耗尽时抛出解析异常。
+    line: 56-62
+    name: next
+  - code:
+    - token expect(token::type type, const std::string&  error) {
+    - '    const auto & t = peek();'
+    - '    if (t.t != type) {'
+    - '        throw parser_exception("Parser Error: " + error + " (Got " + t.value
+      + ")", source, t.pos);'
+    - '    }'
+    - '    current++;'
+    - '    return t;'
+    - '}'
+    desc: 检查当前 token 类型是否符合预期，不符合时抛出带位置信息的解析异常。
+    line: 64-72
+    name: expect
+  - code:
+    - void expect_identifier(const std::string & name) {
+    - '    const auto & t = peek();'
+    - '    if (t.t != token::identifier || t.value != name) {'
+    - '        throw parser_exception("Expected identifier: " + name, source, t.pos);'
+    - '    }'
+    - '    current++;'
+    - '}'
+    desc: 检查当前 token 是否为指定名称的标识符。
+    line: 74-81
+    name: expect_identifier
+  - code:
+    - bool is(token::type type) const {
+    - '    return peek().t == type;'
+    - '}'
+    desc: 判断当前 token 是否为指定类型。
+    line: 83-85
+    name: is
+  - code:
+    - bool is_identifier(const std::string & name) const {
+    - '    return peek().t == token::identifier && peek().value == name;'
+    - '}'
+    desc: 判断当前 token 是否为指定名称的标识符。
+    line: 87-89
+    name: is_identifier
+  - code:
+    - bool is_statement(const std::vector<std::string> & names) const {
+    - '    if (peek(0).t != token::open_statement || peek(1).t != token::identifier)
+      {'
+    - '        return false;'
+    - '    }'
+    - '    std::string val = peek(1).value;'
+    - '    return std::find(names.begin(), names.end(), val) != names.end();'
+    - '}'
+    desc: 判断当前位置是否开始一个指定名称的 Jinja 语句。
+    line: 91-98
+    name: is_statement
+  - code:
+    - statement_ptr parse_any() {
+    - '    size_t start_pos = current;'
+    - '    switch (peek().t) {'
+    - '        case token::comment:'
+    - '            return mk_stmt<comment_statement>(start_pos, next().value);'
+    - '        case token::text:'
+    - '            return mk_stmt<string_literal>(start_pos, next().value);'
+    - '        case token::open_statement:'
+    - '            return parse_jinja_statement();'
+    - '        case token::open_expression:'
+    - '            return parse_jinja_expression();'
+    - '        default:'
+    - '            throw std::runtime_error("Unexpected token type");'
+    - '    }'
+    - '}'
+    desc: 根据当前 token 类型分派到注释、文本、Jinja 语句或 Jinja 表达式解析逻辑。
+    line: 100-115
+    name: parse_any
+  - code:
+    - statement_ptr parse_jinja_expression() {
+    - '    expect(token::open_expression, "Expected {{");'
+    - '    auto result = parse_expression();'
+    - '    expect(token::close_expression, "Expected }}");'
+    - '    return result;'
+    - '}'
+    desc: 解析由 {{ 和 }} 包围的 Jinja 表达式。
+    line: 117-123
+    name: parse_jinja_expression
+  - code:
+    - statement_ptr parse_jinja_statement() {
+    - '    expect(token::open_statement, "Expected {%");'
+    - '    if (peek().t != token::identifier) {'
+    - '        throw std::runtime_error("Unknown statement");'
+    - '    }'
+    - '    size_t start_pos = current;'
+    - '    std::string name = next().value;'
+    - '    statement_ptr result;'
+    - '    if (name == "set") {'
+    - '        result = parse_set_statement(start_pos);'
+    - '    } else if (name == "if") {'
+    - '        result = parse_if_statement(start_pos);'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endif");'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '    } else if (name == "macro") {'
+    - '        result = parse_macro_statement(start_pos);'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endmacro");'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '    } else if (name == "for") {'
+    - '        result = parse_for_statement(start_pos);'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endfor");'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '    } else if (name == "break") {'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        result = mk_stmt<break_statement>(start_pos);'
+    - '    } else if (name == "continue") {'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        result = mk_stmt<continue_statement>(start_pos);'
+    - '    } else if (name == "call") {'
+    - '        statements caller_args;'
+    - '        if (is(token::open_paren)) caller_args = parse_args();'
+    - '        auto callee = parse_primary_expression();'
+    - '        if (!is_type<identifier>(callee)) throw std::runtime_error("Expected
+      identifier");'
+    - '        auto call_args = parse_args();'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        statements body;'
+    - '        while (!is_statement({"endcall"})) body.push_back(parse_any());'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endcall");'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        auto call_expr = mk_stmt<call_expression>(start_pos, std::move(callee),
+      std::move(call_args));'
+    - '        result = mk_stmt<call_statement>(start_pos, std::move(call_expr), std::move(caller_args),
+      std::move(body));'
+    - '    } else if (name == "filter") {'
+    - '        auto filter_node = parse_primary_expression();'
+    - '        if (is_type<identifier>(filter_node) && is(token::open_paren)) filter_node
+      = parse_call_expression(std::move(filter_node));'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        statements body;'
+    - '        while (!is_statement({"endfilter"})) body.push_back(parse_any());'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endfilter");'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        result = mk_stmt<filter_statement>(start_pos, std::move(filter_node),
+      std::move(body));'
+    - '    } else if (name == "generation" || name == "endgeneration") {'
+    - '        result = mk_stmt<noop_statement>(start_pos);'
+    - '        ++current;'
+    - '    } else {'
+    - '        throw std::runtime_error("Unknown statement: " + name);'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 解析由 {% 和 %} 包围的 Jinja 控制语句，并分派到具体语句解析方法。
+    line: 125-198
+    name: parse_jinja_statement
+  - code:
+    - statement_ptr parse_set_statement(size_t start_pos) {
+    - '    auto left = parse_expression_sequence();'
+    - '    statement_ptr value = nullptr;'
+    - '    statements body;'
+    - '    if (is(token::equals)) {'
+    - '        ++current;'
+    - '        value = parse_expression_sequence();'
+    - '    } else {'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        while (!is_statement({"endset"})) body.push_back(parse_any());'
+    - '        expect(token::open_statement, "Expected {%");'
+    - '        expect_identifier("endset");'
+    - '    }'
+    - '    expect(token::close_statement, "Expected %}");'
+    - '    return mk_stmt<set_statement>(start_pos, std::move(left), std::move(value),
+      std::move(body));'
+    - '}'
+    desc: 解析 set 赋值语句或多行 set 块。
+    line: 200-218
+    name: parse_set_statement
+  - code:
+    - statement_ptr parse_if_statement(size_t start_pos) {
+    - '    auto test = parse_expression();'
+    - '    expect(token::close_statement, "Expected %}");'
+    - '    statements body;'
+    - '    statements alternate;'
+    - '    while (!is_statement({"elif", "else", "endif"})) body.push_back(parse_any());'
+    - '    if (is_statement({"elif"})) {'
+    - '        size_t pos0 = current;'
+    - '        ++current;'
+    - '        ++current;'
+    - '        alternate.push_back(parse_if_statement(pos0));'
+    - '    } else if (is_statement({"else"})) {'
+    - '        ++current;'
+    - '        ++current;'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        while (!is_statement({"endif"})) alternate.push_back(parse_any());'
+    - '    }'
+    - '    return mk_stmt<if_statement>(start_pos, std::move(test), std::move(body),
+      std::move(alternate));'
+    - '}'
+    desc: 解析 if、elif 和 else 条件语句及其嵌套内容。
+    line: 220-243
+    name: parse_if_statement
+  - code:
+    - statement_ptr parse_macro_statement(size_t start_pos) {
+    - '    auto name = parse_primary_expression();'
+    - '    auto args = parse_args();'
+    - '    expect(token::close_statement, "Expected %}");'
+    - '    statements body;'
+    - '    while (!is_statement({"endmacro"})) body.push_back(parse_any());'
+    - '    return mk_stmt<macro_statement>(start_pos, std::move(name), std::move(args),
+      std::move(body));'
+    - '}'
+    desc: 解析宏名称、参数和宏体，构造宏语句节点。
+    line: 245-253
+    name: parse_macro_statement
+  - code:
+    - statement_ptr parse_expression_sequence(bool primary = false) {
+    - '    size_t start_pos = current;'
+    - '    statements exprs;'
+    - '    exprs.push_back(primary ? parse_primary_expression() : parse_expression());'
+    - '    bool is_tuple = is(token::comma);'
+    - '    while (is(token::comma)) {'
+    - '        ++current;'
+    - '        exprs.push_back(primary ? parse_primary_expression() : parse_expression());'
+    - '    }'
+    - '    return is_tuple ? mk_stmt<tuple_literal>(start_pos, std::move(exprs)) :
+      std::move(exprs[0]);'
+    - '}'
+    desc: 解析一个或多个逗号分隔的表达式，并在存在多个元素时构造元组节点。
+    line: 255-265
+    name: parse_expression_sequence
+  - code:
+    - statement_ptr parse_for_statement(size_t start_pos) {
+    - '    auto loop_var = parse_expression_sequence(true);'
+    - '    if (!is_identifier("in")) throw std::runtime_error("Expected ''in''");'
+    - '    ++current;'
+    - '    auto iterable = parse_expression();'
+    - '    expect(token::close_statement, "Expected %}");'
+    - '    statements body;'
+    - '    statements alternate;'
+    - '    while (!is_statement({"endfor", "else"})) body.push_back(parse_any());'
+    - '    if (is_statement({"else"})) {'
+    - '        ++current;'
+    - '        ++current;'
+    - '        expect(token::close_statement, "Expected %}");'
+    - '        while (!is_statement({"endfor"})) alternate.push_back(parse_any());'
+    - '    }'
+    - '    return mk_stmt<for_statement>(start_pos, std::move(loop_var), std::move(iterable),
+      std::move(body), std::move(alternate));'
+    - '}'
+    desc: 解析 for 循环的循环变量、可迭代对象、循环体以及可选的 else 分支。
+    line: 267-289
+    name: parse_for_statement
+  - code:
+    - statement_ptr parse_expression() {
+    - '    return parse_if_expression();'
+    - '}'
+    desc: 从最低优先级入口开始解析表达式。
+    line: 291-294
+    name: parse_expression
+  - code:
+    - statement_ptr parse_if_expression() {
+    - '    auto a = parse_logical_or_expression();'
+    - '    if (is_identifier("if")) {'
+    - '        size_t start_pos = current;'
+    - '        ++current;'
+    - '        auto test = parse_logical_or_expression();'
+    - '        if (is_identifier("else")) {'
+    - '            size_t pos0 = current;'
+    - '            ++current;'
+    - '            auto false_expr = parse_if_expression();'
+    - '            return mk_stmt<ternary_expression>(pos0, std::move(test), std::move(a),
+      std::move(false_expr));'
+    - '        } else {'
+    - '            return mk_stmt<select_expression>(start_pos, std::move(a), std::move(test));'
+    - '        }'
+    - '    }'
+    - '    return a;'
+    - '}'
+    desc: 解析带 if/else 的三元表达式或选择表达式。
+    line: 296-313
+    name: parse_if_expression
+  - code:
+    - statement_ptr parse_logical_or_expression() {
+    - '    auto left = parse_logical_and_expression();'
+    - '    while (is_identifier("or")) {'
+    - '        size_t start_pos = current;'
+    - '        token op = next();'
+    - '        left = mk_stmt<binary_expression>(start_pos, op, std::move(left), parse_logical_and_expression());'
+    - '    }'
+    - '    return left;'
+    - '}'
+    desc: 解析由 or 连接的逻辑或表达式。
+    line: 315-324
+    name: parse_logical_or_expression
+  - code:
+    - statement_ptr parse_logical_and_expression() {
+    - '    auto left = parse_logical_negation_expression();'
+    - '    while (is_identifier("and")) {'
+    - '        size_t start_pos = current;'
+    - '        auto op = next();'
+    - '        left = mk_stmt<binary_expression>(start_pos, op, std::move(left), parse_logical_negation_expression());'
+    - '    }'
+    - '    return left;'
+    - '}'
+    desc: 解析由 and 连接的逻辑与表达式。
+    line: 326-335
+    name: parse_logical_and_expression
+  - code:
+    - statement_ptr parse_logical_negation_expression() {
+    - '    if (is_identifier("not")) {'
+    - '        size_t start_pos = current;'
+    - '        auto op = next();'
+    - '        return mk_stmt<unary_expression>(start_pos, op, parse_logical_negation_expression());'
+    - '    }'
+    - '    return parse_comparison_expression();'
+    - '}'
+    desc: 解析 not 一元逻辑运算及其后续比较表达式。
+    line: 337-345
+    name: parse_logical_negation_expression
+  - code:
+    - statement_ptr parse_comparison_expression() {
+    - '    auto left = parse_additive_expression();'
+    - '    while (true) {'
+    - '        token op;'
+    - '        size_t start_pos = current;'
+    - '        if (is_identifier("not") && peek(1).t == token::identifier && peek(1).value
+      == "in") {'
+    - '            op = {token::identifier, "not in", tokens[current].pos};'
+    - '            ++current;'
+    - '            ++current;'
+    - '        } else if (is_identifier("in")) {'
+    - '            op = next();'
+    - '        } else if (is(token::comparison_binary_operator)) {'
+    - '            op = next();'
+    - '        } else break;'
+    - '        left = mk_stmt<binary_expression>(start_pos, op, std::move(left), parse_additive_expression());'
+    - '    }'
+    - '    return left;'
+    - '}'
+    desc: 解析比较运算符、in 和 not in 成员关系表达式。
+    line: 347-365
+    name: parse_comparison_expression
+  - code:
+    - statement_ptr parse_additive_expression() {
+    - '    auto left = parse_multiplicative_expression();'
+    - '    while (is(token::additive_binary_operator)) {'
+    - '        size_t start_pos = current;'
+    - '        auto op = next();'
+    - '        left = mk_stmt<binary_expression>(start_pos, op, std::move(left), parse_multiplicative_expression());'
+    - '    }'
+    - '    return left;'
+    - '}'
+    desc: 解析加法和减法等加性二元表达式。
+    line: 367-375
+    name: parse_additive_expression
+  - code:
+    - statement_ptr parse_multiplicative_expression() {
+    - '    auto left = parse_test_expression();'
+    - '    while (is(token::multiplicative_binary_operator)) {'
+    - '        size_t start_pos = current;'
+    - '        auto op = next();'
+    - '        left = mk_stmt<binary_expression>(start_pos, op, std::move(left), parse_test_expression());'
+    - '    }'
+    - '    return left;'
+    - '}'
+    desc: 解析乘法、除法等乘性二元表达式。
+    line: 377-385
+    name: parse_multiplicative_expression
+  - code:
+    - statement_ptr parse_test_expression() {
+    - '    auto operand = parse_filter_expression();'
+    - '    while (is_identifier("is")) {'
+    - '        size_t start_pos = current;'
+    - '        ++current;'
+    - '        bool negate = false;'
+    - '        if (is_identifier("not")) { ++current; negate = true; }'
+    - '        auto test_id = parse_primary_expression();'
+    - '        if (is(token::open_paren)) test_id = parse_call_expression(std::move(test_id));'
+    - '        operand = mk_stmt<test_expression>(start_pos, std::move(operand), negate,
+      std::move(test_id));'
+    - '    }'
+    - '    return operand;'
+    - '}'
+    desc: 解析 is 和 is not 测试表达式及其可选调用参数。
+    line: 387-399
+    name: parse_test_expression
+  - code:
+    - statement_ptr parse_filter_expression() {
+    - '    auto operand = parse_call_member_expression();'
+    - '    while (is(token::pipe)) {'
+    - '        size_t start_pos = current;'
+    - '        ++current;'
+    - '        auto filter = parse_primary_expression();'
+    - '        if (is(token::open_paren)) filter = parse_call_expression(std::move(filter));'
+    - '        operand = mk_stmt<filter_expression>(start_pos, std::move(operand),
+      std::move(filter));'
+    - '    }'
+    - '    return operand;'
+    - '}'
+    desc: 解析管道过滤器表达式及其过滤器调用参数。
+    line: 401-412
+    name: parse_filter_expression
+  - code:
+    - statement_ptr parse_call_member_expression() {
+    - '    auto member = parse_member_expression(parse_primary_expression());'
+    - '    return is(token::open_paren) ? parse_call_expression(std::move(member))
+      : std::move(member);'
+    - '}'
+    desc: 解析成员访问表达式，并处理成员表达式后的函数调用。
+    line: 414-418
+    name: parse_call_member_expression
+  - code:
+    - statement_ptr parse_call_expression(statement_ptr callee) {
+    - '    size_t start_pos = current;'
+    - '    auto expr = mk_stmt<call_expression>(start_pos, std::move(callee), parse_args());'
+    - '    auto member = parse_member_expression(std::move(expr));'
+    - '    return is(token::open_paren) ? parse_call_expression(std::move(member))
+      : std::move(member);'
+    - '}'
+    desc: 解析函数调用表达式、调用参数以及调用结果上的链式成员访问或调用。
+    line: 420-426
+    name: parse_call_expression
+  - code:
+    - statements parse_args() {
+    - '    expect(token::open_paren, "Expected (");'
+    - '    statements args;'
+    - '    while (!is(token::close_paren)) {'
+    - '        statement_ptr arg;'
+    - '        if (peek().t == token::multiplicative_binary_operator && peek().value
+      == "*") {'
+    - '            size_t start_pos = current;'
+    - '            ++current;'
+    - '            arg = mk_stmt<spread_expression>(start_pos, parse_expression());'
+    - '        } else {'
+    - '            arg = parse_expression();'
+    - '            if (is(token::equals)) {'
+    - '                size_t start_pos = current;'
+    - '                ++current;'
+    - '                arg = mk_stmt<keyword_argument_expression>(start_pos, std::move(arg),
+      parse_expression());'
+    - '            }'
+    - '        }'
+    - '        args.push_back(std::move(arg));'
+    - '        if (is(token::comma)) ++current;'
+    - '    }'
+    - '    expect(token::close_paren, "Expected )");'
+    - '    return args;'
+    - '}'
+    desc: 解析逗号分隔的普通参数、展开参数和关键字参数。
+    line: 428-452
+    name: parse_args
+  - code:
+    - statement_ptr parse_member_expression(statement_ptr object) {
+    - '    size_t start_pos = current;'
+    - '    while (is(token::dot) || is(token::open_square_bracket)) {'
+    - '        auto op = next();'
+    - '        bool computed = op.t == token::open_square_bracket;'
+    - '        statement_ptr prop;'
+    - '        if (computed) {'
+    - '            prop = parse_member_expression_arguments();'
+    - '            expect(token::close_square_bracket, "Expected ]");'
+    - '        } else {'
+    - '            prop = parse_primary_expression();'
+    - '        }'
+    - '        object = mk_stmt<member_expression>(start_pos, std::move(object), std::move(prop),
+      computed);'
+    - '    }'
+    - '    return object;'
+    - '}'
+    desc: 递归解析点号成员访问和方括号索引或切片访问。
+    line: 454-469
+    name: parse_member_expression
+  - code:
+    - statement_ptr parse_member_expression_arguments() {
+    - '    statements slices;'
+    - '    bool is_slice = false;'
+    - '    size_t start_pos = current;'
+    - '    while (!is(token::close_square_bracket)) {'
+    - '        if (is(token::colon)) {'
+    - '            slices.push_back(nullptr);'
+    - '            ++current;'
+    - '            is_slice = true;'
+    - '        } else {'
+    - '            slices.push_back(parse_expression());'
+    - '            if (is(token::colon)) {'
+    - '                ++current;'
+    - '                is_slice = true;'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (is_slice) {'
+    - '        statement_ptr start = slices.size() > 0 ? std::move(slices[0]) : nullptr;'
+    - '        statement_ptr stop = slices.size() > 1 ? std::move(slices[1]) : nullptr;'
+    - '        statement_ptr step = slices.size() > 2 ? std::move(slices[2]) : nullptr;'
+    - '        return mk_stmt<slice_expression>(start_pos, std::move(start), std::move(stop),
+      std::move(step));'
+    - '    }'
+    - '    if (slices.empty()) return mk_stmt<blank_expression>(start_pos);'
+    - '    return std::move(slices[0]);'
+    - '}'
+    desc: 解析方括号中的索引表达式或冒号分隔的切片表达式。
+    line: 471-499
+    name: parse_member_expression_arguments
+  - code:
+    - statement_ptr parse_primary_expression() {
+    - '    size_t start_pos = current;'
+    - '    auto t = next();'
+    - '    switch (t.t) {'
+    - '        case token::numeric_literal:'
+    - '            if (t.value.find(''.'') != std::string::npos) return mk_stmt<float_literal>(start_pos,
+      std::stod(t.value));'
+    - '            else return mk_stmt<integer_literal>(start_pos, std::stoll(t.value));'
+    - '        case token::string_literal: {'
+    - '            std::string val = t.value;'
+    - '            while (is(token::string_literal)) val += next().value;'
+    - '            return mk_stmt<string_literal>(start_pos, val);'
+    - '        }'
+    - '        case token::identifier:'
+    - '            return mk_stmt<identifier>(start_pos, t.value);'
+    - '        case token::open_paren: {'
+    - '            auto expr = parse_expression_sequence();'
+    - '            expect(token::close_paren, "Expected )");'
+    - '            return expr;'
+    - '        }'
+    - '        case token::open_square_bracket: {'
+    - '            statements vals;'
+    - '            while (!is(token::close_square_bracket)) {'
+    - '                vals.push_back(parse_expression());'
+    - '                if (is(token::comma)) ++current;'
+    - '            }'
+    - '            ++current;'
+    - '            return mk_stmt<array_literal>(start_pos, std::move(vals));'
+    - '        }'
+    - '        case token::open_curly_bracket: {'
+    - '            std::vector<std::pair<statement_ptr, statement_ptr>> pairs;'
+    - '            while (!is(token::close_curly_bracket)) {'
+    - '                auto key = parse_expression();'
+    - '                expect(token::colon, "Expected :");'
+    - '                pairs.push_back({std::move(key), parse_expression()});'
+    - '                if (is(token::comma)) ++current;'
+    - '            }'
+    - '            ++current;'
+    - '            return mk_stmt<object_literal>(start_pos, std::move(pairs));'
+    - '        }'
+    - '        default:'
+    - '            throw std::runtime_error("Unexpected token: " + t.value + " of
+      type " + std::to_string(t.t));'
+    - '    }'
+    - '}'
+    desc: 解析数字、字符串、标识符、括号表达式、数组字面量和对象字面量等基本表达式。
+    line: 501-542
+    name: parse_primary_expression
+  name: parser
+desc: 该文件实现 Jinja 模板语言的递归下降解析器：接收词法分析器生成的 token 序列，解析文本、注释、表达式、控制语句、宏、循环、条件、调用、过滤器以及各种运算符表达式，并构建对应的抽象语法树（AST）；同时在语法错误时结合源代码和
+  token 位置抛出解析异常。
+file: common/jinja/parser.cpp
+funcs:
+- code:
+  - template<typename T>
+  - static bool is_type(const statement_ptr & ptr) {
+  - '    return dynamic_cast<const T*>(ptr.get()) != nullptr;'
+  - '}'
+  desc: 使用 dynamic_cast 检查语句指针是否指向指定类型的 AST 节点。
+  line: 16-19
+  name: is_type
+- code:
+  - program parse_from_tokens(const lexer_result & lexer_res) {
+  - '    return parser(lexer_res.tokens, lexer_res.source).parse();'
+  - '}'
+  desc: 使用词法分析结果创建解析器并解析出完整的 Jinja 程序 AST。
+  line: 545-547
+  name: parse_from_tokens
+- code:
+  - '#include "lexer.h"'
+  - '#include "runtime.h"'
+  - '#include "parser.h"'
+  - '#define FILENAME "jinja-parser"'
+  - namespace jinja {
+  - '}'
+  - ''
+  desc: 文件级全局代码，包括头文件引入、宏定义以及 jinja 命名空间和解析器定义。
+  line: 1-549
+  name: __main__

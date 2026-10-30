@@ -1,0 +1,89 @@
+classes: []
+desc: the file defines the stable-ish C API helper functions for the mtmd multimodal
+  library. It provides auxiliary routines for logging configuration, bitmap loading
+  from files or buffers, token/position counting from input chunks, batch evaluation
+  (which orchestrates text decoding and image encoding followed by decoding), single-chunk
+  evaluation, and image-chunk decoding with established embeddings. It is designed
+  to sit on top of the core mtmd and llama APIs to simplify integration, while explicitly
+  noting that these helpers may change without notice.
+file: tools/mtmd/mtmd-helper.h
+funcs:
+- code:
+  - MTMD_API void mtmd_helper_log_set(ggml_log_callback log_callback, void * user_data);
+  desc: the function sets a callback for all future logging events. If not called,
+    or NULL is supplied, all logs go to stderr. It also internally invokes mtmd_log_set()
+    to apply the same callback at the lower level.
+  line: 23-30
+  name: mtmd_helper_log_set
+- code:
+  - MTMD_API mtmd_bitmap * mtmd_helper_bitmap_init_from_file(mtmd_context * ctx, const
+    char * fname);
+  desc: the function constructs a mtmd_bitmap from a file by delegating to mtmd_helper_bitmap_init_from_buf()
+    internally. It returns nullptr on failure and is declared thread-safe.
+  line: 31-34
+  name: mtmd_helper_bitmap_init_from_file
+- code:
+  - MTMD_API mtmd_bitmap * mtmd_helper_bitmap_init_from_buf(mtmd_context * ctx, const
+    unsigned char * buf, size_t len);
+  desc: the function constructs a mtmd_bitmap from a buffer containing file data.
+    It supports image formats via stb_image (jpg, png, bmp, gif) and audio formats
+    via miniaudio (wav, mp3, flac). Audio is auto-detected from magic bytes, returns
+    nullptr on failure, and is thread-safe.
+  line: 35-42
+  name: mtmd_helper_bitmap_init_from_buf
+- code:
+  - MTMD_API size_t mtmd_helper_get_n_tokens(const mtmd_input_chunks * chunks);
+  desc: the function counts the total number of tokens from a list of chunks. This
+    is useful for tracking the KV cache state.
+  line: 45-47
+  name: mtmd_helper_get_n_tokens
+- code:
+  - MTMD_API llama_pos mtmd_helper_get_n_pos(const mtmd_input_chunks * chunks);
+  desc: the function counts the total position of tokens from a list of chunks, helpful
+    for tracking n_past. Under normal circumstances n_pos equals n_tokens, but for
+    M-RoPE semantics they may differ.
+  line: 49-52
+  name: mtmd_helper_get_n_pos
+- code:
+  - MTMD_API int32_t mtmd_helper_eval_chunks(mtmd_context * ctx,
+  - '                                         struct llama_context * lctx,'
+  - '                                         const mtmd_input_chunks * chunks,'
+  - '                                         llama_pos n_past,'
+  - '                                         llama_seq_id seq_id,'
+  - '                                         int32_t n_batch,'
+  - '                                         bool logits_last,'
+  - '                                         llama_pos * new_n_past);'
+  desc: the function runs llama_decode() on text chunks and mtmd_encode() followed
+    by mtmd_get_output_embd() and llama_decode() on image chunks. It stops and forwards
+    any non-zero error from mtmd_encode() or llama_decode(). Returns 0 on success
+    and is NOT thread-safe.
+  line: 54-67
+  name: mtmd_helper_eval_chunks
+- code:
+  - MTMD_API int32_t mtmd_helper_eval_chunk_single(mtmd_context * ctx,
+  - '                                               struct llama_context * lctx,'
+  - '                                               const mtmd_input_chunk * chunk,'
+  - '                                               llama_pos n_past,'
+  - '                                               llama_seq_id seq_id,'
+  - '                                               int32_t n_batch,'
+  - '                                               bool logits_last,'
+  - '                                               llama_pos * new_n_past);'
+  desc: the function works like mtmd_helper_eval_chunks() but operates on a single
+    chunk. It is NOT thread-safe.
+  line: 68-80
+  name: mtmd_helper_eval_chunk_single
+- code:
+  - MTMD_API int32_t mtmd_helper_decode_image_chunk(mtmd_context * ctx,
+  - '                                                struct llama_context * lctx,'
+  - '                                                const mtmd_input_chunk * chunk,'
+  - '                                                float * encoded_embd,'
+  - '                                                llama_pos n_past,'
+  - '                                                llama_seq_id seq_id,'
+  - '                                                int32_t n_batch,'
+  - '                                                llama_pos * new_n_past);'
+  desc: the function decodes an image chunk whose embeddings have already been calculated.
+    It handles batching and pre/post decoding setup (e.g. gemma 3 requires non-causal
+    attention). Returns 0 on success, -1 if the chunk is not a valid image chunk,
+    and 1 on decode failure.
+  line: 83-95
+  name: mtmd_helper_decode_image_chunk

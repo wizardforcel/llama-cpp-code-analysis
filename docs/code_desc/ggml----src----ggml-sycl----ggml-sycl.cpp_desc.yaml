@@ -1,0 +1,3777 @@
+classes:
+- desc: 代表一个SYCL后端缓冲区上下文，持有设备ID、设备内存指针、关联的SYCL队列、缓冲区名称和优化特性，并管理相关的张量附加数据。
+  methods:
+  - code:
+    - 'ggml_backend_sycl_buffer_context(int device, void * dev_ptr, queue_ptr stream)
+      :'
+    - '    device(device), dev_ptr(dev_ptr), stream(stream) {'
+    - '        check_allow_gpu_index(device);'
+    - '        name = (GGML_SYCL_NAME + std::to_string(device));'
+    - '        opt_feature = ggml_sycl_info().devices[device].opt_feature;'
+    - '    }'
+    desc: 构造函数：初始化设备ID、设备指针和SYCL队列，检查设备索引有效性，设置缓冲区名称和优化特性。
+    line: 282-286
+    name: ggml_backend_sycl_buffer_context
+  - code:
+    - ~ggml_backend_sycl_buffer_context() {
+    - '    if (dev_ptr != nullptr) {'
+    - '        ggml_sycl_set_device(device);'
+    - '        SYCL_CHECK(CHECK_TRY_ERROR(sycl::free(dev_ptr, *stream)));'
+    - '    }'
+    - '    for (ggml_tensor_extra_gpu * extra : tensor_extras) {'
+    - '        release_extra_gpu(extra);'
+    - '    }'
+    - '}'
+    desc: 析构函数：释放设备内存指针，并释放所有关联的张量附加数据。
+    line: 288-296
+    name: ~ggml_backend_sycl_buffer_context
+  name: ggml_backend_sycl_buffer_context
+- desc: 代表SYCL后端缓冲区类型的上下文，存储设备编号、缓冲区类型名称以及对应的SYCL队列。
+  methods: []
+  name: ggml_backend_sycl_buffer_type_context
+- desc: 代表SYCL分割缓冲区的类型上下文，存储多设备间的张量分割比例。
+  methods: []
+  name: ggml_backend_sycl_split_buffer_type_context
+- desc: 代表SYCL分割缓冲区的上下文，管理多设备上张量附加数据和关联的SYCL队列。
+  methods:
+  - code:
+    - ~ggml_backend_sycl_split_buffer_context() try {
+    - '    for (ggml_tensor_extra_gpu * extra : tensor_extras) {'
+    - '        release_extra_gpu(extra, streams);'
+    - '    }'
+    - '}'
+    - catch (sycl::exception const &exc) {
+    - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+    - '            << ", line:" << __LINE__ << std::endl;'
+    - '  std::exit(1);'
+    - '}'
+    desc: 析构函数：释放所有张量附加数据。
+    line: 476-484
+    name: ~ggml_backend_sycl_split_buffer_context
+  name: ggml_backend_sycl_split_buffer_context
+- desc: 传统的SYCL设备内存池实现，用于优化GPU内存分配，通过复用已分配块来减少malloc/free调用次数。
+  methods:
+  - code:
+    - void * alloc(size_t size, size_t * actual_size) override {
+    - '    size_t best_diff = 1ull << 36;'
+    - '    int ibest = -1;'
+    - '    for (int i = 0; i < MAX_SYCL_BUFFERS; ++i) {'
+    - '        ggml_sycl_buffer& b = buffer_pool[i];'
+    - '        if (b.ptr != nullptr) {'
+    - '            if (b.size >= size) {'
+    - '                size_t diff = b.size - size;'
+    - '                if (diff < best_diff) {'
+    - '                    best_diff = diff;'
+    - '                    ibest = i;'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (ibest >= 0) {'
+    - '        ggml_sycl_buffer& b = buffer_pool[ibest];'
+    - '        void * ptr = b.ptr;'
+    - '        *actual_size = b.size;'
+    - '        b.ptr = nullptr;'
+    - '        b.size = 0;'
+    - '        return ptr;'
+    - '    }'
+    - '    void * ptr;'
+    - '    size_t look_ahead_size = (size_t) (1.05 * size);'
+    - '    SYCL_CHECK(CHECK_TRY_ERROR(ptr = (void *)sycl::malloc_device(look_ahead_size,
+      *qptr)));'
+    - '    if (!ptr) {'
+    - '        GGML_LOG_ERROR("%s: can''t allocate %lu Bytes of memory on device/GPU\n",
+      __func__, look_ahead_size);'
+    - '        return nullptr;'
+    - '    }'
+    - '    *actual_size = look_ahead_size;'
+    - '    pool_size += look_ahead_size;'
+    - '    return ptr;'
+    - '}'
+    desc: 从内存池中分配指定大小的设备内存块，优先复用已存在的合适大小的块，否则新分配内存。
+    line: 673-708
+    name: alloc
+  - code:
+    - void free(void * ptr, size_t size) override {
+    - '    for (int i = 0; i < MAX_SYCL_BUFFERS; ++i) {'
+    - '        ggml_sycl_buffer& b = buffer_pool[i];'
+    - '        if (b.ptr == nullptr) {'
+    - '            b.ptr = ptr;'
+    - '            b.size = size;'
+    - '            return;'
+    - '        }'
+    - '    }'
+    - '    GGML_LOG_WARN("WARNING: sycl buffer pool full, increase MAX_sycl_BUFFERS\n");'
+    - '    SYCL_CHECK(CHECK_TRY_ERROR(sycl::free(ptr, *qptr)));'
+    - '    pool_size -= size;'
+    - '}'
+    desc: 将释放的内存块放回内存池中以便复用，如果池已满则直接释放。
+    line: 710-721
+    name: free
+  name: ggml_sycl_pool_leg
+- desc: 主机内存池实现，用于管理CPU侧的内存分配，通过固定大小的缓冲池来加快主机内存的分配和释放。
+  methods:
+  - code:
+    - void * alloc(size_t size, size_t * actual_size) override {
+    - '    if (counter == MAX_POOL_SIZE) {'
+    - '        ggml_sycl_buffer b               = buffer_pool[0];'
+    - '        void *           ptr             = b.ptr;'
+    - '        *actual_size                     = b.size;'
+    - '        counter                          = 1;'
+    - '        return ptr;'
+    - '    }'
+    - '    ggml_sycl_buffer & b = buffer_pool[counter];'
+    - '    if (b.ptr == nullptr) {'
+    - '        void * ptr;'
+    - '        SYCL_CHECK(CHECK_TRY_ERROR(ptr = (void *) sycl::malloc_host(size, *qptr)));'
+    - '        if (!ptr) {'
+    - '            GGML_LOG_ERROR("%s: can''t allocate %lu Bytes of memory on host\n",
+      __func__, size);'
+    - '            return nullptr;'
+    - '        }'
+    - '        pool_size += size;'
+    - '        *actual_size = size;'
+    - '        counter      = counter + 1;'
+    - '        return ptr;'
+    - '    } else {'
+    - '        ++counter;'
+    - '        b.size = size;'
+    - '        return b.ptr;'
+    - '    }'
+    - '}'
+    desc: 从主机内存池中分配块，如果块不存在则新分配主机内存，否则复用已有块并增加计数器。
+    line: 752-771
+    name: alloc
+  - code:
+    - void free(void * ptr, size_t size) override {
+    - '    for (int i = 0; i < MAX_POOL_SIZE; ++i) {'
+    - '        ggml_sycl_buffer & b = buffer_pool[i];'
+    - '        if (b.ptr == nullptr) {'
+    - '            b.ptr  = ptr;'
+    - '            b.size = size;'
+    - '            return;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 将内存块放入主机内存池中，不实际释放，等到池销毁时统一释放。
+    line: 773-783
+    name: free
+  name: ggml_sycl_pool_host
+- desc: 提供静态方法gemm来调用oneDNN矩阵乘法库，封装了SYCL队列和数据类型转换。
+  methods:
+  - code:
+    - static void gemm(const ggml_backend_sycl_context &ctx, int64_t m, int64_t n,
+      int64_t k,
+    - '                     const void *a, dpct::library_data_t a_dt, int64_t lda,
+      int64_t stridea,'
+    - '                     const void *b, dpct::library_data_t b_dt, int64_t ldb,
+      int64_t strideb,'
+    - '                     void *c, dpct::library_data_t c_dt, queue_ptr queue,'
+    - '                     int64_t batch_a, int64_t batch_b) {'
+    - '    // 实现调用oneDNN的gemm函数'
+    desc: 静态方法，执行矩阵乘法操作。
+    line: 3050-3100
+    name: gemm
+  name: DnnlGemmWrapper
+- desc: 一个辅助结构体，用于在 mul_mat_id 操作中记录源张量行到原始目标张量行的映射关系。
+  methods: []
+  name: mmid_row_mapping
+- desc: SYCL后端的上下文结构体，持有backend设备指针及其相关参数。
+  methods:
+  - code:
+    - const queue_ptr stream = sycl_ctx->stream(sycl_ctx->device, 0);
+    desc: 获取当前设备的SYCL指令队列（queue）指针。
+    line: 4396-4697
+    name: stream
+  name: ggml_backend_sycl_context
+- desc: SYCL设备上下文结构体，持有设备ID、名称、描述和最小批量大小等属性。
+  methods: []
+  name: ggml_backend_sycl_device_context
+- desc: SYCL后端注册上下文结构体，持有已注册的回调函数映射表。
+  methods: []
+  name: ggml_backend_sycl_reg_context
+desc: 该文件是ggml项目中SYCL后端的核心实现，负责设备初始化、SYCL设备信息管理、SYCL后端缓冲区的创建与操作，以及设备间数据拷贝等功能。它实现了ggml后端抽象层的buffer和buffer_type接口，为在Intel
+  GPU等SYCL设备上运行大模型推理提供了内存管理与数据搬运的底层支持。该文件是ggml库中SYCL后端实现的核心部分，负责GPU内存管理（设备/主机缓冲区分配与释放）、张量数据的跨设备分割与传输，以及定义多种GPU计算内核（如矩阵乘法、归约、池化等）。文件通过SYCL异构编程模型实现跨平台GPU计算，支持多设备并行和统一的张量存储管理。该文件是
+  GGML 库的 SYCL 后端实现，针对 Intel GPU 等 SYCL 设备提供了各类张量运算函数的 GPU 加速版本。文件中包含多个静态函数和类，覆盖了矩阵乘法、池化、排序、求和、掩码等算子，通过
+  SYCL 并行计算框架将计算任务映射到 GPU 上执行。该文件是ggml-sycl后端实现的核心部分，专注于在SYCL设备上执行矩阵乘法、乘加等运算。文件包含了多个用于处理不同数据布局和类型的乘法优化内核，以及支持多GPU分布计算的辅助函数。它利用oneDNN和SYCL的异步内存分配特性，通过选择适当的算法（如标准矩阵乘法、向量乘法或批量乘法）来提高计算效率，并提供了内存重排功能以优化数据在设备上的存储布局。该文件是
+  ggml-sycl 后端实现的核心部分，负责 SYCL (Intel oneAPI) 设备上张量操作的分发与执行。它包含了矩阵乘法（mul_mat）的各种优化路径（如
+  DMMV、MMVQ、MMQ）以及张量重排（reorder）逻辑，同时还实现了 mul_mat_id 操作以及一个庞大的 compute_forward 函数，用于将各种
+  GGML 操作类型映射到相应的 SYCL 内核调用。该文件是ggml在SYCL设备上的后端实现，包含了SYCL后端的初始化、设备管理、张量操作、计算图执行、事件同步等功能，以及后端和设备注册逻辑，通过SYCL统一编程模型支持Intel等GPU设备上的神经网络推理和训练。
+file: ggml/src/ggml-sycl/ggml-sycl.cpp
+funcs:
+- code:
+  - static bool g_sycl_loaded = false;
+  - int g_ggml_sycl_debug = 0;
+  - int g_ggml_sycl_disable_optimize = 0;
+  - int g_ggml_sycl_disable_graph = 0;
+  - int g_ggml_sycl_disable_dnn = 0;
+  - int g_ggml_sycl_prioritize_dmmv = 0;
+  - int g_ggml_sycl_use_async_mem_op = 0;
+  - int g_ggml_sycl_enable_flash_attention = 1;
+  desc: 文件全局作用域，包含全局变量定义和静态设备信息初始化逻辑。
+  line: 57-65
+  name: __main__
+- code:
+  - static ggml_sycl_device_info ggml_sycl_init() {
+  - '    ggml_sycl_device_info info = {};'
+  - '    info.device_count = dpct::dev_mgr::instance().device_count();'
+  - '    if (info.device_count == 0) {'
+  - '        GGML_LOG_ERROR("%s: failed to initialize: %s\n", GGML_SYCL_NAME, __func__);'
+  - '        return info;'
+  - '    }'
+  - '    GGML_ASSERT(info.device_count <= GGML_SYCL_MAX_DEVICES);'
+  - '    int64_t total_vram = 0;'
+  - '    for (int i = 0; i < info.device_count; ++i) {'
+  - '        info.devices[i].vmm = 0;'
+  - '        dpct::device_info prop;'
+  - '        sycl::device device = dpct::dev_mgr::instance().get_device(i);'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR(dpct::get_device_info(prop, device)));'
+  - '        info.default_tensor_split[i] = total_vram;'
+  - '        total_vram += prop.get_global_mem_size();'
+  - '        info.devices[i].cc = 100 * prop.get_major_version() + 10 * prop.get_minor_version();'
+  - '        info.devices[i].nsm = prop.get_max_compute_units() / 16;'
+  - '        info.devices[i].opt_feature.reorder = device.ext_oneapi_architecture_is(syclex::arch_category::intel_gpu);'
+  - '        info.devices[i].smpbo = prop.get_local_mem_size();'
+  - '        info.devices[i].warp_size = WARP_SIZE;'
+  - '        info.max_work_group_sizes[i] = prop.get_max_work_group_size();'
+  - '        info.devices[i].max_wg_per_cu = info.max_work_group_sizes[i] / prop.get_max_compute_units();'
+  - '    }'
+  - '    for (int id = 0; id < info.device_count; ++id) {'
+  - '        info.default_tensor_split[id] /= total_vram;'
+  - '    }'
+  - '    return info;'
+  - '}'
+  desc: 静态函数，初始化并获取所有SYCL设备的信息，包括设备计算能力、内存大小等，并计算默认的张量分割比例。
+  line: 67-102
+  name: ggml_sycl_init
+- code:
+  - const ggml_sycl_device_info & ggml_sycl_info() {
+  - '    static ggml_sycl_device_info info = ggml_sycl_init();'
+  - '    return info;'
+  - '}'
+  desc: 返回全局SYCL设备信息对象（单例模式），首次调用时初始化。
+  line: 104-107
+  name: ggml_sycl_info
+- code:
+  - static void print_device_detail(int id, sycl::device &device, std::string device_type)
+    {
+  - '    dpct::device_info prop;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(dpct::get_device_info(prop, device)));'
+  - '    std::string version;'
+  - '    version += std::to_string(prop.get_major_version());'
+  - '    version += ".";'
+  - '    version += std::to_string(prop.get_minor_version());'
+  - '    device_type = std::regex_replace(device_type, std::regex("ext_oneapi_"),
+    "");'
+  - '    std::string name = std::string(prop.get_name());'
+  - '    name = std::regex_replace(name, std::regex("\\(R\\)"), "");'
+  - '    name = std::regex_replace(name, std::regex("\\(TM\\)"), "");'
+  - '    auto global_mem_size = prop.get_global_mem_size()/1000000;'
+  - '    GGML_LOG_INFO("|%2d|%19s|%39s|%7s|%7d|%8d|%5d|%6luM|%21s|\n", id, device_type.c_str(),'
+  - '            name.c_str(), version.c_str(), prop.get_max_compute_units(),'
+  - '            prop.get_max_work_group_size(), prop.get_max_sub_group_size(),'
+  - '            global_mem_size, device.get_info<sycl::info::device::driver_version>().c_str());'
+  - '}'
+  desc: 静态函数，打印单个SYCL设备的详细信息，包括设备类型、名称、版本、计算单元数等。
+  line: 109-123
+  name: print_device_detail
+- code:
+  - static void print_device_opt_feature(int device_count) {
+  - '    GGML_LOG_INFO("SYCL Optimization Feature:\n");'
+  - '    GGML_LOG_INFO("|ID|        Device Type|Reorder|\n");'
+  - '    GGML_LOG_INFO("|--|-------------------|-------|\n");'
+  - '    std::map<std::string, size_t> DeviceNums;'
+  - '    for (int id = 0; id < device_count; ++id) {'
+  - '      sycl::device device = dpct::dev_mgr::instance().get_device(id);'
+  - '      std::string backend_type = get_device_backend_and_type(device);'
+  - '      int type_id = DeviceNums[backend_type]++;'
+  - '      std::stringstream device_type;'
+  - '      device_type << "[" << backend_type << ":" << std::to_string(type_id) <<
+    "]";'
+  - '      std::string device_type_s = device_type.str();'
+  - '      device_type_s = std::regex_replace(device_type_s, std::regex("ext_oneapi_"),
+    "");'
+  - '      GGML_LOG_INFO("|%2d|%19s|%7s|\n", id, device_type_s.c_str(),'
+  - '        ggml_sycl_info().devices[id].opt_feature.reorder ? "Y": "N");'
+  - '    }'
+  - '}'
+  desc: 静态函数，打印所有SYCL设备的优化特性（如是否支持Reorder）。
+  line: 125-140
+  name: print_device_opt_feature
+- code:
+  - void ggml_backend_sycl_print_sycl_devices() {
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_print_sycl_devices\n");'
+  - '    int device_count = dpct::dev_mgr::instance().device_count();'
+  - '    std::map<std::string, size_t> DeviceNums;'
+  - '    GGML_LOG_INFO("Found %d SYCL devices:\n", device_count);'
+  - '    GGML_LOG_INFO("|  |                   |                                       |      "'
+  - '        " |Max    |        |Max  |Global |                     |\n");'
+  - '    GGML_LOG_INFO("|  |                   |                                       |      "'
+  - '        " |compute|Max work|sub  |mem    |                     |\n");'
+  - '    GGML_LOG_INFO("|ID|        Device Type|                                   "'
+  - '        "Name|Version|units  |group   |group|size   |       Driver version|\n");'
+  - '    GGML_LOG_INFO("|--|-------------------|---------------------------------------|------"'
+  - '        "-|-------|--------|-----|-------|---------------------|\n");'
+  - '    for (int id = 0; id < device_count; ++id) {'
+  - '      sycl::device device = dpct::dev_mgr::instance().get_device(id);'
+  - '      std::string backend_type = get_device_backend_and_type(device);'
+  - '      int type_id = DeviceNums[backend_type]++;'
+  - '      std::stringstream device_type;'
+  - '      device_type << "[" << backend_type << ":" << std::to_string(type_id) <<
+    "]";'
+  - '      print_device_detail(id, device, device_type.str());'
+  - '    }'
+  - '    print_device_opt_feature(device_count);'
+  - '}'
+  desc: 打印系统上所有SYCL设备的列表及其详细信息和优化特性。
+  line: 142-166
+  name: ggml_backend_sycl_print_sycl_devices
+- code:
+  - static inline int get_sycl_env(const char *env_name, int default_val) {
+  - '    char *user_device_string = getenv(env_name);'
+  - '    int user_number = default_val;'
+  - '    unsigned n;'
+  - '    if (user_device_string != NULL && sscanf(user_device_string, " %u", &n) ==
+    1) {'
+  - '        user_number = (int)n;'
+  - '    } else {'
+  - '        user_number = default_val;'
+  - '    }'
+  - '    return user_number;'
+  - '}'
+  desc: 静态内联函数，从环境变量读取整数配置值，若读取失败则返回默认值。
+  line: 168-177
+  name: get_sycl_env
+- code:
+  - static void ggml_check_sycl() try {
+  - '    static bool initialized = false;'
+  - '    if (!initialized) {'
+  - '        g_ggml_sycl_debug = get_sycl_env("GGML_SYCL_DEBUG", 0);'
+  - '        g_ggml_sycl_disable_optimize = get_sycl_env("GGML_SYCL_DISABLE_OPT",
+    0);'
+  - '        g_ggml_sycl_disable_graph = get_sycl_env("GGML_SYCL_DISABLE_GRAPH", 1);'
+  - '        g_ggml_sycl_disable_dnn = get_sycl_env("GGML_SYCL_DISABLE_DNN", 0);'
+  - '        g_ggml_sycl_prioritize_dmmv = get_sycl_env("GGML_SYCL_PRIORITIZE_DMMV",
+    0);'
+  - '        g_ggml_sycl_enable_flash_attention = get_sycl_env("GGML_SYCL_ENABLE_FLASH_ATTN",
+    1);'
+  - '        GGML_LOG_INFO("Build with Macros:\n");'
+  - '        GGML_LOG_INFO("Running with Environment Variables:\n");'
+  - '        GGML_LOG_INFO("  GGML_SYCL_DEBUG: %d\n", g_ggml_sycl_debug);'
+  - '        if (CHECK_TRY_ERROR(g_all_sycl_device_count = dpct::dev_mgr::instance().device_count())
+    != 0) {'
+  - '            initialized = true;'
+  - '            g_sycl_loaded = false;'
+  - '            return;'
+  - '        }'
+  - '        GGML_ASSERT(g_all_sycl_device_count <= GGML_SYCL_MAX_DEVICES);'
+  - '        initialized = true;'
+  - '        g_sycl_loaded = true;'
+  - '        ggml_backend_sycl_print_sycl_devices();'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，检查SYCL环境，读取并记录环境变量配置，初始化SYCL后端标记和相关信息。
+  line: 179-234
+  name: ggml_check_sycl
+- code:
+  - inline void check_allow_gpu_index(const int device_index) {
+  - '  if (device_index >= ggml_sycl_info().device_count) {'
+  - '    char error_buf[256];'
+  - '    snprintf(error_buf, sizeof(error_buf), "%s error: device_index:%d is out
+    of range: [0-%d]",'
+  - '        __func__, device_index, ggml_sycl_info().device_count - 1);'
+  - '    GGML_LOG_ERROR("%s\n", error_buf);'
+  - '    assert(false);'
+  - '  }'
+  - '}'
+  desc: 内联函数，检查设备索引是否有效，若超出范围则记录错误并断言失败。
+  line: 246-255
+  name: check_allow_gpu_index
+- code:
+  - GGML_API void ggml_backend_sycl_get_gpu_list(int *id_list, int max_len) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_get_gpu_list\n");'
+  - '    for(int i=0;i<max_len;i++) id_list[i] = -1;'
+  - '    for (int i=0;i< ggml_sycl_info().device_count;i++){'
+  - '        if (i>=max_len) break;'
+  - '        id_list[i] = i;'
+  - '    }'
+  - '    return;'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 获取可用的SYCL设备索引列表，填充到给定的整数数组中。
+  line: 258-269
+  name: ggml_backend_sycl_get_gpu_list
+- code:
+  - static const char * ggml_backend_sycl_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_sycl_buffer_type_context * ctx = (ggml_backend_sycl_buffer_type_context
+    *)buft->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 静态函数，返回SYCL缓冲区类型的名称。
+  line: 326-329
+  name: ggml_backend_sycl_buffer_type_get_name
+- code:
+  - static bool ggml_backend_buffer_is_sycl(ggml_backend_buffer_t buffer) {
+  - '    return buffer->buft->iface.get_name == ggml_backend_sycl_buffer_type_get_name;'
+  - '}'
+  desc: 静态函数，判断给定的后端缓冲区是否属于SYCL后端。
+  line: 333-335
+  name: ggml_backend_buffer_is_sycl
+- code:
+  - static void ggml_backend_sycl_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    try {
+  - '    ggml_backend_sycl_buffer_context * ctx = ( ggml_backend_sycl_buffer_context
+    *)buffer->context;'
+  - '    ggml_sycl_set_device(ctx->device);'
+  - '    delete ctx;'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，释放SYCL后端缓冲区，删除其上下文。
+  line: 337-345
+  name: ggml_backend_sycl_buffer_free_buffer
+- code:
+  - static void * ggml_backend_sycl_buffer_get_base(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_sycl_buffer_context * ctx = ( ggml_backend_sycl_buffer_context
+    *)buffer->context;'
+  - '    return ctx->dev_ptr;'
+  - '}'
+  desc: 静态函数，返回SYCL缓冲区的基础设备指针。
+  line: 347-350
+  name: ggml_backend_sycl_buffer_get_base
+- code:
+  - static enum ggml_status ggml_backend_sycl_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, ggml_tensor *tensor) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    ggml_backend_sycl_buffer_context * ctx = (ggml_backend_sycl_buffer_context
+    *)buffer->context;'
+  - '    if (tensor->view_src != NULL) {'
+  - '        assert(tensor->view_src->buffer->buft == buffer->buft);'
+  - '        return GGML_STATUS_SUCCESS;'
+  - '    }'
+  - '    if ((tensor->type == GGML_TYPE_Q4_0 || tensor->type == GGML_TYPE_Q8_0 ||
+    tensor->type == GGML_TYPE_Q4_K || tensor->type == GGML_TYPE_Q6_K) && !g_ggml_sycl_disable_optimize)
+    {'
+  - '        ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};'
+  - '        tensor->extra                 = extra;'
+  - '        ctx->tensor_extras.push_back(extra);'
+  - '    }'
+  - '    if (ggml_is_quantized(tensor->type)) {'
+  - '        size_t original_size = ggml_nbytes(tensor);'
+  - '        size_t padded_size = ggml_backend_buft_get_alloc_size(buffer->buft, tensor);'
+  - '        if (padded_size > original_size && tensor->view_src == nullptr) {'
+  - '            SYCL_CHECK(CHECK_TRY_ERROR(ctx->stream->memset((char *)tensor->data
+    + original_size, 0, padded_size - original_size).wait()));'
+  - '        }'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，初始化SYCL缓冲区中的张量，为量化张量分配额外空间并进行填充。
+  line: 352-380
+  name: ggml_backend_sycl_buffer_init_tensor
+- code:
+  - static void ggml_backend_sycl_buffer_set_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor *tensor, const void *data, size_t offset, size_t size) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    ggml_backend_sycl_buffer_context * ctx = ( ggml_backend_sycl_buffer_context
+    *)buffer->context;'
+  - '    ggml_sycl_set_device(ctx->device);'
+  - '    auto stream = &(dpct::dev_mgr::instance().get_device(ctx->device).default_queue());'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(dpct::dev_mgr::instance().get_device(ctx->device).queues_wait_and_throw()));'
+  - '    char * host_buf = (char *) malloc(size);'
+  - '    memcpy(host_buf, data, size);'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy((char *) tensor->data + offset,
+    host_buf, size).wait()));'
+  - '    free(host_buf);'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，将主机内存中的数据拷贝到SYCL设备上的张量中。
+  line: 382-404
+  name: ggml_backend_sycl_buffer_set_tensor
+- code:
+  - static void ggml_backend_sycl_buffer_get_tensor(ggml_backend_buffer_t buffer,
+    const ggml_tensor *tensor, void *data, size_t offset, size_t size) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    ggml_backend_sycl_buffer_context * ctx = ( ggml_backend_sycl_buffer_context
+    *)buffer->context;'
+  - '    ggml_sycl_set_device(ctx->device);'
+  - '    auto stream = dpct::dev_mgr::instance().get_device(ctx->device).default_queue();'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(stream.memcpy(data, (const char *)tensor->data
+    + offset, size).wait()));'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，将SYCL设备上的张量数据拷贝回主机内存。
+  line: 406-420
+  name: ggml_backend_sycl_buffer_get_tensor
+- code:
+  - static void dev2dev_memcpy(sycl::queue &q_dst, sycl::queue &q_src, void *ptr_dst,
+    const void *ptr_src, size_t size) {
+  - '    char *host_buf = (char *)malloc(size);'
+  - '    q_src.memcpy(host_buf, (const char *)ptr_src, size).wait();'
+  - '    q_dst.memcpy((char *)ptr_dst, host_buf, size).wait();'
+  - '    free(host_buf);'
+  - '}'
+  desc: 静态函数，通过主机内存作为中介，实现两个SYCL设备队列之间的数据拷贝。
+  line: 422-427
+  name: dev2dev_memcpy
+- code:
+  - static bool ggml_backend_sycl_buffer_cpy_tensor(ggml_backend_buffer_t buffer,
+    const ggml_tensor *src, ggml_tensor *dst) try {
+  - '    bool is_cpy_supported = ggml_backend_buffer_is_sycl(src->buffer);'
+  - '    if (is_cpy_supported) {'
+  - '        ggml_backend_sycl_buffer_context * src_ctx = (ggml_backend_sycl_buffer_context
+    *)src->buffer->context;'
+  - '        ggml_backend_sycl_buffer_context * dst_ctx = (ggml_backend_sycl_buffer_context
+    *)dst->buffer->context;'
+  - '        ggml_sycl_set_device(src_ctx->device);'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR(dpct::dev_mgr::instance().get_device(src_ctx->device).queues_wait_and_throw()));'
+  - '        ggml_sycl_set_device(dst_ctx->device);'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR(dpct::dev_mgr::instance().get_device(dst_ctx->device).queues_wait_and_throw()));'
+  - '        queue_ptr stream_dst = dst_ctx->stream;'
+  - '        queue_ptr stream_src = src_ctx->stream;'
+  - '        size_t size = ggml_nbytes(src);'
+  - '        dev2dev_memcpy(*stream_dst, *stream_src, dst->data, src->data, size);'
+  - '        return true;'
+  - '    }'
+  - '    return false;'
+  - '    GGML_UNUSED(buffer);'
+  - '} catch (const sycl::exception & exc) {'
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ",
+    line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 静态函数，在SYCL设备间或设备内拷贝张量数据，若源缓冲区是SYCL缓冲区则返回true。
+  line: 429-459
+  name: ggml_backend_sycl_buffer_cpy_tensor
+- code:
+  - static void ggml_backend_sycl_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s: size=%zu\n", __func__, buffer->size);'
+  - '    ggml_backend_sycl_buffer_context * ctx = (ggml_backend_sycl_buffer_context
+    *) buffer->context;'
+  - '    ggml_sycl_set_device(ctx->device);'
+  - '    queue_ptr stream = ctx->stream;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(dpct::get_current_device().queues_wait_and_throw()));'
+  - '    constexpr size_t MAX_CHUNK = 2ULL << 30;  // 2 GiB'
+  - '    for (size_t off = 0; off < buffer->size; off += MAX_CHUNK) {'
+  - '        size_t chunk = std::min(buffer->size - off, MAX_CHUNK);'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR((*stream).memset(static_cast<char*>(ctx->dev_ptr)
+    + off, value, chunk).wait()));'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，将SYCL缓冲区的内容清零（分块执行memset）。
+  line: 461-476
+  name: ggml_backend_sycl_buffer_clear
+- code:
+  - static void ggml_backend_sycl_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    ggml_backend_sycl_buffer_context * ctx = (ggml_backend_sycl_buffer_context
+    *) buffer->context;'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx->device));'
+  - '    auto stream = &(dpct::dev_mgr::instance().get_device(ctx->device).default_queue());'
+  - '    if (size == 0) {'
+  - '        return;'
+  - '    }'
+  - '    if (tensor->data == nullptr) {'
+  - '        GGML_ABORT("Error: Tensor data pointer is null.\n");'
+  - '    }'
+  - '    void * target_ptr = static_cast<char *>(tensor->data) + offset;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((*stream).memset(target_ptr, value, size)));'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((*stream).wait()));'
+  - '}'
+  desc: 静态函数，对SYCL缓冲区中的张量特定区域进行memset操作。
+  line: 478-495
+  name: ggml_backend_sycl_buffer_memset_tensor
+- code:
+  - static void ggml_backend_sycl_buffer_reset(ggml_backend_buffer_t buffer) {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s\n", __func__);'
+  - '    if (buffer == nullptr) {'
+  - '        return;'
+  - '    }'
+  - '    ggml_backend_sycl_buffer_context * ctx = (ggml_backend_sycl_buffer_context
+    *) buffer->context;'
+  - '    if (ctx != nullptr) {'
+  - '        for (ggml_tensor_extra_gpu * extra : ctx->tensor_extras) {'
+  - '            release_extra_gpu(extra);'
+  - '        }'
+  - '        ctx->tensor_extras.clear();'
+  - '    }'
+  - '}'
+  desc: 静态函数，重置SYCL缓冲区，释放所有关联的张量附加数据。
+  line: 497-509
+  name: ggml_backend_sycl_buffer_reset
+- code:
+  - static ggml_backend_buffer_t ggml_backend_sycl_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) try {
+  - '    ggml_backend_sycl_buffer_type_context * buft_ctx = (ggml_backend_sycl_buffer_type_context
+    *)buft->context;'
+  - '    ggml_sycl_set_device(buft_ctx->device);'
+  - '    const queue_ptr stream = buft_ctx->stream;'
+  - '    size = std::max(size, (size_t)1);'
+  - '    void * dev_ptr;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(dev_ptr = (void *)sycl::malloc_device(size, *stream)));'
+  - '    if (!dev_ptr) {'
+  - '      GGML_LOG_ERROR("%s: can''t allocate %lu Bytes of memory on device\n", __func__,
+    size);'
+  - '      return nullptr;'
+  - '    }'
+  - '    ggml_backend_sycl_buffer_context * ctx = new ggml_backend_sycl_buffer_context(buft_ctx->device,
+    dev_ptr, buft_ctx->stream);'
+  - '    return ggml_backend_buffer_init(buft, ggml_backend_sycl_buffer_interface,
+    ctx, size);'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，分配SYCL设备内存并创建对应的缓冲区。
+  line: 540-558
+  name: ggml_backend_sycl_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_sycl_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    return 128;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 静态函数，返回SYCL缓冲区类型的对齐要求（固定为128）。
+  line: 560-563
+  name: ggml_backend_sycl_buffer_type_get_alignment
+- code:
+  - static size_t ggml_backend_sycl_buffer_type_get_max_size(ggml_backend_buffer_type_t
+    buft) {
+  - '    return dpct::get_current_device().get_max_mem_alloc_size();'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 静态函数，获取SYCL设备的最大内存分配大小。
+  line: 565-568
+  name: ggml_backend_sycl_buffer_type_get_max_size
+- code:
+  - static size_t ggml_backend_sycl_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const ggml_tensor * tensor) {
+  - '    size_t size = ggml_nbytes(tensor);'
+  - '    int64_t ne0 = tensor->ne[0];'
+  - '    if (ggml_is_quantized(tensor->type)) {'
+  - '        if (ne0 % MATRIX_ROW_PADDING != 0) {'
+  - '            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);'
+  - '        }'
+  - '    }'
+  - '    return size;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 静态函数，计算给定张量在SYCL缓冲区中需要的分配大小（考虑量化张量的行填充）。
+  line: 570-580
+  name: ggml_backend_sycl_buffer_type_get_alloc_size
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_sycl_buffer_type(int device) {
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    auto dev_count = ggml_backend_sycl_get_device_count();'
+  - '    if (device>=dev_count or device<0) {'
+  - '        GGML_LOG_ERROR("ggml_backend_sycl_buffer_type error: device_index:%d
+    is out of range [0, %d], miss to call ggml_backend_sycl_set_single_device()\n",
+    device, dev_count-1);'
+  - '        GGML_ASSERT(device<dev_count);'
+  - '    }'
+  - '    static struct ggml_backend_buffer_type ggml_backend_sycl_buffer_types[GGML_SYCL_MAX_DEVICES];'
+  - '    static bool ggml_backend_sycl_buffer_type_initialized = false;'
+  - '    if (!ggml_backend_sycl_buffer_type_initialized) {'
+  - '        for (int i = 0; i < dev_count; i++) {'
+  - '            auto & device_i = dpct::dev_mgr::instance().get_device(i);'
+  - '            queue_ptr stream = &(device_i.default_queue());'
+  - '            ggml_backend_sycl_buffer_types[i] = {'
+  - '                /* .iface    = */ ggml_backend_sycl_buffer_type_interface,'
+  - '                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_sycl_reg(),
+    i),'
+  - '                /* .context  = */ new ggml_backend_sycl_buffer_type_context{i,
+    GGML_SYCL_NAME + std::to_string(i), stream},'
+  - '            };'
+  - '        }'
+  - '        ggml_backend_sycl_buffer_type_initialized = true;'
+  - '    }'
+  - '    return &ggml_backend_sycl_buffer_types[device];'
+  - '}'
+  desc: 根据设备索引获取或创建对应的SYCL缓冲区类型对象（单例模式）。
+  line: 596-620
+  name: ggml_backend_sycl_buffer_type
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_sycl_buffer_type(ggml_backend_sycl_context
+    * ctx) {
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_buffer_type\n");'
+  - '    int device = ctx->device;'
+  - '    if (device>=ggml_sycl_info().device_count or device<0) {'
+  - '        GGML_LOG_ERROR("ggml_backend_sycl_buffer_type error: device_index:%d
+    is out of range [0, %d], miss to call ggml_backend_sycl_set_single_device()\n",
+    device, ggml_sycl_info().device_count-1);'
+  - '        GGML_ASSERT(device<ggml_sycl_info().device_count);'
+  - '    }'
+  - '    static struct ggml_backend_buffer_type ggml_backend_sycl_buffer_types[GGML_SYCL_MAX_DEVICES];'
+  - '    static bool ggml_backend_sycl_buffer_type_initialized = false;'
+  - '    if (!ggml_backend_sycl_buffer_type_initialized) {'
+  - '        for (int i = 0; i < ggml_sycl_info().device_count; i++) {'
+  - '            ggml_backend_sycl_buffer_types[i] = {'
+  - '                /* .iface    = */ ggml_backend_sycl_buffer_type_interface,'
+  - '                /* .device   = */ nullptr,'
+  - '                /* .context  = */ new ggml_backend_sycl_buffer_type_context{i,
+    GGML_SYCL_NAME + std::to_string(i), ctx->stream(i, 0)},'
+  - '            };'
+  - '        }'
+  - '        ggml_backend_sycl_buffer_type_initialized = true;'
+  - '    }'
+  - '    return &ggml_backend_sycl_buffer_types[device];'
+  - '}'
+  desc: 根据SYCL上下文对象获取或创建对应的SYCL缓冲区类型对象（重载版本）。
+  line: 622-642
+  name: ggml_backend_sycl_buffer_type
+- code:
+  - static int64_t get_row_rounding(ggml_type type, const std::array<float, GGML_SYCL_MAX_DEVICES>
+    & tensor_split) {
+  - '    int64_t min_compute_capability = INT_MAX;'
+  - '    int64_t max_compute_capability = INT_MIN;'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        if (tensor_split[i] < (i + 1 < ggml_sycl_info().device_count ? tensor_split[i
+    + 1] : 1.0f)) {'
+  - '            if (min_compute_capability > ggml_sycl_info().devices[i].cc) {'
+  - '                min_compute_capability = ggml_sycl_info().devices[i].cc;'
+  - '            }'
+  - '            if (max_compute_capability < ggml_sycl_info().devices[i].cc) {'
+  - '                max_compute_capability = ggml_sycl_info().devices[i].cc;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    switch(type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q4_1:'
+  - '            return max_compute_capability >= VER_GEN9 ? 128 : 64;'
+  - '        case GGML_TYPE_Q5_0:'
+  - '        case GGML_TYPE_Q5_1:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            return 64;'
+  - '        case GGML_TYPE_F16:'
+  - '        case GGML_TYPE_F32:'
+  - '            return 1;'
+  - '        case GGML_TYPE_Q2_K:'
+  - '        case GGML_TYPE_Q3_K:'
+  - '        case GGML_TYPE_Q4_K:'
+  - '        case GGML_TYPE_Q5_K:'
+  - '        case GGML_TYPE_IQ2_XXS:'
+  - '        case GGML_TYPE_IQ2_XS:'
+  - '        case GGML_TYPE_IQ2_S:'
+  - '        case GGML_TYPE_IQ1_S:'
+  - '        case GGML_TYPE_IQ1_M:'
+  - '        case GGML_TYPE_IQ3_XXS:'
+  - '        case GGML_TYPE_IQ4_XS:'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '            return max_compute_capability >= VER_GEN9 ? 128 : 64;'
+  - '        case GGML_TYPE_IQ3_S:'
+  - '            return max_compute_capability >= VER_GEN9 ? 128 : 64;'
+  - '        case GGML_TYPE_Q6_K:'
+  - '            return 64;'
+  - '        default:'
+  - '            GGML_ABORT("fatal error");'
+  - '    }'
+  - '}'
+  desc: 静态函数，根据张量类型和设备计算能力，返回行号的舍入值。
+  line: 650-680
+  name: get_row_rounding
+- code:
+  - static void get_row_split(int64_t * row_low, int64_t * row_high, const ggml_tensor
+    * tensor, const std::array<float, GGML_SYCL_MAX_DEVICES> & tensor_split, int id)
+    {
+  - '    const int64_t nrows = ggml_nrows(tensor);'
+  - '    const int64_t rounding = get_row_rounding(tensor->type, tensor_split);'
+  - '    *row_low = id == 0 ? 0 : nrows*tensor_split[id];'
+  - '    *row_low -= *row_low % rounding;'
+  - '    if (id == ggml_sycl_info().device_count - 1) {'
+  - '        *row_high = nrows;'
+  - '    } else {'
+  - '        *row_high = nrows*tensor_split[id + 1];'
+  - '        *row_high -= *row_high % rounding;'
+  - '    }'
+  - '}'
+  desc: 静态函数，计算张量在指定设备上的行号范围（基于分割比例和行号舍入）。
+  line: 682-691
+  name: get_row_split
+- code:
+  - static size_t ggml_nbytes_split(const struct ggml_tensor * tensor, int nrows_split)
+    {
+  - '    static_assert(GGML_MAX_DIMS == 4, "GGML_MAX_DIMS is not 4 - update this function");'
+  - '    return nrows_split*ggml_row_size(tensor->type, tensor->ne[0]);'
+  - '}'
+  desc: 静态函数，计算张量在指定行数分割下的字节大小。
+  line: 693-696
+  name: ggml_nbytes_split
+- code:
+  - static void ggml_backend_sycl_split_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_sycl_split_buffer_context * ctx = (ggml_backend_sycl_split_buffer_context
+    *)buffer->context;'
+  - '    delete ctx;'
+  - '}'
+  desc: 静态函数，释放SYCL分割缓冲区，删除其上下文。
+  line: 708-711
+  name: ggml_backend_sycl_split_buffer_free_buffer
+- code:
+  - static void * ggml_backend_sycl_split_buffer_get_base(ggml_backend_buffer_t buffer)
+    {
+  - '    return (void *)0x1000;'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 静态函数，返回SYCL分割缓冲区的虚拟基地址（实际指针存储在tensor extras中）。
+  line: 713-717
+  name: ggml_backend_sycl_split_buffer_get_base
+- code:
+  - static enum ggml_status ggml_backend_sycl_split_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, ggml_tensor *tensor) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    GGML_ASSERT(tensor->view_src == nullptr);'
+  - '    ggml_backend_sycl_split_buffer_context * ctx = (ggml_backend_sycl_split_buffer_context
+    *)buffer->context;'
+  - '    ggml_backend_sycl_split_buffer_type_context * buft_ctx = (ggml_backend_sycl_split_buffer_type_context
+    *)buffer->buft->context;'
+  - '    const int64_t ne0 = tensor->ne[0];'
+  - '    ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};'
+  - '    ctx->tensor_extras.push_back(extra);'
+  - '    ctx->streams.push_back(&(dpct::get_current_device().default_queue()));'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        int64_t row_low, row_high;'
+  - '        get_row_split(&row_low, &row_high, tensor, buft_ctx->tensor_split, i);'
+  - '        int64_t nrows_split = row_high - row_low;'
+  - '        // ... (此处代码截断)'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 静态函数，初始化SYCL分割缓冲区中的张量，为每个设备分配张量附加数据和行号范围。
+  line: 719-737
+  name: ggml_backend_sycl_split_buffer_init_tensor
+- code:
+  - static GGML_CALL ggml_status
+  - ggml_backend_sycl_split_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor
+    * tensor) try {
+  - '    ggml_backend_sycl_split_buffer_context * ctx = (ggml_backend_sycl_split_buffer_context
+    *)buffer->context;'
+  - '    ggml_backend_sycl_split_buffer_type_context * buft_ctx = (ggml_backend_sycl_split_buffer_type_context
+    *)buffer->buft->context;'
+  - '    const int64_t ne0 = tensor->ne[0];'
+  - '    ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};'
+  - '    ctx->tensor_extras.push_back(extra);'
+  - '    ctx->streams.push_back(&(dpct::get_current_device().default_queue()));'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        int64_t row_low, row_high;'
+  - '        get_row_split(&row_low, &row_high, tensor, buft_ctx->tensor_split, i);'
+  - '        int64_t nrows_split = row_high - row_low;'
+  - '        if (nrows_split == 0) continue;'
+  - '        size_t size = ggml_nbytes_split(tensor, nrows_split);'
+  - '        const size_t original_size = size;'
+  - '        if (ne0 % MATRIX_ROW_PADDING != 0) {'
+  - '            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);'
+  - '        }'
+  - '        ggml_sycl_set_device(i);'
+  - '        const queue_ptr stream = ctx->streams[i];'
+  - '        char * buf;'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR(buf = (char *)sycl::malloc_device(size, *stream)));'
+  - '        if (!buf) {'
+  - '            char err_buf[1024];'
+  - '            snprintf(err_buf, 1023, "%s: can''t allocate %lu Bytes of memory
+    on device\n", __func__, size);'
+  - '            throw std::runtime_error(err_buf);'
+  - '        }'
+  - '        if (size > original_size) {'
+  - '            SYCL_CHECK(CHECK_TRY_ERROR((*stream).memset(buf + original_size,
+    0, size - original_size).wait()));'
+  - '        }'
+  - '        extra->data_device[i] = buf;'
+  - '        for (int64_t is = 0; is < GGML_SYCL_MAX_STREAMS; ++is) {'
+  - '            SYCL_CHECK(CHECK_TRY_ERROR(extra->events[i][is] = new sycl::event()));'
+  - '        }'
+  - '    }'
+  - '    tensor->extra = extra;'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:"
+    << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 初始化一个分块张量，为每个设备分配到GPU内存并处理内存对齐，设置张量的额外元数据。
+  line: 889-946
+  name: ggml_backend_sycl_split_buffer_init_tensor
+- code:
+  - static void
+  - ggml_backend_sycl_split_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor
+    *tensor, const void *data, size_t offset, size_t size) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    GGML_ASSERT(offset == 0);'
+  - '    GGML_ASSERT(size == ggml_nbytes(tensor));'
+  - '    ggml_backend_sycl_split_buffer_context * ctx = (ggml_backend_sycl_split_buffer_context
+    *)buffer->context;'
+  - '    ggml_backend_sycl_split_buffer_type_context * buft_ctx = (ggml_backend_sycl_split_buffer_type_context
+    *)buffer->buft->context;'
+  - '    const int64_t ne0 = tensor->ne[0];'
+  - '    const size_t nb1 = tensor->nb[1];'
+  - '    ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *)tensor->extra;'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        int64_t row_low, row_high;'
+  - '        get_row_split(&row_low, &row_high, tensor, buft_ctx->tensor_split, i);'
+  - '        int64_t nrows_split = row_high - row_low;'
+  - '        if (nrows_split == 0) continue;'
+  - '        const size_t offset_split = row_low*nb1;'
+  - '        size_t size = ggml_nbytes_split(tensor, nrows_split);'
+  - '        const size_t original_size = size;'
+  - '        if (ne0 % MATRIX_ROW_PADDING != 0) {'
+  - '            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);'
+  - '        }'
+  - '        const char * buf_host = (const char *)data + offset_split;'
+  - '        ggml_sycl_set_device(i);'
+  - '        const queue_ptr stream = ctx->streams[i];'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy(extra->data_device[i], buf_host,
+    original_size).wait()));'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:"
+    << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 将主机端张量数据复制到GPU设备上的分块内存中，支持逐设备复制对应的数据切片。
+  line: 948-979
+  name: ggml_backend_sycl_split_buffer_set_tensor
+- code:
+  - static void
+  - ggml_backend_sycl_split_buffer_get_tensor(ggml_backend_buffer_t buffer, const
+    ggml_tensor *tensor, void *data, size_t offset, size_t size) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    GGML_ASSERT(offset == 0);'
+  - '    GGML_ASSERT(size == ggml_nbytes(tensor));'
+  - '    ggml_backend_sycl_split_buffer_context * ctx = (ggml_backend_sycl_split_buffer_context
+    *)buffer->context;'
+  - '    ggml_backend_sycl_split_buffer_type_context * buft_ctx = (ggml_backend_sycl_split_buffer_type_context
+    *)buffer->buft->context;'
+  - '    const int64_t ne0 = tensor->ne[0];'
+  - '    const size_t nb1 = tensor->nb[1];'
+  - '    ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *)tensor->extra;'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        int64_t row_low, row_high;'
+  - '        get_row_split(&row_low, &row_high, tensor, buft_ctx->tensor_split, i);'
+  - '        int64_t nrows_split = row_high - row_low;'
+  - '        if (nrows_split == 0) continue;'
+  - '        const size_t offset_split = row_low*nb1;'
+  - '        size_t size = ggml_nbytes_split(tensor, nrows_split);'
+  - '        const size_t original_size = size;'
+  - '        if (ne0 % MATRIX_ROW_PADDING != 0) {'
+  - '            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);'
+  - '        }'
+  - '        char * buf_host = (char *)data + offset_split;'
+  - '        ggml_sycl_set_device(i);'
+  - '        const queue_ptr stream = ctx->streams[i];'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy(buf_host, extra->data_device[i],
+    original_size).wait()));'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:"
+    << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 从GPU设备上的分块内存中读取张量数据并复制回主机端，支持按设备逐个获取数据切片。
+  line: 981-1012
+  name: ggml_backend_sycl_split_buffer_get_tensor
+- code:
+  - static void ggml_backend_sycl_split_buffer_clear(ggml_backend_buffer_t buffer,
+    uint8_t value) {
+  - '    GGML_UNUSED(buffer);'
+  - '    GGML_UNUSED(value);'
+  - '}'
+  desc: 一个空操作，用于兼容缓冲区接口，不执行任何实际清理操作。
+  line: 1014-1017
+  name: ggml_backend_sycl_split_buffer_clear
+- code:
+  - static const char * ggml_backend_sycl_split_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    return GGML_SYCL_NAME "_Split";'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回SYCL分块缓冲区类型的名称字符串。
+  line: 1026-1029
+  name: ggml_backend_sycl_split_buffer_type_get_name
+- code:
+  - static bool ggml_backend_buffer_is_sycl_split(ggml_backend_buffer_t buffer) {
+  - '   return buffer->buft->iface.get_name == ggml_backend_sycl_split_buffer_type_get_name;'
+  - '}'
+  desc: 检查给定缓冲区是否为SYCL分块缓冲区类型。
+  line: 1031-1033
+  name: ggml_backend_buffer_is_sycl_split
+- code:
+  - static ggml_backend_buffer_t ggml_backend_sycl_split_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    ggml_backend_sycl_split_buffer_context * ctx = new ggml_backend_sycl_split_buffer_context();'
+  - '    return ggml_backend_buffer_init(buft, ggml_backend_sycl_split_buffer_interface,
+    ctx, size);'
+  - '}'
+  desc: 分配一个SYCL分块缓冲区上下文，由于张量分割不确定，推迟到初始化张量时再分配内存。
+  line: 1035-1040
+  name: ggml_backend_sycl_split_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_sycl_split_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    return 128;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回SYCL分块缓冲区类型的对齐要求，固定为128字节。
+  line: 1042-1045
+  name: ggml_backend_sycl_split_buffer_type_get_alignment
+- code:
+  - static size_t ggml_backend_sycl_split_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const ggml_tensor * tensor) {
+  - '    ggml_backend_sycl_split_buffer_type_context * ctx = (ggml_backend_sycl_split_buffer_type_context
+    *)buft->context;'
+  - '    size_t total_size = 0;'
+  - '    const int64_t ne0 = tensor->ne[0];'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        int64_t row_low, row_high;'
+  - '        get_row_split(&row_low, &row_high, tensor, ctx->tensor_split, i);'
+  - '        int64_t nrows_split = row_high - row_low;'
+  - '        if (nrows_split == 0) continue;'
+  - '        total_size += ggml_nbytes_split(tensor, nrows_split);'
+  - '        if (ne0 % MATRIX_ROW_PADDING != 0) {'
+  - '            total_size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0
+    % MATRIX_ROW_PADDING);'
+  - '        }'
+  - '    }'
+  - '    return total_size;'
+  - '}'
+  desc: 计算在SYCL分块缓冲区中存储张量所需的总内存大小，考虑所有设备的行分割和填充需求。
+  line: 1047-1066
+  name: ggml_backend_sycl_split_buffer_type_get_alloc_size
+- code:
+  - static bool ggml_backend_sycl_split_buffer_type_is_host(ggml_backend_buffer_type_t
+    buft) {
+  - '    return false;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 指示SYCL分块缓冲区类型是否为主机内存，返回false表示是设备内存。
+  line: 1068-1072
+  name: ggml_backend_sycl_split_buffer_type_is_host
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_sycl_split_buffer_type(const float * tensor_split)
+    {
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_split_buffer_type\n");'
+  - '    ggml_check_sycl();'
+  - '    static std::map<std::array<float, GGML_SYCL_MAX_DEVICES>, struct ggml_backend_buffer_type>
+    buft_map;'
+  - '    std::array<float, GGML_SYCL_MAX_DEVICES> tensor_split_arr = {};'
+  - '    bool all_zero = tensor_split == nullptr || std::all_of(tensor_split, tensor_split
+    + GGML_SYCL_MAX_DEVICES, [](float x) { return x == 0.0f; });'
+  - '    if (all_zero) {'
+  - '        tensor_split_arr = ggml_sycl_info().default_tensor_split;'
+  - '    } else {'
+  - '        float split_sum = 0.0f;'
+  - '        for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '            tensor_split_arr[i] = split_sum;'
+  - '            split_sum += tensor_split[i];'
+  - '        }'
+  - '        for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '            tensor_split_arr[i] /= split_sum;'
+  - '        }'
+  - '    }'
+  - '    auto it = buft_map.find(tensor_split_arr);'
+  - '    if (it != buft_map.end()) return &it->second;'
+  - '    struct ggml_backend_buffer_type buft {'
+  - '        /* .iface   = */ ggml_backend_sycl_split_buffer_type_interface,'
+  - '        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_sycl_reg(), 0),'
+  - '        /* .context = */ new ggml_backend_sycl_split_buffer_type_context{tensor_split_arr},'
+  - '    };'
+  - '    auto result = buft_map.emplace(tensor_split_arr, buft);'
+  - '    return &result.first->second;'
+  - '}'
+  desc: 创建或获取一个SYCL分块缓冲区类型，根据张量分割比例配置设备内存分配策略。
+  line: 1086-1116
+  name: ggml_backend_sycl_split_buffer_type
+- code:
+  - static const char * ggml_backend_sycl_host_buffer_type_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    return GGML_SYCL_NAME "_Host";'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回SYCL主机缓冲区类型的名称字符串。
+  line: 1119-1122
+  name: ggml_backend_sycl_host_buffer_type_name
+- code:
+  - inline void * aligned_malloc_host(size_t alignment, size_t size) {
+  - '#ifdef _WIN32'
+  - '    return _aligned_malloc(size, alignment);'
+  - '#else'
+  - '    return aligned_alloc(alignment, size);'
+  - '#endif'
+  - '}'
+  desc: 分配对齐的主机内存，在不同的平台上使用不同的分配函数。
+  line: 1124-1130
+  name: aligned_malloc_host
+- code:
+  - inline void free_aligned_mem_host(void * memblock) {
+  - '#ifdef _WIN32'
+  - '    _aligned_free(memblock);'
+  - '#else'
+  - '    free(memblock);'
+  - '#endif'
+  - '}'
+  desc: 释放对齐的主机内存，根据平台选择相应的释放函数。
+  line: 1132-1138
+  name: free_aligned_mem_host
+- code:
+  - static void ggml_backend_sycl_host_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    free_aligned_mem_host((void *)buffer->context);'
+  - '}'
+  desc: 释放SYCL主机缓冲区的内存。
+  line: 1139-1141
+  name: ggml_backend_sycl_host_buffer_free_buffer
+- code:
+  - static ggml_backend_buffer_t ggml_backend_sycl_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    void * ptr = aligned_malloc_host(TENSOR_ALIGNMENT, size);'
+  - '    if (ptr == nullptr) {'
+  - '        return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(),
+    size);'
+  - '    }'
+  - '    ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(ptr, size);'
+  - '    buffer->buft = buft;'
+  - '    buffer->iface.free_buffer = ggml_backend_sycl_host_buffer_free_buffer;'
+  - '    return buffer;'
+  - '}'
+  desc: 分配一个SYCL主机缓冲区，如果分配失败则回退到CPU缓冲区类型。
+  line: 1143-1152
+  name: ggml_backend_sycl_host_buffer_type_alloc_buffer
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_sycl_host_buffer_type() {
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_host_buffer_type\n");'
+  - '    static struct ggml_backend_buffer_type ggml_backend_sycl_buffer_type_host
+    = {'
+  - '        /* .iface    = */ {'
+  - '            /* .get_name         = */ ggml_backend_sycl_host_buffer_type_name,'
+  - '            /* .alloc_buffer     = */ ggml_backend_sycl_host_buffer_type_alloc_buffer,'
+  - '            /* .get_alignment    = */ ggml_backend_cpu_buffer_type()->iface.get_alignment,'
+  - '            /* .get_max_size     = */ NULL,'
+  - '            /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,'
+  - '            /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,'
+  - '        },'
+  - '        /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_sycl_reg(), 0),'
+  - '        /* .context  = */ nullptr,'
+  - '    };'
+  - '    return &ggml_backend_sycl_buffer_type_host;'
+  - '}'
+  desc: 创建或返回SYCL主机缓冲区类型的单例实例。
+  line: 1154-1168
+  name: ggml_backend_sycl_host_buffer_type
+- code:
+  - std::unique_ptr<ggml_sycl_pool> ggml_backend_sycl_context::new_pool_for_host(queue_ptr
+    qptr, int device) {
+  - '    return std::unique_ptr<ggml_sycl_pool>(new ggml_sycl_pool_host(qptr, device));'
+  - '}'
+  desc: 创建用于主机内存管理的内存池实例。
+  line: 788-790
+  name: ggml_backend_sycl_context::new_pool_for_host
+- code:
+  - std::unique_ptr<ggml_sycl_pool> ggml_backend_sycl_context::new_pool_for_device(queue_ptr
+    qptr, int device) {
+  - '   return std::unique_ptr<ggml_sycl_pool>(new ggml_sycl_pool_leg(qptr, device));'
+  - '}'
+  desc: 创建用于设备内存管理的内存池实例，目前使用传统内存池实现。
+  line: 792-796
+  name: ggml_backend_sycl_context::new_pool_for_device
+- code:
+  - static void mul_mat_p021_f16_f32(
+  - '    const void * __restrict__ vx, const float * __restrict__ y, float * __restrict__
+    dst,'
+  - '    const int ncols_x, const int nrows_x, const int nchannels_x, const int nchannels_y,'
+  - '    const sycl::nd_item<3> &item_ct1) {'
+  - '    const sycl::half *x = (const sycl::half *)vx;'
+  - '    const int row_x = item_ct1.get_local_range(1) * item_ct1.get_group(1) + item_ct1.get_local_id(1);'
+  - '    const int channel = item_ct1.get_local_range(0) * item_ct1.get_group(0) +
+    item_ct1.get_local_id(0);'
+  - '    const int channel_x = channel / (nchannels_y / nchannels_x);'
+  - '    const int nrows_y = ncols_x;'
+  - '    const int nrows_dst = nrows_x;'
+  - '    const int row_dst = row_x;'
+  - '    float tmp = 0.0f;'
+  - '    for (int col_x0 = 0; col_x0 < ncols_x; col_x0 += item_ct1.get_local_range(2))
+    {'
+  - '        const int col_x = col_x0 + item_ct1.get_local_id(2);'
+  - '        if (col_x >= ncols_x) break;'
+  - '        const int ix = row_x*nchannels_x*ncols_x + channel_x*ncols_x + col_x;'
+  - '        const float xi = sycl::vec<sycl::half, 1>(x[ix]).convert<float, sycl::rounding_mode::automatic>()[0];'
+  - '        const int row_y = col_x;'
+  - '        const int iy = channel*nrows_y + row_y;'
+  - '        tmp += xi * y[iy];'
+  - '    }'
+  - '    const int idst = channel*nrows_dst + row_dst;'
+  - '#pragma unroll'
+  - '    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {'
+  - '        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp,
+    mask);'
+  - '    }'
+  - '    if (item_ct1.get_local_id(2) == 0) dst[idst] = tmp;'
+  - '}'
+  desc: GPU内核函数，实现f16输入和f32权重的矩阵乘法，处理特定的数据张量排列。
+  line: 804-832
+  name: mul_mat_p021_f16_f32
+- code:
+  - static void mul_mat_vec_nc_f16_f32(
+  - '    const void * __restrict__ vx, const float * __restrict__ y, float * __restrict__
+    dst, const int ncols_x, const int nrows_x,'
+  - '    const int row_stride_x, const int channel_stride_x,const int channel_stride_y,
+    const int channel_x_divisor,'
+  - '    const sycl::nd_item<3> &item_ct1) {'
+  - '    const sycl::half *x = (const sycl::half *)vx;'
+  - '    const int row_x = item_ct1.get_local_range(1) * item_ct1.get_group(1) + item_ct1.get_local_id(1);'
+  - '    const int channel = item_ct1.get_local_range(0) * item_ct1.get_group(0) +
+    item_ct1.get_local_id(0);'
+  - '    const int channel_x = channel / channel_x_divisor;'
+  - '    const int nrows_dst = nrows_x;'
+  - '    const int row_dst   = row_x;'
+  - '    const int idst = channel*nrows_dst + row_dst;'
+  - '    float tmp = 0.0f;'
+  - '    for (int col_x0 = 0; col_x0 < ncols_x; col_x0 += item_ct1.get_local_range(2))
+    {'
+  - '        const int col_x = col_x0 + item_ct1.get_local_id(2);'
+  - '        if (col_x >= ncols_x) break;'
+  - '        const int row_y = col_x;'
+  - '        const int ix = channel_x*channel_stride_x + row_x*row_stride_x + col_x;'
+  - '        const int iy = channel * channel_stride_y + row_y;'
+  - '        const float xi = sycl::vec<sycl::half, 1>(x[ix]).convert<float, sycl::rounding_mode::automatic>()[0];'
+  - '        tmp += xi * y[iy];'
+  - '    }'
+  - '#pragma unroll'
+  - '    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {'
+  - '        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp,
+    mask);'
+  - '    }'
+  - '    if (item_ct1.get_local_id(2) == 0) dst[idst] = tmp;'
+  - '}'
+  desc: GPU内核函数，处理非连续数据布局的矩阵向量乘法，使用f16输入和f32权重。
+  line: 834-861
+  name: mul_mat_vec_nc_f16_f32
+- code:
+  - static void k_sum_rows_f32(const float * x, float * dst, const int ncols,
+  - '                           const sycl::nd_item<3> &item_ct1) {'
+  - '    const int row = item_ct1.get_group(1);'
+  - '    const int col = item_ct1.get_local_id(2);'
+  - '    float sum = 0.0f;'
+  - '    for (int i = col; i < ncols; i += item_ct1.get_local_range(2)) {'
+  - '        sum += x[row * ncols + i];'
+  - '    }'
+  - '    sum = warp_reduce_sum(sum, item_ct1);'
+  - '    if (col == 0) dst[row] = sum;'
+  - '}'
+  desc: GPU内核函数，计算每一行的和，将结果存储到目标数组中。
+  line: 801-811
+  name: k_sum_rows_f32
+- code:
+  - template<typename T>
+  - static inline void ggml_sycl_swap(T & a, T & b) {
+  - '    T tmp = a;'
+  - '    a = b;'
+  - '    b = tmp;'
+  - '}'
+  desc: 交换两个变量的值的模板函数。
+  line: 813-817
+  name: ggml_sycl_swap
+- code:
+  - template <ggml_sort_order order>
+  - __dpct_inline__ static void
+  - k_argsort_f32_i32(const float *x, int *dst, const int ncols, int ncols_pad,
+  - '                  const int tasks_per_thread, const sycl::nd_item<3> &item_ct1,'
+  - '                  uint8_t *dpct_local) {'
+  - '    int col_index =  item_ct1.get_local_id(2);'
+  - '    int row = item_ct1.get_group(1);'
+  - '    for (int i = 0; i < tasks_per_thread; i++) {'
+  - '        int col = col_index * tasks_per_thread + i;'
+  - '        if (col >= ncols_pad) return;'
+  - '    }'
+  - '    const float * x_row = x + row * ncols;'
+  - '    auto dst_row = (int *)dpct_local;'
+  - '    for (int i=0;i<tasks_per_thread;i++){'
+  - '        int col = col_index*tasks_per_thread+i;'
+  - '        dst_row[col] = col;'
+  - '    }'
+  - '    item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '    for (int k = 2; k <= ncols_pad; k *= 2) {'
+  - '        for (int j = k / 2; j > 0; j /= 2) {'
+  - '            for (int i = 0; i < tasks_per_thread; i++) {'
+  - '                int col = col_index * tasks_per_thread + i;'
+  - '                int ixj = col ^ j;'
+  - '                if (ixj > col) {'
+  - '                    if ((col & k) == 0) {'
+  - '                        if (dst_row[col] >= ncols || (dst_row[ixj] < ncols &&
+    (order == GGML_SORT_ORDER_ASC ? x_row[dst_row[col]] > x_row[dst_row[ixj]] : x_row[dst_row[col]]
+    < x_row[dst_row[ixj]]))) {'
+  - '                            ggml_sycl_swap(dst_row[col], dst_row[ixj]);'
+  - '                        }'
+  - '                    } else {'
+  - '                        if (dst_row[ixj] >= ncols || (dst_row[col] < ncols &&
+    (order == GGML_SORT_ORDER_ASC ? x_row[dst_row[col]] < x_row[dst_row[ixj]] : x_row[dst_row[col]]
+    > x_row[dst_row[ixj]]))) {'
+  - '                            ggml_sycl_swap(dst_row[col], dst_row[ixj]);'
+  - '                        }'
+  - '                    }'
+  - '                }'
+  - '                item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    for (int i = 0; i < tasks_per_thread; i++) {'
+  - '        int col = col_index * tasks_per_thread + i;'
+  - '        if (col < ncols) dst[row * ncols + col] = dst_row[col];'
+  - '    }'
+  - '}'
+  desc: GPU内核函数，使用双调排序对浮点数组的非负索引进行排序，返回排序后的索引。
+  line: 819-855
+  name: k_argsort_f32_i32
+- code:
+  - static void diag_mask_inf_f32(const float * x, float * dst, const int ncols, const
+    int rows_per_channel, const int n_past,
+  - '                              const sycl::nd_item<3> &item_ct1) {'
+  - '    const int col = item_ct1.get_local_range(1) * item_ct1.get_group(1) + item_ct1.get_local_id(1);'
+  - '    const int row = item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2);'
+  - '    if (col >= ncols) return;'
+  - '    const int i = row*ncols + col;'
+  - '    dst[i] = x[i] - (col > n_past + row % rows_per_channel) * FLT_MAX;'
+  - '}'
+  desc: GPU内核函数，应用对角掩码将超出范围内的元素设置为负无穷大。
+  line: 857-867
+  name: diag_mask_inf_f32
+- code:
+  - static void scale_f32(const float * x, float * dst, const float scale, const float
+    bias, const int k,
+  - '                      const sycl::nd_item<3> &item_ct1) {'
+  - '    const int i = item_ct1.get_local_range(2) * item_ct1.get_group(2) + item_ct1.get_local_id(2);'
+  - '    if (i >= k) return;'
+  - '    dst[i] = scale * x[i] + bias;'
+  - '}'
+  desc: GPU内核函数，对浮点数组应用缩放和偏置操作。
+  line: 869-875
+  name: scale_f32
+- code:
+  - template <typename Ti, typename To>
+  - static  void pool2d_nchw_kernel(
+  - '        const int ih, const int iw, const int oh, const int ow,'
+  - '        const int kh, const int kw, const int sh, const int sw,'
+  - '        const int ph, const int pw, const int parallel_elements,'
+  - '        const Ti* src, To* dst, const enum ggml_op_pool op,'
+  - '        const sycl::nd_item<3> &item_ct1) {'
+  - '        int idx = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);'
+  - '        if (idx >= parallel_elements) return;'
+  - '        const int I_HW = ih * iw;'
+  - '        const int O_HW = oh * ow;'
+  - '        const int nc = idx / O_HW;'
+  - '        const int cur_oh = idx % O_HW / ow;'
+  - '        const int cur_ow = idx % O_HW % ow;'
+  - '        const Ti* i_ptr = src + nc * I_HW;'
+  - '        To* o_ptr = dst + nc * O_HW;'
+  - '        const int start_h = cur_oh * sh - ph;'
+  - '        const int bh = sycl::max(0, start_h);'
+  - '        const int eh = sycl::min(ih, start_h + kh);'
+  - '        const int start_w = cur_ow * sw - pw;'
+  - '        const int bw = sycl::max(0, start_w);'
+  - '        const int ew = sycl::min(iw, start_w + kw);'
+  - '        To res = 0;'
+  - '        switch (op) {'
+  - '            case GGML_OP_POOL_AVG: res = 0; break;'
+  - '            case GGML_OP_POOL_MAX: res = -FLT_MAX; break;'
+  - '            default:'
+  - '                res      = (To) sycl::nan(uint32_t(0));'
+  - '                break;'
+  - '        }'
+  - '        for (int i = bh; i < eh; i += 1) {'
+  - '            for (int j = bw; j < ew; j += 1) {'
+  - '                Ti cur = i_ptr[i * iw + j];'
+  - '                switch (op) {'
+  - '                    case GGML_OP_POOL_AVG: res += (cur / (kh * kw)); break;'
+  - '                    case GGML_OP_POOL_MAX: res = sycl::max(res, (To)cur); break;'
+  - '                    default:'
+  - '                        res = (To) sycl::nan(uint32_t(0));'
+  - '                        break;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        o_ptr[cur_oh * ow + cur_ow] = res;'
+  - '}'
+  desc: GPU内核函数，实现二维池化操作（平均池化或最大池化），处理NCHW格式的输入。
+  line: 887-926
+  name: pool2d_nchw_kernel
+- code:
+  - static void ggml_mul_mat_p021_f16_f32_sycl(const void *vx, const float *y,
+  - '                                           float *dst, const int ncols_x,'
+  - '                                           const int nrows_x,'
+  - '                                           const int nchannels_x,'
+  - '                                           const int nchannels_y,'
+  - '                                           queue_ptr stream) {'
+  - '    const sycl::range<3> block_nums(nchannels_y, nrows_x, 1);'
+  - '    const sycl::range<3> block_dims(1, 1, WARP_SIZE);'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), {sycl::aspect::fp16});'
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+    {'
+  - '                mul_mat_p021_f16_f32(vx, y, dst, ncols_x, nrows_x, nchannels_x,
+    nchannels_y, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 启动GPU内核执行f16-f32矩阵乘法，配置工作项和线程组尺寸。
+  line: 928-941
+  name: ggml_mul_mat_p021_f16_f32_sycl
+- code:
+  - static void ggml_mul_mat_vec_nc_f16_f32_sycl(
+  - '    const void *vx, const float *y, float *dst, const int ncols_x,'
+  - '    const int nrows_x, const int row_stride_x, const int nchannels_x,'
+  - '    const int nchannels_y, const int channel_stride_x, const int channel_stride_y,
+    queue_ptr stream) {'
+  - '    const sycl::range<3> block_nums(nchannels_y, nrows_x, 1);'
+  - '    const sycl::range<3> block_dims(1, 1, WARP_SIZE);'
+  - '    {'
+  - '        dpct::has_capability_or_fail(stream->get_device(), {sycl::aspect::fp16});'
+  - '        stream->parallel_for('
+  - '            sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+    {'
+  - '                mul_mat_vec_nc_f16_f32(vx, y, dst, ncols_x, nrows_x, row_stride_x,
+    channel_stride_x, channel_stride_y, nchannels_y / nchannels_x, item_ct1);'
+  - '            });'
+  - '    }'
+  - '}'
+  desc: 启动GPU内核执行非连续布局的矩阵向量乘法。
+  line: 943-957
+  name: ggml_mul_mat_vec_nc_f16_f32_sycl
+- code:
+  - static void scale_f32_sycl(const float *x, float *dst, const float scale, const
+    float bias,
+  - '                           const int k, queue_ptr stream) {'
+  - '    const int num_blocks = (k + SYCL_SCALE_BLOCK_SIZE - 1) / SYCL_SCALE_BLOCK_SIZE;'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) * sycl::range<3>(1,
+    1, SYCL_SCALE_BLOCK_SIZE),'
+  - '                          sycl::range<3>(1, 1, SYCL_SCALE_BLOCK_SIZE)),'
+  - '        [=](sycl::nd_item<3> item_ct1) {'
+  - '            scale_f32(x, dst, scale, bias, k, item_ct1);'
+  - '        });'
+  - '}'
+  desc: 启动GPU内核执行浮点数组的缩放和偏置操作。
+  line: 959-967
+  name: scale_f32_sycl
+- code:
+  - static void sum_rows_f32_sycl(const float *x, float *dst, const int ncols,
+  - '                              const int nrows, queue_ptr stream) {'
+  - '    const sycl::range<3> block_dims(1, 1, WARP_SIZE);'
+  - '    const sycl::range<3> block_nums(1, nrows, 1);'
+  - '    stream->parallel_for(sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '                     [=](sycl::nd_item<3> item_ct1) {'
+  - '                         k_sum_rows_f32(x, dst, ncols, item_ct1);'
+  - '                     });'
+  - '}'
+  desc: 启动GPU内核执行求行和操作。
+  line: 969-976
+  name: sum_rows_f32_sycl
+- code:
+  - static void sum_rows_f32_sycl(const float *x, float *dst, const int ncols,
+  - '                              const int nrows, queue_ptr stream) {'
+  - '    const sycl::range<3> block_dims(1, 1, WARP_SIZE);'
+  - '    const sycl::range<3> block_nums(1, nrows, 1);'
+  - '    stream->parallel_for(sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '                         [=](sycl::nd_item<3> item_ct1)'
+  - '                             [[sycl::reqd_sub_group_size(WARP_SIZE)]] {'
+  - '                                 k_sum_rows_f32(x, dst, ncols, item_ct1);'
+  - '                             });'
+  - '}'
+  desc: 对输入矩阵按行求和，将结果输出到输出数组中。
+  line: 1826-1835
+  name: sum_rows_f32_sycl
+- code:
+  - static int next_power_of_2(int x) {
+  - '    int n = 1;'
+  - '    while (n < x) {'
+  - '        n *= 2;'
+  - '    }'
+  - '    return n;'
+  - '}'
+  desc: 计算给定整数向上取最近的下一个2的幂次方。
+  line: 1837-1843
+  name: next_power_of_2
+- code:
+  - static void argsort_f32_i32_sycl(const float *x, int *dst, const int ncols,
+  - '                                 const int nrows, ggml_sort_order order,'
+  - '                                 queue_ptr stream, int device) {'
+  - '    // bitonic sort requires ncols to be power of 2'
+  - '    const int ncols_pad = next_power_of_2(ncols);'
+  - '    int nth = 1;'
+  - '    int max_block_size = ggml_sycl_info().max_work_group_sizes[device];'
+  - '    while (nth < ncols_pad && nth < max_block_size)'
+  - '        nth *= 2;'
+  - '    if (nth > max_block_size)'
+  - '        nth = max_block_size;'
+  - '    const int tasks_per_thread = ncols_pad / nth;'
+  - '    const sycl::range<3> block_dims(1, 1, nth);'
+  - '    const sycl::range<3> block_nums(1, nrows, 1);'
+  - '    const size_t shared_mem = ncols_pad * sizeof(int);'
+  - '    GGML_ASSERT(shared_mem<=ggml_sycl_info().devices[device].smpbo);'
+  - '    if (order == GGML_SORT_ORDER_ASC) {'
+  - '        stream->submit([&](sycl::handler &cgh) {'
+  - '            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1('
+  - '                sycl::range<1>(shared_mem), cgh);'
+  - '            cgh.parallel_for('
+  - '                sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '                [=](sycl::nd_item<3> item_ct1) {'
+  - '                    k_argsort_f32_i32<GGML_SORT_ORDER_ASC>('
+  - '                        x, dst, ncols, ncols_pad, tasks_per_thread, item_ct1,'
+  - '                        dpct_local_acc_ct1'
+  - '                            .get_multi_ptr<sycl::access::decorated::no>()'
+  - '                            .get());'
+  - '                });'
+  - '        });'
+  - '    } else if (order == GGML_SORT_ORDER_DESC) {'
+  - '        stream->submit([&](sycl::handler &cgh) {'
+  - '            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1('
+  - '                sycl::range<1>(shared_mem), cgh);'
+  - '            cgh.parallel_for('
+  - '                sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '                [=](sycl::nd_item<3> item_ct1) {'
+  - '                    k_argsort_f32_i32<GGML_SORT_ORDER_DESC>('
+  - '                        x, dst, ncols, ncols_pad, tasks_per_thread, item_ct1,'
+  - '                        dpct_local_acc_ct1'
+  - '                            .get_multi_ptr<sycl::access::decorated::no>()'
+  - '                            .get());'
+  - '                });'
+  - '        });'
+  - '    } else {'
+  - '        GGML_ABORT("fatal error");'
+  - '    }'
+  - '}'
+  desc: 对浮点数数组进行排序（升序或降序），输出对应的整数索引数组。
+  line: 1845-1876
+  name: argsort_f32_i32_sycl
+- code:
+  - static void top_k_f32_sycl(
+  - '    const float * src,'
+  - '    int32_t * dst_indices,'
+  - '    const int64_t ncols,'
+  - '    const int64_t nrows,'
+  - '    const int k,'
+  - '    dpct::queue_ptr main_stream'
+  - ) {
+  - '    const int block_size = 128;'
+  - '    const sycl::range<1> block_dims(block_size);'
+  - '    const sycl::range<1> grid_dims(nrows);'
+  - '    main_stream->submit([&](sycl::handler &cgh) {'
+  - '        sycl::local_accessor<float, 1> shared_vals(sycl::range<1>(block_size
+    * k), cgh);'
+  - '        sycl::local_accessor<int, 1> shared_idx(sycl::range<1>(block_size * k),
+    cgh);'
+  - '        cgh.parallel_for('
+  - '            sycl::nd_range<1>(grid_dims * block_dims, block_dims),'
+  - '            [=](sycl::nd_item<1> item_ct1) {'
+  - '                const int row = item_ct1.get_group(0);'
+  - '                const int tid = item_ct1.get_local_id(0);'
+  - '                if (row >= nrows) return;'
+  - '                const float * src_row = src + row * ncols;'
+  - '                int32_t * dst_idx_row = dst_indices + row * k;'
+  - '                float local_vals[32];'
+  - '                int local_idx[32];'
+  - '                for (int i = 0; i < k; i++) {'
+  - '                    local_vals[i] = -FLT_MAX;'
+  - '                    local_idx[i] = -1;'
+  - '                }'
+  - '                for (int col = tid; col < ncols; col += block_size) {'
+  - '                    float val = src_row[col];'
+  - '                    if (val > local_vals[k-1]) {'
+  - '                        int pos = k - 1;'
+  - '                        while (pos > 0 && val > local_vals[pos - 1]) {'
+  - '                            pos--;'
+  - '                        }'
+  - '                        for (int i = k - 1; i > pos; i--) {'
+  - '                            local_vals[i] = local_vals[i - 1];'
+  - '                            local_idx[i] = local_idx[i - 1];'
+  - '                        }'
+  - '                        local_vals[pos] = val;'
+  - '                        local_idx[pos] = col;'
+  - '                    }'
+  - '                }'
+  - '                for (int i = 0; i < k; i++) {'
+  - '                    shared_vals[tid * k + i] = local_vals[i];'
+  - '                    shared_idx[tid * k + i] = local_idx[i];'
+  - '                }'
+  - '                item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '                if (tid == 0) {'
+  - '                    float final_vals[32];'
+  - '                    int final_idx[32];'
+  - '                    for (int i = 0; i < k; i++) {'
+  - '                        final_vals[i] = -FLT_MAX;'
+  - '                        final_idx[i] = -1;'
+  - '                    }'
+  - '                    for (int t = 0; t < block_size; t++) {'
+  - '                        for (int i = 0; i < k; i++) {'
+  - '                            float val = shared_vals[t * k + i];'
+  - '                            int idx = shared_idx[t * k + i];'
+  - '                            if (val > final_vals[k-1]) {'
+  - '                                int pos = k - 1;'
+  - '                                while (pos > 0 && val > final_vals[pos - 1])
+    {'
+  - '                                    pos--;'
+  - '                                }'
+  - '                                for (int j = k - 1; j > pos; j--) {'
+  - '                                    final_vals[j] = final_vals[j - 1];'
+  - '                                    final_idx[j] = final_idx[j - 1];'
+  - '                                }'
+  - '                                final_vals[pos] = val;'
+  - '                                final_idx[pos] = idx;'
+  - '                            }'
+  - '                        }'
+  - '                    }'
+  - '                    for (int i = 0; i < k; i++) {'
+  - '                        dst_idx_row[i] = final_idx[i];'
+  - '                    }'
+  - '                    if (k > 1) {'
+  - '                        int32_t temp = dst_idx_row[0];'
+  - '                        dst_idx_row[0] = dst_idx_row[1];'
+  - '                        dst_idx_row[1] = temp;'
+  - '                    }'
+  - '                }'
+  - '            });'
+  - '    });'
+  - '}'
+  desc: 对矩阵的每一行找出前 k 个最大值，并输出这些最大值对应的列索引。
+  line: 1878-1946
+  name: top_k_f32_sycl
+- code:
+  - static void argmax_f32_i32_sycl(const float *x, int *dst, const int ncols,
+  - '                               const int nrows, queue_ptr stream) {'
+  - '    const sycl::range<3> block_dims(1, 1, SYCL_ARGMAX_BLOCK_SIZE);'
+  - '    const sycl::range<3> block_nums(1, nrows, 1);'
+  - '    const size_t shared_mem = 256 * sizeof(float);'
+  - '    stream->submit([&](sycl::handler &cgh) {'
+  - '        sycl::local_accessor<float, 1> shared_data('
+  - '            sycl::range<1>(shared_mem/sizeof(float)), cgh);'
+  - '        sycl::local_accessor<int, 1> shared_indices('
+  - '            sycl::range<1>(shared_mem/sizeof(float)), cgh);'
+  - '        cgh.parallel_for('
+  - '            sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '            [=](sycl::nd_item<3> item_ct1) {'
+  - '                const int tid = item_ct1.get_local_id(2);'
+  - '                const int row = item_ct1.get_global_id(1);'
+  - '                float max_val = -INFINITY;'
+  - '                int max_idx = -1;'
+  - '                for (int col = tid; col < ncols; col += 256) {'
+  - '                    float val = x[row * ncols + col];'
+  - '                    if (val > max_val) {'
+  - '                        max_val = val;'
+  - '                        max_idx = col;'
+  - '                    }'
+  - '                }'
+  - '                shared_data[tid] = max_val;'
+  - '                shared_indices[tid] = max_idx;'
+  - '                item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '                for (int stride = 256/2; stride > 0; stride >>= 1) {'
+  - '                    if (tid < stride) {'
+  - '                        float val1 = shared_data[tid];'
+  - '                        float val2 = shared_data[tid + stride];'
+  - '                        if (val2 > val1) {'
+  - '                            shared_data[tid] = val2;'
+  - '                            shared_indices[tid] = shared_indices[tid + stride];'
+  - '                        }'
+  - '                    }'
+  - '                    item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '                }'
+  - '                if (tid == 0) {'
+  - '                    dst[row] = shared_indices[0];'
+  - '                }'
+  - '            });'
+  - '    });'
+  - '}'
+  desc: 计算浮点数矩阵每行的最大值索引，并输出整数索引数组。
+  line: 1948-1976
+  name: argmax_f32_i32_sycl
+- code:
+  - static void diag_mask_inf_f32_sycl(const float *x, float *dst,
+  - '                                   const int ncols_x, const int nrows_x,'
+  - '                                   const int rows_per_channel, const int n_past,'
+  - '                                   queue_ptr stream) {'
+  - '    const sycl::range<3> block_dims(1, SYCL_DIAG_MASK_INF_BLOCK_SIZE, 1);'
+  - '    const int block_num_x = (ncols_x + SYCL_DIAG_MASK_INF_BLOCK_SIZE - 1) / SYCL_DIAG_MASK_INF_BLOCK_SIZE;'
+  - '    const sycl::range<3> block_nums(1, block_num_x, nrows_x);'
+  - '    stream->parallel_for(sycl::nd_range<3>(block_nums * block_dims, block_dims),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             diag_mask_inf_f32(x, dst, ncols_x,'
+  - '                                               rows_per_channel, n_past,'
+  - '                                               item_ct1);'
+  - '                         });'
+  - '}'
+  desc: 应用对角线掩码，将指定对角线以上的位置设置为负无穷。
+  line: 1978-1987
+  name: diag_mask_inf_f32_sycl
+- code:
+  - static dpct::err0 ggml_sycl_cpy_tensor_2d(void *dst,
+  - '                                          const struct ggml_tensor *src,'
+  - '                                          int64_t i3, int64_t i2,'
+  - '                                          int64_t i1_low, int64_t i1_high,'
+  - '                                          queue_ptr stream) try {'
+  - '    dpct::memcpy_direction kind;'
+  - '    char * src_ptr;'
+  - '    if (ggml_backend_buffer_is_host(src->buffer)) {'
+  - '        kind = dpct::host_to_device;'
+  - '        src_ptr = (char *) src->data;'
+  - '    } else if (ggml_backend_buffer_is_sycl(src->buffer)) {'
+  - '        kind    = dpct::device_to_device;'
+  - '        src_ptr = (char *) src->data;'
+  - '    } else if (ggml_backend_buffer_is_sycl_split(src->buffer)) {'
+  - '        GGML_ASSERT(i1_low == 0 && i1_high == src->ne[1]);'
+  - '        kind = dpct::device_to_device;'
+  - '        ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *) src->extra;'
+  - '        int id;'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR('
+  - '            id = get_current_device_id()));'
+  - '        src_ptr = (char *) extra->data_device[id];'
+  - '    } else {'
+  - '        GGML_ABORT("fatal error");'
+  - '    }'
+  - '    char * dst_ptr = (char *) dst;'
+  - '    GGML_TENSOR_LOCALS_1(int64_t, ne, src, ne);'
+  - '    GGML_TENSOR_LOCALS(int64_t, nb, src, nb);'
+  - '    const enum ggml_type type = src->type;'
+  - '    const int64_t ts = ggml_type_size(type);'
+  - '    const int64_t bs = ggml_blck_size(type);'
+  - '    int64_t i1_diff = i1_high - i1_low;'
+  - '    const char * x = src_ptr + i1_low*nb1 + i2*nb2 + i3*nb3;'
+  - '    if (nb0 == ts && nb1 == ts*ne0/bs) {'
+  - '        return CHECK_TRY_ERROR(dpct::async_dpct_memcpy(dst_ptr, x, i1_diff *
+    nb1,'
+  - '                                    kind, *stream));'
+  - '    } else if (nb0 == ts) {'
+  - '        return CHECK_TRY_ERROR('
+  - '            dpct::async_dpct_memcpy(dst_ptr, ts * ne0 / bs, x, nb1,'
+  - '                                    ts * ne0 / bs, i1_diff, kind, *stream));'
+  - '    } else {'
+  - '        for (int64_t i1 = 0; i1 < i1_diff; i1++) {'
+  - '            const void * rx = (const void *) ((const char *) x + i1*nb1);'
+  - '            void * rd = (void *) (dst_ptr + i1*ts*ne0/bs);'
+  - '            dpct::err0 r = CHECK_TRY_ERROR(dpct::async_dpct_memcpy('
+  - '                rd, ts / bs, rx, nb0, ts / bs, ne0, kind, *stream));'
+  - '            if (r != 0) return r;'
+  - '        }'
+  - '        return 0;'
+  - '    }'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 将输入的 2D 张量数据复制到目标内存，支持不同缓冲区类型之间的复制。
+  line: 1989-2025
+  name: ggml_sycl_cpy_tensor_2d
+- code:
+  - inline void ggml_sycl_op_mul_mat_sycl(
+  - '    ggml_backend_sycl_context & ctx,'
+  - '    const ggml_tensor *src0, const ggml_tensor *src1, ggml_tensor *dst,'
+  - '    const char *src0_dd_i, const float *src1_ddf_i, const char *src1_ddq_i,'
+  - '    float *dst_dd_i, const int64_t row_low, const int64_t row_high,'
+  - '    const int64_t src1_ncols, const int64_t src1_padded_row_size,'
+  - '    const queue_ptr &stream) try {'
+  - '    GGML_ASSERT(src0_dd_i  != nullptr);'
+  - '    GGML_ASSERT(src1_ddf_i != nullptr);'
+  - '    GGML_ASSERT(dst_dd_i   != nullptr);'
+  - '    const int64_t ne00 = src0->ne[0];'
+  - '    const int64_t ne10 = src1->ne[0];'
+  - '    GGML_ASSERT(ne00 == ne10);'
+  - '    const int64_t row_diff = row_high - row_low;'
+  - '    int id;'
+  - '    SYCL_CHECK('
+  - '        CHECK_TRY_ERROR(id = get_current_device_id()));'
+  - '    const int64_t ne0 = dst->ne[0];'
+  - '    int ldc = id == ctx.device ? ne0 : row_diff;'
+  - '#ifdef GGML_SYCL_F16'
+  - '    bool use_fp16 = true;'
+  - '#else'
+  - '    bool use_fp16 = false;'
+  - '#endif'
+  - '    if ((src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type)) && use_fp16
+    && ggml_is_contiguous(src0) &&'
+  - '        row_diff == src0->ne[1] && dst->op_params[0] == GGML_PREC_DEFAULT) {'
+  - '        ggml_sycl_pool_alloc<sycl::half> src0_as_f16(ctx.pool());'
+  - '        if (src0->type != GGML_TYPE_F16) {'
+  - '            const to_fp16_sycl_t to_fp16_sycl = ggml_get_to_fp16_sycl(src0->type,
+    dst);'
+  - '            GGML_ASSERT(to_fp16_sycl != nullptr);'
+  - '            size_t ne = row_diff*ne00;'
+  - '            src0_as_f16.alloc(ne);'
+  - '            to_fp16_sycl(src0_dd_i, src0_as_f16.get(), ne, stream);'
+  - '        }'
+  - '        const sycl::half *src0_ptr = src0->type == GGML_TYPE_F16'
+  - '                                         ? (const sycl::half *)src0_dd_i'
+  - '                                         : src0_as_f16.get();'
+  - '        ggml_sycl_pool_alloc<sycl::half> src1_as_f16(ctx.pool());'
+  - '        if (src1->type != GGML_TYPE_F16) {'
+  - '            const to_fp16_sycl_t to_fp16_sycl = ggml_get_to_fp16_sycl(src1->type,
+    dst);'
+  - '            GGML_ASSERT(to_fp16_sycl != nullptr);'
+  - '            size_t ne = src1_ncols*ne10;'
+  - '            src1_as_f16.alloc(ne);'
+  - '            to_fp16_sycl(src1_ddf_i, src1_as_f16.get(), ne, stream);'
+  - '        }'
+  - '        const sycl::half *src1_ptr = src1->type == GGML_TYPE_F16'
+  - '                ? (const sycl::half *)src1->data + src1_padded_row_size'
+  - '                                         : src1_as_f16.get();'
+  - '#if GGML_SYCL_DNNL'
+  - '        if (!g_ggml_sycl_disable_dnn) {'
+  - '                DnnlGemmWrapper::row_gemm(ctx,row_diff, src1_ncols , ne10, src0_ptr,'
+  - '                                     DnnlGemmWrapper::to_dt<sycl::half>(), src1_ptr,
+    DnnlGemmWrapper::to_dt<sycl::half>(),'
+  - '                                      dst_dd_i, DnnlGemmWrapper::to_dt<float>(),
+    stream);'
+  - '        }'
+  - '        else'
+  - '#endif'
+  - '        {'
+  - '            ggml_sycl_pool_alloc<sycl::half> dst_f16(ctx.pool(), row_diff * src1_ncols);'
+  - '            const sycl::half alpha_f16 = 1.0f;'
+  - '            const sycl::half beta_f16  = 0.0f;'
+  - '            SYCL_CHECK(CHECK_TRY_ERROR(dpct::gemm('
+  - '                *stream, oneapi::mkl::transpose::trans,'
+  - '                oneapi::mkl::transpose::nontrans, row_diff, src1_ncols, ne10,'
+  - '                &alpha_f16, src0_ptr, dpct::library_data_t::real_half, ne00,'
+  - '                src1_ptr, dpct::library_data_t::real_half, ne10, &beta_f16,'
+  - '                dst_f16.get(), dpct::library_data_t::real_half, ldc,'
+  - '                dpct::library_data_t::real_half)));'
+  - '            const to_fp32_sycl_t to_fp32_sycl = ggml_get_to_fp32_sycl(GGML_TYPE_F16,
+    dst);'
+  - '            to_fp32_sycl(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);'
+  - '        }'
+  - '    } else {'
+  - '        ggml_sycl_pool_alloc<float> src0_ddq_as_f32(ctx.pool());'
+  - '        ggml_sycl_pool_alloc<float> src1_ddq_as_f32(ctx.pool());'
+  - '        if (src0->type != GGML_TYPE_F32) {'
+  - '            const to_fp32_sycl_t to_fp32_sycl = ggml_get_to_fp32_sycl(src0->type,
+    dst);'
+  - '            GGML_ASSERT(to_fp32_sycl != nullptr);'
+  - '            src0_ddq_as_f32.alloc(row_diff*ne00);'
+  - '            to_fp32_sycl(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, stream);'
+  - '        }'
+  - '        if (src1->type != GGML_TYPE_F32) {'
+  - '            const to_fp32_sycl_t to_fp32_sycl = ggml_get_to_fp32_sycl(src1->type,
+    dst);'
+  - '            GGML_ASSERT(to_fp32_sycl != nullptr);'
+  - '            src1_ddq_as_f32.alloc(src1_ncols*ne10);'
+  - '            to_fp32_sycl(src1_ddf_i, src1_ddq_as_f32.get(), src1_ncols*ne10,
+    stream);'
+  - '        }'
+  - '        const float * src0_ddf_i = src0->type == GGML_TYPE_F32 ? (const float
+    *) src0_dd_i : src0_ddq_as_f32.get();'
+  - '        const float * src1_ddf1_i = src1->type == GGML_TYPE_F32 ? (const float
+    *) src1_ddf_i : src1_ddq_as_f32.get();'
+  - '#if GGML_SYCL_DNNL'
+  - '        if (!g_ggml_sycl_disable_dnn) {'
+  - '            DnnlGemmWrapper::row_gemm(ctx, row_diff, src1_ncols, ne10, src0_ddf_i,'
+  - '                                      DnnlGemmWrapper::to_dt<float>(), src1_ddf1_i,
+    DnnlGemmWrapper::to_dt<float>(),'
+  - '                                      dst_dd_i, DnnlGemmWrapper::to_dt<float>(),
+    stream);'
+  - '        }'
+  - '        else'
+  - '#endif'
+  - '        {'
+  - '            const float alpha = 1.0f;'
+  - '            const float beta  = 0.0f;'
+  - '            SYCL_CHECK(CHECK_TRY_ERROR(oneapi::mkl::blas::column_major::gemm('
+  - '                *stream, oneapi::mkl::transpose::trans, oneapi::mkl::transpose::nontrans,
+    row_diff,'
+  - '                src1_ncols, ne10, dpct::get_value(&alpha, *stream), src0_ddf_i,
+    ne00, src1_ddf1_i, ne10,'
+  - '                dpct::get_value(&beta, *stream), dst_dd_i, ldc)));'
+  - '        }'
+  - '    }'
+  - '    GGML_UNUSED(dst);'
+  - '    GGML_UNUSED(src1_ddq_i);'
+  - '    GGML_UNUSED(src1_padded_row_size);'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 执行矩阵乘法运算，支持不同精度（fp16/fp32），并可通过可选库进行优化。
+  line: 2027-2090
+  name: ggml_sycl_op_mul_mat_sycl
+- code:
+  - static void ggml_sycl_op_pool2d(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const int32_t * opts = (const int32_t *)dst->op_params;'
+  - '    enum ggml_op_pool op = static_cast<ggml_op_pool>(opts[0]);'
+  - '    const int k0 = opts[1];'
+  - '    const int k1 = opts[2];'
+  - '    const int s0 = opts[3];'
+  - '    const int s1 = opts[4];'
+  - '    const int p0 = opts[5];'
+  - '    const int p1 = opts[6];'
+  - '    const int64_t IH = dst->src[0]->ne[1];'
+  - '    const int64_t IW = dst->src[0]->ne[0];'
+  - '    const int64_t N = dst->ne[3];'
+  - '    const int64_t OC = dst->ne[2];'
+  - '    const int64_t OH = dst->ne[1];'
+  - '    const int64_t OW = dst->ne[0];'
+  - '    const int parallel_elements = N * OC * OH * OW;'
+  - '    const int num_blocks = (parallel_elements + SYCL_POOL2D_BLOCK_SIZE - 1) /
+    SYCL_POOL2D_BLOCK_SIZE;'
+  - '    sycl::range<3> block_nums(1, 1, num_blocks);'
+  - '    main_stream->parallel_for('
+  - '        sycl::nd_range<3>(block_nums *'
+  - '                              sycl::range<3>(1, 1, SYCL_IM2COL_BLOCK_SIZE),'
+  - '                          sycl::range<3>(1, 1, SYCL_IM2COL_BLOCK_SIZE)),'
+  - '        [=](sycl::nd_item<3> item_ct1) {'
+  - '            pool2d_nchw_kernel(IH, IW, OH, OW, k1, k0, s1, s0, p1, p0,'
+  - '                               parallel_elements, src0_dd, dst_dd, op,'
+  - '                               item_ct1);'
+  - '        });'
+  - '}'
+  desc: 执行 2D 池化操作，支持平均池化、最大池化等模式。
+  line: 2092-2113
+  name: ggml_sycl_op_pool2d
+- code:
+  - inline void ggml_sycl_op_sum(ggml_backend_sycl_context & ctx, ggml_tensor *dst)
+    {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const int64_t ne = ggml_nelements(dst->src[0]);'
+  - '    sum_rows_f32_sycl(src0_dd, dst_dd, ne, 1, main_stream);'
+  - '}'
+  desc: 计算整个输入张量的求和结果并存储到输出张量。
+  line: 2115-2122
+  name: ggml_sycl_op_sum
+- code:
+  - inline void ggml_sycl_op_sum_rows(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const int64_t ncols = dst->src[0]->ne[0];'
+  - '    const int64_t nrows = ggml_nrows(dst->src[0]);'
+  - '    sum_rows_f32_sycl(src0_dd, dst_dd, ncols, nrows, main_stream);'
+  - '}'
+  desc: 对输入张量的每一行求和，结果输出到对应的输出行。
+  line: 2124-2131
+  name: ggml_sycl_op_sum_rows
+- code:
+  - inline void ggml_sycl_op_mean(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const int64_t ncols = dst->src[0]->ne[0];'
+  - '    const int64_t nrows = ggml_nrows(dst->src[0]);'
+  - '    sum_rows_f32_sycl(src0_dd, dst_dd, ncols, nrows, main_stream);'
+  - '    main_stream->parallel_for('
+  - '        sycl::range<1>(nrows),'
+  - '        [=](sycl::id<1> row) {'
+  - '            dst_dd[row] /= ncols;'
+  - '        }'
+  - '    );'
+  - '}'
+  desc: 计算输入张量每行的均值，结果输出到对应的输出行。
+  line: 2133-2145
+  name: ggml_sycl_op_mean
+- code:
+  - inline void ggml_sycl_op_argsort(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_I32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    int32_t *       dst_dd  = static_cast<int32_t *>(dst->data);'
+  - '    const int64_t ncols = dst->src[0]->ne[0];'
+  - '    const int64_t nrows = ggml_nrows(dst->src[0]);'
+  - '    enum ggml_sort_order order = (enum ggml_sort_order) dst->op_params[0];'
+  - '    argsort_f32_i32_sycl(src0_dd, (int *)dst_dd, ncols, nrows, order,'
+  - '                         main_stream, ctx.device);'
+  - '}'
+  desc: 对输入张量的每一行执行排序，结果输出排序后的索引。
+  line: 2147-2158
+  name: ggml_sycl_op_argsort
+- code:
+  - static void ggml_sycl_op_top_k(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    GGML_ASSERT(src0);'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_I32);'
+  - '    GGML_ASSERT(ggml_is_contiguous(src0));'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(src0->data);'
+  - '    int32_t * dst_dd = static_cast<int32_t *>(dst->data);'
+  - '    const int k = dst->ne[0];'
+  - '    const int64_t ncols = src0->ne[0];'
+  - '    const int64_t nrows = ggml_nrows(src0);'
+  - '    GGML_ASSERT(k > 0 && k <= 32);'
+  - '    GGML_ASSERT(k <= ncols);'
+  - '    top_k_f32_sycl(src0_dd, dst_dd, ncols, nrows, k, main_stream);'
+  - '}'
+  desc: 对输入张量的每一行找出前 k 个最大值及其索引并输出。
+  line: 2160-2172
+  name: ggml_sycl_op_top_k
+- code:
+  - inline void ggml_sycl_op_argmax(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_I32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    int32_t *       dst_dd  = static_cast<int32_t *>(dst->data);'
+  - '    const int64_t ncols = dst->src[0]->ne[0];'
+  - '    const int64_t nrows = ggml_nrows(dst->src[0]);'
+  - '    argmax_f32_i32_sycl(src0_dd, dst_dd, ncols, nrows, main_stream);'
+  - '}'
+  desc: 计算输入张量每行的最大值索引并输出。
+  line: 2174-2183
+  name: ggml_sycl_op_argmax
+- code:
+  - inline void ggml_sycl_op_diag_mask_inf(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const int64_t ne00 = dst->src[0]->ne[0];'
+  - '    const int64_t ne01 = dst->src[0]->ne[1];'
+  - '    const int nrows0 = ggml_nrows(dst->src[0]);'
+  - '    const int n_past = ((int32_t *) dst->op_params)[0];'
+  - '    diag_mask_inf_f32_sycl(src0_dd, dst_dd, ne00, nrows0, ne01, n_past, main_stream);'
+  - '}'
+  desc: 应用对角线掩码，将指定对角线以上的位置设置为负无穷。
+  line: 2185-2195
+  name: ggml_sycl_op_diag_mask_inf
+- code:
+  - static void tri_f32_sycl(
+  - '    const float * src,'
+  - '    float * dst,'
+  - '    const int64_t ne0,'
+  - '    const int64_t ne1,'
+  - '    const int64_t ne2,'
+  - '    const int64_t ne3,'
+  - '    const ggml_tri_type ttype,'
+  - '    dpct::queue_ptr main_stream'
+  - ) {
+  - '    const size_t total = (size_t) ne0 * (size_t) ne1 * (size_t) ne2 * (size_t)
+    ne3;'
+  - '    main_stream->parallel_for(sycl::range<1>(total), [=](sycl::id<1> tid) {'
+  - '        const int64_t idx = (int64_t) tid[0];'
+  - '        const int64_t i0 = idx % ne0;'
+  - '        const int64_t t1 = idx / ne0;'
+  - '        const int64_t i1 = t1 % ne1;'
+  - '        bool keep = false;'
+  - '        switch (ttype) {'
+  - '            case GGML_TRI_TYPE_LOWER:      keep = (i0 <  i1); break;'
+  - '            case GGML_TRI_TYPE_LOWER_DIAG: keep = (i0 <= i1); break;'
+  - '            case GGML_TRI_TYPE_UPPER:      keep = (i0 >  i1); break;'
+  - '            case GGML_TRI_TYPE_UPPER_DIAG: keep = (i0 >= i1); break;'
+  - '            default: keep = false; break;'
+  - '        }'
+  - '        dst[idx] = keep ? src[idx] : 0.0f;'
+  - '    });'
+  - '}'
+  desc: 对浮点矩阵执行三角掩码操作，根据三角形类型保留或清零对应元素。
+  line: 2197-2213
+  name: tri_f32_sycl
+- code:
+  - static void ggml_sycl_op_tri(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    GGML_ASSERT(src0);'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(dst->type  == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(ggml_is_contiguous(src0));'
+  - '    GGML_ASSERT(ggml_is_contiguous(dst));'
+  - '    GGML_ASSERT(ggml_are_same_shape(src0, dst));'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(src0->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    const ggml_tri_type ttype = (ggml_tri_type) ggml_get_op_params_i32(dst, 0);'
+  - '    const int64_t ne0 = src0->ne[0];'
+  - '    const int64_t ne1 = src0->ne[1];'
+  - '    const int64_t ne2 = src0->ne[2];'
+  - '    const int64_t ne3 = src0->ne[3];'
+  - '    tri_f32_sycl(src0_dd, dst_dd, ne0, ne1, ne2, ne3, ttype, main_stream);'
+  - '}'
+  desc: 执行三角掩码操作的入口函数，将结果输出到目标张量。
+  line: 2215-2229
+  name: ggml_sycl_op_tri
+- code:
+  - inline void ggml_sycl_op_scale(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);'
+  - '    float *       dst_dd  = static_cast<float *>(dst->data);'
+  - '    float scale;'
+  - '    float bias;'
+  - '    memcpy(&scale, (float *) dst->op_params + 0, sizeof(float));'
+  - '    memcpy(&bias,  (float *) dst->op_params + 1, sizeof(float));'
+  - '    scale_f32_sycl(src0_dd, dst_dd, scale, bias, ggml_nelements(dst->src[0]),
+    main_stream);'
+  - '    SYCL_CHECK(0);'
+  - '}'
+  desc: 对输入张量进行缩放和偏置操作，结果输出到目标张量。
+  line: 2231-2243
+  name: ggml_sycl_op_scale
+- code:
+  - static void ggml_sycl_set_peer_access(const int n_tokens, int main_device) {
+  - '    static bool peer_access_enabled = false;'
+  - '    const bool enable_peer_access = n_tokens <= GGML_SYCL_PEER_MAX_BATCH_SIZE;'
+  - '    if (peer_access_enabled == enable_peer_access) {'
+  - '        return;'
+  - '    }'
+  - '#ifdef NDEBUG'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        SYCL_CHECK(ggml_sycl_set_device(i));'
+  - '    }'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        SYCL_CHECK(ggml_sycl_set_device(i));'
+  - '        for (int id_other = 0; id_other < ggml_sycl_info().device_count; ++id_other)
+    {'
+  - '            if (i == id_other) {'
+  - '                continue;'
+  - '            }'
+  - '            if (i != main_device && id_other != main_device) {'
+  - '                continue;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '#endif // NDEBUG'
+  - '    peer_access_enabled = enable_peer_access;'
+  - '}'
+  desc: 配置多设备间的直接内存访问（peer access）支持。
+  line: 2245-2261
+  name: ggml_sycl_set_peer_access
+- code:
+  - template <template <int> typename quantize_f>
+  - static void ggml_sycl_op_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
+    *src0,
+  - '                                 const ggml_tensor *src1, ggml_tensor *dst,'
+  - '                                 ggml_sycl_op_mul_mat_t op) try {'
+  - '    GGML_TENSOR_LOCALS(int64_t, ne0, src0, ne);'
+  - '    GGML_TENSOR_LOCALS(int64_t, ne1, src1, ne);'
+  - '    const int64_t nrows1 = ggml_nrows(src1);'
+  - '    GGML_ASSERT(ne03 == ne13);'
+  - '    const int64_t ne0 = dst->ne[0];'
+  - '    const int64_t ne1 = dst->ne[1];'
+  - '    const int nb2 = dst->nb[2];'
+  - '    const int nb3 = dst->nb[3];'
+  - '    GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(dst->buffer));'
+  - '    GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(src1->buffer));'
+  - '    GGML_ASSERT(src1->type == GGML_TYPE_F32 || (src1->ne[2] == 1 && src1->ne[3]
+    == 1));'
+  - '    GGML_ASSERT(ne12 >= ne02 && ne12 % ne02 == 0);'
+  - '    const int64_t i02_divisor = ne12 / ne02;'
+  - '    const size_t src0_ts = ggml_type_size(src0->type);'
+  - '    const size_t src0_bs = ggml_blck_size(src0->type);'
+  - '    const size_t q8_1_ts = sizeof(block_q8_1);'
+  - '    const size_t q8_1_bs = QK8_1;'
+  - '    ggml_tensor_extra_gpu * src0_extra = (ggml_tensor_extra_gpu *) src0->extra;'
+  - '    ggml_tensor_extra_gpu * src1_extra = (ggml_tensor_extra_gpu *) src1->extra;'
+  - '    const bool src0_is_contiguous = ggml_is_contiguous(src0);'
+  - '    const bool src1_is_contiguous = ggml_is_contiguous(src1);'
+  - '    int64_t src1_padded_col_size = GGML_PAD(ne10, MATRIX_ROW_PADDING);'
+  - '    const bool split = ggml_backend_buffer_is_sycl_split(src0->buffer);'
+  - '    GGML_ASSERT(!(split && ne02 > 1));'
+  - '    GGML_ASSERT(!(split && ne03 > 1));'
+  - '    GGML_ASSERT(!(split && ne02 < ne12));'
+  - '    std::array<float, GGML_SYCL_MAX_DEVICES> tensor_split;'
+  - '    if (split) {'
+  - '        ggml_backend_sycl_split_buffer_type_context * buft_ctx = (ggml_backend_sycl_split_buffer_type_context
+    *) src0->buffer->buft->context;'
+  - '        tensor_split = buft_ctx->tensor_split;'
+  - '    }'
+  - '    struct dev_data {'
+  - '        ggml_sycl_pool_alloc<char> src0_dd_alloc;'
+  - '        ggml_sycl_pool_alloc<float> src1_ddf_alloc;'
+  - '        ggml_sycl_pool_alloc<char> src1_ddq_alloc;'
+  - '        ggml_sycl_pool_alloc<float> dst_dd_alloc;'
+  - '        char *src0_dd = nullptr;'
+  - '        float *src1_ddf = nullptr;'
+  - '        char *src1_ddq = nullptr;'
+  - '        float *dst_dd = nullptr;'
+  - '        int64_t row_low;'
+  - '        int64_t row_high;'
+  - '    };'
+  - '    dev_data dev[GGML_SYCL_MAX_DEVICES];'
+  - '    int used_devices = 0;'
+  - '    queue_ptr main_stream = ctx.stream();'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        dev[i].row_low  = 0;'
+  - '        dev[i].row_high = ne01;'
+  - '        if (split) {'
+  - '            const int64_t rounding = get_row_rounding(src0->type, tensor_split);'
+  - '            if (i != 0) {'
+  - '                dev[i].row_low  = ne01*tensor_split[i];'
+  - '                if (dev[i].row_low < ne01) {'
+  - '                    dev[i].row_low -= dev[i].row_low % rounding;'
+  - '                }'
+  - '            }'
+  - '            if (i != ggml_sycl_info().device_count - 1) {'
+  - '                dev[i].row_high  = ne01*tensor_split[i + 1];'
+  - '                if (dev[i].row_high < ne01) {'
+  - '                    dev[i].row_high -= dev[i].row_high % rounding;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    constexpr bool quantize_enabled = !std::is_same_v<quantize_f<QK8_1 / WARP_SIZE>,'
+  - '                                                      no_quantize_q8_1<QK8_1
+    / WARP_SIZE>>;'
+  - '    for (int i = 0; i < ggml_sycl_info().device_count; ++i) {'
+  - '        if ((!split && i != ctx.device) || dev[i].row_low == dev[i].row_high)
+    {'
+  - '            continue;'
+  - '        }'
+  - '        used_devices++;'
+  - '        const bool src1_on_device = i == ctx.device;'
+  - '        const bool  dst_on_device = i == ctx.device;'
+  - '        ggml_sycl_set_device(i);'
+  - '        queue_ptr stream = ctx.stream(i, 0);'
+  - '        if (src0_is_contiguous) {'
+  - '            dev[i].src0_dd = (char *) src0->data;'
+  - '        } else {'
+  - '            dev[i].src0_dd = dev[i].src0_dd_alloc.alloc(ctx.pool(i), ggml_nbytes(src0));'
+  - '        }'
+  - '        if (src1_on_device && src1_is_contiguous) {'
+  - '            dev[i].src1_ddf = (float *) src1->data;'
+  - '        } else {'
+  - '            dev[i].src1_ddf = dev[i].src1_ddf_alloc.alloc(ctx.pool(i), ggml_nelements(src1));'
+  - '        }'
+  - '        if constexpr(quantize_enabled) {'
+  - '            dev[i].src1_ddq = dev[i].src1_ddq_alloc.alloc(ctx.pool(i), nrows1*src1_padded_col_size*q8_1_ts/q8_1_bs);'
+  - '            if (src1_on_device && src1_is_contiguous) {'
+  - '                scope_op_debug_print scope_dbg_print(__f'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 执行矩阵乘法运算的入口函数，支持多设备并行和不同数据类型。
+  line: 2263-2311
+  name: ggml_sycl_op_mul_mat
+- code:
+  - static void ggml_sycl_repeat_back(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_repeat_back(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行重复运算的后向传播。
+  line: 2791-2794
+  name: ggml_sycl_repeat_back
+- code:
+  - static void ggml_sycl_get_rows(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);'
+  - '    ggml_sycl_op_get_rows(ctx, dst);'
+  - '}'
+  desc: 调用底层函数获取指定行数据。
+  line: 2796-2799
+  name: ggml_sycl_get_rows
+- code:
+  - static void ggml_sycl_norm(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_norm(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行归一化操作。
+  line: 2801-2804
+  name: ggml_sycl_norm
+- code:
+  - static void ggml_sycl_rms_norm(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_rms_norm(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行根均方归一化。
+  line: 2806-2809
+  name: ggml_sycl_rms_norm
+- code:
+  - static void ggml_sycl_rms_norm_back(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);'
+  - '    ggml_sycl_op_rms_norm_back(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行根均方归一化的后向传播。
+  line: 2811-2814
+  name: ggml_sycl_rms_norm_back
+- code:
+  - static void ggml_sycl_l2_norm(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_l2_norm(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行L2范数归一化。
+  line: 2816-2819
+  name: ggml_sycl_l2_norm
+- code:
+  - static void ggml_sycl_group_norm(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_group_norm(ctx, dst);'
+  - '}'
+  desc: 调用底层函数执行组归一化。
+  line: 2821-2824
+  name: ggml_sycl_group_norm
+- code:
+  - static void ggml_sycl_mul_mat_vec_p021(ggml_backend_sycl_context & ctx, const
+    ggml_tensor *src0,
+  - '                                       const ggml_tensor *src1,'
+  - '                                       ggml_tensor *dst) try {'
+  - '    GGML_ASSERT(ggml_is_permuted(src0) && ggml_is_permuted(src1));'
+  - '    GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(src0->buffer));'
+  - '    GGML_ASSERT(src0->nb[0] <= src0->nb[1] && src0->nb[2] <= src0->nb[3]); //
+    0213 permutation'
+  - '    GGML_ASSERT(src1->nb[0] <= src1->nb[1] && src1->nb[2] <= src1->nb[3]); //
+    0213 permutation'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(src1->type == GGML_TYPE_F32);'
+  - '    const int64_t ne00 = src0->ne[0];'
+  - '    const int64_t ne01 = src0->ne[1];'
+  - '    const int64_t ne02 = src0->ne[2];'
+  - '    const int64_t ne12 = src1->ne[2];'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    queue_ptr main_stream = ctx.stream();'
+  - '    void  * src0_ddq = src0->data;'
+  - '    float * src1_ddf = (float *) src1->data;'
+  - '    float * dst_ddf  = (float *) dst->data;'
+  - '    ggml_mul_mat_p021_f16_f32_sycl(src0_ddq, src1_ddf, dst_ddf, ne00, ne01, ne02,
+    ne12, main_stream);'
+  - '}'
+  desc: 执行特定排列（P021）的矩阵向量乘法，输入为F16类型src0和F32类型src1。
+  line: 2826-2865
+  name: ggml_sycl_mul_mat_vec_p021
+- code:
+  - static void ggml_sycl_mul_mat_vec_nc(ggml_backend_sycl_context & ctx, const ggml_tensor
+    *src0,
+  - '                                     const ggml_tensor *src1,'
+  - '                                     ggml_tensor *dst) try {'
+  - '    GGML_ASSERT(!ggml_is_transposed(src0));'
+  - '    GGML_ASSERT(!ggml_is_transposed(src1));'
+  - '    GGML_ASSERT(!ggml_is_permuted(src0));'
+  - '    GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(src0->buffer));'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(src1->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(src1->ne[1] == 1);'
+  - '    GGML_ASSERT(src1->ne[3] == 1);'
+  - '    const int64_t ne00 = src0->ne[0];'
+  - '    const int64_t ne01 = src0->ne[1];'
+  - '    const int64_t ne02 = src0->ne[2];'
+  - '    const int64_t nb01 = src0->nb[1];'
+  - '    const int64_t nb02 = src0->nb[2];'
+  - '    const int64_t ne12 = src1->ne[2];'
+  - '    const int64_t nb11 = src1->nb[1];'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    queue_ptr main_stream = ctx.stream();'
+  - '    void  * src0_ddq = src0->data;'
+  - '    float * src1_ddf = (float *) src1->data;'
+  - '    float * dst_ddf  = (float *) dst->data;'
+  - '    const int64_t row_stride_x = nb01 / sizeof(sycl::half);'
+  - '    const int64_t channel_stride_x = nb02 / sizeof(sycl::half);'
+  - '    const int64_t channel_stride_y = nb11 / sizeof(float);'
+  - '    ggml_mul_mat_vec_nc_f16_f32_sycl(src0_ddq, src1_ddf, dst_ddf, ne00, ne01,
+    row_stride_x, ne02, ne12, channel_stride_x, channel_stride_y, main_stream);'
+  - '}'
+  desc: 执行非连续布局的矩阵向量乘法，支持F16输入。
+  line: 2867-2910
+  name: ggml_sycl_mul_mat_vec_nc
+- code:
+  - static void k_compute_batched_ptrs(const sycl::half * src0_as_f16, const sycl::half
+    * src1_as_f16, void * dst,
+  - '                                   const void ** ptrs_src, void ** ptrs_dst,
+    int64_t ne12, int64_t ne13, int64_t ne23,'
+  - '                                   size_t nb02, size_t nb03, size_t nb12, size_t
+    nb13, size_t nbd2, size_t nbd3,'
+  - '                                   int64_t r2, int64_t r3, const sycl::nd_item<3>
+    & item_ct1) {'
+  - '    const int64_t i13 = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+    item_ct1.get_local_id(2);'
+  - '    const int64_t i12 = item_ct1.get_group(1) * item_ct1.get_local_range(1) +
+    item_ct1.get_local_id(1);'
+  - '    if (i13 >= ne13 || i12 >= ne12) {'
+  - '        return;'
+  - '    }'
+  - '    const int64_t i03 = i13 / r3;'
+  - '    const int64_t i02 = i12 / r2;'
+  - '    const uint8_t * src0_bytes = reinterpret_cast<const uint8_t *>(src0_as_f16);'
+  - '    const uint8_t * src1_bytes = reinterpret_cast<const uint8_t *>(src1_as_f16);'
+  - '    uint8_t * dst_bytes = static_cast<uint8_t *>(dst);'
+  - '    ptrs_src[0 * ne23 + i12 + i13 * ne12] = src0_bytes + i02 * nb02 + i03 * nb03;'
+  - '    ptrs_src[1 * ne23 + i12 + i13 * ne12] = src1_bytes + i12 * nb12 + i13 * nb13;'
+  - '    ptrs_dst[0 * ne23 + i12 + i13 * ne12] = dst_bytes + i12 * nbd2 + i13 * nbd3;'
+  - '}'
+  desc: SYCL内核函数，计算批量矩阵乘法中每个批次的数据指针偏移。
+  line: 2912-2927
+  name: k_compute_batched_ptrs
+- code:
+  - static void ggml_sycl_mul_mat_batched_sycl(ggml_backend_sycl_context & ctx, const
+    ggml_tensor * src0,
+  - '                                           const ggml_tensor * src1, ggml_tensor
+    * dst) try {'
+  - '    GGML_ASSERT(!ggml_is_transposed(src0));'
+  - '    GGML_ASSERT(!ggml_is_transposed(src1));'
+  - '    GGML_ASSERT(!ggml_backend_buffer_is_sycl_split(src0->buffer));'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_F32);'
+  - '    GGML_TENSOR_BINARY_OP_LOCALS'
+  - '    GGML_ASSERT(ggml_is_contiguous(dst));'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    queue_ptr queue = ctx.stream();'
+  - '    dpct::has_capability_or_fail(queue->get_device(), { sycl::aspect::fp16 });'
+  - '    const sycl::half * src0_f16 = static_cast<const sycl::half *>(src0->data);'
+  - '    float * dst_ddf  = static_cast<float *>(dst->data);'
+  - '    const sycl::half * src1_f16 = static_cast<const sycl::half *>(src1->data);'
+  - '    const size_t type_size_src0 = ggml_type_size(src0->type);'
+  - '    const size_t type_size_src1 = ggml_type_size(src1->type);'
+  - '    bool is_src0_cont_2 = ggml_is_contiguous_2(src0);'
+  - '    bool is_src1_cont_2 = ggml_is_contiguous_2(src1);'
+  - '    // ... [大量代码用于处理转换、广播和批量乘法]'
+  - '}'
+  desc: 执行批量矩阵乘法，支持广播和不同数据布局，可选择使用oneDNN或SYCL原生实现。
+  line: 2929-3100
+  name: ggml_sycl_mul_mat_batched_sycl
+- code:
+  - inline bool ggml_sycl_supports_mmq(enum ggml_type type) {
+  - '    // TODO: accuracy issues in MMQ'
+  - '    GGML_UNUSED(type);'
+  - '    return false;'
+  - '}'
+  desc: 检查是否支持MMQ（多量化）算法，当前始终返回false。
+  line: 3102-3106
+  name: ggml_sycl_supports_mmq
+- code:
+  - inline bool ggml_sycl_supports_reorder_mul_mat_sycl(enum ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            return true;'
+  - '        case GGML_TYPE_Q4_K:'
+  - '        case GGML_TYPE_Q6_K:'
+  - '            return !g_ggml_sycl_prioritize_dmmv;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否支持SYCL矩阵乘法的重排操作，仅支持Q4_0和Q8_0类型。
+  line: 3108-3120
+  name: ggml_sycl_supports_reorder_mul_mat_sycl
+- code:
+  - inline bool ggml_sycl_supports_reorder_dmmv(enum ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否支持DMMV（密集矩阵向量乘法）的重排操作。
+  line: 3122-3131
+  name: ggml_sycl_supports_reorder_dmmv
+- code:
+  - inline bool ggml_sycl_supports_reorder_mmvq(enum ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_Q4_K:'
+  - '        case GGML_TYPE_Q6_K:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否支持MMVQ（向量量化乘法）的重排操作。
+  line: 3133-3143
+  name: ggml_sycl_supports_reorder_mmvq
+- code:
+  - static bool ggml_sycl_supports_dmmv(enum ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q4_1:'
+  - '        case GGML_TYPE_Q5_0:'
+  - '        case GGML_TYPE_Q5_1:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_Q2_K:'
+  - '        case GGML_TYPE_Q3_K:'
+  - '        case GGML_TYPE_Q4_K:'
+  - '        case GGML_TYPE_Q5_K:'
+  - '        case GGML_TYPE_Q6_K:'
+  - '        case GGML_TYPE_F16:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否支持DMMV算法，支持的量化数据类型较多。
+  line: 3145-3159
+  name: ggml_sycl_supports_dmmv
+- code:
+  - static inline void * sycl_ext_malloc_device(dpct::queue_ptr stream, size_t size)
+    {
+  - '    bool use_async = g_ggml_sycl_use_async_mem_op;'
+  - '#if defined(GGML_SYCL_GRAPH) && SYCL_EXT_ONEAPI_ASYNC_MEMORY_ALLOC'
+  - '    if (use_async) {'
+  - '        return syclex::async_malloc(*stream, sycl::usm::alloc::device, size);'
+  - '    }'
+  - '#else'
+  - '    // If async allocation extension is not available, use_async should always
+    be false.'
+  - '    GGML_ASSERT(!use_async);'
+  - '#endif'
+  - '    return sycl::malloc(size, *stream, sycl::usm::alloc::device);'
+  - '}'
+  desc: 根据配置在SYCL设备上分配内存，可选用异步分配。
+  line: 3161-3172
+  name: sycl_ext_malloc_device
+- code:
+  - static inline void sycl_ext_free(dpct::queue_ptr stream, void * ptr) {
+  - '    bool use_async = g_ggml_sycl_use_async_mem_op;'
+  - '#if defined(GGML_SYCL_GRAPH) && SYCL_EXT_ONEAPI_ASYNC_MEMORY_ALLOC'
+  - '    if (use_async) {'
+  - '        syclex::async_free(*stream, ptr);'
+  - '        return;'
+  - '    }'
+  - '#else'
+  - '    // If async allocation extension is not available, use_async should always
+    be false.'
+  - '    GGML_ASSERT(!use_async);'
+  - '#endif'
+  - '    sycl::free(ptr, *stream);'
+  - '}'
+  desc: 根据配置释放SYCL设备上的内存。
+  line: 3174-3185
+  name: sycl_ext_free
+- code:
+  - static void reorder_qw_q4_0(uint8_t * data_device, const int ncols, const int
+    nrows, size_t size, size_t offset,
+  - '                            dpct::queue_ptr stream) {'
+  - '    uint8_t * tmp_buf = static_cast<uint8_t *>(sycl_ext_malloc_device(stream,
+    size));'
+  - '    sycl::event copy_event;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device,
+    size)));'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        copy_event.wait();'
+  - '    }'
+  - '    GGML_ASSERT((size % sizeof(block_q4_0) == 0));'
+  - '    GGML_ASSERT((offset % sizeof(block_q4_0) == 0));'
+  - '    int offset_blks = offset / sizeof(block_q4_0);'
+  - '    auto qs_ptr = data_device + offset_blks * QK4_0 / 2;'
+  - '    auto d_ptr = (sycl::half*)(qs_ptr + ncols * nrows / 2) + offset_blks;'
+  - '    auto reorder_event = stream->parallel_for('
+  - '        size / sizeof(block_q4_0), [=](auto i) [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+    {'
+  - '            const block_q4_0* x = (const block_q4_0*)tmp_buf;'
+  - '            const int ib = i;'
+  - '            for (int j = 0; j < QK4_0/2; j ++) {'
+  - '                *(qs_ptr + ib * QK4_0 / 2 + j) = x[ib].qs[j];'
+  - '            }'
+  - '            *(d_ptr + ib) = x[ib].d;'
+  - '        });'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        reorder_event.wait_and_throw();'
+  - '    }'
+  - '    sycl_ext_free(stream, tmp_buf);'
+  - '}'
+  desc: 对Q4_0量化数据执行重排，将其转换为优化布局。
+  line: 3187-3216
+  name: reorder_qw_q4_0
+- code:
+  - static void reorder_qw_q8_0(uint8_t * data_device, const int ncols, const int
+    nrows, size_t size, size_t offset,
+  - '                            dpct::queue_ptr stream) {'
+  - '    uint8_t * tmp_buf = static_cast<uint8_t *>(sycl_ext_malloc_device(stream,
+    size));'
+  - '    sycl::event copy_event;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device,
+    size)));'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        copy_event.wait();'
+  - '    }'
+  - '    GGML_ASSERT((size % sizeof(block_q8_0) == 0));'
+  - '    GGML_ASSERT((offset % sizeof(block_q8_0) == 0));'
+  - '    int offset_blks = offset / sizeof(block_q8_0);'
+  - '    auto qs_ptr = data_device + offset_blks * QK8_0;'
+  - '    auto d_ptr = (sycl::half*)(qs_ptr + ncols * nrows) + offset_blks;'
+  - '    auto reorder_event = stream->parallel_for('
+  - '        size / sizeof(block_q8_0), [=](auto i) [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+    {'
+  - '            const block_q8_0* x = (const block_q8_0*)tmp_buf;'
+  - '            const int ib = i;'
+  - '            for (int j = 0; j < QK8_0; j++) {'
+  - '                *((int8_t*)qs_ptr + ib * QK8_0 + j) = x[ib].qs[j];'
+  - '            }'
+  - '            *(d_ptr + ib) = x[ib].d;'
+  - '        });'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        reorder_event.wait_and_throw();'
+  - '    }'
+  - '    sycl_ext_free(stream, tmp_buf);'
+  - '}'
+  desc: 对Q8_0量化数据执行重排，将其转换为优化布局。
+  line: 3218-3247
+  name: reorder_qw_q8_0
+- code:
+  - static void reorder_qw_q4_k(uint8_t * data_device, size_t size, size_t offset,
+    dpct::queue_ptr stream) {
+  - '    GGML_ASSERT(size % sizeof(block_q4_K) == 0);'
+  - '    GGML_ASSERT(offset % sizeof(block_q4_K) == 0);'
+  - '    const int nblocks = size / sizeof(block_q4_K);'
+  - '    uint8_t * tmp_buf = static_cast<uint8_t *>(sycl_ext_malloc_device(stream,
+    size));'
+  - '    sycl::event copy_event;'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device,
+    size)));'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        copy_event.wait();'
+  - '    }'
+  - '    auto * qs_ptr     = data_device;'
+  - '    auto * scales_ptr = qs_ptr + QK_K / 2 * nblocks;'
+  - '    auto * dm_ptr     = (sycl::half2 *) (scales_ptr + K_SCALE_SIZE * nblocks);'
+  - '    auto reorder_event = stream->parallel_for(nblocks, [=](auto i) {'
+  - '        const block_q4_K * x = (const block_q4_K *) tmp_buf;'
+  - '        const int ib = i;'
+  - '        for (int j = 0; j < QK_K / 2; ++j) {'
+  - '            qs_ptr[ib * (QK_K / 2) + j] = x[ib].qs[j];'
+  - '        }'
+  - '        for (int j = 0; j < K_SCALE_SIZE; ++j) {'
+  - '            scales_ptr[ib * K_SCALE_SIZE + j] = x[ib].scales[j];'
+  - '        }'
+  - '        dm_ptr[ib] = x[ib].dm;'
+  - '    });'
+  - '    if (!g_ggml_sycl_use_async_mem_op) {'
+  - '        reorder_event.wait_and_throw();'
+  - '    }'
+  - '    sycl_ext_free(stream, tmp_buf);'
+  - '}'
+  desc: 对Q4_K量化数据执行重排，将其转换为优化布局。
+  line: 3249-3280
+  name: reorder_qw_q4_k
+- code: []
+  desc: 全局代码，包含全局变量定义、宏定义以及 SYCL 设备初始化等。
+  line: '3480'
+  name: __main__
+- code: []
+  desc: 将 Q4_K 量化权重张量从原始布局重新排序为优化的布局，以便在后续的矩阵乘法中提高性能。
+  line: 3561-3588
+  name: reorder_qw_q4_k
+- code: []
+  desc: 将 Q6_K 量化权重张量从原始布局重新排序为优化的布局，以便在后续的矩阵乘法中提高性能。
+  line: 3590-3624
+  name: reorder_qw_q6_k
+- code: []
+  desc: 根据张量的类型调用相应的重排函数，支持 Q4_0、Q8_0、Q4_K 和 Q6_K 类型。
+  line: 3626-3648
+  name: reorder_qw
+- code: []
+  desc: 判断是否应该对张量进行重排优化，条件是优化未禁用、设备支持重排、操作是 MUL_MAT 且 src1 的维度为 1。
+  line: 3650-3654
+  name: should_reorder_tensor
+- code: []
+  desc: 在满足条件时调用 reorder_qw 对张量进行重排优化，并标记该张量已优化，避免重复重排。
+  line: 3656-3685
+  name: opt_for_reorder
+- code: []
+  desc: 检查是否可以使用 dequantize_mul_mat_vec 操作，要求 src0 类型受支持、src1 和 dst 都是 F32、src0 的宽度是特定值的倍数、src1
+    只有一行。
+  line: 3687-3690
+  name: can_use_dequantize_mul_mat_vec
+- code: []
+  desc: 检查是否可以使用 mul_mat_vec_q 操作，要求 src0 是量化类型、src1 和 dst 都是 F32、src1 的行数不超过特定批次大小。
+  line: 3692-3695
+  name: can_use_mul_mat_vec_q
+- code: []
+  desc: SYCL 后端的主矩阵乘法函数，根据张量类型、形状和优化条件选择不同的实现路径，包括处理 split 缓冲区、调用各种优化的矩阵乘法内核。
+  line: 3697-3760
+  name: ggml_sycl_mul_mat
+- code: []
+  desc: SYCL 内核函数，用于在 mul_mat_id 操作中将选定的 src1 行复制到连续缓冲区，并记录映射关系。
+  line: 3762-3795
+  name: k_copy_src1_to_contiguous
+- code: []
+  desc: SYCL 内核函数，用于在 mul_mat_id 操作中将计算结果从连续缓冲区复制回原始目标张量的正确位置。
+  line: 3797-3811
+  name: k_copy_dst_from_contiguous
+- code: []
+  desc: 实现带索引的矩阵乘法操作，支持多种批量处理方式，当 src1 的 batch 维度大于 1 时使用连续缓冲区和内核函数来优化性能。
+  line: 3813-3932
+  name: ggml_sycl_mul_mat_id
+- code: []
+  desc: SYCL 后端的缩放操作，调用 ggml_sycl_op_scale 函数。
+  line: 3934-3937
+  name: ggml_sycl_scale
+- code: []
+  desc: SYCL 后端的对角线掩码（无穷大）操作，调用 ggml_sycl_op_diag_mask_inf 函数。
+  line: 3939-3942
+  name: ggml_sycl_diag_mask_inf
+- code: []
+  desc: SYCL 后端的 2D 池化操作，调用 ggml_sycl_op_pool2d 函数。
+  line: 3944-3947
+  name: ggml_sycl_pool2d
+- code: []
+  desc: SYCL 后端的 im2col 操作，调用 ggml_sycl_op_im2col 函数。
+  line: 3949-3952
+  name: ggml_sycl_im2col
+- code: []
+  desc: SYCL 后端的求和操作，要求输入张量连续，并调用 ggml_sycl_op_sum 函数。
+  line: 3954-3958
+  name: ggml_sycl_sum
+- code: []
+  desc: SYCL 后端的按行求和操作，要求输入张量连续，并调用 ggml_sycl_op_sum_rows 函数。
+  line: 3960-3964
+  name: ggml_sycl_sum_rows
+- code: []
+  desc: SYCL 后端的均值操作，要求输入张量连续，并调用 ggml_sycl_op_mean 函数。
+  line: 3966-3970
+  name: ggml_sycl_mean
+- code: []
+  desc: SYCL 后端的排序操作，要求输入张量连续，并调用 ggml_sycl_op_argsort 函数。
+  line: 3972-3976
+  name: ggml_sycl_argsort
+- code: []
+  desc: SYCL 后端的 argmax 操作，要求输入张量连续，并调用 ggml_sycl_op_argmax 函数。
+  line: 3978-3982
+  name: ggml_sycl_argmax
+- code: []
+  desc: 设置 SYCL 后端的主设备，如果当前设备不是目标设备则切换设备。
+  line: 3984-4000
+  name: ggml_sycl_set_main_device
+- code: []
+  desc: SYCL 后端的主要分发函数，根据张量操作类型（dst->op）调用相应的具体实现函数，处理所有支持的 GGML 操作。
+  line: 4002-4180
+  name: ggml_sycl_compute_forward
+- code: []
+  desc: 获取指定设备的描述信息并写入提供的缓冲区。
+  line: 4182-4190
+  name: ggml_backend_sycl_get_device_description
+- code: []
+  desc: 获取指定设备的可用内存和总内存信息。
+  line: 4192-4199
+  name: ggml_backend_sycl_get_device_memory
+- code: []
+  desc: 获取后端名称，返回存储在 sycl_ctx 中的名称。
+  line: 4203-4206
+  name: ggml_backend_sycl_get_name
+- code: []
+  desc: 释放后端上下文和 backend 对象。
+  line: 4208-4212
+  name: ggml_backend_sycl_free
+- code: []
+  desc: 异步地将数据从主机复制到设备上的张量，支持指定偏移和大小。
+  line: 4214-4228
+  name: ggml_backend_sycl_set_tensor_async
+- code: []
+  desc: 异步地将数据从设备上的张量复制回主机，支持指定偏移和大小。
+  line: 4230-4242
+  name: ggml_backend_sycl_get_tensor_async
+- code:
+  - static void ggml_backend_sycl_set_tensor_async(ggml_backend_t backend,
+  - '                                       ggml_tensor *tensor,'
+  - '                                       const void *data,'
+  - '                                       size_t offset,'
+  - '                                       size_t size) try {'
+  - '    ggml_backend_sycl_context * sycl_ctx = (ggml_backend_sycl_context *)backend->context;'
+  - '    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer :
+    tensor->buffer;'
+  - '    GGML_ASSERT(buf->buft == ggml_backend_sycl_buffer_type(sycl_ctx->device)
+    && "unsupported buffer type");'
+  - '    const queue_ptr stream = sycl_ctx->stream(sycl_ctx->device, 0);'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((stream)->memcpy('
+  - '        (char *)tensor->data + offset, data, size)));'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 异步将张量数据从主机内存拷贝到SYCL设备显存。
+  line: 4379-4394
+  name: ggml_backend_sycl_set_tensor_async
+- code:
+  - static void ggml_backend_sycl_get_tensor_async(ggml_backend_t backend,
+  - '                                       const ggml_tensor *tensor,'
+  - '                                       void *data,'
+  - '                                       size_t offset,'
+  - '                                       size_t size) try {'
+  - '    ggml_backend_sycl_context * sycl_ctx = (ggml_backend_sycl_context *)backend->context;'
+  - '    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer :
+    tensor->buffer;'
+  - '    GGML_ASSERT(buf->buft == ggml_backend_sycl_buffer_type(sycl_ctx->device)
+    && "unsupported buffer type");'
+  - '    const queue_ptr stream = sycl_ctx->stream(sycl_ctx->device, 0);'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((stream)->memcpy('
+  - '        data, (const char *)tensor->data + offset, size)));'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 异步将张量数据从SYCL设备显存拷贝到主机内存。
+  line: 4396-4411
+  name: ggml_backend_sycl_get_tensor_async
+- code:
+  - static bool ggml_backend_sycl_cpy_tensor_async(ggml_backend_t backend,
+  - '                                               const ggml_tensor *src,'
+  - '                                               ggml_tensor *dst) try {'
+  - '    ggml_backend_sycl_context * sycl_ctx = (ggml_backend_sycl_context *)backend->context;'
+  - '    bool is_cpy_supported                = dst->buffer->buft == ggml_backend_sycl_buffer_type(sycl_ctx->device)
+    &&'
+  - '                                            ggml_backend_buffer_is_sycl(src->buffer);'
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s", __func__);'
+  - '    GGML_SYCL_DEBUG("%s", debug_get_tensor_str(": dst", dst).c_str());'
+  - '    GGML_SYCL_DEBUG("%s", debug_get_tensor_str(" src", src).c_str());'
+  - '    GGML_SYCL_DEBUG(" is_cpy_supported=%d\n", is_cpy_supported);'
+  - '    if (is_cpy_supported) {'
+  - '        const queue_ptr stream = sycl_ctx->stream(sycl_ctx->device, 0);'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR((stream)->memcpy('
+  - '            dst->data, src->data, ggml_nbytes(dst))));'
+  - '        return true;'
+  - '    }'
+  - '    return false;'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 尝试在异步状态下拷贝SYCL设备上的张量，如果目标源缓冲区均支持则执行memcpy并返回true。
+  line: 4413-4435
+  name: ggml_backend_sycl_cpy_tensor_async
+- code:
+  - static void ggml_backend_sycl_synchronize(ggml_backend_t backend) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s\n", __func__);'
+  - '    ggml_backend_sycl_context * sycl_ctx = (ggml_backend_sycl_context *)backend->context;'
+  - '    const queue_ptr stream = sycl_ctx->stream(sycl_ctx->device, 0);'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR((stream)->wait()));'
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  - catch (sycl::exception const &exc) {
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 阻塞当前主机线程直到SYCL队列中的所有命令执行完毕。
+  line: 4437-4446
+  name: ggml_backend_sycl_synchronize
+- code:
+  - static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx,
+    ggml_cgraph * cgraph) {
+  - '    ggml_sycl_set_main_device(sycl_ctx->device);'
+  - '    for (int i = 0; i < cgraph->n_nodes; i++) {'
+  - '        ggml_tensor * node = cgraph->nodes[i];'
+  - '        if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op ==
+    GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE ||
+    node->op == GGML_OP_NONE) {'
+  - '            continue;'
+  - '        }'
+  - '        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {'
+  - '            continue;'
+  - '        }'
+  - '        bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);'
+  - '        if (!ok) {'
+  - '            GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__,
+    node->name, ggml_op_name(node->op));'
+  - '        }'
+  - '        GGML_ASSERT(ok);'
+  - '    }'
+  - '}'
+  desc: 在SYCL设备上遍历计算图中的节点并逐节点执行计算前向传播。
+  line: 4448-4463
+  name: ggml_backend_sycl_graph_compute_impl
+- code:
+  - static bool check_graph_compatibility(ggml_cgraph * cgraph) {
+  - '    if (ggml_sycl_info().device_count > 1) {'
+  - '        GGML_LOG_INFO("%s: disabling SYCL graphs due to multiple devices\n",
+    __func__);'
+  - '        return false;'
+  - '    }'
+  - '    for (int i = 0; i < cgraph->n_nodes; i++) {'
+  - '        const ggml_op node_op = cgraph->nodes[i]->op;'
+  - '        switch (node_op) {'
+  - '            default:'
+  - '                break;'
+  - '            case GGML_OP_CONCAT:'
+  - '                [[fallthrough]];'
+  - '            case GGML_OP_MUL_MAT_ID:'
+  - '                GGML_LOG_INFO("%s: disabling SYCL graphs due to unsupported node
+    type %s\n", __func__,'
+  - '                              ggml_op_name(node_op));'
+  - '                return false;'
+  - '            case GGML_OP_MUL_MAT:'
+  - '                if (!g_ggml_sycl_use_async_mem_op) {'
+  - '                    GGML_LOG_INFO('
+  - '                        "%s: disabling SYCL graphs due to unsupported node type
+    when using a compiler without the "'
+  - '                        "oneAPI async memory allocation extension "'
+  - '                        "%s\n",'
+  - '                        __func__, ggml_op_name(node_op));'
+  - '                    return false;'
+  - '                }'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查计算图是否满足使用SYCL命令图（command graph）加速的条件（单设备且无特定不兼容节点类型）。
+  line: 4465-4495
+  name: check_graph_compatibility
+- code:
+  - static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_cgraph
+    * cgraph) {
+  - '    auto * sycl_ctx = static_cast<ggml_backend_sycl_context *>(backend->context);'
+  - '#ifdef GGML_SYCL_GRAPH'
+  - '    bool use_sycl_graph = !g_ggml_sycl_disable_graph && check_graph_compatibility(cgraph);'
+  - '    if (use_sycl_graph) {'
+  - '        const bool graph_support = dpct::get_device(sycl_ctx->device).has(sycl::aspect::ext_oneapi_limited_graph);'
+  - '        if (!graph_support) {'
+  - '            GGML_SYCL_DEBUG("[SYCL-GRAPH] can not use graphs on device:%d\n",
+    sycl_ctx->device);'
+  - '            ggml_backend_sycl_graph_compute_impl(sycl_ctx, cgraph);'
+  - '            return GGML_STATUS_SUCCESS;'
+  - '        }'
+  - '        sycl_ex::command_graph model_sycl_graph(*(sycl_ctx->stream()), {sycl_ex::property::graph::assume_buffer_outlives_graph{}});'
+  - '        model_sycl_graph.begin_recording(*(sycl_ctx->stream()));'
+  - '        ggml_backend_sycl_graph_compute_impl(sycl_ctx, cgraph);'
+  - '        model_sycl_graph.end_recording();'
+  - '        const bool graph_update_support = dpct::get_device(sycl_ctx->device).has(sycl::aspect::ext_oneapi_graph);'
+  - '        if (!sycl_ctx->exec_graph || !graph_update_support) {'
+  - '            auto exec_graph = graph_update_support ? model_sycl_graph.finalize(sycl_ex::property::graph::updatable{})
+    :'
+  - '                                                     model_sycl_graph.finalize();'
+  - '            sycl_ctx->exec_graph = std::make_unique<'
+  - '                sycl_ex::command_graph<sycl_ex::graph_state::executable>>(exec_graph);'
+  - '        } else {'
+  - '            try {'
+  - '                sycl_ctx->exec_graph->update(model_sycl_graph);'
+  - '                GGML_SYCL_DEBUG("[SYCL-GRAPH] update success\n");'
+  - '            } catch (sycl::exception const & e) {'
+  - '                GGML_SYCL_DEBUG("[SYCL-GRAPH] Exception when updating graph,
+    %s\n", e.what());'
+  - '                auto exec_graph = model_sycl_graph.finalize({sycl_ex::property::graph::updatable{}});'
+  - '                sycl_ctx->exec_graph = std::make_unique<'
+  - '                    sycl_ex::command_graph<sycl_ex::graph_state::executable>>(exec_graph);'
+  - '            }'
+  - '        }'
+  - '        sycl_ctx->stream()->ext_oneapi_graph(*(sycl_ctx->exec_graph));'
+  - '    } else'
+  - '#endif'
+  - '    {'
+  - '        ggml_backend_sycl_graph_compute_impl(sycl_ctx, cgraph);'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 在SYCL后端上执行给定的计算图，优先使用SYCL命令图优化并自动管理可执行命令图的创建与更新。
+  line: 4497-4527
+  name: ggml_backend_sycl_graph_compute
+- code:
+  - static void ggml_backend_sycl_event_record(ggml_backend_t backend, ggml_backend_event_t
+    event)
+  - try
+  - '{'
+  - '    ggml_backend_sycl_context *sycl_ctx ='
+  - '        (ggml_backend_sycl_context *)backend->context;'
+  - '    sycl::event *sycl_event = static_cast<sycl::event *>(event->context);'
+  - '    const queue_ptr &stream = sycl_ctx->stream(sycl_ctx->device, 0);'
+  - '    // Record the current state of the queue'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR(*sycl_event = stream->ext_oneapi_submit_barrier()));'
+  - '}'
+  - catch (sycl::exception const &exc)
+  - '{'
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 记录当前SYCL队列状态并创建事件对象。
+  line: 4529-4541
+  name: ggml_backend_sycl_event_record
+- code:
+  - static void ggml_backend_sycl_event_wait(ggml_backend_t backend, ggml_backend_event_t
+    event) try {
+  - '    GGML_SYCL_DEBUG("[SYCL] call %s\n", __func__);'
+  - '    sycl::event* sycl_event = static_cast<sycl::event*>(event->context);'
+  - '    if (ggml_backend_is_sycl(backend)) {'
+  - '        SYCL_CHECK(CHECK_TRY_ERROR(sycl_event->wait()));'
+  - '    } else'
+  - '        GGML_ABORT("fatal error");'
+  - '} catch (sycl::exception const& exc) {'
+  - '    std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '              << ", line:" << __LINE__ << std::endl;'
+  - '    std::exit(1);'
+  - '}'
+  desc: 阻塞主机线程等待指定的SYCL事件完成。
+  line: 4543-4551
+  name: ggml_backend_sycl_event_wait
+- code:
+  - static ggml_backend_i ggml_backend_sycl_interface = {
+  - '    /* .get_name                = */ ggml_backend_sycl_get_name,'
+  - '    /* .free                    = */ ggml_backend_sycl_free,'
+  - '    /* .set_tensor_async        = */ ggml_backend_sycl_set_tensor_async,'
+  - '    /* .get_tensor_async        = */ ggml_backend_sycl_get_tensor_async,'
+  - '    /* .cpy_tensor_async        = */ NULL, // ggml_backend_sycl_cpy_tensor_async,'
+  - '    /* .synchronize             = */ ggml_backend_sycl_synchronize,'
+  - '    /* .graph_plan_create       = */ NULL,'
+  - '    /* .graph_plan_free         = */ NULL,'
+  - '    /* .graph_plan_update       = */ NULL,'
+  - '    /* .graph_plan_compute      = */ NULL,'
+  - '    /* .graph_compute           = */ ggml_backend_sycl_graph_compute,'
+  - '    /* .event_record            = */ ggml_backend_sycl_event_record,'
+  - '    /* .event_wait              = */ ggml_backend_sycl_event_wait,'
+  - '    /* .graph_optimize          = */ NULL,'
+  - '};'
+  desc: SYCL后端接口回调函数集，定义了SYCL后端支持的操作。
+  line: 4553-4564
+  name: ggml_backend_sycl_interface
+- code:
+  - static ggml_guid_t ggml_backend_sycl_guid() {
+  - '    static ggml_guid guid = { 0x58, 0x05, 0x13, 0x8f, 0xcd, 0x3a, 0x61, 0x9d,
+    0xe7, 0xcd, 0x98, 0xa9, 0x03, 0xfd, 0x7c, 0x53 };'
+  - '    return &guid;'
+  - '}'
+  desc: 返回SYCL后端的全局唯一标识符。
+  line: 4566-4568
+  name: ggml_backend_sycl_guid
+- code:
+  - bool ggml_backend_is_sycl(ggml_backend_t backend) {
+  - '    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_sycl_guid());'
+  - '}'
+  desc: 判断给定的后端是否为SYCL后端。
+  line: 4570-4572
+  name: ggml_backend_is_sycl
+- code:
+  - int ggml_backend_sycl_get_device_count() {
+  - '    return ggml_sycl_info().device_count;'
+  - '}'
+  desc: 返回SYCL可见的设备数量。
+  line: 4574-4576
+  name: ggml_backend_sycl_get_device_count
+- code:
+  - static const char * ggml_backend_sycl_device_get_name(ggml_backend_dev_t dev)
+    {
+  - '    ggml_backend_sycl_device_context * ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 获取SYCL设备的名称。
+  line: 4580-4582
+  name: ggml_backend_sycl_device_get_name
+- code:
+  - static const char * ggml_backend_sycl_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_sycl_device_context * ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return ctx->description.c_str();'
+  - '}'
+  desc: 获取SYCL设备的描述信息。
+  line: 4584-4586
+  name: ggml_backend_sycl_device_get_description
+- code:
+  - static void ggml_backend_sycl_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '    ggml_backend_sycl_device_context * ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    ggml_sycl_set_device(ctx->device);'
+  - '    SYCL_CHECK(CHECK_TRY_ERROR('
+  - '    dpct::dev_mgr::instance().get_device(ctx->device).get_memory_info(*free,
+    *total)));'
+  - '}'
+  desc: 获取SYCL设备的显存总量和可用量。
+  line: 4588-4591
+  name: ggml_backend_sycl_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_sycl_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    GGML_UNUSED(dev);'
+  - '    return GGML_BACKEND_DEVICE_TYPE_GPU;'
+  - '}'
+  desc: 获取SYCL设备类型（固定返回GPU类型）。
+  line: 4593-4596
+  name: ggml_backend_sycl_device_get_type
+- code:
+  - static void ggml_backend_sycl_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props
+    * props) {
+  - '    props->name        = ggml_backend_sycl_device_get_name(dev);'
+  - '    props->description = ggml_backend_sycl_device_get_description(dev);'
+  - '    props->type        = ggml_backend_sycl_device_get_type(dev);'
+  - '    ggml_backend_sycl_device_get_memory(dev, &props->memory_free, &props->memory_total);'
+  - '    bool host_buffer = getenv("GGML_SYCL_NO_PINNED") == nullptr;'
+  - '#ifdef GGML_SYCL_NO_PEER_COPY'
+  - '    bool events = false;'
+  - '#else'
+  - '    bool events = true;'
+  - '#endif'
+  - '    props->caps = {'
+  - '        /* .async                 = */ true,'
+  - '        /* .host_buffer           = */ host_buffer,'
+  - '        /* .buffer_from_host_ptr  = */ false,'
+  - '        /* .events                = */ events,'
+  - '    };'
+  - '}'
+  desc: 获取SYCL设备的属性，包括名称、描述、类型、显存容量和功能支持标志。
+  line: 4598-4616
+  name: ggml_backend_sycl_device_get_props
+- code:
+  - static ggml_backend_t ggml_backend_sycl_device_init(ggml_backend_dev_t dev, const
+    char * params) {
+  - '    GGML_UNUSED(params);'
+  - '    ggml_backend_sycl_device_context * ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return ggml_backend_sycl_init(ctx->device);'
+  - '}'
+  desc: 初始化SYCL后端并返回后端上下文。
+  line: 4618-4621
+  name: ggml_backend_sycl_device_init
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_sycl_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_sycl_device_context * ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return ggml_backend_sycl_buffer_type(ctx->device);'
+  - '}'
+  desc: 获取SYCL设备的缓冲区类型。
+  line: 4623-4626
+  name: ggml_backend_sycl_device_get_buffer_type
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_sycl_device_get_host_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    GGML_UNUSED(dev);'
+  - '    return ggml_backend_sycl_host_buffer_type();'
+  - '}'
+  desc: 获取SYCL设备的主机缓冲区类型。
+  line: 4628-4631
+  name: ggml_backend_sycl_device_get_host_buffer_type
+- code:
+  - static ggml_backend_buffer_t ggml_backend_sycl_device_buffer_from_host_ptr(ggml_backend_dev_t
+    dev, void * ptr, size_t size, size_t max_tensor_size) {
+  - '    GGML_UNUSED(dev);'
+  - '    GGML_UNUSED(ptr);'
+  - '    GGML_UNUSED(size);'
+  - '    GGML_UNUSED(max_tensor_size);'
+  - '    return nullptr;'
+  - '}'
+  desc: 从主机指针创建SYCL缓冲区，当前不支持直接创建返回nullptr。
+  line: 4633-4639
+  name: ggml_backend_sycl_device_buffer_from_host_ptr
+- code:
+  - static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const
+    ggml_tensor * op) {
+  - '    ggml_backend_sycl_device_context *sycl_ctx ='
+  - '        (ggml_backend_sycl_device_context *)dev->context;'
+  - '    int device = sycl_ctx->device;'
+  - '    switch (op->op) {'
+  - '        case GGML_OP_CONV_TRANSPOSE_1D:'
+  - '            {'
+  - '                ggml_type src0_type = op->src[0]->type;'
+  - '                ggml_type src1_type = op->src[1]->type;'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                return false;'
+  - '            }'
+  - '        case GGML_OP_UNARY:'
+  - '            switch (ggml_get_unary_op(op)) {'
+  - '                case GGML_UNARY_OP_SGN:'
+  - '                case GGML_UNARY_OP_ABS:'
+  - '                case GGML_UNARY_OP_NEG:'
+  - '                case GGML_UNARY_OP_STEP:'
+  - '                case GGML_UNARY_OP_RELU:'
+  - '                case GGML_UNARY_OP_HARDSIGMOID:'
+  - '                case GGML_UNARY_OP_TANH:'
+  - '                case GGML_UNARY_OP_GELU:'
+  - '                case GGML_UNARY_OP_SILU:'
+  - '                case GGML_UNARY_OP_SIGMOID:'
+  - '                case GGML_UNARY_OP_HARDSWISH:'
+  - '                case GGML_UNARY_OP_GELU_QUICK:'
+  - '                case GGML_UNARY_OP_GELU_ERF:'
+  - '                case GGML_UNARY_OP_EXP:'
+  - '                case GGML_UNARY_OP_SOFTPLUS:'
+  - '                case GGML_UNARY_OP_ELU:'
+  - '                case GGML_UNARY_OP_CEIL:'
+  - '                    return true;'
+  - '                case GGML_UNARY_OP_FLOOR:'
+  - '                case GGML_UNARY_OP_ROUND:'
+  - '                case GGML_UNARY_OP_TRUNC:'
+  - '#if defined (GGML_SYCL_F16)'
+  - '                    return ggml_is_contiguous(op->src[0]) && (op->type == op->src[0]->type);'
+  - '#else'
+  - '                    return ggml_is_contiguous(op->src[0]) && (op->src[0]->type
+    == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) && (op->type == op->src[0]->type);'
+  - '#endif'
+  - '                default:'
+  - '                    return false;'
+  - '            }'
+  - '        case GGML_OP_GLU:'
+  - '            switch (ggml_get_glu_op(op)) {'
+  - '                case GGML_GLU_OP_REGLU:'
+  - '                case GGML_GLU_OP_GEGLU:'
+  - '                case GGML_GLU_OP_SWIGLU:'
+  - '                case GGML_GLU_OP_SWIGLU_OAI:'
+  - '                case GGML_GLU_OP_GEGLU_ERF:'
+  - '                case GGML_GLU_OP_GEGLU_QUICK:'
+  - '                    return ggml_is_contiguous_1(op->src[0]);'
+  - '                default:'
+  - '                    return false;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_MUL_MAT:'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '            {'
+  - '                struct ggml_tensor * a = op->src[0];'
+  - '                struct ggml_tensor * b = op->src[1];'
+  - '                if (a->ne[3] != b->ne[3]) {'
+  - '                    return false;'
+  - '                }'
+  - '                ggml_type src0_type = op->src[0]->type;'
+  - '                if (ggml_is_permuted(a) && !ggml_is_contiguous(a) &&'
+  - '                    a->ne[2] > 1 && a->ne[3] > 1 && src0_type == GGML_TYPE_F16)
+    {'
+  - '                  return false;'
+  - '                }'
+  - '                if (!ggml_is_permuted(a) && ggml_is_permuted(b) && b->ne[2] >
+    1 && b->ne[3] > 1 &&'
+  - '                    a->ne[0] > 128 && a->ne[2] == 1 && src0_type == GGML_TYPE_F16)
+    {'
+  - '                    return false;'
+  - '                }'
+  - '                return true;'
+  - '            }'
+  - '        case GGML_OP_OUT_PROD:'
+  - '            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32
+    && op->src[1]->type == GGML_TYPE_F32 && op->ne[2] == 1 && op->ne[3] == 1;'
+  - '        case GGML_OP_GET_ROWS:'
+  - '            {'
+  - '                switch (op->src[0]->type) {'
+  - '                    case GGML_TYPE_F16:'
+  - '                    case GGML_TYPE_F32:'
+  - '                    case GGML_TYPE_Q4_0:'
+  - '                    case GGML_TYPE_Q4_1:'
+  - '                    case GGML_TYPE_Q5_0:'
+  - '                    case GGML_TYPE_Q5_1:'
+  - '                    case GGML_TYPE_Q8_0:'
+  - '                        return true;'
+  - '                    default:'
+  - '                        return false;'
+  - '                }'
+  - '            }'
+  - '         case GGML_OP_SET:'
+  - '               return (op->type == GGML_TYPE_F32) &&'
+  - '                      (op->src[0] && op->src[1]) &&'
+  - '                      (op->src[0]->type == GGML_TYPE_F32) &&'
+  - '                      (op->src[1]->type == GGML_TYPE_F32);'
+  - '        case GGML_OP_SET_ROWS:'
+  - '            {'
+  - '                return ((op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16
+    || op->type == GGML_TYPE_BF16 ||'
+  - '                         op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_Q5_1
+    || op->type == GGML_TYPE_Q5_0 ||'
+  - '                         op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q4_0
+    || op->type == GGML_TYPE_IQ4_NL) &&'
+  - '                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type
+    == GGML_TYPE_I32));'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_CPY:'
+  - '            {'
+  - '                ggml_type src0_type = op->src[0]->type;'
+  - '                ggml_type src1_type = op->src[1]->type;'
+  - '                if (src0_type == src1_type && (ggml_is_contiguous(op->src[0])
+    && ggml_is_contiguous(op->src[1])) && src0_type != GGML_TYPE_BF16) {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F16)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q8_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q4_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q4_1)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_F16)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_Q8_0 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_Q4_0 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_Q4_1 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q5_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_Q5_0 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q5_1)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_Q5_1 && src1_type == GGML_TYPE_F32)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_IQ4_NL)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if(src0_type == GGML_TYPE_Q8_0 && src1_type == GGML_TYPE_Q8_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if(src0_type == GGML_TYPE_Q5_0 && src1_type == GGML_TYPE_Q5_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if(src0_type == GGML_TYPE_Q5_1 && src1_type == GGML_TYPE_Q5_1)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if(src0_type == GGML_TYPE_Q4_0 && src1_type == GGML_TYPE_Q4_0)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                if(src0_type == GGML_TYPE_Q4_1 && src1_type == GGML_TYPE_Q4_1)
+    {'
+  - '                    return true;'
+  - '                }'
+  - '                return false;'
+  - '            }'
+  - '        case GGML_OP_REPEAT_BACK:'
+  - '            {'
+  - '                ggml_type src0_type = op->src[0]->type;'
+  - '                return src0_type == GGML_TYPE_F32;'
+  - '            }'
+  - '        case GGML_OP_CONCAT:'
+  - '        case GGML_OP_DUP:'
+  - '        case GGML_OP_ARGMAX:'
+  - '        case GGML_OP_NONE:'
+  - '        case GGML_OP_RESHAPE:'
+  - '        case GGML_OP_VIEW:'
+  - '        case GGML_OP_PERMUTE:'
+  - '        case GGML_OP_TRANSPOSE:'
+  - '        case GGML_OP_ADD:'
+  - '        case GGML_OP_ADD1:'
+  - '        case GGML_OP_ADD_ID:'
+  - '        case GGML_OP_SUB:'
+  - '        case GGML_OP_COUNT_EQUAL:'
+  - '        case GGML_OP_MUL:'
+  - '        case GGML_OP_DIV:'
+  - '        case GGML_OP_REPEAT:'
+  - '            return true;'
+  - '        case GGML_OP_PAD_REFLECT_1D:'
+  - '            return ggml_is_contiguous(op->src[0]) && op-> type == GGML_TYPE_F32
+    && op->src[0]->type == GGML_TYPE_F32;'
+  - '        case GGML_OP_SQR:'
+  - '        case GGML_OP_SQRT:'
+  - '        case GGML_OP_SIN:'
+  - '        case GGML_OP_COS:'
+  - '        case GGML_OP_CLAMP:'
+  - '        case GGML_OP_LOG:'
+  - '#if defined (GGML_SYCL_F16)'
+  - '            return ((op->type == GGML_TYPE_F32 || op->type == GGML_SYCL_F16)
+    && (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_SYCL_F16) &&
+    (op->type == op->src[0]->type));'
+  - '#else'
+  - '            return (op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32)
+    && (op->type == op->src[0]->type);'
+  - '#endif'
+  - '        case GGML_OP_NORM:'
+  - '        case GGML_OP_L2_NORM:'
+  - '        case GGML_OP_GROUP_NORM:'
+  - '        case GGML_OP_RMS_NORM:'
+  - '            return true;'
+  - '        case GGML_OP_RMS_NORM_BACK:'
+  - '            return ggml_is_contiguous(op->src[0]);'
+  - '        case GGML_OP_SCALE:'
+  - '            return true;'
+  - '        case GGML_OP_CONT:'
+  - '            return op->src[0]->type != GGML_TYPE_BF16;'
+  - '        case GGML_OP_TRI:'
+  - '            {'
+  - '                const ggml_tensor * src0 = op->src[0];'
+  - '                return src0 &&'
+  - '                       op->type == GGML_TYPE_F32 &&'
+  - '                       ggml_is_contiguous(src0);'
+  - '            }'
+  - '        case GGML_OP_DIAG_MASK_INF:'
+  - '            return true;'
+  - '        case GGML_OP_SOFT_MAX:'
+  - '            return true;'
+  - '        case GGML_OP_SOFT_MAX_BACK: {'
+  - '            float max_bias = 0.0f;'
+  - '            memcpy(&max_bias, (const float *) op->op_params + 1, sizeof(float));'
+  - '            return max_bias == 0.0f;'
+  - '        }'
+  - '        case GGML_OP_ROPE:'
+  - '        case GGML_OP_ROPE_BACK:'
+  - '        case GGML_OP_IM2COL:'
+  - '        case GGML_OP_UPSCALE:'
+  - '            return true;'
+  - '        case GGML_OP_SUM:'
+  - '        case GGML_OP_SUM_ROWS:'
+  - '        case GGML_OP_MEAN:'
+  - '            return ggml_is_contiguous(op->src[0]);'
+  - '        case GGML_OP_ARGSORT:'
+  - '            return op->src[0]->ne[0] * sizeof(int) <='
+  - '                   ggml_sycl_info().devices[device].smpbo;'
+  - '        case GGML_OP_TOP_K: {'
+  - '            const ggml_tensor * src0 = op->src[0];'
+  - '            const int k = op->ne[0];'
+  - '            return src0 &&'
+  - '                op->type == GGML_TYPE_I32 &&'
+  - '                src0->type == GGML_TYPE_F32 &&'
+  - '                ggml_is_contiguous(src0) &&'
+  - '                k > 0 && k <= 32;'
+  - '        }'
+  - '        case GGML_OP_POOL_2D:'
+  - '            return true;'
+  - '        case GGML_OP_ACC:'
+  - '            return ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]);'
+  - '        case GGML_OP_PAD:'
+  - '            if (ggml_get_op_params_i32(op, 8) != 0) {'
+  - '                return false;'
+  - '            }'
+  - '            return ggml_is_contiguous(op->src[0]);'
+  - '        case GGML_OP_LEAKY_RELU:'
+  - '        case GGML_OP_TIMESTEP_EMBEDDING:'
+  - '        case GGML_OP_RWKV_WKV6:'
+  - '        case GGML_OP_RWKV_WKV7:'
+  - '        case GGML_OP_GATED_LINEAR_ATTN:'
+  - '        case GGML_OP_GATED_DELTA_NET:'
+  - '            return true;'
+  - '        case GGML_OP_SSM_CONV:'
+  - '            return op->type == GGML_TYPE_F32 &&'
+  - '                   op->src[0]->type == GGML_TYPE_F32 &&'
+  - '                   op->src[1]->type == GGML_TYPE_F32;'
+  - '        case GGML_OP_ROLL:'
+  - '            return op->type == GGML_TYPE_F32;'
+  - '        case GGML_OP_ARANGE:'
+  - '            return op->type == GGML_TYPE_F32;'
+  - '        case GGML_OP_FLASH_ATTN_EXT:'
+  - '            return ggml_sycl_flash_attn_ext_supported(device, op);'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 检查SYCL设备是否支持特定张量操作类型（如卷积、矩阵乘法等）。
+  line: 4641-4803
+  name: ggml_backend_sycl_device_supports_op
+- code:
+  - static bool ggml_backend_sycl_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t
+    buft) {
+  - '    if (buft->iface.get_name != ggml_backend_sycl_buffer_type_get_name) {'
+  - '        return false;'
+  - '    }'
+  - '    ggml_backend_sycl_buffer_type_context * buft_ctx = (ggml_backend_sycl_buffer_type_context
+    *)buft->context;'
+  - '    ggml_backend_sycl_device_context * sycl_ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return buft_ctx->device == sycl_ctx->device;'
+  - '}'
+  desc: 检查SYCL设备是否支持特定的缓冲区类型。
+  line: 4805-4810
+  name: ggml_backend_sycl_device_supports_buft
+- code:
+  - static int64_t get_op_batch_size(const ggml_tensor * op) {
+  - '    switch (op->op) {'
+  - '        case GGML_OP_GET_ROWS:'
+  - '            return 0;'
+  - '        case GGML_OP_MUL_MAT:'
+  - '            return op->ne[1];'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '        case GGML_OP_ROPE:'
+  - '            return op->ne[2];'
+  - '        default:'
+  - '            return ggml_nrows(op);'
+  - '    }'
+  - '}'
+  desc: 根据操作类型返回计算操作的批量大小，对于GET_ROWS返回0，MUL_MAT返回ne[1]，MUL_MAT_ID和ROPE返回ne[2]。
+  line: 4812-4820
+  name: get_op_batch_size
+- code:
+  - static bool ggml_backend_sycl_device_offload_op(ggml_backend_dev_t dev, const
+    ggml_tensor * op) {
+  - '    ggml_backend_sycl_device_context * sycl_ctx = (ggml_backend_sycl_device_context
+    *)dev->context;'
+  - '    return get_op_batch_size(op) >= sycl_ctx->op_offload_min_batch_size;'
+  - '}'
+  desc: 根据操作批量大小和最小批量阈值决定是否将操作卸载到SYCL设备。
+  line: 4822-4825
+  name: ggml_backend_sycl_device_offload_op
+- code:
+  - static ggml_backend_event_t
+  - ggml_backend_sycl_device_event_new(ggml_backend_dev_t dev) {
+  - '#ifdef GGML_SYCL_NO_PEER_COPY'
+  - '    return nullptr;'
+  - '#else'
+  - '  sycl::event *event_ptr = new sycl::event();'
+  - '  return new ggml_backend_event{'
+  - '      /* .device = */ dev,'
+  - '      /* .context = */ event_ptr,'
+  - '  };'
+  - '#endif'
+  - '}'
+  desc: 创建一个新的SYCL后端事件对象，在没有peer copy支持时返回空指针。
+  line: 4827-4835
+  name: ggml_backend_sycl_device_event_new
+- code:
+  - static void ggml_backend_sycl_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t
+    event) try {
+  - '  GGML_UNUSED(dev);'
+  - '  if (event == nullptr) {'
+  - '    return;'
+  - '  }'
+  - '  if (event->context != nullptr) {'
+  - '    sycl::event *sycl_event = static_cast<sycl::event *>(event->context);'
+  - '    delete sycl_event;'
+  - '    event->context = nullptr;'
+  - '  }'
+  - '  delete event;'
+  - '} catch (sycl::exception const &exc) {'
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 释放SYCL后端事件对象及其内部sycl::event资源。
+  line: 4837-4853
+  name: ggml_backend_sycl_device_event_free
+- code:
+  - static void ggml_backend_sycl_device_event_synchronize(ggml_backend_dev_t dev,
+    ggml_backend_event_t event) try {
+  - '  GGML_UNUSED(dev);'
+  - '  GGML_SYCL_DEBUG("[SYCL] call %s\n", __func__);'
+  - '  sycl::event *sycl_event = static_cast<sycl::event *>(event->context);'
+  - '  SYCL_CHECK(CHECK_TRY_ERROR(sycl_event->wait()));'
+  - '} catch (sycl::exception const &exc) {'
+  - '  std::cerr << exc.what() << "Exception caught at file:" << __FILE__'
+  - '            << ", line:" << __LINE__ << std::endl;'
+  - '  std::exit(1);'
+  - '}'
+  desc: 同步等待指定SYCL事件完成。
+  line: 4855-4865
+  name: ggml_backend_sycl_device_event_synchronize
+- code:
+  - static const ggml_backend_device_i ggml_backend_sycl_device_interface = {
+  - '    /* .get_name                = */ ggml_backend_sycl_device_get_name,'
+  - '    /* .get_description         = */ ggml_backend_sycl_device_get_description,'
+  - '    /* .get_memory              = */ ggml_backend_sycl_device_get_memory,'
+  - '    /* .get_type                = */ ggml_backend_sycl_device_get_type,'
+  - '    /* .get_props               = */ ggml_backend_sycl_device_get_props,'
+  - '    /* .init_backend            = */ ggml_backend_sycl_device_init,'
+  - '    /* .get_buffer_type         = */ ggml_backend_sycl_device_get_buffer_type,'
+  - '    /* .get_host_buffer_type    = */ ggml_backend_sycl_device_get_host_buffer_type,'
+  - '    /* .buffer_from_host_ptr    = */ ggml_backend_sycl_device_buffer_from_host_ptr,'
+  - '    /* .supports_op             = */ ggml_backend_sycl_device_supports_op,'
+  - '    /* .supports_buft           = */ ggml_backend_sycl_device_supports_buft,'
+  - '    /* .offload_op              = */ ggml_backend_sycl_device_offload_op,'
+  - '    /* .event_new               = */ ggml_backend_sycl_device_event_new,'
+  - '    /* .event_free              = */ ggml_backend_sycl_device_event_free,'
+  - '    /* .event_synchronize       = */ ggml_backend_sycl_device_event_synchronize,'
+  - '};'
+  desc: SYCL设备接口回调函数集，定义了设备管理和执行的操作。
+  line: 4867-4882
+  name: ggml_backend_sycl_device_interface
+- code:
+  - static const char * ggml_backend_sycl_reg_get_name(ggml_backend_reg_t reg) {
+  - '    GGML_UNUSED(reg);'
+  - '    return GGML_SYCL_NAME;'
+  - '}'
+  desc: 返回SYCL注册名称。
+  line: 4886-4889
+  name: ggml_backend_sycl_reg_get_name
+- code:
+  - static size_t ggml_backend_sycl_reg_get_device_count(ggml_backend_reg_t reg) {
+  - '    ggml_backend_sycl_reg_context * ctx = (ggml_backend_sycl_reg_context *)reg->context;'
+  - '    return ctx->devices.size();'
+  - '}'
+  desc: 返回SYCL注册的设备数量。
+  line: 4891-4894
+  name: ggml_backend_sycl_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_sycl_reg_get_device(ggml_backend_reg_t
+    reg, size_t index) {
+  - '    ggml_backend_sycl_reg_context * ctx = (ggml_backend_sycl_reg_context *)reg->context;'
+  - '    GGML_ASSERT(index < ctx->devices.size());'
+  - '    return ctx->devices[index];'
+  - '}'
+  desc: 按索引获取SYCL注册的设备对象。
+  line: 4896-4900
+  name: ggml_backend_sycl_reg_get_device
+- code:
+  - static void *ggml_backend_sycl_reg_get_proc_address(ggml_backend_reg_t reg, const
+    char *name) {
+  - '    GGML_UNUSED(reg);'
+  - '    if (strcmp(name, "ggml_backend_split_buffer_type") == 0) {'
+  - '        return (void *)ggml_backend_sycl_split_buffer_type;'
+  - '    }'
+  - '    GGML_UNUSED(name);'
+  - '    return nullptr;'
+  - '}'
+  desc: 获取SYCL注册的过程地址，目前仅支持获取split_buffer_type的函数指针。
+  line: 4902-4908
+  name: ggml_backend_sycl_reg_get_proc_address
+- code:
+  - static const ggml_backend_reg_i ggml_backend_sycl_reg_interface = {
+  - '    /* .get_name          = */ ggml_backend_sycl_reg_get_name,'
+  - '    /* .get_device_count  = */ ggml_backend_sycl_reg_get_device_count,'
+  - '    /* .get_device        = */ ggml_backend_sycl_reg_get_device,'
+  - '    /* .get_proc_address  = */ ggml_backend_sycl_reg_get_proc_address,'
+  - '};'
+  desc: SYCL后端注册接口回调函数集，定义了后端注册相关的操作。
+  line: 4910-4914
+  name: ggml_backend_sycl_reg_interface
+- code:
+  - ggml_backend_reg_t ggml_backend_sycl_reg() {
+  - '    static ggml_backend_reg reg;'
+  - '    static bool initialized = false;'
+  - '    {'
+  - '        static std::mutex mutex;'
+  - '        std::lock_guard<std::mutex> lock(mutex);'
+  - '        if (!initialized) {'
+  - '            ggml_backend_sycl_reg_context * ctx = new ggml_backend_sycl_reg_context;'
+  - '            const int min_batch_size = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ?
+    atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;'
+  - '            for (int i = 0; i < ggml_sycl_info().device_count; i++) {'
+  - '                ggml_backend_sycl_device_context * dev_ctx = new ggml_backend_sycl_device_context;'
+  - '                dev_ctx->device = i;'
+  - '                dev_ctx->name = GGML_SYCL_NAME + std::to_string(i);'
+  - '                ggml_sycl_set_device(i);'
+  - '                dpct::device_info prop;'
+  - '                SYCL_CHECK(CHECK_TRY_ERROR(dpct::get_device_info('
+  - '                    prop, dpct::dev_mgr::instance().get_device(i))));'
+  - '                dev_ctx->description = prop.get_name();'
+  - '                dev_ctx->op_offload_min_batch_size = min_batch_size;'
+  - '                ggml_backend_dev_t dev = new ggml_backend_device {'
+  - '                    /* .iface       = */ ggml_backend_sycl_device_interface,'
+  - '                    /* .reg         = */ &reg,'
+  - '                    /* .context     = */ dev_ctx'
+  - '                };'
+  - '                ctx->devices.push_back(dev);'
+  - '            }'
+  - '            reg = ggml_backend_reg {'
+  - '                /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '                /* .iface       = */ ggml_backend_sycl_reg_interface,'
+  - '                /* .context     = */ ctx'
+  - '            };'
+  - '        }'
+  - '        initialized = true;'
+  - '    }'
+  - '    return &reg;'
+  - '}'
+  desc: 全局注册SYCL后端，为每个可见设备创建设备上下文并注册到后端注册表。
+  line: 4916-4945
+  name: ggml_backend_sycl_reg
+- code:
+  - ggml_backend_t ggml_backend_sycl_init(int device) {
+  - '    GGML_SYCL_DEBUG("[SYCL] call ggml_backend_sycl_init\n");'
+  - '    ggml_check_sycl();'
+  - '    check_allow_gpu_index(device);'
+  - '    ggml_backend_sycl_context * ctx = new ggml_backend_sycl_context(device);'
+  - '    if (ctx == nullptr) {'
+  - '        GGML_LOG_ERROR("%s: error: failed to allocate context\n", __func__);'
+  - '        return nullptr;'
+  - '    };'
+  - '    ggml_backend_t sycl_backend = new ggml_backend {'
+  - '        /* .guid    = */ ggml_backend_sycl_guid(),'
+  - '        /* .iface   = */ ggml_backend_sycl_interface,'
+  - '        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_sycl_reg(), device),'
+  - '        /* .context = */ ctx'
+  - '    };'
+  - '    return sycl_backend;'
+  - '}'
+  desc: 初始化SYCL后端上下文并返回后端对象，在指定设备上执行。
+  line: 4947-4961
+  name: ggml_backend_sycl_init

@@ -1,0 +1,146 @@
+classes: []
+desc: 该文件实现了通用的单精度浮点矩阵乘法 C[M x N] += A[M x K] * B[K x N]，通过 SIMD 指令集（如 AVX、NEON 等）提供优化的矩阵乘法核心函数。代码根据编译平台选择
+  SIMD 或标量路径，包含微内核函数和顶层的矩阵分块处理逻辑，旨在最大化缓存利用和并行度。
+file: ggml/src/ggml-cpu/simd-gemm.h
+funcs:
+- code:
+  - '#pragma once'
+  - ''
+  - // Computes C[M x N] += A[M x K] * B[K x N]
+  - ''
+  - '#include "simd-mappings.h"'
+  - ''
+  - '// TODO: add support for sizeless vector types'
+  - '#if defined(GGML_SIMD) && !defined(__ARM_FEATURE_SVE) && !defined(__riscv_v_intrinsic)'
+  - ''
+  - '// TODO: untested on avx512'
+  - // These are in units of GGML_F32_EPR
+  - '#if defined(__AVX512F__) || defined (__ARM_NEON__)'
+  - '    static constexpr int GEMM_RM = 4;'
+  - '    static constexpr int GEMM_RN = 4; // 16+4+1 = 25/32'
+  - '#elif defined(__AVX2__) || defined(__AVX__)'
+  - '    static constexpr int GEMM_RM = 6;'
+  - '    static constexpr int GEMM_RN = 2; // 12+2+1 = 15/16'
+  - '#else'
+  - '    static constexpr int GEMM_RM = 2;'
+  - '    static constexpr int GEMM_RN = 2;'
+  - '#endif'
+  desc: 文件顶部的全局代码，定义 SIMD 路径的编译条件、分块常量（GEMM_RM 和 GEMM_RN），以及根据指令集选择不同配置。
+  line: 1-22
+  name: __main__
+- code:
+  - template <int RM, int RN>
+  - static inline void simd_gemm_ukernel(
+  - '    float       * GGML_RESTRICT C,'
+  - '    const float * GGML_RESTRICT A,'
+  - '    const float * GGML_RESTRICT B,'
+  - '    int K, int N)'
+  - '{'
+  - '    static constexpr int KN = GGML_F32_EPR;'
+  - ''
+  - '    GGML_F32_VEC acc[RM][RN];'
+  - '    for (int64_t i = 0; i < RM; i++) {'
+  - '        for (int r = 0; r < RN; r++) {'
+  - '            acc[i][r] = GGML_F32_VEC_LOAD(C + i * N + r * KN);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int64_t kk = 0; kk < K; kk++) {'
+  - '        GGML_F32_VEC Bv[RN];'
+  - '        for (int r = 0; r < RN; r++) {'
+  - '            Bv[r] = GGML_F32_VEC_LOAD(B + kk * N + r * KN);'
+  - '        }'
+  - '        for (int64_t i = 0; i < RM; i++) {'
+  - '            GGML_F32_VEC p = GGML_F32_VEC_SET1(A[i * K + kk]);'
+  - '            for (int r = 0; r < RN; r++) {'
+  - '                acc[i][r] = GGML_F32_VEC_FMA(acc[i][r], Bv[r], p);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int64_t i = 0; i < RM; i++) {'
+  - '        for (int r = 0; r < RN; r++) {'
+  - '            GGML_F32_VEC_STORE(C + i * N + r * KN, acc[i][r]);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: SIMD 路径下的矩阵乘法微内核模板函数，处理固定大小的分块计算。它加载 C 的累加器，遍历 K 维度，使用 FMA 指令进行批量乘加，最后将结果存回
+    C。
+  line: 24-53
+  name: simd_gemm_ukernel
+- code:
+  - static void simd_gemm(
+  - '    float       * GGML_RESTRICT C,'
+  - '    const float * GGML_RESTRICT A,'
+  - '    const float * GGML_RESTRICT B,'
+  - '    int M, int K, int N)'
+  - '{'
+  - '    static constexpr int KN = GGML_F32_EPR;'
+  - ''
+  - '    int64_t ii = 0;'
+  - '    for (; ii + GEMM_RM <= M; ii += GEMM_RM) {'
+  - '        int64_t jj = 0;'
+  - '        for (; jj + GEMM_RN * KN <= N; jj += GEMM_RN * KN) {'
+  - '            simd_gemm_ukernel<GEMM_RM, GEMM_RN>(C + jj, A, B + jj, K, N);'
+  - '        }'
+  - '        for (; jj + KN <= N; jj += KN) {'
+  - '            simd_gemm_ukernel<GEMM_RM, 1>(C + jj, A, B + jj, K, N);'
+  - '        }'
+  - '        for (; jj < N; jj++) {'
+  - '            for (int64_t i = 0; i < GEMM_RM; i++) {'
+  - '                float a = C[i * N + jj];'
+  - '                for (int64_t kk = 0; kk < K; kk++) {'
+  - '                    a += A[i + kk] * B[kk * N + jj];'
+  - '                }'
+  - '                C[i * N + jj] = a;'
+  - '            }'
+  - '        }'
+  - ''
+  - '        A += GEMM_RM * K;'
+  - '        C += GEMM_RM * N;'
+  - '    }'
+  - ''
+  - '    // Tail rows: one at a time'
+  - '    for (; ii < M; ii++) {'
+  - '        int64_t jj = 0;'
+  - '        for (; jj + GEMM_RN * KN <= N; jj += GEMM_RN * KN) {'
+  - '            simd_gemm_ukernel<1, GEMM_RN>(C + jj, A, B + jj, K, N);'
+  - '        }'
+  - '        for (; jj + KN <= N; jj += KN) {'
+  - '            simd_gemm_ukernel<1, 1>(C + jj, A, B + jj, K, N);'
+  - '        }'
+  - '        for (; jj < N; jj++) {'
+  - '            float a = C[jj];'
+  - '            for (int64_t kk = 0; kk < K; kk++) {'
+  - '                a += A[kk] * B[kk * N + jj];'
+  - '            }'
+  - '            C[jj] = a;'
+  - '        }'
+  - ''
+  - '        A += K;'
+  - '        C += N;'
+  - '    }'
+  - '}'
+  desc: 顶层 SIMD 路径的矩阵乘法函数，负责将矩阵分块并调用微内核函数。它对 M 和 N 维度进行分块处理，包括对齐块、部分块，以及处理尾部元素的标量回退，以处理无法被向量长度整除的边界情况。
+  line: 55-112
+  name: simd_gemm
+- code:
+  - static void simd_gemm(
+  - '    float       * GGML_RESTRICT C,'
+  - '    const float * GGML_RESTRICT A,'
+  - '    const float * GGML_RESTRICT B,'
+  - '    int M, int K, int N)'
+  - '{'
+  - '    for (int64_t i = 0; i < M; i++) {'
+  - '        for (int64_t j = 0; j < N; j++) {'
+  - '            float sum = C[i * N + j];'
+  - '            for (int64_t kk = 0; kk < K; kk++) {'
+  - '                sum += A[i * K + kk] * B[kk * N + j];'
+  - '            }'
+  - '            C[i * N + j] = sum;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 标量路径下的矩阵乘法函数，当平台不支持 SIMD 时使用，通过三重循环实现基本的矩阵乘累加操作。
+  line: 130-141
+  name: simd_gemm

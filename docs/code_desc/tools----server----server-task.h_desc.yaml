@@ -1,0 +1,493 @@
+classes:
+- desc: 用于存储和管理任务执行参数的配置结构体，包含生成参数、采样参数、响应格式等配置项
+  methods:
+  - code:
+    - json format_logit_bias(const std::vector<llama_logit_bias> & logit_bias) const;
+    desc: 将logit bias向量格式化为JSON格式，用于处理生成时的logit偏置
+    line: '86'
+    name: format_logit_bias
+  - code:
+    - json to_json(bool only_metrics = false) const;
+    desc: 将任务参数转换为JSON表示，可指定仅输出性能指标数据
+    line: '87'
+    name: to_json
+  name: task_params
+- desc: 用于跟踪任务执行状态的类，特别是在流式生成中维护部分工具调用的差异、生成的文本和各个API格式的状态信息
+  methods:
+  - code:
+    - task_result_state(const common_chat_parser_params & chat_parser_params)
+    - '    : chat_parser_params(chat_parser_params)'
+    - '    , oai_resp_id("resp_" + random_string())'
+    - '    , oai_resp_reasoning_id("rs_" + random_string())'
+    - '    , oai_resp_message_id("msg_" + random_string()) {}'
+    desc: 构造函数，初始化聊天解析参数并生成唯一的响应ID、推理ID和消息ID
+    line: 94-98
+    name: task_result_state
+  - code:
+    - common_chat_msg update_chat_msg(
+    - '    const std::string & text_added,'
+    - '    bool is_partial,'
+    - '    std::vector<common_chat_msg_diff> & diffs,'
+    - '    bool filter_tool_calls = false);'
+    desc: 解析部分工具调用并更新内部状态，处理新增的文本并返回更新后的聊天消息
+    line: 103-106
+    name: update_chat_msg
+  name: task_result_state
+- desc: 服务器任务的核心结构体，定义了任务的基本属性、类型以及各种状态查询和任务创建方法
+  methods:
+  - code:
+    - server_task() = default;
+    desc: 默认构造函数，初始化任务类型
+    line: '155'
+    name: server_task
+  - code:
+    - 'server_task(server_task_type type) : type(type) {}'
+    desc: 带类型参数的构造函数，用于创建指定类型的任务
+    line: '157'
+    name: server_task
+  - code:
+    - int32_t n_tokens() const {
+    - '    return tokens.size();'
+    - '}'
+    desc: 返回任务中的token数量
+    line: 159-161
+    name: n_tokens
+  - code:
+    - bool need_embd() const {
+    - '    switch (type) {'
+    - '        case SERVER_TASK_TYPE_EMBEDDING:'
+    - '        case SERVER_TASK_TYPE_RERANK:'
+    - '            return true;'
+    - '        default:'
+    - '            return false;'
+    - '    }'
+    - '}'
+    desc: 判断任务是否需要嵌入向量（用于嵌入和重排序任务）
+    line: 163-172
+    name: need_embd
+  - code:
+    - bool need_logits() const {
+    - '    switch (type) {'
+    - '        case SERVER_TASK_TYPE_COMPLETION:'
+    - '        case SERVER_TASK_TYPE_INFILL:'
+    - '            return true;'
+    - '        default:'
+    - '            return false;'
+    - '    }'
+    - '}'
+    desc: 判断任务是否需要逻辑输出（用于生成和填充任务）
+    line: 174-183
+    name: need_logits
+  - code:
+    - bool need_sampling() const {
+    - '    switch (type) {'
+    - '        case SERVER_TASK_TYPE_COMPLETION:'
+    - '        case SERVER_TASK_TYPE_INFILL:'
+    - '            return true;'
+    - '        default:'
+    - '            return false;'
+    - '    }'
+    - '}'
+    desc: 判断任务是否需要采样操作（用于生成和填充任务）
+    line: 185-194
+    name: need_sampling
+  - code:
+    - static task_params params_from_json_cmpl(
+    - '    const llama_vocab * vocab,'
+    - '    const common_params & params_base,'
+    - '    const int n_ctx_slot,'
+    - '    const json & data);'
+    desc: 静态方法，从JSON数据解析任务参数，用于创建完成（completion）类型的任务
+    line: 196-200
+    name: params_from_json_cmpl
+  - code:
+    - static std::unordered_set<int> get_list_id(const std::vector<server_task> &
+      tasks) {
+    - '    std::unordered_set<int> ids(tasks.size());'
+    - '    for (size_t i = 0; i < tasks.size(); i++) {'
+    - '        ids.insert(tasks[i].id);'
+    - '        for (auto & child : tasks[i].child_tasks) {'
+    - '            ids.insert(child.id);'
+    - '        }'
+    - '    }'
+    - '    return ids;'
+    - '}'
+    desc: 静态方法，从任务列表中收集所有任务的ID，包括父任务和子任务
+    line: 204-213
+    name: get_list_id
+  - code:
+    - void add_child(int id_parent, int id_child) {
+    - '    server_task copy;'
+    - ''
+    - '    copy.id        = id_child;'
+    - '    copy.id_parent = id_parent;'
+    - '    copy.params    = params;'
+    - '    copy.type      = type;'
+    - '    copy.tokens    = tokens.clone();'
+    - '    copy.id_slot   = -1; // child tasks cannot specify slot'
+    - ''
+    - '    // use different sampling seed for each child'
+    - '    // note: https://github.com/ggml-org/llama.cpp/pull/18700#discussion_r2675115723'
+    - '    if (copy.params.sampling.seed != LLAMA_DEFAULT_SEED) {'
+    - '        copy.params.sampling.seed += (uint32_t)child_tasks.size() + 1;'
+    - '    }'
+    - ''
+    - '    child_tasks.push_back(std::move(copy));'
+    - '}'
+    desc: 为当前任务添加子任务，用于并行采样场景，并自动调整每个子任务的采样种子
+    line: 216-232
+    name: add_child
+  - code:
+    - task_result_state create_state() const {
+    - '    return task_result_state(params.chat_parser_params);'
+    - '}'
+    desc: 创建与当前任务关联的任务状态对象，用于追踪流式生成过程中的状态变化
+    line: 237-239
+    name: create_state
+  - code:
+    - bool is_parent() const {
+    - '    return child_tasks.size() > 0;'
+    - '}'
+    desc: 判断当前任务是否是父任务（即是否有子任务）
+    line: 241-243
+    name: is_parent
+  - code:
+    - bool is_child() const {
+    - '    return id_parent != -1;'
+    - '}'
+    desc: 判断当前任务是否是子任务（即是否有父任务ID）
+    line: 245-247
+    name: is_child
+  name: server_task
+- desc: 服务器任务结果的基类，定义了结果对象的接口，支持错误判断、停止判断和JSON序列化等虚函数
+  methods:
+  - code:
+    - virtual bool is_error() {
+    - '    // only used by server_task_result_error'
+    - '    return false;'
+    - '}'
+    desc: 虚函数，判断结果是否为错误（默认返回false）
+    line: 309-312
+    name: is_error
+  - code:
+    - virtual bool is_stop() {
+    - '    // only used by server_task_result_cmpl_*'
+    - '    return true;'
+    - '}'
+    desc: 虚函数，判断结果是否为停止（默认返回true）
+    line: 313-316
+    name: is_stop
+  - code:
+    - virtual void update(task_result_state &) {
+    - '    // only used by server_task_result_cmpl_*'
+    - '}'
+    desc: 虚函数，更新任务状态（默认无操作）
+    line: 317-320
+    name: update
+  - code:
+    - virtual json to_json() = 0;
+    desc: 纯虚函数，将结果转换为JSON格式
+    line: '321'
+    name: to_json
+  - code:
+    - virtual ~server_task_result() = default;
+    desc: 虚析构函数，确保正确销毁派生类对象
+    line: '322'
+    name: ~server_task_result
+  name: server_task_result
+- desc: 用于表示完成任务的单个token输出，包含token、概率和文本信息
+  methods:
+  - code:
+    - json to_json(bool post_sampling_probs) const;
+    desc: 将单个token输出转换为JSON格式
+    line: '340'
+    name: to_json
+  - code:
+    - static json probs_vector_to_json(const std::vector<completion_token_output>
+      & probs, bool post_sampling_probs);
+    desc: 静态方法，将完成token输出的向量转换为JSON格式
+    line: '342'
+    name: probs_vector_to_json
+  - code:
+    - static float logarithm(float x);
+    desc: 静态方法，计算自然对数
+    line: '344'
+    name: logarithm
+  - code:
+    - static std::vector<unsigned char> str_to_bytes(const std::string & str);
+    desc: 静态方法，将字符串转换为字节向量
+    line: '346'
+    name: str_to_bytes
+  name: completion_token_output
+- desc: 表示完成类型任务的最终结果，包含完整的生成文本、时间统计、停止原因等信息，并支持多种API格式的序列化
+  methods:
+  - code:
+    - virtual bool is_stop() override {
+    - '    return true; // in stream mode, final responses are considered stop'
+    - '}'
+    desc: 判断结果是否为停止状态，在流式模式下最终响应被视为停止
+    line: 402-404
+    name: is_stop
+  - code:
+    - virtual json to_json() override;
+    desc: 将最终结果转换为JSON格式
+    line: '406'
+    name: to_json
+  - code:
+    - virtual void update(task_result_state & state) override {
+    - '    is_updated = true;'
+    - '    oaicompat_msg = state.update_chat_msg(content, false, oaicompat_msg_diffs);'
+    - ''
+    - '    oai_resp_id = state.oai_resp_id;'
+    - '    oai_resp_reasoning_id = state.oai_resp_reasoning_id;'
+    - '    oai_resp_message_id = state.oai_resp_message_id;'
+    - '}'
+    desc: 更新任务状态，并填充OpenAI兼容消息和ID
+    line: 408-415
+    name: update
+  - code:
+    - json to_json_non_oaicompat();
+    desc: 将最终结果转换为非OpenAI兼容格式的JSON
+    line: '417'
+    name: to_json_non_oaicompat
+  - code:
+    - json usage_json_oaicompat();
+    desc: 生成OpenAI兼容的usage统计JSON
+    line: '419'
+    name: usage_json_oaicompat
+  - code:
+    - json to_json_oaicompat();
+    desc: 生成OpenAI兼容的JSON响应
+    line: '421'
+    name: to_json_oaicompat
+  - code:
+    - json to_json_oaicompat_chat();
+    desc: 生成OpenAI兼容的聊天格式JSON
+    line: '423'
+    name: to_json_oaicompat_chat
+  - code:
+    - json to_json_oaicompat_chat_stream();
+    desc: 生成OpenAI兼容的流式聊天格式JSON
+    line: '425'
+    name: to_json_oaicompat_chat_stream
+  - code:
+    - json to_json_oaicompat_resp();
+    desc: 生成OpenAI Responses格式的JSON
+    line: '427'
+    name: to_json_oaicompat_resp
+  - code:
+    - json to_json_oaicompat_resp_stream();
+    desc: 生成OpenAI Responses流式格式的JSON
+    line: '429'
+    name: to_json_oaicompat_resp_stream
+  - code:
+    - json to_json_anthropic();
+    desc: 生成Anthropic格式的JSON
+    line: '431'
+    name: to_json_anthropic
+  - code:
+    - json to_json_anthropic_stream();
+    desc: 生成Anthropic流式格式的JSON
+    line: '433'
+    name: to_json_anthropic_stream
+  name: server_task_result_cmpl_final
+- desc: 表示完成类型任务的流式部分结果，包含当前生成的部分文本、进度和状态信息
+  methods:
+  - code:
+    - virtual bool is_stop() override {
+    - '    return false; // in stream mode, partial responses are not considered stop'
+    - '}'
+    desc: 判断结果是否为停止状态，在流式模式下部分响应不被视为停止
+    line: 478-480
+    name: is_stop
+  - code:
+    - virtual void update(task_result_state & state) override;
+    desc: 更新任务状态，处理流式生成过程中的状态变化
+    line: '482'
+    name: update
+  - code:
+    - virtual json to_json() override;
+    desc: 将部分结果转换为JSON格式
+    line: '483'
+    name: to_json
+  - code:
+    - json to_json_non_oaicompat();
+    desc: 将部分结果转换为非OpenAI兼容格式的JSON
+    line: '485'
+    name: to_json_non_oaicompat
+  - code:
+    - json to_json_oaicompat();
+    desc: 生成OpenAI兼容的JSON响应
+    line: '487'
+    name: to_json_oaicompat
+  - code:
+    - json to_json_oaicompat_chat();
+    desc: 生成OpenAI兼容的聊天格式JSON
+    line: '489'
+    name: to_json_oaicompat_chat
+  - code:
+    - json to_json_oaicompat_resp();
+    desc: 生成OpenAI Responses格式的JSON
+    line: '491'
+    name: to_json_oaicompat_resp
+  - code:
+    - json to_json_anthropic();
+    desc: 生成Anthropic格式的JSON
+    line: '493'
+    name: to_json_anthropic
+  name: server_task_result_cmpl_partial
+- desc: 表示嵌入类型任务的结果，包含嵌入向量和token数量
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将嵌入结果转换为JSON格式
+    line: '500'
+    name: to_json
+  - code:
+    - json to_json_non_oaicompat();
+    desc: 将嵌入结果转换为非OpenAI兼容格式的JSON
+    line: '502'
+    name: to_json_non_oaicompat
+  - code:
+    - json to_json_oaicompat();
+    desc: 将嵌入结果转换为OpenAI兼容格式的JSON
+    line: '504'
+    name: to_json_oaicompat
+  name: server_task_result_embd
+- desc: 表示重排序类型任务的结果，包含排序分数和token数量
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将重排序结果转换为JSON格式
+    line: '511'
+    name: to_json
+  name: server_task_result_rerank
+- desc: 表示错误类型任务的结果，包含错误类型和错误消息
+  methods:
+  - code:
+    - virtual bool is_error() override {
+    - '    return true;'
+    - '}'
+    desc: 判断结果是否为错误状态（始终返回true）
+    line: 521-523
+    name: is_error
+  - code:
+    - virtual json to_json() override;
+    desc: 将错误结果转换为JSON格式
+    line: '525'
+    name: to_json
+  name: server_task_result_error
+- desc: 表示性能指标任务的结果，包含各种与token处理和生成时间相关的统计数据
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将性能指标结果转换为JSON格式
+    line: '559'
+    name: to_json
+  name: server_task_result_metrics
+- desc: 表示槽保存或加载任务的结果，包含文件名、token数量和耗时信息
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将槽保存/加载结果转换为JSON格式
+    line: '571'
+    name: to_json
+  name: server_task_result_slot_save_load
+- desc: 表示槽擦除任务的结果，包含擦除的token数量
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将槽擦除结果转换为JSON格式
+    line: '579'
+    name: to_json
+  name: server_task_result_slot_erase
+- desc: 表示获取LoRA适配器列表任务的结果，包含适配器信息和相关的调用参数
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将LoRA结果转换为JSON格式
+    line: '590'
+    name: to_json
+  name: server_task_result_get_lora
+- desc: 表示应用LoRA适配器任务的结果
+  methods:
+  - code:
+    - virtual json to_json() override;
+    desc: 将应用LoRA结果转换为JSON格式
+    line: '594'
+    name: to_json
+  name: server_task_result_apply_lora
+- desc: 表示服务器端的提示(prompt)结构，包含token数据和签入点(checkpoint)信息
+  methods:
+  - code:
+    - size_t size() const {
+    - '    size_t res = data.size();'
+    - ''
+    - '    for (const auto & checkpoint : checkpoints) {'
+    - '        res += checkpoint.size();'
+    - '    }'
+    - ''
+    - '    return res;'
+    - '}'
+    desc: 计算prompt和所有检查点数据的总大小
+    line: 617-626
+    name: size
+  - code:
+    - int n_tokens() const {
+    - '    return tokens.size();'
+    - '}'
+    desc: 返回prompt中的token数量
+    line: 628-630
+    name: n_tokens
+  - code:
+    - server_prompt clone() const {
+    - '    return server_prompt {'
+    - '        tokens.clone(),'
+    - '        data,'
+    - '        checkpoints'
+    - '    };'
+    - '}'
+    desc: 创建当前prompt的深拷贝副本
+    line: 632-638
+    name: clone
+  name: server_prompt
+- desc: 管理服务器端prompt缓存的类，支持容量限制和缓存管理功能
+  methods:
+  - code:
+    - server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
+    - '    this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);'
+    - '    this->limit_tokens = limit_tokens;'
+    - '}'
+    desc: 构造函数，初始化缓存的大小限制和token数量限制
+    line: 646-649
+    name: server_prompt_cache
+  - code:
+    - size_t size() const;
+    desc: 计算缓存中所有prompt的总大小
+    line: '655'
+    name: size
+  - code:
+    - size_t n_tokens() const;
+    desc: 计算缓存中所有prompt的总token数量
+    line: '656'
+    name: n_tokens
+  - code:
+    - server_prompt * alloc(const server_prompt & prompt, size_t state_size);
+    desc: 向缓存中分配新的prompt空间，返回指向状态的指针
+    line: '658'
+    name: alloc
+  - code:
+    - bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context
+      * ctx, int32_t id_slot);
+    desc: 从缓存中加载匹配的prompt状态到上下文
+    line: '660'
+    name: load
+  - code:
+    - void update();
+    desc: 更新缓存状态，清理过期或超限的数据
+    line: '662'
+    name: update
+  name: server_prompt_cache
+desc: 该文件是 llama.cpp 服务器端任务管理模块的头文件，定义了服务器任务的核心数据结构，包括任务类型枚举、任务参数配置、任务状态跟踪、任务结果的结构体以及相关的辅助数据结构和内联方法，为服务器处理各种推理请求（如文本生成、嵌入、重排序等）提供了统一的接口和数据载体。
+file: tools/server/server-task.h
+funcs: []

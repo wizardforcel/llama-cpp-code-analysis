@@ -1,0 +1,985 @@
+code_map:
+- ./convert_hf_to_gguf.py
+- ├── ModelBase（抽象基类）
+- '│   ├── _model_classes                        # 两级注册表 dict[ModelType, dict[str,
+  type]]'
+- '│   ├── __init__()                            # ~100-180 行：检测 GGUFWriter 配置、加载
+  hparams、构建 model_tensors'
+- '│   ├── load_hparams()                       # ~185-200 行：AutoConfig / config.json
+  / text_config 展平'
+- '│   ├── find_hparam()                        # ~200-210 行：候选键容错查找'
+- '│   ├── index_tensors()                      # ~185-270 行：扫描 safetensors 分片并包装为
+  Lazy 代理'
+- '│   ├── dequant_model()                      # ~280-360 行：bitnet/fp8/gptq/compressed-tensors/modelopt
+  反量化'
+- '│   ├── get_tensors()                        # ~365-370 行：触发所有延迟张量求值的迭代器'
+- '│   ├── format_tensor_name()                 # ~370-380 行：按 MODEL_T_MODEL_TENSORS
+  表生成 GGUF 张量名'
+- '│   ├── match_model_tensor_name()            # ~380-390 行：张量名与架构键的双向匹配'
+- '│   ├── map_tensor_name()                    # ~390-395 行：TensorNameMap 查表改名'
+- '│   ├── set_gguf_parameters()                # ~395-400 行：抽象方法，子类实现架构特有字段'
+- '│   ├── modify_tensors()                     # ~400-430 行：张量改名/融合钩子（gate_up_exps
+  融合）'
+- '│   ├── tensor_force_quant()                 # ~430-435 行：局部量化覆盖（如 patch_embd 强制
+  F16）'
+- '│   ├── generate_extra_tensors()             # ~435-440 行：生成 rope_freqs 等额外张量'
+- '│   ├── _nvfp4_pack()                        # ~440-465 行：NVFP4 权重→GGML 超级块布局'
+- '│   ├── _nvfp4_scale2_is_trivial()           # ~465-470 行：判断 per-tensor scale2
+  是否为 1.0'
+- '│   ├── _repack_nvfp4()                      # ~470-495 行：单张量 NVFP4 重打包 + scale2/input_scale
+  输出'
+- '│   ├── _generate_nvfp4_tensors()            # ~495-540 行：NVFP4 全局扫描与专家流式生成'
+- '│   ├── _flush_nvfp4_experts()               # ~540-560 行：MoE 专家权重按层刷新'
+- '│   ├── prepare_tensors()                    # ~560-584 行：量化决策主入口（ftype→dtype 映射）'
+- '│   ├── set_type()                           # ~617-622 行：写入 GGUF 类型（MODEL/MMPROJ/ADAPTER）'
+- '│   ├── prepare_metadata()                   # ~622-650 行：元数据装配（参数量统计、size_label）'
+- '│   ├── write_vocab()                        # ~650-655 行：抽象方法，子类写词表'
+- '│   ├── write()                              # ~700-710 行：顶层入口 prepare→header→kv→tensors→close'
+- '│   ├── get_model_part_names()               # ~710-720 行：列举 model.safetensors
+  分片'
+- '│   ├── add_prefix_to_filename()             # ~720-725 行：为输出文件添加 mmproj-/lora-
+  前缀'
+- '│   ├── register()                           # ~585-600 行：装饰器工厂，按 model_arch 归类到
+  TEXT/MMPROJ'
+- '│   ├── from_model_architecture()           # ~600-605 行：查表获取模型类，未找到抛 NotImplementedError'
+- '│   └── print_registered_models()            # ~610-617 行：被 --print-supported-models
+  调用'
+- ├── TextModel（纯文本解码器基类）
+- '│   ├── __init__()                           # ~730-800 行：find_hparam 多键容错查找'
+- '│   ├── set_vocab()                          # ~820-825 行：默认 _set_vocab_gpt2()'
+- '│   ├── prepare_metadata()                   # ~826-850 行：文件名推导与 vocab_only 处理'
+- '│   ├── set_gguf_parameters()                # ~850-980 行：先 super() 再追加架构特有字段'
+- '│   ├── write_vocab()                        # ~980-990 行：仅写词表的特化流程'
+- '│   ├── does_token_look_special()            # ~990-1010 行 特殊 token 启发式识别'
+- '│   ├── get_vocab_base()                    # ~1010-1050 行：GPT-2 BPE 词表主入口'
+- '│   ├── get_vocab_base_pre()                # ~1050-1250 行：BPE pre-tokenizer 哈希识别表'
+- '│   ├── _set_vocab_none()                   # ~1250-1255 行：占位无词表方案'
+- '│   ├── _set_vocab_gpt2()                   # ~1255-1270 行：GPT-2 BPE 风格词表'
+- '│   ├── _set_vocab_qwen()                   # ~1270-1310 行：Qwen 专用 BPE 重建'
+- '│   ├── _set_vocab_sentencepiece()          # ~1310-1320 行：SentencePiece 模型加载'
+- '│   ├── _create_vocab_sentencepiece()       # ~1320-1370 行：SPM token/score/type
+  提取'
+- '│   ├── _set_vocab_llama_hf()                # ~1370-1385 行：LlamaHfVocab 统一抽象'
+- '│   ├── _set_vocab_rwkv_world()             # ~1385-1405 行：RWKV 专用词表'
+- '│   ├── _set_vocab_builtin()                # ~1405-1430 行：内置 gpt-neox/llama-spm
+  词表'
+- '│   ├── _try_set_pooling_type()             # ~1430-1445 行：sentence-transformers
+  池化类型推断'
+- '│   ├── _set_vocab_glmedge()                # ~1445-1455 行：GLM-Edge 词表'
+- '│   ├── _set_vocab_glm()                    # ~1455-1465 行：GLM 系列词表'
+- '│   ├── _set_vocab_interns1()               # ~1465-1485 行：Intern-S1 词表'
+- '│   ├── _set_vocab_mistral()                # ~1485-1510 行：Mistral spm/tekken 双模式'
+- '│   └── _set_vocab_plamo()                  # ~1510-1550 行：PLaMo jsonl 词表'
+- ├── MmprojModel（多模态投影器基类）
+- '│   ├── __init__()                          # ~1450-1540 行：global_config 时光机、双编码器'
+- '│   ├── get_vision_config()                 # ~1540-1550 行：提取视觉子配置'
+- '│   ├── get_audio_config()                  # ~1550-1555 行：提取音频子配置'
+- '│   ├── set_gguf_parameters()               # ~1560-1610 行：写入 vision/audio 各自参数'
+- '│   ├── find_vparam()                      # ~1610-1620 行：视觉参数查找'
+- '│   ├── find_aparam()                      # ~1620-1625 行：音频参数查找'
+- '│   ├── _find_param()                       # ~1625-1635 行：通用子子配置键查找'
+- '│   ├── tensor_force_quant()                # ~1635-1645 行：强制 patch_embd/patch_merger
+  为 F16/F32'
+- '│   ├── set_type()                          # ~1645-1650 行：写入 MMPROJ 类型'
+- '│   ├── prepare_metadata()                  # ~1650-1670 行：mmproj- 文件名前缀处理'
+- '│   └── write_vocab()                       # ~1670-1675 行：MmprojModel 不支持写词表'
+- ├── @ModelBase.register 装饰器家族
+- '│   ├── @register("GPTNeoXForCausalLM") ...  # 类名到架构的多对一映射'
+- '│   └── LlamaModel                          # 一类多注册的代表：同时承载 Mistral/Mixtral/IQuestCoder'
+- ├── 模块入口函数
+- '│   ├── get_model_architecture()            # ~900-920 行：从 config.json 推断 HF 架构名'
+- '│   ├── main()                              # ~920-960 行：from_model_architecture
+  → 实例化 → write'
+- '│   ├── parse_args()                        # ~960-1000 行：CLI 参数解析'
+- '│   └── split_str_to_n_bytes()              # ~1000-1015 行：K/M/G 后缀字节数解析'
+- └── LazyTorchTensor（延迟张量框架）
+- '    ├── _tensor_type / _dtype_map           # torch 与 numpy 类型映射'
+- '    ├── _dtype_byteswap_map                 # 大小端字节序转换映射'
+- '    ├── meta_with_dtype_and_shape()         # ~5880-5890 行：meta device 空张量构造'
+- '    ├── numpy()                             # ~5870-5880 行：触发操作树求值'
+- '    ├── from_safetensors_slice() classmethod # ~5890-5900 行：包装 safetensors 内存切片'
+- '    ├── from_local_tensor() classmethod     # ~5900-5915 行：通过 mmap_bytes 零拷贝加载'
+- '    ├── from_remote_tensor() classmethod    # ~5915-5930 行：包装 HTTP Range 远程张量'
+- '    └── __torch_function__()                # ~5930-5960 行：拦截 torch 算子构建操作树'
+exercises:
+- contents:
+  - 在 convert_hf_to_gguf.py 中定位并阅读以下方法的源码（约 60-180 行 + 585-605 行）：
+  - 1. `ModelBase._model_classes` 类变量的定义与初始化
+  - 2. `ModelBase.__init__()` 中 `self.lazy = not eager or (remote_hf_model_id is not
+    None)` 的设计意图
+  - 3. `ModelBase.register()` 与 `ModelBase.from_model_architecture()` 的配合逻辑
+  - 回答问题：
+  - '- `_model_classes` 为什么用 `dict[ModelType, dict[str, type[ModelBase]]]` 两级嵌套而非扁平字典？'
+  - '- 当传入未注册的架构名时（例如 `UnknownModelForCausalLM`），main()），会如何处理？'
+  - '- `register(*names)` 接收可变参数 `names` 有什么工程意义？请举例说明 LLaMA 家族如何利用这一特性。'
+  'no': 1
+  title: 追踪 ModelBase 的构造与注册流程
+- contents:
+  - 阅读 convert_hf_to_gguf.py 第 730-980 行，重点关注：
+  - 1. `TextModel.__init__()` 中 `self.block_count = self.find_hparam(["n_layers",
+    "num_hidden_layers", "n_layer", "num_layers"])` 的实现
+  - 2. `TextModel.__init_subclass__()` 对子类 model_arch 的强制校验
+  - 3. `TextModel.set_gguf_parameters()` 中调用 `super().set_gguf_parameters()` 的顺序
+  - 回答问题：
+  - '- `find_hparam` 的「候选键列表」模式相比硬编码 `self.hparams["n_layers"]` 有何优势？'
+  - '- 为什么 LlamaModel 在 `set_gguf_parameters()` 中调用 `super().set_gguf_parameters()`
+    而非直接复制？'
+  - '- 如果某个 TextModel 子类忘了定义 `model_arch`，会在什么时候、以什么方式失败？'
+  'no': 2
+  title: 理解 TextModel 的「候选键 +链式调用」兼容模式
+- contents:
+  - 阅读 convert_hf_to_gguf.py 第 1450-1675 行，重点关注：
+  - 1. `MmprojModel.__init__()` 中 `self.global_config = copy.deepcopy(self.hparams)`
+    与 `self.hparams = self.hparams_vision or self.hparams_audio or self.hparams` 的处理顺序
+  - 2. `has_vision_encoder / has_audio_encoder` 双布尔标志如何决定 block_count（128 占位 vs 真实层数）
+  - 3. `tensor_force_quant()` 对 `.patch_embd.weight` 和 `.patch_merger.weight` 的特殊处理
+  - 4. `get_vision_config()` / `get_audio_config()` / `find_vparam()` / `find_aparam()`
+    的子配置隔离策略
+  - 回答问题：
+  - '- 「时光机」机制 `global_config` 在什么场景下会被实际依赖？举例说明一个需要回看的字段（如 `norm_eps`）。'
+  - '- 为什么双编码器模型的 `block_count` 必须硬编码为 128 而不是真实层数之和？'
+  - '- `tensor_force_quant` 强制 F16/F32 而非依赖全局 ftype，这种「局部覆盖」策略的工程意义是什么？'
+  'no': 3
+  title: 剖析 MmprojModel 的「时光机」机制与双编码器处理
+- contents:
+  - 阅读 convert_hf_to_gguf.py 第 5870-5960 行 LazyTorchTensor 类，定位并阅读：
+  - 1. `numpy()` 方法如何触发操作树求值
+  - 2. `meta_with_dtype_and_shape()` 如何构造 meta device 上的空张量以保留 dtype+shape 元信息
+  - 3. `from_safetensors_slice()` 与 `from_local_tensor()` 的区别
+  - 4. `from_remote_tensor()` 如何配合 `--remote` 参数实现「不下载整个模型就转换」
+  - 5. `__torch_function__()` 如何拦截 torch 算子并构建延迟操作树
+  - 回答问题：
+  - '- `_tensor_type = torch.Tensor` 和 `_dtype_map` 在延迟求值框架中各自承担什么角色？'
+  - '- 默认 `lazy = not eager or remote_hf_model_id is not None` 这一判断中，`remote_hf_model_id`
+    为何能「强制 lazy」？'
+  - '- 在 NVFP4 处理流程中，`to_eager` 与 `e_to_meta` 的「对称设计」如何避免按层合并时丢失元信息？'
+  'no': 4
+  title: 追踪 LazyTorchTensor 的延迟求值链路
+- contents:
+  - 阅读 convert_hf_to_gguf.py 中 TextModel 的词表相关方法（约 820-1550 行）：
+  - 1. `set_vocab()` 与 `_set_vocab_gpt2()` 的默认路径
+  - 2. `_set_vocab_sentencepiece()` 与 `_create_vocab_sentencepiece()` 的职责分工
+  - 3. `_set_vocab_mistral()` 的 spm/tekken 双模式
+  - 4. `_set_vocab_plamo()` 的 jsonl 词表读取
+  - 5. `get_vocab_base_pre()` 的 BPE pre-tokenizer 哈希识别表
+  - 回答问题：
+  - '- `get_vocab_base_pre()` 用 sha256 哈希识别 pre-tokenizer 的工程意义是什么？如果哈希未命中会怎样？'
+  - '- `_set_vocab_sentencepiece()` 与 `_create_vocab_sentencepiece()` 的职责如何分工？各处理哪些字段？'
+  - '- 为什么 PLaMo 需要单独的 `_set_vocab_plamo()` 而不是复用 SPM 方案？'
+  'no': 5
+  title: 梳理 TextModel 的词表方案族
+- contents:
+  - 阅读 convert_hf_to_gguf.py 中 ModelBase 的 NVFP4 相关方法（约 440-560 行）：
+  - 1. `_nvfp4_pack()` 的超级块布局（4 UE4M3 scales + 32 qs bytes = 36B / 64 元素）
+  - 2. `_nvfp4_scale2_is_trivial()` 的判断条件
+  - 3. `_repack_nvfp4()` 如何输出 scale2 / input_scale 辅助张量
+  - 4. `_generate_nvfp4_tensors()` 的 experts 识别与按层缓冲策略
+  - 5. `_flush_nvfp4_experts()` 的流式写出时机与兜底逻辑
+  - 回答问题：
+  - '- 为什么 NVFP4 要保留 E4M3 scale 的原始位作为 UE4M3（剥符号位）？'
+  - '- `_flush_nvfp4_experts()` 在 `n_experts` 已知与未知两种情况下的兜底策略分别是什么？'
+  - '- 如果某层专家数未收齐就触发了 `prepare_tensors()`，未消费的 NVFP4 张量会如何处理？'
+  'no': 6
+  title: 追踪 NVFP4 打包链路
+learning_targets:
+- 理解 ModelBase 作为转换器中央调度器的设计哲学与不可实例化的防御性编程机制
+- 掌握 TextModel 通过「候选键列表」与「先父后子链式调用」兼容多种模型家族的工程技巧
+- 理解 MmprojModel 如何通过 global_config「时光机」机制实现视觉/音频双编码器的解耦处理
+- 熟悉注册器装饰器 @ModelBase.register 与 from_model_architecture 工厂方法的「注册-查表」解耦模式
+- 掌握 LazyTorchTensor 通过操作树延迟求值解决大模型 OOM 问题的核心原理
+- 了解模型归属判断（TEXT vs MMPROJ）与 LlamaModel 一类多注册的架构共用模式
+- 掌握张量命名体系（format_tensor_name / match_model_tensor_name / map_tensor_name）的协同机制与 TensorNameMap
+  查表原理
+- 理解 modify_tensors 钩子与 tensor_force_quant 的局部量化覆盖策略
+- 掌握 dequant_model 的多路径反量化（bitnet / fp8 / gptq / compressed-tensors / modelopt）
+- 理解 NVFP4 打包链路（_nvfp4_pack → _repack_nvfp4 → _generate_nvfp4_tensors → _flush_nvfp4_experts）与
+  MoE 专家权重的流式生成
+- 掌握 prepare_tensors 的量化决策链（tensor_force_quant → ftype → dtype）与 prepare_metadata
+  的元数据装配、size_label 推导
+- 熟悉 TextModel 的多套词表方案（GPT-2 / SPM / Llama-HF / RWKV / PLaMo / Mistral / GLM 等）与 get_vocab_base_pre
+  的 BPE pre-tokenizer 哈希识别机制
+- 了解模块入口函数（main / parse_args / get_model_architecture / split_str_to_n_bytes）的协作流程与
+  CLI 开关管理
+life_analogy:
+- 想象 convert_hf_to_gguf.py 是一座**「国际集装箱中转站」**——把 Hugging Face 仓库里各式样的零散货物（Hugging Face
+  模型权重）打包成统一的 GGUF 集装箱，让 llama.cpp 这艘「远洋货轮」能跨平台、零依赖地搬运：
+- '- **ModelBase 总调度中心** = 中转站的中央控制塔，负责识别货物类别、调度搬运机器人、维护集装箱装载规则'
+- '- **TextModel 装配车间** = 文本集装箱专区，负责核对超参数标签、贴词表封条、记录张量仓位'
+- '- **MmprojModel 多模态仓库** = 冷藏箱与危险品仓库专区，分别处理视觉图像与音频频谱，独立打包成 mmproj- 前缀集装箱'
+- '- **_model_classes 两级注册表** = 仓库楼层索引：TEXT 在一楼，MMPROJ 在二楼，每类货物都有专属的「架构名→货架号」对照表'
+- '- **@ModelBase.register 装饰器** = 货物入库时贴上的 RFID 标签，让分拣机器人一扫码就能定位到正确的货架与搬运流程'
+- '- **from_model_architecture 工厂方法** = 仓库门口的「扫码枪」，扫一下模型架构名就能立刻调出对应的搬运流程'
+- '- **LazyTorchTensor 延迟张量** = 「按需拆封的真空包装」：货物先以「货箱信息卡」形式登记，真正要装装时才从冷库里取出实物，大幅降低冷库（内存）占用'
+- '- **global_config 时光机** = 多模态仓库的「备份磁带」：完整保留视觉/音频配置快照，万一后续流程覆盖了关键字段，还能倒带找回'
+- '- **write → prepare_tensors → prepare_metadata 流水线** = 标准的「清点→打包→报关」流程，先核对货物（（张量），再贴报关单（元数据），最后封箱装装'
+- '- **张量命名体系（map_tensor_name / format_tensor_name）** = 仓库的「条码系统」：每件货物从 HF 原名换标成 GGUF
+  标准名，分拣机才能一眼识别'
+- '- **modify_tensors 钩子** = 「改装工位」：某些货物（如 Baichuan 的 QKV、Qwen2MoE 的 experts）要在装箱前拆解或融合'
+- '- **tensor_force_quant 局部覆盖** = 「特殊货物处理区」：某些高价值货物（如视觉 patch_embd）不走默认压缩，单独加保护层'
+- '- **dequant_model 反量化** = 「拆封质检」：bitnet/fp8/gptq 等已压缩货物，先在中转站内还原成可打包的原始形态'
+- '- **NVFP4 打包链** = 「真空压缩流水线」：把 ModelOpt 的 NVFP4 货物重排成 GGML 超级块，逐层收齐专家后流式封箱，避免爆仓'
+- '- **TextModel 词表方案族** = 「多语种多语言封条工厂」：GPT-2 BPE、SentencePiece、LLaMA-HF、Mistral tekken、PLaMo
+  jsonl 各有专线，靠 get_vocab_base_pre 的哈希指纹区分'
+- '- **get_model_architecture / main / parse_args** = 「闸口与调度屏」：扫一眼 config.json 的 architectures，调度屏就派出对应的搬运流程'
+'no': 1
+summary:
+- concept: '`ModelBase`'
+  desc: 转换器抽象基类，通过 `type(self) is ModelBase` 断言禁止直接实例化，强制子类声明 model_arch
+- concept: '`_model_classes`'
+  desc: 两级注册表 dict[ModelType, dict[arch, class]]，按 TEXT/MMPROJ 分类管理所有模型类
+- concept: '`@ModelBase.register(*names)`'
+  desc: 装饰器工厂，按 model_arch 自动归类，支持一类多注册（如 LlamaModel 同时承载 Mistral/Mixtral）
+- concept: '`from_model_architecture(arch)`'
+  desc: 查表工厂方法，未找到时抛 NotImplementedError；main() 先调用此方法再加载权重
+- concept: '`find_hparam([keys])`'
+  desc: 候选键容错查找，依次尝试 `n_layers`/`num_hidden_layers`/`n_layer`/`num_layers` 等别名
+- concept: '`map_tensor_name(name)`'
+  desc: 通过 TensorNameMap 把 Hugging Face 张量名转换为 GGUF 命名空间
+- concept: '`format_tensor_name(key, bid, suffix)`'
+  desc: 按 MODEL_TENSORS[arch] 表 + 层号拼装标准 GGUF 张量名
+- concept: '`match_model_tensor_name()`'
+  desc: 支持 `{bid}` 模板的张量名双向匹配，用于量化决策与融合判断
+- concept: '`super().set_gguf_parameters()`'
+  desc: 先父后子的链式调用模式，父类写入通用字段，子类追加架构特有字段
+- concept: '`modify_tensors()`'
+  desc: 张量改名/融合钩子；基类仅改名，子类可拆分 QKV、融合 gate/up、合并 experts
+- concept: '`tensor_force_quant()`'
+  desc: 局部量化覆盖：返回 False 跟随全局 ftype，返回 GGMLQuantizationType 则强制指定
+- concept: '`generate_extra_tensors()`'
+  desc: 生成派生张量（如 Llama3/YARN 的 `rope_freqs`、MiniCPM 的 long/short factors）
+- concept: '`dequant_model()`'
+  desc: 多路径反量化：bitnet（1.58-bit）、fp8/compressed-tensors（block scale）、gptq（g_idx 四件套）、modelopt（NVFP4/FP8）
+- concept: '`_nvfp4_pack()`'
+  desc: 把 ModelOpt nibble 权重 + UE4M3 scale 重排为 36B 超级块（4 scales + 32 qs bytes / 64
+    元素）
+- concept: '`_repack_nvfp4()`'
+  desc: 单张量 NVFP4 重打包，非平凡时额外输出 per-tensor scale2 / input_scale
+- concept: '`_generate_nvfp4_tensors()`'
+  desc: 全局扫描 NVFP4 张量，识别 experts 并按 (layer, proj) 缓冲，避免全量驻驻显存
+- concept: '`_flush_nvfp4_experts()`'
+  desc: MoE 专家权重流式写出：收齐某层全部后立即打包，支持 n_experts 未知的兜底
+- concept: '`prepare_tensors()`'
+  desc: 量化决策主入口：NVFP4 重打包 → dequant → 逐张量 tensor_force_quant → ftype→dtype 映射 → quantize（失败回退
+    F16）
+- concept: '`prepare_metadata()`'
+  desc: 元数据装配：get_total_parameter_count 统计、Metadata.load 加载、size_label 推导、NVFP4/MXFP4
+    动态升级 ftype
+- concept: '`TextModel.set_vocab()`'
+  desc: 词表方案调度器，默认走 `_set_vocab_gpt2()`，子类可重写为 SPM / Mistral / PLaMo 等
+- concept: '`TextModel._set_vocab_sentencepiece()`'
+  desc: SentencePiece 模型加载，输出 token/score/type 三元组
+- concept: '`TextModel._set_vocab_mistral()`'
+  desc: Mistral 专有分词器分词器双模式：spm 走 SentencePiece，tekken 走自定义合并表
+- concept: '`TextModel.get_vocab_base_pre()`'
+  desc: BPE pre-tokenizer 哈希识别：用 sha256 指纹查表决定 `tokenizer.ggml.pre`，未命中抛 NotImplementedError
+- concept: '`MmprojModel.global_config`'
+  desc: 在 __init__ 时 deepcopy 原始 hparams，后续覆盖后仍可回看未覆盖字段（如 norm_eps）
+- concept: '`MmprojModel.get_vision_config()`'
+  desc: 从 global_config 提取视觉子配置（vision_config / vision_encoder）
+- concept: '`MmprojModel.find_vparam()`'
+  desc: 在视觉子配置中做候选键容错查找，用于写入 vision_* 字段
+- concept: '`LazyTorchTensor`'
+  desc: 延迟张量框架，构建「操作树」按需生成；meta_with_dtype_and_shape 创建 meta 张量保留元信息
+- concept: '`LazyTorchTensor.__torch_function__()`'
+  desc: 拦截所有 torch 算子并经 `_wrap_fn` 包装为延迟操作，真正计算在 numpy() 时触发
+- concept: '`get_model_architecture()`'
+  desc: 从 config.json 推断 HF 架构名，三级回退：architectures → ssm_cfg → text_config
+- concept: '`main()`'
+  desc: 入口流水线：print_supported_models → parse_args → from_model_architecture 查表 → 实例化
+    → write/write_vocab
+units:
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 约 100-180 行
+    method_or_func: ModelBase.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 185-200 行
+    method_or_func: ModelBase.load_hparams()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 200-210 行
+    method_or_func: ModelBase.find_hparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 280-360 行
+    method_or_func: ModelBase.dequant_model()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 365-370 行
+    method_or_func: ModelBase.get_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 370-380 行
+    method_or_func: ModelBase.format_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 380-390 行
+    method_or_func: ModelBase.match_model_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 390-395 行
+    method_or_func: ModelBase.map_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 395-400 行
+    method_or_func: ModelBase.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 400-430 行
+    method_or_func: ModelBase.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 430-435 行
+    method_or_func: ModelBase.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 435-440 行
+    method_or_func: ModelBase.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 440-465 行
+    method_or_func: ModelBase._nvfp4_pack()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 465-470 行
+    method_or_func: ModelBase._nvfp4_scale2_is_trivial()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 470-495 行
+    method_or_func: ModelBase._repack_nvfp4()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 495-540 行
+    method_or_func: ModelBase._generate_nvfp4_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 540-560 行
+    method_or_func: ModelBase._flush_nvfp4_experts()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 560-584 行
+    method_or_func: ModelBase.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 617-622 行
+    method_or_func: ModelBase.set_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 622-650 行
+    method_or_func: ModelBase.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 650-655 行
+    method_or_func: ModelBase.write_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 700-710 行
+    method_or_func: ModelBase.write()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 710-720 行
+    method_or_func: ModelBase.get_model_part_names()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 720-725 行
+    method_or_func: ModelBase.add_prefix_to_filename()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 920-960 行
+    method_or_func: main()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 960-1000 行
+    method_or_func: parse_args()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1000-1015 行
+    method_or_func: split_str_to_n_bytes()
+  name: ModelBase：转换器的心脏 —— 编排一切的的「调度中枢」
+  'no': 1
+  points:
+  - '**为什么 ModelBase 不能直接实例化？**'
+  - '- 通过 `type(self) is ModelBase` 断言防止基类被直接使用，强制子类必须继承并实现 `model_arch` 与 `block_count`'
+  - '- `model_arch: gguf.MODEL_ARCH` 是子类的身份标识，决定 GGUF 写入器使用哪种架构字符串'
+  - '- `block_count: int` 与 `tensor_map: gguf.TensorNameMap` 由子类初始化，前者从 hparams 推导层数，后者按架构+层数生成张量名映射'
+  - '**它如何识别模型归属 TEXT 还是 MMPROJ？**'
+  - '- `_model_classes` 是 `dict[ModelType, dict[str, type[ModelBase]]]` 两级注册表'
+  - '- `ModelType.TEXT`（值1）对应纯文本解码器，`ModelType.MMPROJ`（值2）对应多模态投影器'
+  - '- `register()` 装饰器按 `modelcls.model_arch == gguf.MODEL_ARCH.MMPROJ` 自动决定放入哪个子表'
+  - '**from_model_architecture 如何做到「架构名→模型类」自动匹配？**'
+  - '- 工厂方法直接查表 `cls._model_classes[model_type][arch]`，找不到时抛出 `NotImplementedError`'
+  - '- 调用方在 `main()` 中通过 `get_model_architecture()` 从 `config.json` 推断架构名（如 `LLaMAForCausalLM`）'
+  - '**为什么需要惰性张量？**'
+  - '- 默认 `lazy = not eager or remote_hf_model_id is not None`'
+  - '- 大模型动辄数百 GB，eager 模式一次性加载全部权重会 OOM'
+  - '- LazyTorchTensor 把每个权把每个 safetensors 分片包装成「按需生成」的代理，仅在实际读取时才执行 `numpy()` 转换'
+  - '**GGUFWriter 是何时是何时配置的？**'
+  - '- 在 `__init__` 末尾通过 `gguf.GGUFWriter(path=None, arch=..., endianess=..., ...)`
+    创建'
+  - '- `path=None` 表示先写入临时文件，最后由 `write()` 落盘到 `fname_out`'
+  - '- `split_max-tensors` 与 `split_max-size` 控制分片策略（>0 时触发多文件输出）'
+  - '**方法链 `write → prepare_tensors → prepare_metadata` 揭示了怎样的工作流？**'
+  - '- `prepare_tensors` 负责所有张量处理（量化、反量化、张量名映射、专家合并、NVFP4 打包等）'
+  - '- `prepare_metadata` 负责元数据装配（参数量统计、size_label、tokenizer 信息）'
+  - '- `write` 是顶层入口：调 prepare → 写头 → 写 KV → 写 tensors → close'
+  - '**张量命名体系（format_tensor_name / match_model_tensor_name / map_tensor_name）如何协同？**'
+  - '- `format_tensor_name(key, bid, suffix)` 按 `MODEL_T_MODEL_TENSORS[arch]` 表 +
+    层号生成标准 GGUF 张量名'
+  - '- `match_model_tensor_name` 支持 `{bid}` 模板的双向匹配，量化决策与融合判断都依赖它'
+  - '- `map_tensor_name` 通过 `TensorNameMap` 把 HF 原名（如 `model.layers.0.self_attn.q_proj.weight`）转为
+    GGUF 命名空间'
+  - '**modify_tensors 钩子与 tensor_force_quant 的局部覆盖是什么？**'
+  - '- 基类 `modify_tensors` 只做改名，子类可重写以拆分/重排/融合张量（如 Baichuan 拆 QKV、Qwen2MoE 合并 experts）'
+  - '- `fuse_gate_up_exps` 模式下把 `FFN_GATE_EXP` + `FFN_UP_EXP` 缓存并拼接为 `FFN_GATE_UP_EXP`'
+  - '- `tensor_force_quant` 返回 `False` 跟随全局 ftype，返回 `GGMLQuantizationType` 则强制指定（如
+    MmprojModel 对 patch_embd 强制 F16/F32）'
+  - '**dequant_model 支持哪些反量化路径？**'
+  - '- `bitnet`：1.58-bit 权重 + scale 反量化'
+  - '- `fp8` / `compressed-tensors`：按 block_size 广播 scale'
+  - '- `gptq`：g_idx + qweight + qzeros + scales 四件套还原'
+  - '- `modelopt`：NVFP4 交给 `_generate_nvfp4_tensors`，FP8 走简单反量化'
+  - '**NVFP4 打包链（_nvfp4_pack → _repack_nvfp4 → _generate_nvfp4_tensors → _flush_nvfp4_experts）**'
+  - '- `_nvfp4_pack` 把 ModelOpt nibble 权重 + UE4M3 scale 重排为 36B 超级块'
+  - '- `_repack_nvfp4` 处理单张量，顺带输出非平凡的 scale2 / input_scale'
+  - '- `_generate_nvfp4_tensors` 全局扫描，识别 experts 张量并按层缓冲'
+  - '- `_flush_nvfp4_experts` 在收齐某层所有专家后流式写出，避免显存爆炸'
+  - '**prepare_tensors 中的量化决策链？**'
+  - '- 先 NVFP4 重打包 → dequant_model → 逐张量调用 `tensor_force_quant`'
+  - '- `n_dims <= 1` 或 `_norm.weight` 强制 F32；特定张量（TOKEN_EMBD/OUTPUT 等）按 ftype 选 F16'
+  - '- 最终 `gguf.quants.quantize(data, data_qtype)`，失败回退 F16'
+  - '**prepare_metadata 装配了哪些元数据？**'
+  - '- `get_total_parameter_count()` 统计 total/shared/expert 参数量'
+  - '- `Metadata.load()` 加载作者、模型名名、size_label 推导'
+  - '- NVFP4/MXFP4 场景下 ftype 动态升级为 MOSTLY_NVFP4 / MOSTLY_MXFP4_MOE'
+  - '**模块入口（main / parse_args / get_model_architecture / split_str_to_n_bytes）**'
+  - '- `get_model_architecture` 处理 `architectures` / `ssm_cfg` / `text_config` 三级回退'
+  - '- `main()` 走「打印支持列表 → 解析参数 → 查表取类 → 实例化 → write」流程'
+  - '- `parse_args` 管理 --remote / --mmproj / --mistral-format / --fuse-gate-up-exps
+    等开关'
+  - '- `split_str_to_n_bytes` 解析 K/M/G 后缀，供 --split-max-size 使用'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 约 730-800 行
+    method_or_func: TextModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 820-825 行
+    method_or_func: TextModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 826-850 行
+    method_or_func: TextModel.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 850-980 行
+    method_or_func: TextModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 980-990 行
+    method_or_func: TextModel.write_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 990-1010 行
+    method_or_func: TextModel.does_token_look_special()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1010-1050 行
+    method_or_func: TextModel.get_vocab_base()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1050-1250 行
+    method_or_func: TextModel.get_vocab_base_pre()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1250-1255 行
+    method_or_func: TextModel._set_vocab_none()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1255-1270 行
+    method_or_func: TextModel._set_vocab_gpt2()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1270-1310 行
+    method_or_func: TextModel._set_vocab_qwen()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1310-1320 行
+    method_or_func: TextModel._set_vocab_sentencepiece()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1320-1370 行
+    method_or_func: TextModel._create_vocab_sentencepiece()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1370-1385 行
+    method_or_func: TextModel._set_vocab_llama_hf()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1385-1405 行
+    method_or_func: TextModel._set_vocab_rwkv_world()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1405-1430 行
+    method_or_func: TextModel._set_vocab_builtin()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1430-1445 行
+    method_or_func: TextModel._try_set_pooling_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1445-1455 行
+    method_or_func: TextModel._set_vocab_glmedge()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1455-1465 行
+    method_or_func: TextModel._set_vocab_glm()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1465-1485 行
+    method_or_func: TextModel._set_vocab_interns1()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1485-1510 行
+    method_or_func: TextModel._set_vocab_mistral()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1510-1550 行
+    method_or_func: TextModel._set_vocab_plamo()
+  name: TextModel：文本模型转换的中枢 —— 「超参数+词表+张量映射」的装配车间
+  'no': 2
+  points:
+  - '**TextModel 如何从 `hparams` 提取关键超参数？**'
+  - '- `block_count` 使用 `find_hparam(["n_layers", "num_hidden_layers", "n_layer",
+    "num_layers"])` 容错查找'
+  - '- `embedding_length / head_count / head_count_kv / feed_forward_length` 各自对应一组候选键'
+  - '- 这种「候选键列表」模式让 TextModel 让 TextModel 能兼容 LLaMA、Mistral、Qwen 等不同家族的的命名差异'
+  - '**RoPE 参数为什么放在 `rope_parameters`？**'
+  - '- `self.rope_parameters = self.hparams.get("rope_parameters", self.hparams.get("rope_scaling"))
+    or {}`'
+  - '- 同时支持旧版 `rope_scaling` 与新版 `rope_parameters`，并镜像 `rope_theta`/`rope_type`'
+  - '- `local_rope_theta` 用于「全局+滑动窗口」双 RoPE 配置（如 Step35）'
+  - '**TextModel 默认走哪种词表方案？**'
+  - '- `set_vocab()` 默认调用 `_set_vocab_gpt2()`，对应 GPT-2 BPE 风格词表'
+  - '- 子类通过重写 `set_vocab` 选择 SPM（SentencePiece）、Mistral Tekken、PLaMo jsonl 等不同方案'
+  - '**词表方案族（_set_vocab_*）各司各为？**'
+  - '- `_set_vocab_gpt2()`：GPT-2 BPE，配合 `get_vocab_base()` 与 `get_vocab_base_pre()`
+    哈希识别'
+  - '- `_set_vocab_sentencepiece()` + `_create_vocab_sentencepiece()`：SPM 模型解析，输出
+    token/score/type'
+  - '- `_set_vocab_llama_hf()`：借助 LlamaHfVocab 屏蔽 transformers 底层复杂度'
+  - '- `_set_vocab_mistral()`：spm/tekken 双模式，输出 BOS/EOS/UNK/PAD'
+  - '- `_set_vocab_plamo()`：解析 jsonl 格式的 PLaMo 词表'
+  - '- `_set_vocab_rwkv_world()` / `_set_vocab_glmedge()` / `_set_vocab_glm()` / `_set_vocab_interns1()`：专用词表'
+  - '- `_set_vocab_builtin()`：无词表文件时回落内置 gpt-neox / llama-spm 词表'
+  - '- `_set_vocab_none()`：占位方案（如 WavTokenizer 解码器）'
+  - '**`get_vocab_base_pre()` 的哈希识别机制是什么？**'
+  - '- 用一段固定校验文本编码后的 sha256 哈希唯一标识 BPE pre-tokenizer'
+  - '- 命中则写入 `tokenizer.ggml.pre`（如 `llama-bpe`、`qwen2`、`deepseek-v3`、`tekken`）'
+  - '- 未命中抛 `NotImplementedError`，提示更新 `convert_hf_to_gguf_update.py`'
+  - '**`super().set_gguf_parameters()` 的复用模式如何工作？**'
+  - '- 基类先调用 `super()` 完成通用写入（block_count、context_length、head_count 等）'
+  - '- 子类再追加特殊参数（如 LLaMA 的 `rope_dimension_count`、Qwen 的 `mrope_section`）'
+  - '- 这种「先父后子」的链式调用避免了字段重复写入'
+  - '**prepare_metadata / write_vocab 的特化处理？**'
+  - '- `TextModel.prepare_metadata()` 推导输出文件名（目录→naming_convention，模板→fill_templated_filename）'
+  - '- `write_vocab()` 是仅写词表的特化流程，要求 `len(tensors) == 1`'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1450-1540 行
+    method_or_func: MmprojModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1540-1550 行
+    method_or_func: MmprojModel.get_vision_config()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1550-1555 行
+    method_or_func: MmprojModel.get_audio_config()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1560-1610 行
+    method_or_func: MmprojModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1610-1620 行
+    method_or_func: MmprojModel.find_vparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1620-1625 行
+    method_or_func: MmprojModel.find_aparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1625-1635 行
+    method_or_func: MmprojModel._find_param()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1635-1645 行
+    method_or_func: MmprojModel.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1645-1650 行
+    method_or_func: MmprojModel.set_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1650-1670 行
+    method_or_func: MmprojModel.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 1670-1675 行
+    method_or_func: MmprojModel.write_vocab()
+  name: MmprojModel：多模态投影器转换 —— 「视觉/音频塔」独立打包术
+  'no': 3
+  points:
+  - '**MmprojModel 与 TextModel 的根本区别是什么？**'
+  - '- `model_type = ModelType.MMPROJ`，`model_arch = gguf.MODEL_ARCH.MMPROJ` 固定不变'
+  - '- 通过 `raise TypeError` 强制子类必须设置 `模型_arch = MODEL_MODEL_ARCH.MMPROJ`'
+  - '- 输出文件名自动加 `mmproj-` 前缀，与文本模型文件解耦'
+  - '**它如何处理「视觉+音频」双编码器？**'
+  - '- `has_vision_encoder / has_audio_encoder` 两个布尔标志控制各编码器是否启用'
+  - '- 双编码器时 `block_count = 128`（占位值），单编码器时从 hparams 读取真实层数'
+  - '- `hparams_vision` 与 `hparams_audio` 分别独立存储视觉/音频配置，互互不干扰'
+  - '**`global_config` 的「时光机」机制是什么？**'
+  - '- `self.global_config = copy.deepcopy(self.hparams)` 在初始化时备份原始 hparams'
+  - '- `hparams = self.hparams_vision or self.hparams_audio or self.hparams` 之后只取某一子子配置'
+  - '- 后续需要访问「未被覆盖的全局字段」（如 `norm_eps`）时，可回看 `global_config`'
+  - '**子子配置隔离（get_vision_config / get_audio_config / find_vparam / find_aparam）？**'
+  - '- `get_vision_config()` 读取 `vision_config`（或 mistral 格式的 `vision_encoder`）'
+  - '- `get_audio_config()` 读取 `audio_config` / `whisper_config`'
+  - '- `find_vparam()` / `find_aparam()` 各自在对应子子配置中做候选键容错查找'
+  - '- `_find_param()` 是它们的通用底座，避免代码重复'
+  - '**预处理配置（preprocessor_config）如何被读取？**'
+  - '- 优先读取优先读取 `preprocessor_config.json`，其次 `processor_config.json`'
+  - '- 自动展平嵌套字段（如 `media_proc_cfg`、`image_processor`）到根级别'
+  - '- Mistral 格式直接复用 `mistral-common` 的 DATASET_MEAN/STD 常量'
+  - '**`tensor_force_quant` 为何对视觉塔特殊？**'
+  - '- `.patch_embd.weight` 和 `.patch_merger.weight` 强制 F16/F32，避免量化损失视觉细节'
+  - '- 子类可重写此方法针对特定子子子模块（如 Gemma3V 的 `input_projection`）定制量化策略'
+  - '**set_type / prepare_metadata / write_vocab 的特化？**'
+  - '- `set_type()` 写入 `GGUFType.MMPROJ`，与 TextModel 的的 MODEL 类型区分'
+  - '- `prepare_metadata()` 给输出文件名前加 `mmproj-` 前缀'
+  - '- `write_vocab()` 直接抛错：MmprojModel 不支持独立写词表'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 约 585-600 行
+    method_or_func: ModelBase.register()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 600-605 行
+    method_or_func: ModelBase.from_model_architecture()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 610-617 行
+    method_or_func: ModelBase.print_registered_models()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 900-920 行
+    method_or_func: get_model_architecture()
+  name: 注册器机制与模型分发 —— @ModelBase.register 的「中央调度室」
+  'no': 4
+  points:
+  - '**为什么用装饰器而不是显式 `register()` 调用？**'
+  - '- `@ModelBase.register("GPTNeoXForCausalLM")` 把模型类与 HF 架构名直接绑定'
+  - '- 类定义后立即生效，无需额外手动加载注册表步骤'
+  - '- `register` 是 classmethod，可以在基类上定义，子类共享同一注册表'
+  - '**注册器如何同时支持「文本+多模态」两种归属？**'
+  - '- `func` 内部通过 `modelcls.model_arch == gguf.MODEL_ARCH.MMPROJ` 判断归属'
+  - '- 文本模型（如 LLaMA）自动进 `_model_classes[ModelType.TEXT]`'
+  - '- mmproj 模型（如 Llava）自动进 `_model_classes[ModelType.MMPROJ]`'
+  - '**一个类可以注册多个架构名吗？**'
+  - '- 可以：`@ModelBase.register("LLaMAForCausalLM", "LlamaForCausalLM", "MistralForCausalLM",
+    "MixtralForCausalLM", ...)`'
+  - '- `for name in names: cls._model_classes[model_type][name] = modelcls` 遍历写入'
+  - '- 这是 LLaMA 家族能同时承载 Mistral、Mixtral、IQuestCoder 等「近亲」的关键'
+  - '**`print_registered_models` 有什么用？**'
+  - '- 当用户传入未注册的架构名时，`--print-supported-models` 打印所有可用模型'
+  - '- 帮助用户快速确认「我的模型是否被支持」'
+  - '- 实际是 CLI 参数 `--print-supported-models` 触发的诊断工具'
+  - '**工厂方法 `from_model_architecture` 是如何避免循环依赖的？**'
+  - '- 它只依赖注册表（一个字典），不依赖任何具体模型类'
+  - '- 因此可以在 main() 中先调用 `from_model_architecture` 再加载权重'
+  - '- 这种「注册-查表」模式与 Java SPI、Python `entry_points` 异曲同工'
+  - '**为什么注册表是 `dict` 而非 `Enum`？**'
+  - '- 不同模型类（如 LlamaModel 与 Llama4Model）共享同一个 MODEL_ARCH.LLAMA 但行为差异大'
+  - '- 用字符串键（架构名）索引比用 enum 灵活，能 1:N 映射'
+  - '**`get_model_architecture()` 如何推断架构名？**'
+  - '- 优先取 `hparams["architectures"][0]`'
+  - '- SSM 模型回退到 `ssm_cfg.layer + "ForCausalLM"`'
+  - '- 多模态模型回退到 `text_config.architectures[0]` / `vision_config.architectures[0]`'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 约 185-270 行
+    method_or_func: ModelBase.index_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5870-5880 行
+    method_or_func: LazyTorchTensor.numpy()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5880-5890 行
+    method_or_func: LazyTorchTensor.meta_with_dtype_and_shape()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5890-5900 行
+    method_or_func: LazyTorchTensor.from_safetensors_slice()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5900-5915 行
+    method_or_func: LazyTorchTensor.from_local_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5915-5930 行
+    method_or_func: LazyTorchTensor.from_remote_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: 约 5930-5960 行
+    method_or_func: LazyTorchTensor.__torch_function__()
+  name: 延迟张量与远程加载 —— LazyTorchTensor的「按需读取」魔法
+  'no': 5
+  points:
+  - '**LazyTorchTensor 是如何工作的？**'
+  - '- 继承自 `gguf.LazyBase`，所有操作（索引、算术、转置）都被 `_wrap_fn` 拦截并构建「操作树」'
+  - '- 真实计算延迟到生成到 `numpy()` 调用时才触发，按链式调用逆序执行'
+  - '- `meta_with_dtype_and_shape` 创建 meta device 上的空张量，仅保存 dtype+shape 元信息'
+  - '**为什么需要 `_tensor_type = torch.Tensor` 和 `_dtype_map`？**'
+  - '- `_tensor_type` 让基类知道如何构造 wrapper'
+  - '- `_dtype_map` 把 torch.dtype 映射到 numpy 类型，确保最终写出 GGUF 时类型正确'
+  - '- `_dtype_byteswap_map` 在大小端转换时保证字节序正确'
+  - '**`from_safetensors_slice` 与 `from_local_tensor` 有什么区别？**'
+  - '- 前者把 safetensors 的内存切片 `st_slice[...]` 延迟生成为 torch.Tensor'
+  - '- 后者把 `LocalTensor` 通过 `mmap_bytes()` 内存映射，配合 `torch.from_numpy` 零拷贝读取'
+  - '- 二者返回的都是 lazy 代理，真正读取发生在 `.numpy()` 时'
+  - '**远程模式 `--remote` 是如何不下载整个模型就工作的？**'
+  - '- `SafetensorRemote.get_list_tensors_hf_model()` 通过 HF Hub API 仅获取张量元信息列表'
+  - '- 每个 RemoteTensor 在 `from_remote_tensor` 中被包装成 lazy 代理'
+  - '- 实际权重数据通过 HF Hub 的 Range 请求按需下载（HTTP Range 头）'
+  - '**`__torch_function__` 如何拦截 torch 算子？**'
+  - '- 重写 `torch.Tensor.__torch_function__` 协议，对 `torch.Tensor.numpy` 特判直接转发'
+  - '- 其余算子经 `_wrap_fn` 包装为延迟操作节点，追加到操作树中'
+  - '- 这使 LazyTorchTensor 能像普通 torch.Tensor 一样参与 reshape、推理、推理、读取时'
+  - '**`prepare_tensors` 中如何「提前生成」关键张量？**'
+  - '- 对 NVFP4/MXFP4 等需要全局视图的张量，用时，使用 `LazyTorchTensor.to_eager()` 立即计算'
+  - '- 普通张量保持 lazy 状态，避免占用过多内存'
+  - '- `model_tensors` 字典的 value 是 `Callable[[], Tensor]`，每次调用一次都返回新的 lazy 代理'
+  - '**`to_eager` 与 `e_to_meta` 的对称设计是？**'
+  - '- `to_eager(self)` 把 lazy 张量立即求值为真实 torch.Tensor'
+  - '- `e_to_meta(self)` 把真实张量转回 meta 张量（保留 dtype+shape）'
+  - '- 这对组合在 NVFP4 处理中被反复使用，确保按层合并时不丢失元信息'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: LlamaModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: GPTNeoXModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: GPTNeoXModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BloomModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BloomModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MPTModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MPTModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MPTModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StableLMModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StableLMModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StableLMModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StableLMModel._stack_qk_norm()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StableLMModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: RefactModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: RefactModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: RefactModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel._reverse_hf_permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel._reverse_hf_permute_part()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BaichuanModel._reverse_hf_part()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: XverseModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: XverseModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: XverseModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: XverseModel._reverse_hf_permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: FalconModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: FalconModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2MoeModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2MoeModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Qwen2MoeModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: DeepseekV2Model.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: DeepseekV2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: DeepseekV2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: DeepseekV2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: DeepseekV2Model.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: GemmaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: GemmaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: GemmaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3NModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3NModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3NModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3NModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma3NModel.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma4Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma4Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma4Model.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma4Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Gemma4Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: OrionModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: OrionModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel._xlmroberta_tokenizer_init()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: BertModel._xlmroberta_set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MambaModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MambaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MambaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: MambaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Mamba2Model.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Mamba2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Mamba2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: Mamba2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 见类定义
+    method_or_func: StarCoderModel.set_gguf_parameters()
+  name: TextModel 的文本模型子类 —— 各显神通的「架构特战队」
+  'no': 6
+  points:
+  - '**LlamaModel 如何承载多家族？**'
+  - '- 一个类同时承载 LLaMA / Mistral / Mixtral / VLlama3 / Llava / Voxtral / IQuestCoder
+    等'
+  - '- 通过 `permute()` 反向 HF 的 Q/K 权重置换'
+  - '- `set_vocab()` 中按需走 SentencePiece / Llama-HF / GPT-2 等不同分支'
+  - '- `generate_extra_tensors()` 处理 Llama3/YARN 的 `rope_freqs` 频率生成'
+  - '- 专家张量 `_experts` 缓冲后 `torch.stack` 为 3D 张量'
+  - '**GPTNeoXModel 与 BloomModel 如何处理 QKV？**'
+  - '- 二者都通过 `modify_tensors()` 把 query_key_value 拆分为 Q/K/V 三个独立张量'
+  - '- 按 `n_head, 3, n_embed // n_head, n_embed` 形状 reshape 后 cat'
+  - '- BloomModel 还会去掉 `transformer.` 前缀'
+  - '**MPTModel / StableLMModel / RefactModel 等小众架构的差异处理？**'
+  - '- MPTModel：`scales` 改名 `act.scales`；`_set_vocab_gpt2()` 失败时回退 SPM'
+  - '- StableLMModel：按层缓冲 `_q_norms` / `_k_norms`，堆叠为统一 q/k norm 权重'
+  - '- RefactModel：把合并的 `kv.weight` 切分为 ATTN_K 和 ATTN_V；FFN 切分为 GATE 和 UP'
+  - '**BaichuanModel / XverseModel / FalconModel 的反置换与分拆？**'
+  - '- BaichuanModel：拆 `W_pack` 为 ATTN_Q/K/V，按 `_reverse_hf_permute` 反置换'
+  - '- XverseModel：使用 `model.layers.X.self_attn.q_proj.weight` 的反置换'
+  - '- FalconModel：把 query_key_value 按 GQA 分组重新排序为标准 Q/K/V 布局'
+  - '**Qwen 系如何做架构适配？**'
+  - '- Qwen2Model：在 `modify_tensors` 中跳过 `mlp`/`vision_model`/`audio_tower` 等多模态字段'
+  - '- Qwen2MoeModel：合并专家权重为 3D 张量，并支持聚合 gate_up_proj 拆分'
+  - '- Qwen3MoeModel / Qwen3NextModel：在 Qwen2MoeModel 基础上继续扩展特殊张量转换'
+  - '**DeepseekV2Model 的 MLA + MoE 复合战场？**'
+  - '- `__init__` 加载原始架构用于 DeepseekOCR 等特殊变体'
+  - '- 合并 routed experts 为 3D 张量并跳过 MTP 层'
+  - '- 把 `kv_b_proj` 拆分为 `k_b_proj`（转置）与 `v_b_proj`'
+  - '- 写入 `kv_lora_rank` / `q_lora_rank` / `key_length_mla` / `value_length_mla` 等
+    MLA 参数'
+  - '**Gemma 家族四部曲？**'
+  - '- GemmaModel：RMS 权重 +1、；写入 head_dim 与 causal_attention=False'
+  - '- Gemma3Model：通过 `norm_shift` 返回 1.0 实现 Gemma3RMSNorm 偏移'
+  - '- Gemma3NModel：补充 altup_projections / altup_unembed_projections 的 3D 堆叠'
+  - '- Gemma4Model：支持共享 KV 层、滑动窗口模式与 proportional RoPE'
+  - '**Mamba/Mamba2 SSM 张量如何转换？**'
+  - '- `A_log → -torch.exp(...)` 还原 A 矩阵'
+  - '- `dt_bias` 改名 `dt_proj.bias`，`conv1d.weight` 去掉挤压维'
+  - '- Mamba2Model 还需把 A、D 升维到 (...,1)，把 norm reshape 为 (n_group, d_inner // n_group)'
+  - '**BertModel 系（DistilBert/Roberta/XLM-RoBERTa/NomicBERT/EuroBERT/ModernBERT）？**'
+  - '- `set_vocab()` 默认走 `get_vocab_base()`，并加 phantom space（U+2581 前缀）'
+  - '- XLM-RoBERTa 用 `sentencepiece.bpe.model` 的 proto 字段构造词表'
+  - '- NomicBERT 支持 MoE 模式（`mlp.experts.mlp.w1/w2` 升维为 3D）'
+  - '- RobertaModel 对 position_embeddings 做 `pad_token_id+1` 偏移'

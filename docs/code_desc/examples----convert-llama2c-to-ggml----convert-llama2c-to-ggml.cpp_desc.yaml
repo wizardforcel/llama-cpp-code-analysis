@@ -1,0 +1,627 @@
+classes:
+- desc: 保存 llama2.c 模型的基本结构配置，包括维度、层数、注意力头数、词表大小和序列长度。
+  methods: []
+  name: Config
+- desc: 保存 llama2.c Transformer 的嵌入、归一化、注意力、前馈网络和输出分类器权重。
+  methods: []
+  name: TransformerWeights
+- desc: 保存词元到 ID 以及 ID 到词元数据的双向映射。
+  methods: []
+  name: my_llama_vocab
+- desc: 保存 GGML llama 模型的超参数，并提供超参数对象比较能力。
+  methods:
+  - code:
+    - bool operator!=(const my_llama_hparams& other) const {
+    - '    return memcmp(this, &other, sizeof(my_llama_hparams));'
+    - '}'
+    desc: 比较当前模型超参数对象与另一个对象的内存内容是否不同。
+    line: 170-172
+    name: operator!=
+  name: my_llama_hparams
+- desc: 保存单个 llama Transformer 层的归一化、注意力和前馈网络张量。
+  methods: []
+  name: my_llama_layer
+- desc: 表示由 GGML 张量和超参数组成的完整 llama 模型及其训练统计信息。
+  methods: []
+  name: my_llama_model
+- desc: 保存模型转换和训练相关的文件路径、模型参数、线程参数及内存配置。
+  methods: []
+  name: train_params
+- desc: 对 C 标准文件句柄进行封装，提供文件大小查询、定位、原始数据及基本类型读取功能。
+  methods:
+  - code:
+    - my_llama_file(const char * fname, const char * mode) {
+    - '    fp = std::fopen(fname, mode);'
+    - '    if (fp == NULL) {'
+    - '        size = 0;'
+    - '    } else {'
+    - '        seek(0, SEEK_END);'
+    - '        size = tell();'
+    - '        seek(0, SEEK_SET);'
+    - '    }'
+    - '}'
+    desc: 打开指定文件并计算文件大小，然后将文件指针复位到文件开头。
+    line: 263-274
+    name: my_llama_file
+  - code:
+    - size_t tell() const {
+    - '#ifdef _WIN32'
+    - '    __int64 ret = _ftelli64(fp);'
+    - '#else'
+    - '    long ret = std::ftell(fp);'
+    - '#endif'
+    - '    GGML_ASSERT(ret != -1);'
+    - '    return (size_t) ret;'
+    - '}'
+    desc: 返回当前文件指针的位置。
+    line: 276-285
+    name: tell
+  - code:
+    - void seek(size_t offset, int whence) {
+    - '#ifdef _WIN32'
+    - '    int ret = _fseeki64(fp, (__int64) offset, whence);'
+    - '#else'
+    - '    int ret = std::fseek(fp, (long) offset, whence);'
+    - '#endif'
+    - '    GGML_ASSERT(ret == 0);'
+    - '}'
+    desc: 将文件指针移动到指定偏移位置。
+    line: 287-296
+    name: seek
+  - code:
+    - void read_raw(void * ptr, size_t size) {
+    - '    if (size == 0) {'
+    - '        return;'
+    - '    }'
+    - '    errno = 0;'
+    - '    std::size_t ret = std::fread(ptr, size, 1, fp);'
+    - '    if (ferror(fp)) {'
+    - '        die_fmt("fread failed: %s", strerror(errno));'
+    - '    }'
+    - '    if (ret != 1) {'
+    - '        die("unexpectedly reached end of file");'
+    - '    }'
+    - '}'
+    desc: 从文件中读取指定大小的原始字节，并处理读取错误或意外 EOF。
+    line: 298-312
+    name: read_raw
+  - code:
+    - std::uint32_t read_u32() {
+    - '    std::uint32_t ret;'
+    - '    read_raw(&ret, sizeof(ret));'
+    - '    return ret;'
+    - '}'
+    desc: 从文件中读取一个无符号 32 位整数。
+    line: 314-318
+    name: read_u32
+  - code:
+    - std::float_t read_f32() {
+    - '    std::float_t ret;'
+    - '    read_raw(&ret, sizeof(ret));'
+    - '    return ret;'
+    - '}'
+    desc: 从文件中读取一个单精度浮点数。
+    line: 319-323
+    name: read_f32
+  - code:
+    - std::string read_string(std::uint32_t len) {
+    - '    std::vector<char> chars(len);'
+    - '    read_raw(chars.data(), len);'
+    - '    return std::string(chars.data(), len);'
+    - '}'
+    desc: 从文件中读取指定长度的字符串。
+    line: 325-329
+    name: read_string
+  - code:
+    - ~my_llama_file() {
+    - '    if (fp) {'
+    - '        std::fclose(fp);'
+    - '    }'
+    - '}'
+    desc: 析构时关闭已经打开的文件句柄。
+    line: 331-335
+    name: ~my_llama_file
+  name: my_llama_file
+- desc: 表示llama模型的类，包含模型超参数和上下文指针。
+  methods:
+  - code:
+    - static void init_model(struct llama_model * model) {
+    - '    const uint32_t n_embd  = model->hparams.n_embd;'
+    - '    const uint32_t n_layer = model->hparams.n_layer;'
+    - '    const uint32_t n_rot   = model->hparams.n_rot;'
+    - '    const uint32_t n_vocab = model->hparams.n_vocab;'
+    - '    struct ggml_context * ctx = model->ctx;'
+    - '    struct ggml_tensor * tok_embeddings = ggml_new_tensor_2d(ctx, GGML_TYPE_F32,
+      n_embd, n_vocab);'
+    - '    struct ggml_tensor * norm_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32,
+      n_embd);'
+    - '    // ...'
+    - '    model->tok_embeddings = tok_embeddings;'
+    - '    model->norm_weight = norm_weight;'
+    - '    // ...'
+    desc: 初始化模型张量并分配权重内存
+    line: 45-120
+    name: init_model
+  name: llama_model
+desc: 该文件是一个 llama2.c 到 GGML/GGUF 模型转换工具：读取 llama2.c 二进制模型配置、Transformer 权重和词表，构造对应的
+  GGML 张量与模型超参数，完成权重布局转换，并将模型及词表元数据写入 GGUF 格式文件。该文件实现了将llama.c格式的模型转换为ggml格式的工具，包含模型参数加载、张量处理、配置转换和文件保存功能。
+file: examples/convert-llama2c-to-ggml/convert-llama2c-to-ggml.cpp
+funcs:
+- code:
+  - static void alloc_weights(TransformerWeights * w, const Config * p, bool shared_weights)
+    {
+  - '    const int n_multiqueries = p->n_kv_heads <= 0 || p->n_kv_heads >= p->n_heads
+    ? 1 : p->n_heads / p->n_kv_heads;'
+  - '    try {'
+  - '        w->token_embedding_table.resize(p->vocab_size * p->dim);'
+  - '        w->rms_att_weight.resize(p->n_layers * p->dim);'
+  - '        w->rms_ffn_weight.resize(p->n_layers * p->dim);'
+  - '        w->wq.resize(p->n_layers * p->dim * p->dim);'
+  - '        w->wk.resize(p->n_layers * p->dim * p->dim / n_multiqueries);'
+  - '        w->wv.resize(p->n_layers * p->dim * p->dim / n_multiqueries);'
+  - '        w->wo.resize(p->n_layers * p->dim * p->dim);'
+  - '        w->w1.resize(p->n_layers * p->hidden_dim * p->dim);'
+  - '        w->w2.resize(p->n_layers * p->hidden_dim * p->dim);'
+  - '        w->w3.resize(p->n_layers * p->hidden_dim * p->dim);'
+  - '        w->rms_final_weight.resize(p->dim);'
+  - '        if (shared_weights) {'
+  - '            w->wcls = {};'
+  - '        } else {'
+  - '            w->wcls.resize(p->vocab_size * p->dim);'
+  - '        }'
+  - '    } catch (std::length_error &) {'
+  - '        die("Invalid configuration. Failed to allocate memory for weights");'
+  - '    }'
+  - '}'
+  desc: 根据模型配置为 Transformer 各类权重分配内存，并处理共享输出权重情况。
+  line: 69-113
+  name: alloc_weights
+- code:
+  - static int checkpoint_init_weights(TransformerWeights * w, const Config * p, FILE
+    * f, bool shared_weights) {
+  - '    if (fread(w->token_embedding_table.data(), sizeof(float), w->token_embedding_table.size(),
+    f) != w->token_embedding_table.size()) return 1;'
+  - '    if (fread(w->rms_att_weight.data(), sizeof(float), w->rms_att_weight.size(),
+    f) != w->rms_att_weight.size()) return 1;'
+  - '    if (fread(w->wq.data(), sizeof(float), w->wq.size(), f) != w->wq.size())
+    return 1;'
+  - '    if (fread(w->wk.data(), sizeof(float), w->wk.size(), f) != w->wk.size())
+    return 1;'
+  - '    if (fread(w->wv.data(), sizeof(float), w->wv.size(), f) != w->wv.size())
+    return 1;'
+  - '    if (fread(w->wo.data(), sizeof(float), w->wo.size(), f) != w->wo.size())
+    return 1;'
+  - '    if (fread(w->rms_ffn_weight.data(), sizeof(float), w->rms_ffn_weight.size(),
+    f) != w->rms_ffn_weight.size()) return 1;'
+  - '    if (fread(w->w1.data(), sizeof(float), w->w1.size(), f) != w->w1.size())
+    return 1;'
+  - '    if (fread(w->w2.data(), sizeof(float), w->w2.size(), f) != w->w2.size())
+    return 1;'
+  - '    if (fread(w->w3.data(), sizeof(float), w->w3.size(), f) != w->w3.size())
+    return 1;'
+  - '    if (fread(w->rms_final_weight.data(), sizeof(float), w->rms_final_weight.size(),
+    f) != w->rms_final_weight.size()) return 1;'
+  - '    int head_size = p->dim / p->n_heads;'
+  - '    fseek(f, p->seq_len * head_size * sizeof(float), SEEK_CUR);'
+  - '    if (!shared_weights && fread(w->wcls.data(), sizeof(float), w->wcls.size(),
+    f) != w->wcls.size()) return 1;'
+  - '    auto curr = ftell(f);'
+  - '    fseek(f, 0, SEEK_END);'
+  - '    auto end = ftell(f);'
+  - '    if (curr != end) return 1;'
+  - '    return 0;'
+  - '}'
+  desc: 按照 llama2.c 检查点文件布局读取所有 Transformer 权重，并验证文件是否完整读取。
+  line: 115-142
+  name: checkpoint_init_weights
+- code:
+  - static void print_sample_weights(TransformerWeights *w){
+  - '    LOG_INF("----- Quick print of first of the weight vales of all the variables\n");'
+  - '    LOG_INF("%f\n", w->token_embedding_table[0]);'
+  - '    LOG_INF("%f\n", w->rms_att_weight[0]);'
+  - '    LOG_INF("%f\n", w->rms_ffn_weight[0]);'
+  - '    LOG_INF("%f\n", w->wq[0]);'
+  - '    LOG_INF("%f\n", w->wk[0]);'
+  - '    LOG_INF("%f\n", w->wv[0]);'
+  - '    LOG_INF("%f\n", w->wo[0]);'
+  - '    LOG_INF("%f\n", w->w1[0]);'
+  - '    LOG_INF("%f\n", w->w2[0]);'
+  - '    LOG_INF("%f\n", w->w3[0]);'
+  - '    LOG_INF("%f\n", w->rms_att_weight[0]);'
+  - '    if (!w->wcls.empty()) LOG_INF("%f\n", w->wcls[0]);'
+  - '}'
+  desc: 打印各类权重数组的首个元素，用于快速检查权重是否成功加载。
+  line: 144-159
+  name: print_sample_weights
+- code:
+  - static void print_params(struct my_llama_hparams * params) {
+  - '    LOG_INF("%s: n_vocab:   %u\n", __func__, params->n_vocab);'
+  - '    LOG_INF("%s: n_ctx:     %u\n", __func__, params->n_ctx);'
+  - '    LOG_INF("%s: n_embd:    %u\n", __func__, params->n_embd);'
+  - '    LOG_INF("%s: n_mult:    %u\n", __func__, params->n_mult);'
+  - '    LOG_INF("%s: n_head:    %u\n", __func__, params->n_head);'
+  - '    LOG_INF("%s: n_head_kv: %u\n", __func__, params->n_head_kv);'
+  - '    LOG_INF("%s: n_ff:      %u\n", __func__, params->n_ff);'
+  - '    LOG_INF("%s: n_layer:   %u\n", __func__, params->n_layer);'
+  - '    LOG_INF("%s: n_rot:     %u\n", __func__, params->n_rot);'
+  - '}'
+  desc: 输出 llama 模型的主要超参数。
+  line: 199-210
+  name: print_params
+- code:
+  - static void print_tensor_info(const struct ggml_context * ctx) {
+  - '    for (auto * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx,
+    t)) {'
+  - '        LOG_INF("%s: Allocating ", __func__);'
+  - '        int64_t total = 1;'
+  - '        int i = 0;'
+  - '        for (; i < ggml_n_dims(t); ++i) {'
+  - '            if (i > 0) { LOG_INF("x "); }'
+  - '            LOG_INF("[%" PRId64 "] ", t->ne[i]);'
+  - '            total *= t->ne[i];'
+  - '        }'
+  - '        if (i > 1) { LOG_INF("= [%" PRId64 "] ", total); }'
+  - '        LOG_INF("float space for %s\n", ggml_get_name(t));'
+  - '    }'
+  - '}'
+  desc: 遍历 GGML 上下文中的所有张量并打印其维度、元素总数和名称。
+  line: 212-227
+  name: print_tensor_info
+- code:
+  - static void init_model(struct my_llama_model * model) {
+  - '    const auto & hparams = model->hparams;'
+  - '    const uint32_t n_embd = hparams.n_embd;'
+  - '    const uint32_t n_layer = hparams.n_layer;'
+  - '    const uint32_t n_vocab = hparams.n_vocab;'
+  - '    const uint32_t n_multiqueries = hparams.n_head_kv <= 0 || hparams.n_head_kv
+    >= hparams.n_head ? 1 : hparams.n_head / hparams.n_head_kv;'
+  - '    const uint32_t n_ff = hparams.n_ff;'
+  - '    struct ggml_context * ctx = model->ctx;'
+  - '    model->tok_embeddings = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_vocab);'
+  - '    model->norm = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);'
+  - '    model->output = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_vocab);'
+  - '    model->layers.resize(n_layer);'
+  - '    for (uint32_t i = 0; i < n_layer; ++i) {'
+  - '        auto & layer = model->layers[i];'
+  - '        layer.attention_norm = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);'
+  - '        layer.wq = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_embd);'
+  - '        layer.wk = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_embd / n_multiqueries);'
+  - '        layer.wv = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_embd / n_multiqueries);'
+  - '        layer.wo = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_embd);'
+  - '        layer.ffn_norm = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);'
+  - '        layer.w1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_ff);'
+  - '        layer.w2 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_ff, n_embd);'
+  - '        layer.w3 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_ff);'
+  - '    }'
+  - '    print_tensor_info(ctx);'
+  - '}'
+  desc: 依据模型超参数创建完整的 GGML 模型张量、逐层设置张量形状和名称，并输出张量信息。
+  line: 229-278
+  name: init_model
+- code:
+  - static float get_f32_2d(struct ggml_tensor * tensor, int64_t i0, int64_t i1) {
+  - '    float * ptr = (float *) ((char *) tensor->data + i0*tensor->nb[0] + i1*tensor->nb[1]);'
+  - '    return *ptr;'
+  - '}'
+  desc: 按照 GGML 张量的步长从二维张量中读取一个 float 元素。
+  line: 280-283
+  name: get_f32_2d
+- code:
+  - static int32_t get_i32_2d(struct ggml_tensor * tensor, int64_t i0, int64_t i1)
+    {
+  - '    int32_t * ptr = (int32_t *) ((char *) tensor->data + i0*tensor->nb[0] + i1*tensor->nb[1]);'
+  - '    return *ptr;'
+  - '}'
+  desc: 按照 GGML 张量的步长从二维张量中读取一个 int32 元素。
+  line: 285-288
+  name: get_i32_2d
+- code:
+  - static void print_row(struct ggml_tensor * probs, int i) {
+  - '    for (int k = 0; k < probs->ne[0]; ++k) {'
+  - '        float p = get_f32_2d(probs, k, i);'
+  - '        LOG(" %f", p);'
+  - '    }'
+  - '    LOG("\n");'
+  - '}'
+  desc: 打印二维概率张量指定行中的所有浮点值。
+  line: 290-297
+  name: print_row
+- code:
+  - static void print_matrix(struct ggml_tensor * probs) {
+  - '    assert(ggml_is_matrix(probs));'
+  - '    for (int i = 0; i < probs->ne[1]; ++i) {'
+  - '        for (int k = 0; k < probs->ne[0]; ++k) {'
+  - '            float p = get_f32_2d(probs, k, i);'
+  - '            LOG(" %.2f", p);'
+  - '        }'
+  - '        LOG("\n");'
+  - '    }'
+  - '}'
+  desc: 验证输入为矩阵后，逐行打印二维张量中的全部元素。
+  line: 299-310
+  name: print_matrix
+- code:
+  - static bool is_ggml_file(const char * filename) {
+  - '    my_llama_file file(filename, "rb");'
+  - '    if (file.size < 4) {'
+  - '        return false;'
+  - '    }'
+  - '    std::string magic = file.read_string(4);'
+  - '    return magic == GGUF_MAGIC;'
+  - '}'
+  desc: 读取文件头部魔数，判断文件是否为 GGUF 文件。
+  line: 337-345
+  name: is_ggml_file
+- code:
+  - static std::string llama_escape_whitespaces(const std::string & text) {
+  - '    std::ostringstream out;'
+  - '    for (char c : text) {'
+  - '        if (c == '' '') out << "\xe2\x96\x81";'
+  - '        else out << c;'
+  - '    }'
+  - '    return out.str();'
+  - '}'
+  desc: 将词元文本中的普通空格替换为 SentencePiece 使用的下划线字符。
+  line: 347-355
+  name: llama_escape_whitespaces
+- code:
+  - static void load_vocab(const char * filename, const Config * config, struct my_llama_vocab
+    * vocab) {
+  - '    if (is_ggml_file(filename)) {'
+  - '        struct ggml_context * ctx_data = NULL;'
+  - '        struct gguf_init_params params = { false, &ctx_data };'
+  - '        struct gguf_context * ctx = gguf_init_from_file(filename, params);'
+  - '        GGML_ASSERT(ctx != NULL);'
+  - '        const int token_idx = gguf_find_key(ctx, KV_TOKENIZER_LIST);'
+  - '        const int score_idx = gguf_find_key(ctx, KV_TOKENIZER_SCORES);'
+  - '        const int toktype_idx = gguf_find_key(ctx, KV_TOKENIZER_TOKEN_TYPE);'
+  - '        const uint32_t n_vocab = gguf_get_arr_n(ctx, token_idx);'
+  - '        vocab->id_to_token.resize(n_vocab);'
+  - '        for (uint32_t i = 0; i < n_vocab; i++) {'
+  - '            std::string word = gguf_get_arr_str(ctx, token_idx, i);'
+  - '            vocab->token_to_id[word] = i;'
+  - '            auto & token_data = vocab->id_to_token[i];'
+  - '            token_data.text = std::move(word);'
+  - '            token_data.score = scores[i];'
+  - '            token_data.type = (llama_token_type) toktypes[i];'
+  - '        }'
+  - '        ggml_free(ctx_data);'
+  - '        gguf_free(ctx);'
+  - '    } else {'
+  - '        my_llama_file file(filename, "rb");'
+  - '        const int n_vocab = config->vocab_size;'
+  - '        file.read_u32();'
+  - '        vocab->id_to_token.resize(n_vocab);'
+  - '        for (my_llama_vocab::id id = 0; id < n_vocab; ++id) {'
+  - '            float_t score = file.read_f32();'
+  - '            uint32_t len = file.read_u32();'
+  - '            std::string text = file.read_string(len);'
+  - '            text = llama_escape_whitespaces(text);'
+  - '            vocab->id_to_token[id].text = text;'
+  - '            vocab->id_to_token[id].score = score;'
+  - '            vocab->token_to_id.emplace(text, id);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 从 GGUF 词表模型或 llama2.c 词表文件中加载词元、分数、类型及其映射关系。
+  line: 357-420
+  name: load_vocab
+- code:
+  - static void convert_weights_ak_to_gg(struct ggml_tensor * gg_weights, const float
+    * karpathy_weights) {
+  - '    int size = 1;'
+  - '    for (int dim = 0; dim < ggml_n_dims(gg_weights); ++dim) {'
+  - '        size *= gg_weights->ne[dim];'
+  - '    }'
+  - '    for (int ct = 0; ct < size; ++ct) {'
+  - '        int64_t i0 = 0; int64_t i1 = 0;'
+  - '        int64_t i2 = 0; int64_t i3 = 0;'
+  - '        ggml_unravel_index(gg_weights, ct, &i0, &i1, &i2, &i3);'
+  - '        ggml_set_f32_nd(gg_weights, i0, i1, i2, i3, karpathy_weights[ct]);'
+  - '    }'
+  - '}'
+  desc: 将 Karpathy llama2.c 的线性权重数组逐元素复制到 GGML 张量布局中。
+  line: 422-435
+  name: convert_weights_ak_to_gg
+- code:
+  - static void save_as_llama_model(
+  - '    struct my_llama_vocab * vocab, struct my_llama_model * model, TransformerWeights*
+    w, const char * filename'
+  - ) {
+  - '    convert_weights_ak_to_gg(model->tok_embeddings, w->token_embedding_table.data());'
+  - '    convert_weights_ak_to_gg(model->output, !w->wcls.empty() ? w->wcls.data()
+    : w->token_embedding_table.data());'
+  - '    convert_weights_ak_to_gg(model->norm, w->rms_final_weight.data());'
+  - '    for (uint32_t i = 0; i < model->hparams.n_layer; ++i) {'
+  - '        auto & layer = model->layers[i];'
+  - '        convert_weights_ak_to_gg(layer.attention_norm, &w->rms_att_weight[i*row_length]);'
+  - '        convert_weights_ak_to_gg(layer.ffn_norm, &w->rms_ffn_weight[i*row_length]);'
+  - '        convert_weights_ak_to_gg(layer.wq, &w->wq[i*row_length*row_length]);'
+  - '        convert_weights_ak_to_gg(layer.wo, &w->wo[i*row_length*row_length]);'
+  - '        convert_weights_ak_to_gg(layer.wk, &w->wk[i*row_length*row_length/n_multiqueries]);'
+  - '        convert_weights_ak_to_gg(layer.wv, &w->wv[i*row_length*row_length/n_multiqueries]);'
+  - '        convert_weights_ak_to_gg(layer.w1, &w->w1[i*row_length*n_ff]);'
+  - '        convert_weights_ak_to_gg(layer.w2, &w->w2[i*n_ff*row_length]);'
+  - '        convert_weights_ak_to_gg(layer.w3, &w->w3[i*row_length*n_ff]);'
+  - '    }'
+  - '    struct gguf_context * ctx = gguf_init_empty();'
+  - '    gguf_set_arr_str(ctx, KV_TOKENIZER_LIST, tokens.data(), tokens.size());'
+  - '    gguf_set_arr_data(ctx, KV_TOKENIZER_SCORES, GGUF_TYPE_FLOAT32, scores.data(),
+    scores.size());'
+  - '    gguf_set_arr_data(ctx, KV_TOKENIZER_TOKEN_TYPE, GGUF_TYPE_INT32, token_types.data(),
+    token_types.size());'
+  - '    gguf_set_val_str(ctx, KV_TOKENIZER_MODEL, TOKENIZER_NAME);'
+  - '    gguf_set_val_str(ctx, KV_GENERAL_ARCHITECTURE, "llama");'
+  - '    gguf_set_val_str(ctx, KV_GENERAL_NAME, "llama");'
+  - '    gguf_add_tensor(ctx, model->tok_embeddings);'
+  - '    gguf_add_tensor(ctx, model->norm);'
+  - '    gguf_add_tensor(ctx, model->output);'
+  - '    for (uint32_t i = 0; i < model->hparams.n_layer; ++i) {'
+  - '        gguf_add_tensor(ctx, model->layers[i].wq);'
+  - '        gguf_add_tensor(ctx, model->layers[i].wk);'
+  - '        gguf_add_tensor(ctx, model->layers[i].wv);'
+  - '        gguf_add_tensor(ctx, model->layers[i].wo);'
+  - '        gguf_add_tensor(ctx, model->layers[i].attention_norm);'
+  - '        gguf_add_tensor(ctx, model->layers[i].w1);'
+  - '        gguf_add_tensor(ctx, model->layers[i].w2);'
+  - '        gguf_add_tensor(ctx, model->layers[i].w3);'
+  - '        gguf_add_tensor(ctx, model->layers[i].ffn_norm);'
+  - '    }'
+  - '    gguf_write_to_file(ctx, filename, false);'
+  - '    gguf_free(ctx);'
+  - '}'
+  desc: 转换所有 llama2.c 权重并写入包含词表、模型元数据和 GGML 张量的 GGUF 文件。
+  line: 437-540
+  name: save_as_llama_model
+- code:
+  - static struct train_params get_default_train_params() {
+  - '    struct train_params params;'
+  - '    params.fn_vocab_model = "models/7B/ggml-model-f16.gguf";'
+  - '    params.fn_llama2c_output_model = "ak_llama_model.bin";'
+  - '    params.fn_train_data = "shakespeare.txt";'
+  - '    params.fn_checkpoint_in = "checkpoint.bin";'
+  - '    params.fn_checkpoint_out = "checkpoint.bin";'
+  - '    params.fn_model_out = "ggml-checkpoint-f32.bin";'
+  - '    params.seed = -1;'
+  - '    params.n_ctx = 128;'
+  - '    params.n_embd = 256;'
+  - '    params.n_mult = 256;'
+  - '    params.n_head = 8;'
+  - '    params.n_layer = 16;'
+  - '    params.n_rotmax = 64;'
+  - '    params.n_threads = 6;'
+  - '    params.n_batch = 8;'
+  - '    params.n_examples = 8;'
+  - '    params.n_predict = 1024;'
+  - '    params.use_adam = true;'
+  - '    params.use_flash = false;'
+  - '    params.use_scratch = true;'
+  - '    return params;'
+  - '}'
+  desc: 创建并返回模型转换工具的默认参数配置。
+  line: 542-585
+  name: get_default_train_params
+- code:
+  - static void print_usage(int /*argc*/, char ** argv, const struct train_params
+    * params) {
+  - '    fprintf(stderr, "usage: %s [options]\n", argv[0]);'
+  - '    fprintf(stderr, "options:\n");'
+  - '    fprintf(stderr, "  -h, --help show this help message and exit\n");'
+  - '    fprintf(stderr, "  --copy-vocab-from-model FNAME path of gguf llama model
+    or llama2.c vocabulary\n");'
+  - '    fprintf(stderr, "  --llama2c-model FNAME [REQUIRED] model path\n");'
+  - '    fprintf(stderr, "  --llama2c-output-model FNAME model path to save converted
+    model\n");'
+  - '}'
+  desc: 打印命令行用法、支持的参数及其默认值。
+  line: 587-595
+  name: print_usage
+- code:
+  - static bool params_parse(int argc, char ** argv, struct train_params * params)
+    {
+  - '    bool invalid_param = false;'
+  - '    bool reqd_param_found = false;'
+  - '    struct train_params default_params = get_default_train_params();'
+  - '    for (int i = 1; i < argc; i++) {'
+  - '        std::string arg = argv[i];'
+  - '        if (arg.compare(0, 2, "--") == 0) {'
+  - '            std::replace(arg.begin(), arg.end(), ''_'', ''-'');'
+  - '        }'
+  - '        if (arg == "--copy-vocab-from-model") {'
+  - '            if (++i >= argc) { invalid_param = true; break; }'
+  - '            params->fn_vocab_model = argv[i];'
+  - '        } else if (arg == "--llama2c-model") {'
+  - '            if (++i >= argc) { invalid_param = true; break; }'
+  - '            reqd_param_found = true;'
+  - '            params->fn_llama2c_model = argv[i];'
+  - '        } else if (arg == "--llama2c-output-model") {'
+  - '            if (++i >= argc) { invalid_param = true; break; }'
+  - '            params->fn_llama2c_output_model = argv[i];'
+  - '        } else if (arg == "-h" || arg == "--help") {'
+  - '            print_usage(argc, argv, &default_params);'
+  - '            exit(0);'
+  - '        } else {'
+  - '            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());'
+  - '            print_usage(argc, argv, &default_params);'
+  - '            exit(1);'
+  - '        }'
+  - '    }'
+  - '    if (!reqd_param_found) {'
+  - '        fprintf(stderr, "error: please specify a llama2.c .bin file\n");'
+  - '        print_usage(argc, argv, &default_params);'
+  - '        exit(1);'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 解析命令行参数，设置输入词表、llama2.c 模型和输出模型路径，并校验必需参数。
+  line: 597-643
+  name: params_parse
+- code:
+  - static std::string basename(const std::string &path) {
+  - '    size_t pos = path.find_last_of("/\\");'
+  - '    if (pos == std::string::npos) {'
+  - '        return path;'
+  - '    }'
+  - '    return path.substr(pos + 1);'
+  - '}'
+  desc: 从路径字符串中提取最后一级文件名。
+  line: 645-652
+  name: basename
+- code:
+  - int main(int argc, char ** argv) {
+  - '    std::setlocale(LC_NUMERIC, "C");'
+  - '    common_init();'
+  - '    struct train_params params = get_default_train_params();'
+  - '    if (!params_parse(argc, argv, &params)) {'
+  - '        return 1;'
+  - '    }'
+  - '    Config config;'
+  - '    TransformerWeights weights = {};'
+  - '    FILE * file = fopen(params.fn_llama2c_model, "rb");'
+  - '    if (!file) {'
+  - '        LOG_ERR("Unable to open the checkpoint file");'
+  - '        return 1;'
+  - '    }'
+  - '    if (fread(&config, sizeof(Config), 1, file) != 1) {'
+  - '        LOG_ERR("Unable to read llama2c config");'
+  - '        return 1;'
+  - '    }'
+  - '    auto shared_weights = config.vocab_size > 0;'
+  - '    config.vocab_size = abs(config.vocab_size);'
+  - '    alloc_weights(&weights, &config, shared_weights);'
+  - '    if (checkpoint_init_weights(&weights, &config, file, shared_weights)) {'
+  - '        return 1;'
+  - '    }'
+  - '    fclose(file);'
+  - '    struct my_llama_vocab vocab;'
+  - '    load_vocab(params.fn_vocab_model, &config, &vocab);'
+  - '    struct my_llama_model model;'
+  - '    model.hparams.n_vocab = config.vocab_size;'
+  - '    model.hparams.n_ctx = params.n_ctx;'
+  - '    model.hparams.n_embd = config.dim;'
+  - '    model.hparams.n_ff = config.hidden_dim;'
+  - '    model.hparams.n_head = config.n_heads;'
+  - '    model.hparams.n_head_kv = config.n_kv_heads;'
+  - '    model.hparams.n_layer = config.n_layers;'
+  - '    model.hparams.n_rot = std::min((uint32_t) params.n_rotmax, model.hparams.n_embd
+    / model.hparams.n_head);'
+  - '    print_params(&model.hparams);'
+  - '}'
+  desc: 初始化运行环境，解析参数，读取 llama2.c 模型配置与权重，加载词表，构造 GGML 模型并执行转换流程。
+  line: 654-约末尾
+  name: __main__
+- code:
+  - int main(int argc, char ** argv) {
+  - '    // 解析参数'
+  - '    // 加载config和checkpoint'
+  - '    // 加载词汇表'
+  - '    // 初始化ggml上下文并分配内存'
+  - '    // 设置模型参数'
+  - '    // 初始化模型结构'
+  - '    // 保存为ggml格式'
+  - '    // 释放内存'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口，加载配置和参数，初始化模型，转换为ggml格式并保存。
+  line: 931-1000
+  name: __main__

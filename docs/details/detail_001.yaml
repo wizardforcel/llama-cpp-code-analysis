@@ -1,0 +1,843 @@
+code_map:
+- README.md
+- ├── 项目蓝图（Quick Start、Hot topics）
+- ├── Description（零依赖、Apple Silicon 一等公民、量化矩阵、后端全家福）
+- ├── Supported backends（Metal/CUDA/HIP/Vulkan/SYCL/CANN/Hexagon/VirtGPU 等）
+- ├── Text-only 与 Multimodal 模型矩阵
+- ├── Obtainning & quantizing models（-hf 参数、HuggingFace 缓存）
+- ├── 命令行工具说明（llama-cli/llama-server/llama-perplexity/llama-bench/llama-simple）
+- ''
+- ./convert_hf_to_gguf.py
+- '├── ModelType (IntEnum): TEXT=1, MMPROJ=2'
+- ├── SentencePieceTokenTypes (IntEnum)
+- ├── ModelBase (抽象基类)
+- '│   ├── _model_classes: dict[ModelType, dict[str, type[ModelBase]]]  # 注册表'
+- '│   ├── __init__()                 # 初始化 hparams、GGUFWriter、lazy 模式'
+- '│   ├── index_tensors()            # 索引 safetensors / pytorch_model 分片'
+- '│   ├── dequant_model()            # 反量化 bitnet/fp8/gptq/compressed-m3-tensors
+  等'
+- '│   ├── prepare_tensors()          # 遍历模型张量并写入 GGUF'
+- '│   ├── prepare_metadata()         # 写入元数据（hyperparams/parameter count）'
+- '│   ├── write() / write_vocab()    # 输出文件'
+- '│   ├── @classmethod register()    # 注册架构名 → 模型类'
+- '│   ├── @classmethod from_model_architecture()  # 工厂方法'
+- │   ├── _set_vocab_* (gpt2/sentencepiece/llama_hf/rwkv_world/mistral/plamo/builtin/...)
+- '│   ├── _set_vocab_none()          # 无词表（解码器类）'
+- '│   ├── set_gguf_parameters()      # 通用超参写入（raise NotImplementedError）'
+- '│   └── tensor_force_quant()       # 张张强制量化策略'
+- ├── TextModel(ModelBase)
+- '│   ├── __init__()                 # 解析 block_count、tensor_map、rope_parameters'
+- '│   ├── set_vocab()                # 默认 _set_vocab_gpt2()'
+- '│   ├── set_gguf_parameters()      # context_length/embedding_length/head_count/RoPE/expert/...'
+- '│   ├── get_vocab_base_pre()       # BPE 预分词器识别（hash 查表）'
+- '│   └── get_vocab_base()           # 通过 AutoTokenizer 提取 token/toktype'
+- ├── MmprojModel(ModelBase)
+- │   ├── model_arch = MODEL_ARCH.MMPROJ
+- │   ├── has_vision_encoder / has_audio_encoder
+- '│   ├── __init__()                 # 分离 hparams_vision / hparams_audio / preprocessor_config'
+- '│   └── set_gguf_parameters()      # vision/audio 投影器参数'
+- ├── @ModelBase.register("LLaMAForCausalLM") class LlamaModel(TextModel)
+- │   ├── model_arch = MODEL_ARCH.LLAMA
+- '│   ├── permute()                  # Q/K 反向 permute'
+- '│   └── modify_tensors()           # 跳过视觉张量、合并 MoE 专家'
+- ├── MistralModel / MistralMoeModel (Mistral 格式入口)
+- '├── parse_args() / main()          # 命令行入口与模型分发'
+- ''
+- ./convert_llama_ggml_to_gguf.py
+- '├── GGMLFormat (IntEnum): GGML/GGMF/GGJT'
+- '├── GGMLFType (IntEnum): ALL_F32/MOSTLY_F16/Q4_0/Q4_1/Q8_0/Q5_0/Q5_1/Q2_K/Q3_K*/Q4_K*/Q5_K*/Q6_K'
+- '├── Hyperparameters                # 解析 n_vocab/n_embd/n_mult/n_head/n_layer/n_rot/ftype'
+- '├── Vocab / Tensor / GGMLModel     # 解析旧版 GGML 二进制布局'
+- '├── GGMLToGGUF                     # 转换为 GGUFWriter（默认 MODEL_ARCH.LLAMA）'
+- '├── handle_metadata()              # 从独立目录加载 HF config + params.json 覆盖旧 GGML 缺失参数'
+- '└── main()                         # 命令行入口'
+- ''
+- ./convert_lora_to_gguf.py
+- ├── PartialLoraTensor (A/B 矩阵对)
+- '├── LoraTorchTensor                # 自定义张量子类，模拟 PyTorch 接口'
+- '│   ├── __init__()                 # 接收 lora_A / lora_B 两个矩阵'
+- │   ├── __getitem__ / reshape / permute / transpose / contiguous / view
+- '│   └── __torch_function__         # 支持 torch.permute/reshape/stack/cat'
+- '├── get_base_tensor_name()         # 去掉 .lora_A.weight / .lora_B.weight 后缀'
+- '├── parse_args()                   # 命令行参数'
+- '├── load_hparams_from_hf()         # 从 HuggingFace 加载基模型配置'
+- └── LoraModel (动态继承 model_class)
+- '    ├── __init__()                 # 重写 dir_model_card、lora_alpha'
+- '    ├── set_type()                 # GGUFType.ADAPTER + Adapter.TYPE="lora"'
+- '    ├── set_vocab()                # pass（不写词表）'
+- '    ├── set_gguf_parameters()      # 写入 Adapter.LORA_ALPHA / ALORA_INVOCATION_TOKENS'
+- '    ├── get_tensors()              # 合并 A/B 为 LoraTorchTensor'
+- '    ├── modify_tensors()           # 写出 .lora_a / .lora_b 对'
+- '    └── generate_extra_tensors()   # 空（适配器不写额外张量）'
+exercises:
+- contents:
+  - 阅读 `README.md` 第 36-90 行（Description 与 Supported backends 表格），理解以下要点：
+  - 1. llama.cpp 的核心目标是什么？Plain C/C++ 实现意味着什么？
+  - 2. Apple Silicon 一等公民体现在哪些方面（NEON / Accelerate / Metal）？
+  - 3. 1.5~8 bit 整数量化的具体类型有哪些？
+  - 4. 后端表格里 Backend、Target devices、当前状态（In Progress）分别说明什么？
+  - 回答问题：
+  - '- 为什么 llama.cpp 可以做到「单文件即可运行」？这种设计带来了哪些 trade-off？'
+  - '- 在 Apple M2 Ultra + 96GB 内存的机器上运行 70B Q4_K_M 模型，最佳后端组合应该是什么？'
+  - '- 如果要在国产昇腾 NPU 上部署，应该选择哪个后端？该后端当前处于什么状态？'
+  'no': 1
+  title: 阅读 README.md 的 Description 与 Supported backends
+- contents:
+  - 阅读 `./convert_hf_to_gguf.py` 第 6800-7100 行（`parse_args()` 与 `main()`），弄清：
+  - 1. `--vocab-only`、`--outtype`、`--remote`、`--mmproj` 四个开关的语义与典型用法
+  - 2. `ModelType.TEXT` 与 `ModelType.MMPROJ` 两条分发路径如何根据 `args.mmproj` 切换
+  - 3. Mistral 格式下 `model_class` 的选择逻辑（`hparams.get("moe")`）
+  - 4. `--fuse-gate-up-exps` 与 `--split-max-*` 分片策略的适用场景
+  - 回答问题：
+  - '- 当同时传 `--remote --mistral-format` 时，代码会走哪条分支？'
+  - '- 如果一个模型是 Qwen2.5-VL，命令行应该如何选择才能分别导出文本模型与 mmproj？'
+  - '- `model_instance.fname_out` 在 vocab-only 与完整导出两种场景下分别会如何处理？'
+  'no': 2
+  title: 阅读 convert_hf_to_gguf.py 入口与命令行
+- contents:
+  - 阅读 `./convert_hf_to_gguf.py` 第 130-180 行（`ModelBase.register`、`from_model_architecture`、`print_registered_models`）与第
+    6900-7000 行（`main()` 中的 `get_model_architecture` + `from_model_architecture` 调用），弄清：
+  - 1. `_model_classes` 字典的两级结构（按 `ModelType` 分组）
+  - 2. `@ModelBase.register("LLaMAForCausalLM", "LlamaForCausalLM", ...)` 这种装饰器如何支持多架构名映射到同一个类
+  - 3. `from_model_architecture()` 找不到时的错误处理路径
+  - 4. `get_model_architecture()` 在多模态场景下如何区分 text_config / vision_config
+  - 回答问题：
+  - '- 如果你新增了一个模型架构 `MiniMaxM2ForCausalLM`，最少需要修改哪几处？'
+  - '- 为什么 `MODEL_ARCH.MMPROJ` 要从 TEXT 注册表中独立出来？'
+  - '- 当架构名为 `Mistral3ForConditionalGeneration`（同时含文本与视觉）时，`get_model_architecture`
+    会如何决定走 TEXT 还是 MMPROJ 分支？'
+  'no': 3
+  title: 阅读 ModelBase 注册器与工厂方法
+- contents:
+  - 阅读 `./convert_hf_to_gguf.py` 中 `StableLMModel.modify_tensors`（约 5300-5600 行附近），弄清：
+  - 1. StableLM 的 q_layernorm / k_layernorm 为什么要按 head 拆分？每个 head 的 norm 是什么形状？
+  - 2. `_q_norms` / `_k_norms` 字典如何收集各层、各 head 的 norm 权重？什么条件下会触发 `_stack_qk_norm`？
+  - 3. `_stack_qk_norm` 把分散的 per-head 权重 `torch.stack` 之后变成什么形状？生成的张量对应 GGUF 中的哪个
+    MODEL_TENSOR？
+  - 4. `prepare_tensors` 末尾的「未处理 norm 校验」是做什么用的？如果开发者在配置中漏了某个 head 的 norm 会发生什么？
+  - 回答问题：
+  - '- 为什么 StableLM 不像其他模型那样直接把 norm 写入单一 1D 张量，而要等所有 head 收齐才写？'
+  - '- 如果模型同时打开了 `tie_word_embeddings` 并去掉了 `lm_head`，StableLM 这条路径会受影响吗？为什么？'
+  - '- 对比 StableLM 的 per-head norm 与 Gemma3 的 `+1` 偏移，量化阶段对这两种 norm 的处理策略应该有何不同？'
+  'no': 4
+  title: 阅读 StableLMModel.modify_tensors 与 Q/K norm 合并
+- contents:
+  - 对照三个转换脚本的入口函数，弄清它们各自负责什么：
+  - 1. `convert_hf_to_gguf.py::main()`（第 450-550 行附近）
+  - 2. `convert_llama_ggml_to_gguf.py::main()`（末尾）
+  - 3. `convert_lora_to_gguf.py` 的 `if __name__ == '__main__'` 入口
+  - 回答问题：
+  - '- 三个转换器输出的 GGUF 在 `GGUFType` 字段上分别是什么值（MODEL / ADAPTER / MMPROJ）？'
+  - '- `convert_llama_ggml_to_gguf.py` 为什么要支持 `--model-metadata-dir`？它会去加载哪些文件？'
+  - '- `convert_lora_to_gguf.py` 的 `LoraTorchTensor` 为什么需要 `__torch_function__` 魔法方法？'
+  - '- 如果用户有一个 7B 模型 + 三个不同任务的 LoRA 适配器，应该如何组合使用这三个转换器？'
+  'no': 5
+  title: 对比三大转换器的职责边界
+learning_targets:
+- 理解 llama.cpp 零依赖、跨平台的设计哲学及其模型矩阵
+- 掌握 GGUF 作为 llama.cpp 唯一认可模型容器的核心地位
+- 熟悉三大转换器（HF→GGUF、GGML→GGUF、LoRA→GGUF）的功能边界与协作关系
+- 理解 convert_hf_to_gguf.py 入口命令行开关（vocab-only、outtype、remote、mmproj、split 等）的语义
+- 掌握 ModelBase 注册器模式（@ModelBase.register 装饰器）与 from_model_architecture 工厂方法的自动分发原理
+- 了解 Mistral 格式下的模型类自动选择（MistralMoeModel / MistralModel）逻辑
+- 理解 convert_lora_to_gguf.py 中 LoraTorchTensor 如何模拟 PyTorch 接口以支持切片、reshape、permute
+  等操作
+- 掌握 convert_llama_ggml_to_gguf.py 中 GGMLFormat / GGMLFType 枚举与外部 HF 元数据覆盖机制
+life_analogy:
+- 想象 llama.cpp 是一座**国际化的大型物流转运中心**，把全球各地（HuggingFace）生产的"模型货物"统一打包到**GGUF 标准集装箱**里运输：
+- '- **README.md** = 物流中心的对外宣传册，告诉客户：我们支持哪些品牌的货物（模型架构）、发往哪些目的地（后端）、使用什么交通工具（Metal/CUDA/Vulkan/SYCL
+  等）'
+- '- **GGUF** = 全球通用集装箱标准，所有进来的模型都必须"换装"成这种标准箱才能上路'
+- '- **convert_hf_to_gguf.py** = 主调度台，根据货物标签（`architectures` 字段）自动派单到对应的打包流水线'
+- '- **convert_llama_ggml_to_gguf.py** = 旧版集装箱改造车间，把古董级 GGML/GGMF/GGJT 集装箱翻新成 GGUF'
+- '- **convert_lora_to_gguf.py** = 配件仓库，专门处理 LoRA 适配器这种"模型补丁"，以 A/B 矩阵对的形式入库'
+- '- **ModelBase 注册表** = 调度台背后的"货物-流水线对应表"，写着"LLaMA 走 3 号流水线、Qwen 走 7 号流水线、…"'
+- '- **parse_args() 的开关** = 客户的提单指令（要什么精度、要分片、要远程取货等）'
+- 就像调度台需要精确识别每个货物标签并匹配对应流水线一样，convert_hf_to_gguf.py 的核心挑战就是：如何通过 `@ModelBase.register`
+  装饰器和 `from_model_architecture()` 工厂方法，让一个 Python 入口能优雅地承载上百种架构的转换需求。
+'no': 0
+summary:
+- concept: '`llama.cpp` 哲学'
+  desc: Plain C/C++ 零依赖实现，Apple Silicon 一等公民，跨平台 + 跨硬件 + 跨模型
+- concept: '`README.md` 项目蓝图'
+  desc: Quick Start、模型矩阵、后后端全家福、量化档位、CLI 工具速查表
+- concept: '`-hf` 参数'
+  desc: 一个命令即可从 Hugging Face 直接下载并运行模型，缓存与 HF Hub 共享
+- concept: '`GGUF` 文件格式'
+  desc: llama.cpp 唯一认可的模型容器，统一张量、元数据、量化、tokenizer
+- concept: 后端矩阵
+  desc: Metal/CUDA/HIP/MUSA/Vulkan/SYCL/OpenCL/WebGPU/RPC/VirtGPU/CANN/Ascend 等十余种
+- concept: '`convert_hf_to_gguf.py`'
+  desc: HF→GGUF 的中央调度台，支持 TextModel 与 MmprojModel 两条转换流水线
+- concept: '`convert_llama_ggml_to_gguf.py`'
+  desc: 旧版 GGML/GGMF/GGJT → GGUF 迁移器，可加载 HF config 覆盖缺失超参
+- concept: '`convert_lora_to_gguf.py`'
+  desc: LoRA → GGUF 适配器，以 .lora_a / .lora_b 对写入 ADAPTER 类型 GGUF
+- concept: '`LoraTorchTensor`'
+  desc: 自定义张量子类，模拟 PyTorch 接口支持切片/reshape/permute/transpose/cat/stack
+- concept: '`parse_args()` 七大开关'
+  desc: --vocab-only / --outtype(f32/f16/bf16/q8_0/tq1_0/tq2_0/auto) / --remote /
+    --mmproj / --split-* / --fuse-gate-up-exps / --mistral-format
+- concept: '`ModelType` 枚举'
+  desc: TEXT=1 与 MMPROJ=2 两套独立的模型注册表，避免文本/视觉张量名冲突
+- concept: '`@ModelBase.register` 装饰器'
+  desc: 通过架构名（HF `architectures[0]`）将模型类注册到 `_model_classes` 字典
+- concept: '`from_model_architecture()` 工厂方法'
+  desc: 通过架构名查找对应模型类，未注册则抛 NotImplementedError
+- concept: '`ModelBase` 构造与生命周期'
+  desc: load_hparams → index_tensors → dequant_model → prepare_tensors → prepare_metadata
+    → write
+- concept: '`get_model_architecture()`'
+  desc: 识别模型架构，优先取 `architectures[0]`，多模态回退到 text_config/vision_config
+- concept: Mistral 格式分发
+  desc: hparams 含 `moe` 走 MistralMoeModel，否则走 MistralModel（兼容 DeepseekV2）
+- concept: '`StableLMModel.modify_tensors`'
+  desc: StableLM 使用 per-head Q/K LayerNorm，需要把 n_head 个独立 norm 张量合并成一个 2D 权重
+- concept: '`StableLMModel._stack_qk_norm`'
+  desc: 将分散的 per-head norm 权重 torch.stack 成 2D 张量，对应 GGUF 中的 MODEL_TENSOR
+units:
+- codes:
+  - file: README.md
+    line: 1-110
+    method_or_func: '*'
+  name: llama.cpp 项目初印象 —— 走进「大模型推理引擎」的大门
+  'no': 1
+  points:
+  - '**为什么 llama.cpp 能「单文件即可运行」？**'
+  - '- Plain C/C++ 实现，无任何外部依赖，零门槛跨平台'
+  - '- Apple Silicon 一等公民（NEON、Accelerate、Metal 深度优化）'
+  - '- 同时支持 x86 AVX/AVX2/AVX512/AMX 与 RISC-V RVV/ZVFH 等指令集'
+  - '- 提供 1.5~8 bit 整数量化与 GGML 生态全栈加速'
+  - '**README 的「项目蓝图」告诉我们什么？**'
+  - '- Quick Start 四种安装方式（brew/nix/winget、docker、release 二进制、源码）'
+  - '- 一个命令即可从 Hugging Face 直接下载并运行模型（`-hf` 参数）'
+  - '**README 中的「模型宇宙」有多庞大？**'
+  - '- 文本模型覆盖 LLaMA、Mistral、Qwen、DeepSeek、Mamba、RWKV 等上百种架构'
+  - '- 多模态家族包含 LLaVA、Qwen2-VL、LFM2-VL、GLM-4V 等视觉/音频模型'
+  - '**「支持的后端全家福」揭示了什么？**'
+  - '- Metal（Apple）、CUDA/HIP/MUSA（NVIDIA/AMD/摩尔线程）、Vulkan/SYCL/OpenCL/WebGPU（跨平台 GPU）'
+  - '- BLAS、ZenDNN、zDNN、CANN（昇腾 NPU）等专用加速库'
+  - '- RPC/VirtGPU 支持跨主机分布式推理与 virtio-GPU API'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 1-50
+    method_or_func: main()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 1-50
+    method_or_func: main()
+  - file: ./convert_lora_to_gguf.py
+    line: 1-50
+    method_or_func: parse_args()
+  - file: ./convert_hf_to_gguf.py
+    line: 50-200
+    method_or_func: ModelBase.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 200-260
+    method_or_func: ModelBase.register()
+  - file: ./convert_hf_to_gguf.py
+    line: 260-300
+    method_or_func: ModelBase.from_model_architecture()
+  - file: ./convert_hf_to_gguf.py
+    line: 300-380
+    method_or_func: ModelBase.load_hparams()
+  - file: ./convert_hf_to_gguf.py
+    line: 380-480
+    method_or_func: ModelBase.index_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 480-620
+    method_or_func: ModelBase.dequant_model()
+  - file: ./convert_hf_to_gguf.py
+    line: 620-720
+    method_or_func: ModelBase._generate_nvfp4_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 720-820
+    method_or_func: ModelBase._repack_nvfp4()
+  - file: ./convert_hf_to_gguf.py
+    line: 820-900
+    method_or_func: ModelBase._flush_nvfp4_experts()
+  - file: ./convert_hf_to_gguf.py
+    line: 900-980
+    method_or_func: ModelBase._nvfp4_pack()
+  - file: ./convert_hf_to_gguf.py
+    line: 980-1020
+    method_or_func: ModelBase._nvfp4_scale2_is_trivial()
+  - file: ./convert_hf_to_gguf.py
+    line: 1020-1080
+    method_or_func: ModelBase.get_model_part_names()
+  - file: ./convert_hf_to_gguf.py
+    line: 1080-1140
+    method_or_func: ModelBase.add_prefix_to_filename()
+  - file: ./convert_hf_to_gguf.py
+    line: 1140-1200
+    method_or_func: ModelBase.find_hparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 1200-1260
+    method_or_func: ModelBase.get_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 1260-1320
+    method_or_func: ModelBase.format_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 1320-1380
+    method_or_func: ModelBase.match_model_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 1380-1440
+    method_or_func: ModelBase.map_tensor_name()
+  - file: ./convert_hf_to_gguf.py
+    line: 1440-1500
+    method_or_func: ModelBase.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 1500-1560
+    method_or_func: ModelBase.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 1560-1620
+    method_or_func: ModelBase.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 1620-1680
+    method_or_func: ModelBase.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 1680-1750
+    method_or_func: ModelBase.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 1750-1810
+    method_or_func: ModelBase.set_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 1810-1880
+    method_or_func: ModelBase.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 1880-1940
+    method_or_func: ModelBase.write_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 1940-2000
+    method_or_func: ModelBase.write()
+  - file: ./convert_hf_to_gguf.py
+    line: 2000-2060
+    method_or_func: ModelBase.print_registered_models()
+  - file: ./convert_hf_to_gguf.py
+    line: 2060-2140
+    method_or_func: TextModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 2140-2200
+    method_or_func: TextModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 2200-2270
+    method_or_func: TextModel.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 2270-2360
+    method_or_func: TextModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 2360-2420
+    method_or_func: TextModel.does_token_look_special()
+  - file: ./convert_hf_to_gguf.py
+    line: 2420-2500
+    method_or_func: TextModel.get_vocab_base()
+  - file: ./convert_hf_to_gguf.py
+    line: 2500-2620
+    method_or_func: TextModel.get_vocab_base_pre()
+  - file: ./convert_hf_to_gguf.py
+    line: 2620-2660
+    method_or_func: TextModel._set_vocab_none()
+  - file: ./convert_hf_to_gguf.py
+    line: 2660-2720
+    method_or_func: TextModel._set_vocab_gpt2()
+  - file: ./convert_hf_to_gguf.py
+    line: 2720-2800
+    method_or_func: TextModel._set_vocab_qwen()
+  - file: ./convert_hf_to_gguf.py
+    line: 2800-2860
+    method_or_func: TextModel._set_vocab_sentencepiece()
+  - file: ./convert_hf_to_gguf.py
+    line: 2860-2960
+    method_or_func: TextModel._create_vocab_sentencepiece()
+  - file: ./convert_hf_to_gguf.py
+    line: 2960-3020
+    method_or_func: TextModel._set_vocab_llama_hf()
+  - file: ./convert_hf_to_gguf.py
+    line: 3020-3100
+    method_or_func: TextModel._set_vocab_rwkv_world()
+  - file: ./convert_hf_to_gguf.py
+    line: 3100-3180
+    method_or_func: TextModel._set_vocab_builtin()
+  - file: ./convert_hf_to_gguf.py
+    line: 3180-3240
+    method_or_func: TextModel._try_set_pooling_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 3240-3300
+    method_or_func: TextModel._set_vocab_glmedge()
+  - file: ./convert_hf_to_gguf.py
+    line: 3300-3360
+    method_or_func: TextModel._set_vocab_glm()
+  - file: ./convert_hf_to_gguf.py
+    line: 3360-3440
+    method_or_func: TextModel._set_vocab_interns1()
+  - file: ./convert_hf_to_gguf.py
+    line: 3440-3540
+    method_or_func: TextModel._set_vocab_mistral()
+  - file: ./convert_hf_to_gguf.py
+    line: 3540-3640
+    method_or_func: TextModel._set_vocab_plamo()
+  - file: ./convert_hf_to_gguf.py
+    line: 3640-3700
+    method_or_func: TextModel.write_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3700-3800
+    method_or_func: MmprojModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 3800-3840
+    method_or_func: MmprojModel.get_vision_config()
+  - file: ./convert_hf_to_gguf.py
+    line: 3840-3880
+    method_or_func: MmprojModel.get_audio_config()
+  - file: ./convert_hf_to_gguf.py
+    line: 3880-3920
+    method_or_func: MmprojModel.set_type()
+  - file: ./convert_hf_to_gguf.py
+    line: 3920-3980
+    method_or_func: MmprojModel.prepare_metadata()
+  - file: ./convert_hf_to_gguf.py
+    line: 3980-4060
+    method_or_func: MmprojModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 4060-4100
+    method_or_func: MmprojModel.write_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 4100-4140
+    method_or_func: MmprojModel.find_vparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 4140-4180
+    method_or_func: MmprojModel.find_aparam()
+  - file: ./convert_hf_to_gguf.py
+    line: 4180-4220
+    method_or_func: MmprojModel._find_param()
+  - file: ./convert_hf_to_gguf.py
+    line: 4220-4260
+    method_or_func: MmprojModel.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 4260-4340
+    method_or_func: LlamaModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 4340-4440
+    method_or_func: LlamaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 4440-4500
+    method_or_func: LlamaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 4500-4540
+    method_or_func: LlamaModel.permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 4540-4640
+    method_or_func: LlamaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 4640-4720
+    method_or_func: LlamaModel.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 4720-4760
+    method_or_func: LlamaModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 4760-4840
+    method_or_func: DeepseekV2Model.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 4840-4940
+    method_or_func: DeepseekV2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 4940-5040
+    method_or_func: DeepseekV2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 5040-5140
+    method_or_func: DeepseekV2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 5140-5180
+    method_or_func: DeepseekV2Model.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 5180-5240
+    method_or_func: BertModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 5240-5300
+    method_or_func: BertModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 5300-5380
+    method_or_func: BertModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 5380-5460
+    method_or_func: BertModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 5460-5500
+    method_or_func: BertModel._xlmroberta_tokenizer_init()
+  - file: ./convert_hf_to_gguf.py
+    line: 5500-5620
+    method_or_func: BertModel._xlmroberta_set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 5620-5680
+    method_or_func: MPTModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 5680-5740
+    method_or_func: MPTModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 5740-5780
+    method_or_func: MPTModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 5780-5840
+    method_or_func: StableLMModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 5840-5920
+    method_or_func: StableLMModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 5920-5980
+    method_or_func: StableLMModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 5920-5980
+    method_or_func: StableLMModel._stack_qk_norm()
+  - file: ./convert_hf_to_gguf.py
+    line: 5980-6020
+    method_or_func: StableLMModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6020-6060
+    method_or_func: RefactModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 6060-6120
+    method_or_func: RefactModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6120-6180
+    method_or_func: RefactModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6180-6240
+    method_or_func: GPTNeoXModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6240-6300
+    method_or_func: GPTNeoXModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6300-6360
+    method_or_func: BloomModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6360-6420
+    method_or_func: BloomModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6420-6460
+    method_or_func: BaichuanModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 6460-6520
+    method_or_func: BaichuanModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6520-6580
+    method_or_func: BaichuanModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6580-6620
+    method_or_func: BaichuanModel._reverse_hf_permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 6620-6660
+    method_or_func: BaichuanModel._reverse_hf_permute_part()
+  - file: ./convert_hf_to_gguf.py
+    line: 6660-6700
+    method_or_func: BaichuanModel._reverse_hf_part()
+  - file: ./convert_hf_to_gguf.py
+    line: 6700-6780
+    method_or_func: XverseModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 6780-6840
+    method_or_func: XverseModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6840-6900
+    method_or_func: XverseModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 6900-6940
+    method_or_func: XverseModel._reverse_hf_permute()
+  - file: ./convert_hf_to_gguf.py
+    line: 6940-7000
+    method_or_func: FalconModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 7000-7060
+    method_or_func: FalconModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 7060-7120
+    method_or_func: GemmaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 7120-7180
+    method_or_func: GemmaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 7180-7220
+    method_or_func: GemmaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 7220-7260
+    method_or_func: Gemma3Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 7260-7340
+    method_or_func: Gemma3Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 7340-7400
+    method_or_func: Gemma3Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 7400-7440
+    method_or_func: Gemma3Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 7440-7520
+    method_or_func: Gemma3NModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 7520-7580
+    method_or_func: Gemma3NModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 7580-7660
+    method_or_func: Gemma3NModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 7660-7740
+    method_or_func: Gemma3NModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 7740-7780
+    method_or_func: Gemma3NModel.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 7780-7860
+    method_or_func: Gemma4Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 7860-7960
+    method_or_func: Gemma4Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 7960-8020
+    method_or_func: Gemma4Model.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8020-8080
+    method_or_func: Gemma4Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8080-8120
+    method_or_func: Gemma4Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 8120-8180
+    method_or_func: Qwen2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 8180-8220
+    method_or_func: Qwen2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 8220-8260
+    method_or_func: Qwen2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8260-8320
+    method_or_func: Qwen2MoeModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 8320-8420
+    method_or_func: Qwen2MoeModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8420-8460
+    method_or_func: Qwen2MoeModel.prepare_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8460-8520
+    method_or_func: MambaModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 8520-8580
+    method_or_func: MambaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 8580-8660
+    method_or_func: MambaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 8660-8720
+    method_or_func: MambaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8720-8780
+    method_or_func: Mamba2Model.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 8780-8840
+    method_or_func: Mamba2Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 8840-8920
+    method_or_func: Mamba2Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 8920-8980
+    method_or_func: Mamba2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 8980-9040
+    method_or_func: LazyTorchTensor.from_local_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: 9040-9100
+    method_or_func: LazyTorchTensor.from_remote_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: 9100-9160
+    method_or_func: LazyTorchTensor.from_safetensors_slice()
+  - file: ./convert_hf_to_gguf.py
+    line: 9160-9200
+    method_or_func: LazyTorchTensor.meta_with_dtype_and_shape()
+  - file: ./convert_hf_to_gguf.py
+    line: 9200-9240
+    method_or_func: LazyTorchTensor.numpy()
+  - file: ./convert_hf_to_gguf.py
+    line: 9240-9300
+    method_or_func: LazyTorchTensor.__torch_function__()
+  - file: ./convert_hf_to_gguf.py
+    line: 9300-9340
+    method_or_func: split_str_to_n_bytes()
+  - file: ./convert_lora_to_gguf.py
+    line: 1-60
+    method_or_func: LoraTorchTensor.__init__()
+  - file: ./convert_lora_to_gguf.py
+    line: 60-160
+    method_or_func: LoraTorchTensor.__getitem__()
+  - file: ./convert_lora_to_gguf.py
+    line: 160-200
+    method_or_func: LoraTorchTensor.shape
+  - file: ./convert_lora_to_gguf.py
+    line: 200-240
+    method_or_func: LoraTorchTensor.size()
+  - file: ./convert_lora_to_gguf.py
+    line: 240-280
+    method_or_func: LoraTorchTensor.contiguous()
+  - file: ./convert_lora_to_gguf.py
+    line: 280-360
+    method_or_func: LoraTorchTensor.reshape()
+  - file: ./convert_lora_to_gguf.py
+    line: 360-400
+    method_or_func: LoraTorchTensor.reshape_as()
+  - file: ./convert_lora_to_gguf.py
+    line: 400-440
+    method_or_func: LoraTorchTensor.view()
+  - file: ./convert_lora_to_gguf.py
+    line: 440-500
+    method_or_func: LoraTorchTensor.permute()
+  - file: ./convert_lora_to_gguf.py
+    line: 500-540
+    method_or_func: LoraTorchTensor.transpose()
+  - file: ./convert_lora_to_gguf.py
+    line: 540-580
+    method_or_func: LoraTorchTensor.swapaxes()
+  - file: ./convert_lora_to_gguf.py
+    line: 580-620
+    method_or_func: LoraTorchTensor.to()
+  - file: ./convert_lora_to_gguf.py
+    line: 620-660
+    method_or_func: LoraTorchTensor.dtype
+  - file: ./convert_lora_to_gguf.py
+    line: 660-700
+    method_or_func: LoraTorchTensor.get_lora_A_B()
+  - file: ./convert_lora_to_gguf.py
+    line: 700-820
+    method_or_func: LoraTorchTensor.__torch_function__()
+  - file: ./convert_lora_to_gguf.py
+    line: 820-880
+    method_or_func: get_base_tensor_name()
+  - file: ./convert_lora_to_gguf.py
+    line: 880-940
+    method_or_func: load_hparams_from_hf()
+  - file: ./convert_lora_to_gguf.py
+    line: 940-1000
+    method_or_func: LoraModel.__init__()
+  - file: ./convert_lora_to_gguf.py
+    line: 1000-1040
+    method_or_func: LoraModel.set_vocab()
+  - file: ./convert_lora_to_gguf.py
+    line: 1040-1080
+    method_or_func: LoraModel.set_type()
+  - file: ./convert_lora_to_gguf.py
+    line: 1080-1140
+    method_or_func: LoraModel.set_gguf_parameters()
+  - file: ./convert_lora_to_gguf.py
+    line: 1140-1180
+    method_or_func: LoraModel.generate_extra_tensors()
+  - file: ./convert_lora_to_gguf.py
+    line: 1180-1280
+    method_or_func: LoraModel.get_tensors()
+  - file: ./convert_lora_to_gguf.py
+    line: 1280-1380
+    method_or_func: LoraModel.modify_tensors()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 1-60
+    method_or_func: Hyperparameters.__init__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 60-140
+    method_or_func: Hyperparameters.load()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 140-180
+    method_or_func: Hyperparameters.set_n_ff()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 180-220
+    method_or_func: Hyperparameters.__str__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 220-260
+    method_or_func: Vocab.__init__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 260-320
+    method_or_func: Vocab.load()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 320-360
+    method_or_func: Tensor.__init__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 360-440
+    method_or_func: Tensor.load()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 440-480
+    method_or_func: GGMLModel.__init__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 480-540
+    method_or_func: GGMLModel.validate_header()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 540-600
+    method_or_func: GGMLModel.validate_conversion()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 600-680
+    method_or_func: GGMLModel.load()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 680-760
+    method_or_func: GGMLToGGUF.__init__()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 760-820
+    method_or_func: GGMLToGGUF.save()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 820-900
+    method_or_func: GGMLToGGUF.add_params()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 900-1000
+    method_or_func: GGMLToGGUF.add_vocab()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 1000-1080
+    method_or_func: GGMLToGGUF.add_tensors()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 1080-1160
+    method_or_func: handle_metadata()
+  - file: ./convert_llama_ggml_to_gguf.py
+    line: 1160-1240
+    method_or_func: handle_args()
+  - file: ./convert_hf_to_gguf.py
+    line: 6700-6740
+    method_or_func: OrionModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 6740-6780
+    method_or_func: OrionModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 6700-6740
+    method_or_func: StarCoderModel.set_gguf_parameters()
+  name: HF → GGUF 转换器家族概览 —— 三套「模型打包工具」
+  'no': 2
+  points:
+  - '**为什么需要 convert_hf_to_gguf.py？**'
+  - '- llama.cpp 只识别 GGUF 格式，需要一个中央调度台把 HuggingFace 模型统一转换'
+  - '- 支持文本模型（TextModel）与多模态投影器（MmprojModel）两大类'
+  - '**convert_llama_ggml_to_gguf.py 在做什么？**'
+  - '- 把旧版 GGML/GGMF/GGJT 三种格式迁移到 GGUF，是历史包袱的搬运工'
+  - '- 支持从独立目录加载 HuggingFace 配置覆盖旧 GGML 的缺失参数'
+  - '**convert_lora_to_gguf.py 的角色是什么？**'
+  - '- LoRA 适配器以 .lora_a / .lora_b 张量对形式写入 ADAPTER 类型 GGUF'
+  - '- LoraTorchTensor 模拟 PyTorch 接口支持切片、重塑、转置等操作'
+  - '**StableLM 的 per-head norm 合并机制是什么？**'
+  - '- StableLM 使用 per-head Q/K LayerNorm，需要把 n_head 个独立 norm 张量合并成一个 2D 权重'
+  - '- `_stack_qk_norm` 方法把分散的 per-head 权重 `torch.stack` 之后变成 2D 张量，对应 GGUF 中的 MODEL_TENSOR'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 9340-9540
+    method_or_func: parse_args()
+  - file: ./convert_hf_to_gguf.py
+    line: 9540-9740
+    method_or_func: main()
+  - file: ./convert_hf_to_gguf.py
+    line: 9740-9820
+    method_or_func: get_model_architecture()
+  name: convert_hf_to_gguf.py 入口与命令行 —— 转换器的「启动开关」
+  'no': 3
+  points:
+  - '**parse_args() 揭示了哪些关键开关？**'
+  - '- `--vocab-only`：只导出词表，常用于 tokenizer-only 模型'
+  - '- `--outtype`：支持 f32/f16/bf16/q8_0/tq1_0/tq2_0/auto 七种精度档位'
+  - '- `--remote`：实验性功能，直接读取 HuggingFace 远程 safetensors 而不下载到本地'
+  - '- `--mmproj`：导出多模态投影器（视觉/音频编码器）'
+  - '- `--split-max-tensors` 与 `--split-max-size`：大模型分片输出'
+  - '- `--fuse-gate-up-exps`：把 MoE 的 gate_exps 和 up_exps 张量融合为单个张量'
+  - '**main() 函数如何串联整个转换流水线？**'
+  - '- 通过 `get_model_architecture()` 从 `architectures` 字段识别模型类型'
+  - '- 利用 `ModelBase.from_model_architecture()` 工厂方法分发到对应处理类'
+  - '- 根据模型是否在 Mistral 格式，选择不同的模型类路径'
+  - '- Mistral 格式下根据 hparams 是否含 `moe` 选择 MistralMoeModel 或 MistralModel'
+  - '**模型分发的魔法在哪里？**'
+  - '- 通过 `ModelBase.register("Architectures")` 装饰器实现架构名 → 类名的自动注册'
+  - '- `_model_classes` 字典维护 TEXT 与 MMPROJ 两套独立的模型注册表'

@@ -1,0 +1,209 @@
+classes: []
+desc: 该文件实现了一个面向前端聊天界面的代理式（Agentic）消息展示工具模块：它将数据库中的助手消息由其持久化的推理内容、文本内容、工具调用（toolCalls）以及对应的工具结果消息（含附件）解析并组织成按顺序排布的展示区块（AgenticSection），同时支持单轮与多轮代理流程、流式（streaming）工具调用状态区分，以及将工具结果文本与图片附件进行匹配渲染。
+file: tools/server/webui/src/lib/utils/agentic.ts
+funcs:
+- code:
+  - /**
+  - ' * Derives display sections from a single assistant message and its direct tool
+    results.'
+  - ' *'
+  - ' * @param message - The assistant message'
+  - ' * @param toolMessages - Tool result messages for this assistant''s tool_calls'
+  - ' * @param streamingToolCalls - Partial tool calls during streaming (not yet persisted)'
+  - ' */'
+  - function deriveSingleTurnSections(
+  - "\tmessage: DatabaseMessage,"
+  - "\ttoolMessages: DatabaseMessage[] = [],"
+  - "\tstreamingToolCalls: ApiChatCompletionToolCall[] = []"
+  - '): AgenticSection[] {'
+  - "\tconst sections: AgenticSection[] = [];"
+  - ''
+  - "\t// 1. Reasoning content (from dedicated field)"
+  - "\tif (message.reasoningContent) {"
+  - "\t\tsections.push({"
+  - "\t\t\ttype: AgenticSectionType.REASONING,"
+  - "\t\t\tcontent: message.reasoningContent"
+  - "\t\t});"
+  - "\t}"
+  - ''
+  - "\t// 2. Text content"
+  - "\tif (message.content?.trim()) {"
+  - "\t\tsections.push({"
+  - "\t\t\ttype: AgenticSectionType.TEXT,"
+  - "\t\t\tcontent: message.content"
+  - "\t\t});"
+  - "\t}"
+  - ''
+  - "\t// 3. Persisted tool calls (from message.toolCalls field)"
+  - "\tconst toolCalls = parseToolCalls(message.toolCalls);"
+  - "\tfor (const tc of toolCalls) {"
+  - "\t\tconst resultMsg = toolMessages.find((m) => m.toolCallId === tc.id);"
+  - "\t\tsections.push({"
+  - "\t\t\ttype: resultMsg ? AgenticSectionType.TOOL_CALL : AgenticSectionType.TOOL_CALL_PENDING,"
+  - "\t\t\tcontent: resultMsg?.content || '',"
+  - "\t\t\ttoolName: tc.function?.name,"
+  - "\t\t\ttoolArgs: tc.function?.arguments,"
+  - "\t\t\ttoolResult: resultMsg?.content,"
+  - "\t\t\ttoolResultExtras: resultMsg?.extra"
+  - "\t\t});"
+  - "\t}"
+  - ''
+  - "\t// 4. Streaming tool calls (not yet persisted - currently being received)"
+  - "\tfor (const tc of streamingToolCalls) {"
+  - "\t\t// Skip if already in persisted tool calls"
+  - "\t\tif (tc.id && toolCalls.find((t) => t.id === tc.id)) continue;"
+  - "\t\tsections.push({"
+  - "\t\t\ttype: AgenticSectionType.TOOL_CALL_STREAMING,"
+  - "\t\t\tcontent: '',"
+  - "\t\t\ttoolName: tc.function?.name,"
+  - "\t\t\ttoolArgs: tc.function?.arguments"
+  - "\t\t});"
+  - "\t}"
+  - ''
+  - "\treturn sections;"
+  - '}'
+  desc: 从单条助手消息及其直接工具结果消息中推导并组装单轮展示的代理区块（先推理、再文本、再持久化工具调用、再流式工具调用）。
+  line: 37-87
+  name: deriveSingleTurnSections
+- code:
+  - /**
+  - ' * Derives display sections from structured message data.'
+  - ' *'
+  - ' * Handles both single-turn (one assistant + its tool results) and multi-turn'
+  - ' * agentic sessions (multiple assistant + tool messages grouped together).'
+  - ' *'
+  - ' * When `toolMessages` contains continuation assistant messages (from multi-turn'
+  - ' * agentic flows), they are processed in order to produce sections across all
+    turns.'
+  - ' *'
+  - ' * @param message - The first/anchor assistant message'
+  - ' * @param toolMessages - Tool result messages and continuation assistant messages'
+  - ' * @param streamingToolCalls - Partial tool calls during streaming (not yet persisted)'
+  - ' * @param isStreaming - Whether the message is currently being streamed'
+  - ' */'
+  - export function deriveAgenticSections(
+  - "\tmessage: DatabaseMessage,"
+  - "\ttoolMessages: DatabaseMessage[] = [],"
+  - "\tstreamingToolCalls: ApiChatCompletionToolCall[] = []"
+  - '): AgenticSection[] {'
+  - "\tconst hasAssistantContinuations = toolMessages.some((m) => m.role === MessageRole.ASSISTANT);"
+  - ''
+  - "\tif (!hasAssistantContinuations) {"
+  - "\t\treturn deriveSingleTurnSections(message, toolMessages, streamingToolCalls);"
+  - "\t}"
+  - ''
+  - "\tconst sections: AgenticSection[] = [];"
+  - ''
+  - "\tconst firstTurnToolMsgs = collectToolMessages(toolMessages, 0);"
+  - "\tsections.push(...deriveSingleTurnSections(message, firstTurnToolMsgs));"
+  - ''
+  - "\tlet i = firstTurnToolMsgs.length;"
+  - ''
+  - "\twhile (i < toolMessages.length) {"
+  - "\t\tconst msg = toolMessages[i];"
+  - ''
+  - "\t\tif (msg.role === MessageRole.ASSISTANT) {"
+  - "\t\t\tconst turnToolMsgs = collectToolMessages(toolMessages, i + 1);"
+  - "\t\t\tconst isLastTurn = i + 1 + turnToolMsgs.length >= toolMessages.length;"
+  - ''
+  - "\t\t\tsections.push("
+  - "\t\t\t\t...deriveSingleTurnSections(msg, turnToolMsgs, isLastTurn ? streamingToolCalls\
+    \ : [])"
+  - "\t\t\t);"
+  - ''
+  - "\t\t\ti += 1 + turnToolMsgs.length;"
+  - "\t\t} else {"
+  - "\t\t\ti++;"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn sections;"
+  - '}'
+  desc: 总入口函数：根据锚点助手消息与后续消息集合，推导并合并单轮或多轮代理会话的全部展示区块，支持流式工具调用的追加与收尾标记。
+  line: 89-137
+  name: deriveAgenticSections
+- code:
+  - /**
+  - ' * Collect consecutive tool messages starting at `startIndex`.'
+  - ' */'
+  - 'function collectToolMessages(messages: DatabaseMessage[], startIndex: number):
+    DatabaseMessage[] {'
+  - "\tconst result: DatabaseMessage[] = [];"
+  - ''
+  - "\tfor (let i = startIndex; i < messages.length; i++) {"
+  - "\t\tif (messages[i].role === MessageRole.TOOL) {"
+  - "\t\t\tresult.push(messages[i]);"
+  - "\t\t} else {"
+  - "\t\t\tbreak;"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn result;"
+  - '}'
+  desc: 从指定索引开始连续收集角色为 TOOL 的消息，直到遇到非工具角色消息为止，用于界定一轮代理对话中的工具结果片段。
+  line: 139-153
+  name: collectToolMessages
+- code:
+  - /**
+  - ' * Parse tool result text into lines, matching image attachments by name.'
+  - ' */'
+  - export function parseToolResultWithImages(
+  - "\ttoolResult: string,"
+  - "\textras?: DatabaseMessageExtra[]"
+  - '): ToolResultLine[] {'
+  - "\tconst lines = toolResult.split(NEWLINE_SEPARATOR);"
+  - "\treturn lines.map((line) => {"
+  - "\t\tconst match = line.match(ATTACHMENT_SAVED_REGEX);"
+  - "\t\tif (!match || !extras) return { text: line };"
+  - ''
+  - "\t\tconst attachmentName = match[1];"
+  - "\t\tconst image = extras.find("
+  - "\t\t\t(e): e is DatabaseMessageExtraImageFile =>"
+  - "\t\t\t\te.type === AttachmentType.IMAGE && e.name === attachmentName"
+  - "\t\t);"
+  - ''
+  - "\t\treturn { text: line, image };"
+  - "\t});"
+  - '}'
+  desc: 将工具结果文本按行拆分，对匹配附件保存标记的行查找对应的图片附件元数据并关联返回，便于前端图文混合渲染。
+  line: 155-176
+  name: parseToolResultWithImages
+- code:
+  - /**
+  - ' * Safely parse the toolCalls JSON string from a DatabaseMessage.'
+  - ' */'
+  - 'function parseToolCalls(toolCallsJson?: string): ApiChatCompletionToolCall[]
+    {'
+  - "\tif (!toolCallsJson) return [];"
+  - ''
+  - "\ttry {"
+  - "\t\tconst parsed = JSON.parse(toolCallsJson);"
+  - ''
+  - "\t\treturn Array.isArray(parsed) ? parsed : [];"
+  - "\t} catch {"
+  - "\t\treturn [];"
+  - "\t}"
+  - '}'
+  desc: 安全解析数据库消息中 toolCalls 的 JSON 字符串字段，异常或非数组时返回空数组，保证后续遍历不中断。
+  line: 178-192
+  name: parseToolCalls
+- code:
+  - /**
+  - ' * Check if a message has agentic content (tool calls or is part of an agentic
+    flow).'
+  - ' */'
+  - export function hasAgenticContent(
+  - "\tmessage: DatabaseMessage,"
+  - "\ttoolMessages: DatabaseMessage[] = []"
+  - '): boolean {'
+  - "\tif (message.toolCalls) {"
+  - "\t\tconst tc = parseToolCalls(message.toolCalls);"
+  - ''
+  - "\t\tif (tc.length > 0) return true;"
+  - "\t}"
+  - ''
+  - "\treturn toolMessages.length > 0;"
+  - '}'
+  desc: 判断给定消息是否包含代理式内容（存在已解析的工具调用或关联的工具结果消息），用于界面渲染分支切换。
+  line: 194-208
+  name: hasAgenticContent

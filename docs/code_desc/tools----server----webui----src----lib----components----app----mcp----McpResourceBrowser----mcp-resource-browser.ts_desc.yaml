@@ -1,0 +1,129 @@
+classes: []
+desc: 该文件是 MCP (Model Context Protocol) 资源浏览器组件的核心逻辑模块，负责将扁平的 MCP 资源列表构建为层级树结构，并提供资源搜索过滤、资源计数和子节点排序等功能。文件包含资源树节点接口定义、资源匹配辅助函数、资源树构建函数、资源计数函数和子节点排序函数，支持通过服务器名称和搜索查询来组织和筛选
+  MCP 资源。
+file: tools/server/webui/src/lib/components/app/mcp/McpResourceBrowser/mcp-resource-browser.ts
+funcs:
+- code:
+  - 'function resourceMatchesSearch(resource: MCPResource, query: string): boolean
+    {'
+  - "\treturn ("
+  - "\t\tresource.title?.toLowerCase().includes(query) || resource.uri.toLowerCase().includes(query)"
+  - "\t);"
+  - '}'
+  desc: 检查 MCP 资源是否匹配搜索关键词，通过比较资源标题和 URI 是否包含查询字符串来实现
+  line: 8-12
+  name: resourceMatchesSearch
+- code:
+  - export function buildResourceTree(
+  - "\tresourceList: MCPResource[],"
+  - "\tserverName: string,"
+  - "\tsearchQuery?: string"
+  - '): ResourceTreeNode {'
+  - "\tconst root: ResourceTreeNode = { name: 'root', children: new Map() };"
+  - ''
+  - "\tif (!searchQuery || !searchQuery.trim()) {"
+  - "\t\tfor (const resource of resourceList) {"
+  - "\t\t\tconst pathParts = parseResourcePath(resource.uri);"
+  - "\t\t\tlet current = root;"
+  - ''
+  - "\t\t\tfor (let i = 0; i < pathParts.length - 1; i++) {"
+  - "\t\t\t\tconst part = pathParts[i];"
+  - "\t\t\t\tif (!current.children.has(part)) {"
+  - "\t\t\t\t\tcurrent.children.set(part, { name: part, children: new Map() });"
+  - "\t\t\t\t}"
+  - "\t\t\t\tcurrent = current.children.get(part)!;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\tconst fileName = pathParts[pathParts.length - 1] || resource.name;"
+  - "\t\t\tcurrent.children.set(resource.uri, {"
+  - "\t\t\t\tname: fileName,"
+  - "\t\t\t\tresource: { ...resource, serverName },"
+  - "\t\t\t\tchildren: new Map()"
+  - "\t\t\t});"
+  - "\t\t}"
+  - ''
+  - "\t\treturn root;"
+  - "\t}"
+  - ''
+  - "\tconst query = searchQuery.toLowerCase();"
+  - ''
+  - "\t// Build tree with filtering"
+  - "\tfor (const resource of resourceList) {"
+  - "\t\tif (!resourceMatchesSearch(resource, query)) continue;"
+  - ''
+  - "\t\tconst pathParts = parseResourcePath(resource.uri);"
+  - "\t\tlet current = root;"
+  - ''
+  - "\t\tfor (let i = 0; i < pathParts.length - 1; i++) {"
+  - "\t\t\tconst part = pathParts[i];"
+  - "\t\t\tif (!current.children.has(part)) {"
+  - "\t\t\t\tcurrent.children.set(part, { name: part, children: new Map(), isFiltered:\
+    \ true });"
+  - "\t\t\t}"
+  - "\t\t\tcurrent = current.children.get(part)!;"
+  - "\t\t}"
+  - ''
+  - "\t\tconst fileName = pathParts[pathParts.length - 1] || resource.name;"
+  - ''
+  - "\t\tcurrent.children.set(resource.uri, {"
+  - "\t\t\tname: fileName,"
+  - "\t\t\tresource: { ...resource, serverName },"
+  - "\t\t\tchildren: new Map(),"
+  - "\t\t\tisFiltered: true"
+  - "\t\t});"
+  - "\t}"
+  - ''
+  - "\tfunction cleanupEmptyFolders(node: ResourceTreeNode): boolean {"
+  - "\t\tif (node.resource) return true;"
+  - ''
+  - "\t\tconst toDelete: string[] = [];"
+  - "\t\tfor (const [name, child] of node.children.entries()) {"
+  - "\t\t\tif (!cleanupEmptyFolders(child)) {"
+  - "\t\t\t\ttoDelete.push(name);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\tfor (const name of toDelete) {"
+  - "\t\t\tnode.children.delete(name);"
+  - "\t\t}"
+  - ''
+  - "\t\treturn node.children.size > 0;"
+  - "\t}"
+  - ''
+  - "\tcleanupEmptyFolders(root);"
+  - ''
+  - "\treturn root;"
+  - '}'
+  desc: 根据资源列表、服务器名称和可选的搜索查询构建资源树结构，无搜索时建立完整树，有搜索时建立过滤后的树并清理空文件夹
+  line: 14-83
+  name: buildResourceTree
+- code:
+  - 'export function countTreeResources(node: ResourceTreeNode): number {'
+  - "\tif (node.resource) return 1;"
+  - "\tlet count = 0;"
+  - ''
+  - "\tfor (const child of node.children.values()) {"
+  - "\t\tcount += countTreeResources(child);"
+  - "\t}"
+  - ''
+  - "\treturn count;"
+  - '}'
+  desc: 递归计算资源树中资源的数量，遇到资源节点返回1，否则累加所有子节点的资源数量
+  line: 85-93
+  name: countTreeResources
+- code:
+  - 'export function sortTreeChildren(children: ResourceTreeNode[]): ResourceTreeNode[]
+    {'
+  - "\treturn children.sort((a, b) => {"
+  - "\t\tconst aIsFolder = !a.resource && a.children.size > 0;"
+  - "\t\tconst bIsFolder = !b.resource && b.children.size > 0;"
+  - ''
+  - "\t\tif (aIsFolder && !bIsFolder) return -1;"
+  - "\t\tif (!aIsFolder && bIsFolder) return 1;"
+  - ''
+  - "\t\treturn a.name.localeCompare(b.name);"
+  - "\t});"
+  - '}'
+  desc: 对资源树的子节点进行排序，文件夹排在资源文件之前，同类型节点按名称进行字母顺序排序
+  line: 95-104
+  name: sortTreeChildren

@@ -1,0 +1,97 @@
+classes: []
+desc: 该文件是服务器模板功能的单元测试模块，通过参数化测试验证不同模型模板在/apply-template端点下的行为，包括reasoning模式处理（on/off/auto）、当前日期注入以及生成提示符的添加，确保模板生成的前缀内容符合预期。
+file: tools/server/tests/unit/test_template.py
+funcs:
+- code:
+  - '@pytest.fixture(autouse=True)'
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.tinyllama2()'
+  - '    server.model_alias = "tinyllama-2"'
+  - '    server.n_slots = 1'
+  desc: pytest的autouse fixture，在每个测试前初始化全局server，配置tinyllama2模型预设、模型别名和槽位数。
+  line: 12-16
+  name: create_server
+- code:
+  - '@pytest.mark.parametrize("tools", [None, [], [TEST_TOOL]])'
+  - '@pytest.mark.parametrize("template_name,reasoning,expected_end", ['
+  - '    ("deepseek-ai-DeepSeek-R1-Distill-Qwen-32B",  "on", ""),'
+  - '    ("Qwen-Qwen3-0.6B","auto", "<|im_start|>assistant\n"),'
+  - '    ("Qwen-Qwen3-0.6B", "off", "<|im_start|>assistant\n\n\n"),'
+  - '    ("Qwen-QwQ-32B","auto", "<|im_start|>assistant\n"),'
+  - '    ("CohereForAI-c4ai-command-r7b-12-2024-tool_use","auto", "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"),'
+  - '    ("CohereForAI-c4ai-command-r7b-12-2024-tool_use", "off", "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|><|START_THINKING|><|END_THINKING|>"),'
+  - '])'
+  - 'def test_reasoning(template_name: str, reasoning: Literal[''on'', ''off'', ''auto'']
+    | None, expected_end: str, tools: list[dict]):'
+  - '    global server'
+  - '    server.jinja = True'
+  - '    server.reasoning = reasoning'
+  - '    server.chat_template_file = f''../../../models/templates/{template_name}.jinja'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/apply-template", data={'
+  - '        "messages": ['
+  - '            {"role": "user", "content": "What is today?"},'
+  - '        ],'
+  - '        "tools": tools,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    prompt = res.body["prompt"]'
+  - '    assert prompt.endswith(expected_end), f"Expected prompt to end with ''{expected_end}'',
+    got ''{prompt}''"'
+  desc: 参数化测试函数，验证不同模板在不同reasoning模式下的prompt结尾是否符合期望值，并测试是否包含tools参数。
+  line: 18-48
+  name: test_reasoning
+- code:
+  - '@pytest.mark.parametrize("tools", [None, [], [TEST_TOOL]])'
+  - '@pytest.mark.parametrize("template_name,format", ['
+  - '    ("meta-llama-Llama-3.3-70B-Instruct",    "%d %b %Y"),'
+  - '    ("fireworks-ai-llama-3-firefunction-v2", "%b %d %Y"),'
+  - '])'
+  - 'def test_date_inside_prompt(template_name: str, format: str, tools: list[dict]):'
+  - '    global server'
+  - '    server.jinja = True'
+  - '    server.chat_template_file = f''../../../models/templates/{template_name}.jinja'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/apply-template", data={'
+  - '        "messages": ['
+  - '            {"role": "user", "content": "What is today?"},'
+  - '        ],'
+  - '        "tools": tools,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    prompt = res.body["prompt"]'
+  - '    today_str = datetime.date.today().strftime(format)'
+  - '    assert today_str in prompt, f"Expected today''s date ({today_str}) in content
+    ({prompt})"'
+  desc: 参数化测试函数，验证模板生成的prompt中包含格式化后的今天的日期，确保日期相关模板功能正常。
+  line: 50-70
+  name: test_date_inside_prompt
+- code:
+  - '@pytest.mark.parametrize("add_generation_prompt", [False, True])'
+  - '@pytest.mark.parametrize("template_name,expected_generation_prompt", ['
+  - '    ("meta-llama-Llama-3.3-70B-Instruct",    "<|start_header_id|>assistant<|end_header_id|>"),'
+  - '])'
+  - 'def test_add_generation_prompt(template_name: str, expected_generation_prompt:
+    str, add_generation_prompt: bool):'
+  - '    global server'
+  - '    server.jinja = True'
+  - '    server.chat_template_file = f''../../../models/templates/{template_name}.jinja'''
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/apply-template", data={'
+  - '        "messages": ['
+  - '            {"role": "user", "content": "What is today?"},'
+  - '        ],'
+  - '        "add_generation_prompt": add_generation_prompt,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    prompt = res.body["prompt"]'
+  - '    if add_generation_prompt:'
+  - '        assert expected_generation_prompt in prompt, f"Expected generation prompt
+    ({expected_generation_prompt}) in content ({prompt})"'
+  - '    else:'
+  - '        assert expected_generation_prompt not in prompt, f"Did not expect generation
+    prompt ({expected_generation_prompt}) in content ({prompt})"'
+  desc: 参数化测试函数，验证当add_generation_prompt参数为True时生成提示符出现在prompt中，为False时不出现。
+  line: 72-91
+  name: test_add_generation_prompt

@@ -1,0 +1,96 @@
+classes:
+- desc: 用于动态库句柄的RAII删除器，针对Windows和非Windows平台分别调用FreeLibrary或dlclose释放库句柄。
+  methods:
+  - code:
+    - void operator()(HMODULE handle) {
+    - '    FreeLibrary(handle);'
+    - '}'
+    desc: 重载函数调用运算符，根据平台调用对应API释放动态库句柄。
+    line: 18-22
+    name: operator()
+  - code:
+    - void operator()(void * handle) {
+    - '    dlclose(handle);'
+    - '}'
+    desc: 重载函数调用运算符，在非Windows平台调用dlclose释放动态库句柄。
+    line: 49-53
+    name: operator()
+  name: dl_handle_deleter
+desc: 该文件是ggml项目中针对Hexagon后端的一个动态链接库封装头文件，提供跨平台（Windows和非Windows）的动态库加载、符号获取和错误处理功能，使用C++文件系统路径作为加载目标，并返回void*类型的通用句柄。
+file: ggml/src/ggml-hexagon/libdl.h
+funcs:
+- code:
+  - '#pragma once'
+  - '#ifdef _WIN32'
+  - '#   define WIN32_LEAN_AND_MEAN'
+  - '#   ifndef NOMINMAX'
+  - '#       define NOMINMAX'
+  - '#   endif'
+  - '#   include <windows.h>'
+  - '#   include <winevt.h>'
+  - '#else'
+  - '#    include <dlfcn.h>'
+  - '#    include <unistd.h>'
+  - '#endif'
+  - '#include <filesystem>'
+  - namespace fs = std::filesystem;
+  - '#ifdef _WIN32'
+  - using dl_handle = std::remove_pointer_t<HMODULE>;
+  - '#else'
+  - using dl_handle = void;
+  - '#endif'
+  desc: 文件全局代码，包括预处理指令、平台条件编译、命名空间别名using和类型别名定义，用于配置跨平台编译环境。
+  line: 1-30
+  name: __main__
+- code:
+  - static inline dl_handle * dl_load_library(const fs::path & path) {
+  - '    DWORD old_mode = SetErrorMode(SEM_FAILCRITICALERRORS);'
+  - '    SetErrorMode(old_mode | SEM_FAILCRITICALERRORS);'
+  - '    HMODULE handle = LoadLibraryW(path.wstring().c_str());'
+  - '    SetErrorMode(old_mode);'
+  - '    return handle;'
+  - '}'
+  desc: 根据平台加载动态库，Windows下使用LoadLibraryW并抑制错误对话框，非Windows下使用dlopen加载库。
+  line: 24-33
+  name: dl_load_library
+- code:
+  - static inline void * dl_get_sym(dl_handle * handle, const char * name) {
+  - '    DWORD old_mode = SetErrorMode(SEM_FAILCRITICALERRORS);'
+  - '    SetErrorMode(old_mode | SEM_FAILCRITICALERRORS);'
+  - '    void * p = (void *) GetProcAddress(handle, name);'
+  - '    SetErrorMode(old_mode);'
+  - '    return p;'
+  - '}'
+  desc: 根据平台获取动态库中的符号地址，Windows下使用GetProcAddress，非Windows下使用dlsym。
+  line: 35-44
+  name: dl_get_sym
+- code:
+  - static inline const char * dl_error() {
+  - '    return "";'
+  - '}'
+  desc: 返回动态库操作的错误信息，Windows下返回空字符串，非Windows下返回dlerror的结果或空字符串。
+  line: 46-48
+  name: dl_error
+- code:
+  - static inline dl_handle * dl_load_library(const fs::path & path) {
+  - '    dl_handle * handle = dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);'
+  - '    return handle;'
+  - '}'
+  desc: 在非Windows平台上加载动态库，使用dlopen并指定RTLD_NOW和RTLD_LOCAL标志。
+  line: 55-60
+  name: dl_load_library
+- code:
+  - static inline void * dl_get_sym(dl_handle * handle, const char * name) {
+  - '    return dlsym(handle, name);'
+  - '}'
+  desc: 在非Windows平台上获取动态库符号地址，直接调用dlsym函数。
+  line: 62-64
+  name: dl_get_sym
+- code:
+  - static inline const char * dl_error() {
+  - '    const char *rslt = dlerror();'
+  - '    return rslt != nullptr ? rslt : "";'
+  - '}'
+  desc: 在非Windows平台上获取并返回动态库的错误信息，若dlerror返回空则返回空字符串。
+  line: 66-69
+  name: dl_error

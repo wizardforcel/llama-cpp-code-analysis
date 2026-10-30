@@ -1,0 +1,234 @@
+classes: []
+desc: the file is a TypeScript module that provides file conversion functionality
+  to transform uploaded chat files (images, audio, PDFs, MCP prompts, and text files)
+  into message extras format for database storage, with special handling for vision
+  model capabilities and various file type conversions.
+file: tools/server/webui/src/lib/utils/convert-files-to-extra.ts
+funcs:
+- code:
+  - import { convertPDFToImage, convertPDFToText } from './pdf-processing';
+  - import { isSvgMimeType, svgBase64UrlToPngDataURL } from './svg-to-png';
+  - import { isWebpMimeType, webpBase64UrlToPngDataURL } from './webp-to-png';
+  - import { FileTypeCategory, AttachmentType, SpecialFileType } from '$lib/enums';
+  - import { config, settingsStore } from '$lib/stores/settings.svelte';
+  - import { modelsStore } from '$lib/stores/models.svelte';
+  - import { getFileTypeCategory } from '$lib/utils';
+  - import { readFileAsText, isLikelyTextFile } from './text-files';
+  - import { toast } from 'svelte-sonner';
+  - import type { FileProcessingResult, ChatUploadedFile, DatabaseMessageExtra } from
+    '$lib/types';
+  desc: the module-level code that imports necessary utilities, types, and enums from
+    various modules including PDF processing, SVG/WebP conversion, file type detection,
+    settings stores, and toast notifications.
+  line: 1-10
+  name: __main__
+- code:
+  - 'function readFileAsBase64(file: File): Promise<string> {'
+  - "\treturn new Promise((resolve, reject) => {"
+  - "\t\tconst reader = new FileReader();"
+  - ''
+  - "\t\treader.onload = () => {"
+  - "\t\t\t// Extract base64 data without the data URL prefix"
+  - "\t\t\tconst dataUrl = reader.result as string;"
+  - "\t\t\tconst base64 = dataUrl.split(',')[1];"
+  - "\t\t\tresolve(base64);"
+  - "\t\t};"
+  - ''
+  - "\t\treader.onerror = () => reject(reader.error);"
+  - ''
+  - "\t\treader.readAsDataURL(file);"
+  - "\t});"
+  - '}'
+  desc: the function reads a File object and converts it to a base64-encoded string
+    using FileReader API, returning a Promise that resolves with the base64 data (without
+    the data URL prefix).
+  line: 12-26
+  name: readFileAsBase64
+- code:
+  - export async function parseFilesToMessageExtras(
+  - "\tfiles: ChatUploadedFile[],"
+  - "\tactiveModelId?: string"
+  - '): Promise<FileProcessingResult> {'
+  - "\tconst extras: DatabaseMessageExtra[] = [];"
+  - "\tconst emptyFiles: string[] = [];"
+  - ''
+  - "\tfor (const file of files) {"
+  - "\t\tif (file.type === SpecialFileType.MCP_PROMPT && file.mcpPrompt) {"
+  - "\t\t\textras.push({"
+  - "\t\t\t\ttype: AttachmentType.MCP_PROMPT,"
+  - "\t\t\t\tname: file.name,"
+  - "\t\t\t\tserverName: file.mcpPrompt.serverName,"
+  - "\t\t\t\tpromptName: file.mcpPrompt.promptName,"
+  - "\t\t\t\tcontent: file.textContent ?? '',"
+  - "\t\t\t\targuments: file.mcpPrompt.arguments"
+  - "\t\t\t});"
+  - ''
+  - "\t\t\tcontinue;"
+  - "\t\t}"
+  - ''
+  - "\t\tif (getFileTypeCategory(file.type) === FileTypeCategory.IMAGE) {"
+  - "\t\t\tif (file.preview) {"
+  - "\t\t\t\tlet base64Url = file.preview;"
+  - ''
+  - "\t\t\t\tif (isSvgMimeType(file.type)) {"
+  - "\t\t\t\t\ttry {"
+  - "\t\t\t\t\t\tbase64Url = await svgBase64UrlToPngDataURL(base64Url);"
+  - "\t\t\t\t\t} catch (error) {"
+  - "\t\t\t\t\t\tconsole.error('Failed to convert SVG to PNG for database storage:',\
+    \ error);"
+  - "\t\t\t\t\t}"
+  - "\t\t\t\t} else if (isWebpMimeType(file.type)) {"
+  - "\t\t\t\t\ttry {"
+  - "\t\t\t\t\t\tbase64Url = await webpBase64UrlToPngDataURL(base64Url);"
+  - "\t\t\t\t\t} catch (error) {"
+  - "\t\t\t\t\t\tconsole.error('Failed to convert WebP to PNG for database storage:',\
+    \ error);"
+  - "\t\t\t\t\t}"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\textras.push({"
+  - "\t\t\t\t\ttype: AttachmentType.IMAGE,"
+  - "\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\tbase64Url"
+  - "\t\t\t\t});"
+  - "\t\t\t}"
+  - "\t\t} else if (getFileTypeCategory(file.type) === FileTypeCategory.AUDIO) {"
+  - "\t\t\t// Process audio files (MP3 and WAV)"
+  - "\t\t\ttry {"
+  - "\t\t\t\tconst base64Data = await readFileAsBase64(file.file);"
+  - ''
+  - "\t\t\t\textras.push({"
+  - "\t\t\t\t\ttype: AttachmentType.AUDIO,"
+  - "\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\tbase64Data: base64Data,"
+  - "\t\t\t\t\tmimeType: file.type"
+  - "\t\t\t\t});"
+  - "\t\t\t} catch (error) {"
+  - "\t\t\t\tconsole.error(`Failed to process audio file ${file.name}:`, error);"
+  - "\t\t\t}"
+  - "\t\t} else if (getFileTypeCategory(file.type) === FileTypeCategory.PDF) {"
+  - "\t\t\ttry {"
+  - "\t\t\t\t// Always get base64 data for preview functionality"
+  - "\t\t\t\tconst base64Data = await readFileAsBase64(file.file);"
+  - "\t\t\t\tconst currentConfig = config();"
+  - "\t\t\t\t// Use per-model vision check for router mode"
+  - "\t\t\t\tconst hasVisionSupport = activeModelId"
+  - "\t\t\t\t\t? modelsStore.modelSupportsVision(activeModelId)"
+  - "\t\t\t\t\t: false;"
+  - ''
+  - "\t\t\t\t// Force PDF-to-text for non-vision models"
+  - "\t\t\t\tlet shouldProcessAsImages = Boolean(currentConfig.pdfAsImage) && hasVisionSupport;"
+  - ''
+  - "\t\t\t\t// If user had pdfAsImage enabled but model doesn't support vision, update\
+    \ setting and notify"
+  - "\t\t\t\tif (currentConfig.pdfAsImage && !hasVisionSupport) {"
+  - "\t\t\t\t\tconsole.log('Non-vision model detected: forcing PDF-to-text mode and\
+    \ updating settings');"
+  - ''
+  - "\t\t\t\t\t// Update the setting in localStorage"
+  - "\t\t\t\t\tsettingsStore.updateConfig('pdfAsImage', false);"
+  - ''
+  - "\t\t\t\t\t// Show toast notification to user"
+  - "\t\t\t\t\ttoast.warning("
+  - "\t\t\t\t\t\t'PDF setting changed: Non-vision model detected, PDFs will be processed\
+    \ as text instead of images.',"
+  - "\t\t\t\t\t\t{"
+  - "\t\t\t\t\t\t\tduration: 5000"
+  - "\t\t\t\t\t\t}"
+  - "\t\t\t\t\t);"
+  - ''
+  - "\t\t\t\t\tshouldProcessAsImages = false;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tif (shouldProcessAsImages) {"
+  - "\t\t\t\t\t// Process PDF as images (only for vision models)"
+  - "\t\t\t\t\ttry {"
+  - "\t\t\t\t\t\tconst images = await convertPDFToImage(file.file);"
+  - ''
+  - "\t\t\t\t\t\t// Show success toast for PDF image processing"
+  - "\t\t\t\t\t\ttoast.success("
+  - "\t\t\t\t\t\t\t`PDF \"${file.name}\" processed as ${images.length} images for\
+    \ vision model.`,"
+  - "\t\t\t\t\t\t\t{"
+  - "\t\t\t\t\t\t\t\tduration: 3000"
+  - "\t\t\t\t\t\t\t}"
+  - "\t\t\t\t\t\t);"
+  - ''
+  - "\t\t\t\t\t\textras.push({"
+  - "\t\t\t\t\t\t\ttype: AttachmentType.PDF,"
+  - "\t\t\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\t\t\tcontent: `PDF file with ${images.length} pages`,"
+  - "\t\t\t\t\t\t\timages: images,"
+  - "\t\t\t\t\t\t\tprocessedAsImages: true,"
+  - "\t\t\t\t\t\t\tbase64Data: base64Data"
+  - "\t\t\t\t\t\t});"
+  - "\t\t\t\t\t} catch (imageError) {"
+  - "\t\t\t\t\t\tconsole.warn("
+  - "\t\t\t\t\t\t\t`Failed to process PDF ${file.name} as images, falling back to\
+    \ text:`,"
+  - "\t\t\t\t\t\t\timageError"
+  - "\t\t\t\t\t\t);"
+  - ''
+  - "\t\t\t\t\t\t// Fallback to text processing"
+  - "\t\t\t\t\t\tconst content = await convertPDFToText(file.file);"
+  - ''
+  - "\t\t\t\t\t\textras.push({"
+  - "\t\t\t\t\t\t\ttype: AttachmentType.PDF,"
+  - "\t\t\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\t\t\tcontent: content,"
+  - "\t\t\t\t\t\t\tprocessedAsImages: false,"
+  - "\t\t\t\t\t\t\tbase64Data: base64Data"
+  - "\t\t\t\t\t\t});"
+  - "\t\t\t\t\t}"
+  - "\t\t\t\t} else {"
+  - "\t\t\t\t\t// Process PDF as text (default or forced for non-vision models)"
+  - "\t\t\t\t\tconst content = await convertPDFToText(file.file);"
+  - ''
+  - "\t\t\t\t\t// Show success toast for PDF text processing"
+  - "\t\t\t\t\ttoast.success(`PDF \"${file.name}\" processed as text content.`, {"
+  - "\t\t\t\t\t\tduration: 3000"
+  - "\t\t\t\t\t});"
+  - ''
+  - "\t\t\t\t\textras.push({"
+  - "\t\t\t\t\t\ttype: AttachmentType.PDF,"
+  - "\t\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\t\tcontent: content,"
+  - "\t\t\t\t\t\tprocessedAsImages: false,"
+  - "\t\t\t\t\t\tbase64Data: base64Data"
+  - "\t\t\t\t\t});"
+  - "\t\t\t\t}"
+  - "\t\t\t} catch (error) {"
+  - "\t\t\t\tconsole.error(`Failed to process PDF file ${file.name}:`, error);"
+  - "\t\t\t}"
+  - "\t\t} else {"
+  - "\t\t\ttry {"
+  - "\t\t\t\tconst content = await readFileAsText(file.file);"
+  - ''
+  - "\t\t\t\t// Check if file is empty"
+  - "\t\t\t\tif (content.trim() === '') {"
+  - "\t\t\t\t\tconsole.warn(`File ${file.name} is empty and will be skipped`);"
+  - "\t\t\t\t\temptyFiles.push(file.name);"
+  - "\t\t\t\t} else if (isLikelyTextFile(content)) {"
+  - "\t\t\t\t\textras.push({"
+  - "\t\t\t\t\t\ttype: AttachmentType.TEXT,"
+  - "\t\t\t\t\t\tname: file.name,"
+  - "\t\t\t\t\t\tcontent: content"
+  - "\t\t\t\t\t});"
+  - "\t\t\t\t} else {"
+  - "\t\t\t\t\tconsole.warn(`File ${file.name} appears to be binary and will be skipped`);"
+  - "\t\t\t\t}"
+  - "\t\t\t} catch (error) {"
+  - "\t\t\t\tconsole.error(`Failed to read file ${file.name}:`, error);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn { extras, emptyFiles };"
+  - '}'
+  desc: the async function processes an array of uploaded chat files and converts
+    them into DatabaseMessageExtra objects based on their file type, handling MCP
+    prompts, images (with SVG/WebP to PNG conversion), audio files, PDFs (with vision
+    model support detection for image vs text processing), and text files, while tracking
+    empty files and returning both extras and empty file lists.
+  line: 28-185
+  name: parseFilesToMessageExtras

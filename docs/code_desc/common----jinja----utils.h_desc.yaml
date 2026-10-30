@@ -1,0 +1,152 @@
+classes:
+- desc: 一个用于哈希表的简单非加密哈希器，基于FNV算法变体，支持流式增量更新（处理部分填充缓冲区）、类型信息的哈希初始化和最终摘要生成。
+  methods:
+  - code:
+    - hasher() = default;
+    desc: 默认构造函数，初始化状态为种子seed和缓冲区索引为0。
+    line: 64-64
+    name: hasher
+  - code:
+    - hasher(const std::type_info & type_inf) noexcept {
+    - '    const auto type_hash = type_inf.hash_code();'
+    - '    update(&type_hash, sizeof(type_hash));'
+    - '}'
+    desc: 构造函数，接受一个type_info引用，将其哈希码更新到hasher中，用于基于类型的哈希。
+    line: 65-68
+    name: hasher(const std::type_info & type_inf)
+  - code:
+    - hasher& update(void const * bytes, size_t len) noexcept {
+    - '    const uint8_t * c = static_cast<uint8_t const *>(bytes);'
+    - '    if (len == 0) {'
+    - '        return *this;'
+    - '    }'
+    - '    size_t processed = 0;'
+    - ''
+    - '    // first, fill the existing buffer if it''s partial'
+    - '    if (idx > 0) {'
+    - '        size_t to_fill = block_size - idx;'
+    - '        if (to_fill > len) {'
+    - '            to_fill = len;'
+    - '        }'
+    - '        std::memcpy(buffer + idx, c, to_fill);'
+    - '        idx += to_fill;'
+    - '        processed += to_fill;'
+    - '        if (idx == block_size) {'
+    - '            update_block(buffer);'
+    - '            idx = 0;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    // process full blocks from the remaining input'
+    - '    for (; processed + block_size <= len; processed += block_size) {'
+    - '        update_block(c + processed);'
+    - '    }'
+    - ''
+    - '    // buffer any remaining bytes'
+    - '    size_t remaining = len - processed;'
+    - '    if (remaining > 0) {'
+    - '        std::memcpy(buffer, c + processed, remaining);'
+    - '        idx = remaining;'
+    - '    }'
+    - '    return *this;'
+    - '}'
+    desc: 核心更新方法，接受字节指针和长度，增量更新哈希状态。它先填充内部缓冲区的部分，然后处理完整块，最后缓存剩余数据。
+    line: 79-108
+    name: update(void const * bytes, size_t len)
+  - code:
+    - hasher& update(const std::string & s) noexcept {
+    - '    return update(s.data(), s.size());'
+    - '}'
+    desc: 便捷方法，用于更新字符串内容，转发到核心update方法。
+    line: 113-115
+    name: update(const std::string & s)
+  - code:
+    - size_t digest() noexcept {
+    - '    // if there are remaining bytes in buffer, fill the rest with zeros and
+      process'
+    - '    if (idx > 0) {'
+    - '        for (size_t i = idx; i < block_size; ++i) {'
+    - '            buffer[i] = 0;'
+    - '        }'
+    - '        update_block(buffer);'
+    - '        idx = 0;'
+    - '    }'
+    - ''
+    - '    return state;'
+    - '}'
+    desc: 最终化方法，处理残留缓冲区的字节（填充零并处理），返回最终的哈希值。注意：调用后将不可再更新。
+    line: 120-132
+    name: digest
+  - code:
+    - void update_block(const uint8_t * block) noexcept {
+    - '    size_t blk = static_cast<uint32_t>(block[0])'
+    - '                | (static_cast<uint32_t>(block[1]) << 8)'
+    - '                | (static_cast<uint32_t>(block[2]) << 16)'
+    - '                | (static_cast<uint32_t>(block[3]) << 24);'
+    - '    if constexpr (block_size == 8) {'
+    - '        blk = blk | (static_cast<uint64_t>(block[4]) << 32)'
+    - '                  | (static_cast<uint64_t>(block[5]) << 40)'
+    - '                  | (static_cast<uint64_t>(block[6]) << 48)'
+    - '                  | (static_cast<uint64_t>(block[7]) << 56);'
+    - '    }'
+    - '    state ^= blk;'
+    - '    state *= prime;'
+    - '}'
+    desc: 私有方法，处理一个完整块（block_size字节），通过异或和乘法更新状态。支持32位和64位size_t。
+    line: 135-146
+    name: update_block
+  name: hasher
+desc: 该文件定义了jinja模板引擎中一些基础工具函数和一个用于哈希表的内存哈希器结构体。功能包括：字符串全局替换、错误位置源代码片段展示、错误消息格式化（带源码指示），以及一个基于FNV变体的非加密哈希器，支持增量更新、处理类型信息哈希和最终摘要生成。
+file: common/jinja/utils.h
+funcs:
+- code:
+  - static void string_replace_all(std::string & s, const std::string & search, const
+    std::string & replace) {
+  - '    if (search.empty()) {'
+  - '        return;'
+  - '    }'
+  - '    std::string builder;'
+  - '    builder.reserve(s.length());'
+  - '    size_t pos = 0;'
+  - '    size_t last_pos = 0;'
+  - '    while ((pos = s.find(search, last_pos)) != std::string::npos) {'
+  - '        builder.append(s, last_pos, pos - last_pos);'
+  - '        builder.append(replace);'
+  - '        last_pos = pos + search.length();'
+  - '    }'
+  - '    builder.append(s, last_pos, std::string::npos);'
+  - '    s = std::move(builder);'
+  - '}'
+  desc: 静态工具函数，将字符串s中的所有search子串替换为replace，使用构建器模式避免频繁分配。
+  line: 9-24
+  name: string_replace_all
+- code:
+  - static std::string peak_source(const std::string & source, size_t pos, size_t
+    max_peak_chars = 40) {
+  - '    if (source.empty()) {'
+  - '        return "(no source available)";'
+  - '    }'
+  - '    std::string output;'
+  - '    size_t start = (pos >= max_peak_chars) ? (pos - max_peak_chars) : 0;'
+  - '    size_t end = std::min(pos + max_peak_chars, source.length());'
+  - '    std::string substr = source.substr(start, end - start);'
+  - '    string_replace_all(substr, "\n", "↵");'
+  - '    output += "..." + substr + "...\n";'
+  - '    std::string spaces(pos - start + 3, '' '');'
+  - '    output += spaces + "^";'
+  - '    return output;'
+  - '}'
+  desc: 静态工具函数，给定源字符串和位置，提取该位置周围的一段源码（默认前后各40字符），将换行符替换为符号，并生成带^指示符的显示文本。
+  line: 28-40
+  name: peak_source
+- code:
+  - static std::string fmt_error_with_source(const std::string & tag, const std::string
+    & msg, const std::string & source, size_t pos) {
+  - '    std::ostringstream oss;'
+  - '    oss << tag << ": " << msg << "\n";'
+  - '    oss << peak_source(source, pos);'
+  - '    return oss.str();'
+  - '}'
+  desc: 静态工具函数，格式化错误消息，带有标签、消息文本和源码位置指示，用于错误报告。
+  line: 44-49
+  name: fmt_error_with_source

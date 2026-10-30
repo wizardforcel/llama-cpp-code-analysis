@@ -1,0 +1,153 @@
+classes:
+- desc: 音频处理缓存结构，存储预计算的正弦/余弦查找表、汉宁窗和梅尔滤波器组矩阵
+  methods:
+  - code:
+    - void mtmd_audio_cache::fill_sin_cos_table(uint32_t n) {
+    - '    sin_vals.resize(n);'
+    - '    cos_vals.resize(n);'
+    - '    for (uint32_t i = 0; i < n; i++) {'
+    - '        double theta = (2 * M_PI * i) / n;'
+    - '        sin_vals[i]  = sinf(theta);'
+    - '        cos_vals[i]  = cosf(theta);'
+    - '    }'
+    - '}'
+    desc: 填充用于FFT计算的正弦和余弦查找表
+    line: 16-24
+    name: fill_sin_cos_table
+  - code:
+    - void mtmd_audio_cache::fill_hann_window(uint32_t length, bool periodic) {
+    - '    hann_window.resize(length);'
+    - '    int offset = periodic ? 0 : -1;'
+    - '    for (uint32_t i = 0; i < length; i++) {'
+    - '        hann_window[i] = 0.5 * (1.0 - cosf((2.0 * M_PI * i) / (length + offset)));'
+    - '    }'
+    - '}'
+    desc: 填充汉宁窗函数，支持周期性或对称性窗口
+    line: 26-32
+    name: fill_hann_window
+  - code:
+    - void mtmd_audio_cache::fill_mel_filterbank_matrix(int   n_mel,
+    - '                                                  int   n_fft,'
+    - '                                                  int   sample_rate,'
+    - '                                                  float fmin,'
+    - '                                                  float fmax,'
+    - '                                                  bool  slaney_area_norm,'
+    - '                                                  float scale) {'
+    - '    ...'
+    - '}'
+    desc: 填充梅尔滤波器组矩阵，使用Slaney刻度映射频率到梅尔刻度
+    line: 34-104
+    name: fill_mel_filterbank_matrix
+  name: mtmd_audio_cache
+- desc: Whisper模型的音频预处理器，将原始音频转换为梅尔频谱图并分割成固定长度块
+  methods:
+  - code:
+    - void mtmd_audio_preprocessor_whisper::initialize() {
+    - '    cache.fill_sin_cos_table(hparams.audio_n_fft);'
+    - '    cache.fill_hann_window(hparams.audio_window_len, true);'
+    - '    cache.fill_mel_filterbank_matrix(hparams.n_mel_bins, hparams.audio_n_fft,
+      hparams.audio_sample_rate);'
+    - '}'
+    desc: 初始化缓存，填充正弦/余弦表、汉宁窗和梅尔滤波器组
+    line: 324-328
+    name: initialize
+  - code:
+    - bool mtmd_audio_preprocessor_whisper::preprocess(const float *                 samples,
+    - '                                                 size_t                        n_samples,'
+    - '                                                 std::vector<mtmd_audio_mel>
+      & output) {'
+    - '    ...'
+    - '}'
+    desc: 将音频样本转换为梅尔频谱图，并按3000帧分割成块用于处理
+    line: 330-401
+    name: preprocess
+  name: mtmd_audio_preprocessor_whisper
+- desc: Conformer模型的音频预处理器，将原始音频转换为梅尔频谱图
+  methods:
+  - code:
+    - void mtmd_audio_preprocessor_conformer::initialize() {
+    - '    cache.fill_sin_cos_table(hparams.audio_n_fft);'
+    - '    cache.fill_hann_window(hparams.audio_window_len, true);'
+    - '    cache.fill_mel_filterbank_matrix(hparams.n_mel_bins, hparams.audio_n_fft,
+      hparams.audio_sample_rate);'
+    - '}'
+    desc: 初始化缓存，填充正弦/余弦表、汉宁窗和梅尔滤波器组
+    line: 409-413
+    name: initialize
+  - code:
+    - bool mtmd_audio_preprocessor_conformer::preprocess(const float *                 samples,
+    - '                                                   size_t                        n_samples,'
+    - '                                                   std::vector<mtmd_audio_mel>
+      & output) {'
+    - '    ...'
+    - '}'
+    desc: 将音频样本转换为梅尔频谱图，使用中心填充、预强调和自然对数
+    line: 415-453
+    name: preprocess
+  name: mtmd_audio_preprocessor_conformer
+- desc: 流式逆短时傅里叶变换实现，从频谱帧恢复音频波形，支持重叠相加和窗口归一化
+  methods:
+  - code:
+    - 'mtmd_audio_streaming_istft::mtmd_audio_streaming_istft(int n_fft, int hop_length)
+      :'
+    - '    n_fft(n_fft),'
+    - '    hop_length(hop_length),'
+    - '    n_fft_bins(n_fft / 2 + 1),'
+    - '    overlap_buffer(n_fft, 0.0f),'
+    - '    window_sum_buffer(n_fft, 0.0f),'
+    - '    padding_to_remove((n_fft - hop_length) / 2),'
+    - '    ifft_in(n_fft * 2 * 4, 0.0f),'
+    - '    ifft_out(n_fft * 2 * 4, 0.0f) {'
+    - '    ...'
+    - '}'
+    desc: 构造函数，初始化FFT大小、跳步长度、缓存和内部缓冲区
+    line: 459-468
+    name: mtmd_audio_streaming_istft
+  - code:
+    - void mtmd_audio_streaming_istft::reset() {
+    - '    std::fill(overlap_buffer.begin(), overlap_buffer.end(), 0.0f);'
+    - '    std::fill(window_sum_buffer.begin(), window_sum_buffer.end(), 0.0f);'
+    - '    padding_to_remove = (n_fft - hop_length) / 2;'
+    - '}'
+    desc: 重置内部缓冲区并恢复初始填充移除量
+    line: 470-475
+    name: reset
+  - code:
+    - std::vector<float> mtmd_audio_streaming_istft::process_frame(const float * frame_spectrum)
+      {
+    - '    ...'
+    - '    return output;'
+    - '}'
+    desc: 处理单个频谱帧，进行IFFT变换并提取hop_length个音频样本
+    line: 477-518
+    name: process_frame
+  - code:
+    - std::vector<float> mtmd_audio_streaming_istft::flush() {
+    - '    ...'
+    - '    return output;'
+    - '}'
+    desc: 提取剩余的重叠缓冲区中的音频样本，完成流式处理
+    line: 520-551
+    name: flush
+  name: mtmd_audio_streaming_istft
+desc: 该文件实现音频预处理功能，包括梅尔频谱图计算（使用FFT/IFFT）、Whisper和Conformer两种预处理器的音频特征提取、以及流式逆短时傅里叶变换（ISTFT）用于从频谱恢复音频波形。文件包含正弦/余弦查找表、汉宁窗和梅尔滤波器组的缓存结构，以及基于Cooley-Tukey算法的FFT实现和基于重叠相加法的ISTFT实现。
+file: tools/mtmd/mtmd-audio.cpp
+funcs:
+- code:
+  - constexpr bool DEBUG = false;
+  - struct filter_params {
+  - '    int32_t n_mel;'
+  - '    int32_t n_fft_bins;'
+  - '    ...'
+  - '};'
+  - template <bool Inverse, bool RealInput>
+  - static void dft_impl(...);
+  - template <bool Inverse, bool RealInput>
+  - static void fft_impl(...);
+  - static void fft(...);
+  - static void ifft(...);
+  - static void log_mel_spectrogram_worker_thread(...);
+  - static bool log_mel_spectrogram(...);
+  desc: 全局代码，包含常量定义、模板函数声明和结构体定义
+  line: 1-14, 106-321
+  name: __main__

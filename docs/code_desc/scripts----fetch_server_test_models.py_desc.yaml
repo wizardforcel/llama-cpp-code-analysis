@@ -1,0 +1,106 @@
+classes:
+- desc: Pydantic数据模型，用于表示从测试参数中解析出的Hugging Face模型信息，包含仓库名称和可选的文件名，且为冻结（不可变）配置。
+  methods:
+  - code:
+    - 'class Config:'
+    - '    frozen = True'
+    desc: Pydantic内部配置类，设置模型为冻结（frozen=True），确保对象创建后不可修改。
+    line: 44-45
+    name: Config
+  name: HuggingFaceModel
+desc: 该脚本用于从服务器测试文件中收集所有的Hugging Face模型参数，并预先使用llama-cli获取这些模型，以避免慢速测试因模型下载而超时。它通过AST解析测试文件中的参数化测试，提取模型repo和文件信息，然后逐一调用llama-cli确保模型已被下载。
+file: scripts/fetch_server_test_models.py
+funcs:
+- code:
+  - 'def collect_hf_model_test_parameters(test_file) -> Generator[HuggingFaceModel,
+    None, None]:'
+  - '    try:'
+  - '        with open(test_file) as f:'
+  - '            tree = ast.parse(f.read())'
+  - '    except Exception as e:'
+  - '        logging.error(f''collect_hf_model_test_parameters failed on {test_file}:
+    {e}'')'
+  - '        return'
+  - ''
+  - '    for node in ast.walk(tree):'
+  - '        if isinstance(node, ast.FunctionDef):'
+  - '            for dec in node.decorator_list:'
+  - '                if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+    and dec.func.attr == ''parametrize'':'
+  - '                    param_names = ast.literal_eval(dec.args[0]).split(",")'
+  - '                    if "hf_repo" not in param_names:'
+  - '                        continue'
+  - ''
+  - '                    raw_param_values = dec.args[1]'
+  - '                    if not isinstance(raw_param_values, ast.List):'
+  - '                        logging.warning(f''Skipping non-list parametrize entry
+    at {test_file}:{node.lineno}'')'
+  - '                        continue'
+  - ''
+  - '                    hf_repo_idx = param_names.index("hf_repo")'
+  - '                    hf_file_idx = param_names.index("hf_file") if "hf_file" in
+    param_names else None'
+  - ''
+  - '                    for t in raw_param_values.elts:'
+  - '                        if not isinstance(t, ast.Tuple):'
+  - '                            logging.warning(f''Skipping non-tuple parametrize
+    entry at {test_file}:{node.lineno}'')'
+  - '                            continue'
+  - '                        yield HuggingFaceModel('
+  - '                            hf_repo=ast.literal_eval(t.elts[hf_repo_idx]),'
+  - '                            hf_file=ast.literal_eval(t.elts[hf_file_idx]) if
+    hf_file_idx is not None else None)'
+  desc: 解析指定测试文件的AST，从参数化测试装饰器中提取Hugging Face模型参数，生成HuggingFaceModel对象。如果遇到无法解析的代码或非预期的参数结构，会发出警告或错误日志并跳过。
+  line: 48-72
+  name: collect_hf_model_test_parameters
+- code:
+  - 'if __name__ == ''__main__'':'
+  - '    logging.basicConfig(level=logging.INFO, format=''%(levelname)s: %(message)s'')'
+  - ''
+  - '    models = sorted(list(set(['
+  - '        model'
+  - '        for test_file in glob.glob(''tools/server/tests/unit/test_*.py'')'
+  - '        for model in collect_hf_model_test_parameters(test_file)'
+  - '    ])), key=lambda m: (m.hf_repo, m.hf_file))'
+  - ''
+  - '    logging.info(f''Found {len(models)} models in parameterized tests:'')'
+  - '    for m in models:'
+  - '        logging.info(f''  - {m.hf_repo} / {m.hf_file}'')'
+  - ''
+  - '    cli_path = os.environ.get('
+  - '        ''LLAMA_CLI_BIN_PATH'','
+  - '        os.path.join('
+  - '            os.path.dirname(__file__),'
+  - '            ''../build/bin/Release/llama-cli.exe'' if os.name == ''nt'' else
+    ''../build/bin/llama-cli''))'
+  - ''
+  - '    for m in models:'
+  - '        if ''<'' in m.hf_repo or (m.hf_file is not None and ''<'' in m.hf_file):'
+  - '            continue'
+  - '        if m.hf_file is not None and ''-of-'' in m.hf_file:'
+  - '            logging.warning(f''Skipping model at {m.hf_repo} / {m.hf_file} because
+    it is a split file'')'
+  - '            continue'
+  - '        logging.info(f''Using llama-cli to ensure model {m.hf_repo}/{m.hf_file}
+    was fetched'')'
+  - '        cmd = ['
+  - '            cli_path,'
+  - '            ''-hfr'', m.hf_repo,'
+  - '            *([] if m.hf_file is None else [''-hff'', m.hf_file]),'
+  - '            ''-n'', ''1'','
+  - '            ''-p'', ''Hey'','
+  - '            ''--no-warmup'','
+  - '            ''--log-disable'','
+  - '            ''-st'']'
+  - '        if m.hf_file != ''tinyllamas/stories260K.gguf'' and ''Mistral-Nemo''
+    not in m.hf_repo:'
+  - '            cmd += (''-fa'', ''on'')'
+  - '        try:'
+  - '            subprocess.check_call(cmd)'
+  - '        except subprocess.CalledProcessError:'
+  - '            logging.error(f''Failed to fetch model at {m.hf_repo} / {m.hf_file}
+    with command:\n  {" ".join(cmd)}'')'
+  - '            exit(1)'
+  desc: 全局入口代码：收集所有测试文件中的模型，去重排序后通过llama-cli逐一确保模型被获取。若模型repo包含'<'或文件为分片（'-of-'）则跳过，fetch失败则报错并退出。
+  line: 74-103
+  name: __main__

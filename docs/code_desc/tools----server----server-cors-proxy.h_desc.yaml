@@ -1,0 +1,72 @@
+classes: []
+desc: 该文件定义了一个CORS代理服务器的核心逻辑，提供HTTP代理功能。它导出一个proxy_request函数，该函数解析客户端请求中的目标URL，验证URL的合法性（如主机存在、不支持认证信息、仅支持HTTP/HTTPS协议），然后将请求转发到目标服务器。此外，文件还创建了两个HTTP处理器（handler），分别用于处理POST和GET方法的代理请求。
+file: tools/server/server-cors-proxy.h
+funcs:
+- code:
+  - static server_http_res_ptr proxy_request(const server_http_req & req, std::string
+    method) {
+  - '    std::string target_url = req.get_param("url");'
+  - '    common_http_url parsed_url = common_http_parse_url(target_url);'
+  - ''
+  - '    if (parsed_url.host.empty()) {'
+  - '        throw std::runtime_error("invalid target URL: missing host");'
+  - '    }'
+  - ''
+  - '    if (parsed_url.path.empty()) {'
+  - '        parsed_url.path = "/";'
+  - '    }'
+  - ''
+  - '    if (!parsed_url.password.empty()) {'
+  - '        throw std::runtime_error("authentication in target URL is not supported");'
+  - '    }'
+  - ''
+  - '    if (parsed_url.scheme != "http" && parsed_url.scheme != "https") {'
+  - '        throw std::runtime_error("unsupported URL scheme in target URL: " + parsed_url.scheme);'
+  - '    }'
+  - ''
+  - '    SRV_INF("proxying %s request to %s://%s:%i%s\n", method.c_str(), parsed_url.scheme.c_str(),
+    parsed_url.host.c_str(), parsed_url.port, parsed_url.path.c_str());'
+  - ''
+  - '    std::map<std::string, std::string> headers;'
+  - '    for (auto [key, value] : req.headers) {'
+  - '        auto new_key = key;'
+  - '        if (string_starts_with(new_key, "x-proxy-header-")) {'
+  - '            string_replace_all(new_key, "x-proxy-header-", "");'
+  - '        }'
+  - '        headers[new_key] = value;'
+  - '    }'
+  - ''
+  - '    auto proxy = std::make_unique<server_http_proxy>('
+  - '            method,'
+  - '            parsed_url.scheme,'
+  - '            parsed_url.host,'
+  - '            parsed_url.port,'
+  - '            parsed_url.path,'
+  - '            headers,'
+  - '            req.body,'
+  - '            req.should_stop,'
+  - '            600, // timeout_read (default to 10 minutes)'
+  - '            600  // timeout_write (default to 10 minutes)'
+  - '            );'
+  - ''
+  - '    return proxy;'
+  - '}'
+  desc: 解析并验证目标URL，构造并返回一个HTTP代理对象，用于将客户端请求转发至远程服务器。
+  line: 15-61
+  name: proxy_request
+- code:
+  - static server_http_context::handler_t proxy_handler_post = [](const server_http_req
+    & req) -> server_http_res_ptr {
+  - '    return proxy_request(req, "POST");'
+  - '};'
+  desc: 作为HTTP POST请求的处理器（handler），调用proxy_request函数并指定方法为POST。
+  line: 63-65
+  name: proxy_handler_post
+- code:
+  - static server_http_context::handler_t proxy_handler_get = [](const server_http_req
+    & req) -> server_http_res_ptr {
+  - '    return proxy_request(req, "GET");'
+  - '};'
+  desc: 作为HTTP GET请求的处理器（handler），调用proxy_request函数并指定方法为GET。
+  line: 67-69
+  name: proxy_handler_get

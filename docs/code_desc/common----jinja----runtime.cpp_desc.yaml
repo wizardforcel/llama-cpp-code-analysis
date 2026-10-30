@@ -1,0 +1,542 @@
+classes:
+- desc: 模板 AST 语句基类，统一封装语句执行并为异常添加源代码位置和类型信息。
+  methods:
+  - code:
+    - value statement::execute(context & ctx) {
+    - '    try {'
+    - '        return execute_impl(ctx);'
+    - '    } catch (const continue_statement::signal & /* ex */) {'
+    - '        throw;'
+    - '    } catch (const break_statement::signal & /* ex */) {'
+    - '        throw;'
+    - '    } catch (const rethrown_exception & /* ex */) {'
+    - '        throw;'
+    - '    } catch (const not_implemented_exception & /* ex */) {'
+    - '        throw;'
+    - '    } catch (const std::exception & e) {'
+    - '        const std::string & source = *ctx.src;'
+    - '        if (source.empty()) {'
+    - '            std::ostringstream oss;'
+    - '            oss << "\nError executing " << type() << " at position " << pos
+      << ": " << e.what();'
+    - '            throw rethrown_exception(oss.str());'
+    - '        } else {'
+    - '            std::ostringstream oss;'
+    - '            oss << "\n------------\n";'
+    - '            oss << "While executing " << type() << " at " << get_line_col(source,
+      pos) << " in source:\n";'
+    - '            oss << peak_source(source, pos) << "\n";'
+    - '            oss << "Error: " << e.what();'
+    - '            throw rethrown_exception(oss.str());'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 执行具体语句实现，并将运行时异常转换为包含模板位置和源码片段的异常。
+    line: 32-62
+    name: execute
+  name: statement
+- desc: 表示模板中的标识符，并从上下文或全局内置函数中解析其值。
+  methods:
+  - code:
+    - value identifier::execute_impl(context & ctx) {
+    - '    auto it = ctx.get_val(val);'
+    - '    auto builtins = global_builtins();'
+    - '    if (!it->is_undefined()) {'
+    - '        if (ctx.is_get_stats) {'
+    - '            value_t::stats_t::mark_used(it);'
+    - '        }'
+    - '        return it;'
+    - '    } else if (builtins.find(val) != builtins.end()) {'
+    - '        return mk_val<value_func>(val, builtins.at(val));'
+    - '    } else {'
+    - '        return mk_val<value_undefined>(val);'
+    - '    }'
+    - '}'
+    desc: 优先从当前上下文获取变量，否则解析全局内置函数，未找到时返回 undefined。
+    line: 64-81
+    name: execute_impl
+  name: identifier
+- desc: 表示对象字面量，通过执行键和值表达式构造运行时对象。
+  methods:
+  - code:
+    - value object_literal::execute_impl(context & ctx) {
+    - '    auto obj = mk_val<value_object>();'
+    - '    for (const auto & pair : val) {'
+    - '        value key = pair.first->execute(ctx);'
+    - '        value val = pair.second->execute(ctx);'
+    - '        obj->insert(key, val);'
+    - '    }'
+    - '    return obj;'
+    - '}'
+    desc: 遍历对象字面量中的键值对并生成 value_object。
+    line: 83-93
+    name: execute_impl
+  name: object_literal
+- desc: 实现模板中的二元表达式，包括逻辑、比较、算术、数组、字符串和成员关系运算。
+  methods:
+  - code:
+    - value binary_expression::execute_impl(context & ctx) {
+    - '    value left_val = left->execute(ctx);'
+    - '    if (op.value == "and") {'
+    - '        return left_val->as_bool() ? right->execute(ctx) : std::move(left_val);'
+    - '    } else if (op.value == "or") {'
+    - '        return left_val->as_bool() ? std::move(left_val) : right->execute(ctx);'
+    - '    }'
+    - '    value right_val = right->execute(ctx);'
+    - '    if (op.value == "==") {'
+    - '        return mk_val<value_bool>(*left_val == *right_val);'
+    - '    } else if (op.value == "!=") {'
+    - '        return mk_val<value_bool>(!(*left_val == *right_val));'
+    - '    }'
+    - '    if (is_val<value_undefined>(left_val) || is_val<value_undefined>(right_val))
+      {'
+    - '        throw std::runtime_error("Cannot perform operation " + op.value + "
+      on undefined values");'
+    - '    }'
+    - '    if (is_val<value_none>(left_val) || is_val<value_none>(right_val)) {'
+    - '        throw std::runtime_error("Cannot perform operation on null values");'
+    - '    }'
+    - '    if ((is_val<value_int>(left_val) || is_val<value_float>(left_val)) &&'
+    - '        (is_val<value_int>(right_val) || is_val<value_float>(right_val))) {'
+    - '        double a = left_val->as_float();'
+    - '        double b = right_val->as_float();'
+    - '        if (op.value == "+" || op.value == "-" || op.value == "*") {'
+    - '            double res = (op.value == "+") ? a + b : (op.value == "-") ? a
+      - b : a * b;'
+    - '            return mk_val<value_float>(res);'
+    - '        } else if (op.value == "/") {'
+    - '            return mk_val<value_float>(a / b);'
+    - '        }'
+    - '    }'
+    - '    if ((is_val<value_string>(left_val) || is_val<value_string>(right_val))
+      &&'
+    - '            (op.value == "~" || op.value == "+")) {'
+    - '        auto output = left_val->as_string().append(right_val->as_string());'
+    - '        return mk_val<value_string>(std::move(output));'
+    - '    }'
+    - '    throw std::runtime_error("Unknown operator \"" + op.value + "\"");'
+    - '}'
+    desc: 根据运算符和操作数类型执行二元运算，并处理 undefined、null 及类型不匹配情况。
+    line: 95-244
+    name: execute_impl
+  name: binary_expression
+- desc: 表示应用于表达式结果的 Jinja 过滤器。
+  methods:
+  - code:
+    - value filter_expression::execute_impl(context & ctx) {
+    - '    value input = operand ? operand->execute(ctx) : val;'
+    - '    if (is_stmt<identifier>(filter)) {'
+    - '        auto filter_id = cast_stmt<identifier>(filter)->val;'
+    - '        if (filter_id == "trim") {'
+    - '            filter_id = "strip";'
+    - '        }'
+    - '        return try_builtin_func(ctx, filter_id, input)->invoke(func_args(ctx));'
+    - '    } else if (is_stmt<call_expression>(filter)) {'
+    - '        auto call = cast_stmt<call_expression>(filter);'
+    - '        if (!is_stmt<identifier>(call->callee)) {'
+    - '            throw std::runtime_error("Filter callee must be an identifier");'
+    - '        }'
+    - '        auto filter_id = cast_stmt<identifier>(call->callee)->val;'
+    - '        func_args args(ctx);'
+    - '        for (const auto & arg_expr : call->args) {'
+    - '            args.push_back(arg_expr->execute(ctx));'
+    - '        }'
+    - '        return try_builtin_func(ctx, filter_id, input)->invoke(args);'
+    - '    } else {'
+    - '        throw std::runtime_error("Invalid filter expression");'
+    - '    }'
+    - '}'
+    desc: 解析过滤器名称和参数，绑定输入值对应的内置函数并执行过滤操作。
+    line: 270-316
+    name: execute_impl
+  name: filter_expression
+- desc: 表示对模板语句块整体结果应用过滤器的语句。
+  methods:
+  - code:
+    - value filter_statement::execute_impl(context & ctx) {
+    - '    auto body_val = exec_statements(body, ctx);'
+    - '    value_string parts = mk_val<value_string>();'
+    - '    gather_string_parts_recursive(body_val, parts);'
+    - '    filter_expression filter_expr(std::move(parts), std::move(filter));'
+    - '    value out = filter_expr.execute(ctx);'
+    - '    this->filter = std::move(filter_expr.filter);'
+    - '    return out;'
+    - '}'
+    desc: 先执行语句块并拼接为字符串，再将过滤器应用到该字符串。
+    line: 318-331
+    name: execute_impl
+  name: filter_statement
+- desc: 表示 Jinja 的 is 测试表达式。
+  methods:
+  - code:
+    - value test_expression::execute_impl(context & ctx) {
+    - '    const auto & builtins = global_builtins();'
+    - '    value input = operand->execute(ctx);'
+    - '    func_args args(ctx);'
+    - '    args.push_back(input);'
+    - '    if (is_stmt<identifier>(test)) {'
+    - '        test_id = cast_stmt<identifier>(test)->val;'
+    - '    } else if (is_stmt<call_expression>(test)) {'
+    - '        auto call = cast_stmt<call_expression>(test);'
+    - '        test_id = cast_stmt<identifier>(call->callee)->val;'
+    - '        for (const auto & arg_expr : call->args) {'
+    - '            args.push_back(arg_expr->execute(ctx));'
+    - '        }'
+    - '    } else {'
+    - '        throw std::runtime_error("Invalid test expression");'
+    - '    }'
+    - '    auto it = builtins.find("test_is_" + test_id);'
+    - '    if (it == builtins.end()) {'
+    - '        throw std::runtime_error("Unknown test ''" + test_id + "''");'
+    - '    }'
+    - '    auto res = it->second(args);'
+    - '    return negate ? mk_val<value_bool>(!res->as_bool()) : res;'
+    - '}'
+    desc: 将测试表达式转换为对应的 test_is_* 内置函数调用，并支持参数和取反。
+    line: 333-374
+    name: execute_impl
+  name: test_expression
+- desc: 表示一元逻辑和数值运算表达式。
+  methods:
+  - code:
+    - value unary_expression::execute_impl(context & ctx) {
+    - '    value operand_val = argument->execute(ctx);'
+    - '    if (op.value == "not") {'
+    - '        return mk_val<value_bool>(!operand_val->as_bool());'
+    - '    } else if (op.value == "-") {'
+    - '        if (is_val<value_int>(operand_val)) {'
+    - '            return mk_val<value_int>(-operand_val->as_int());'
+    - '        } else if (is_val<value_float>(operand_val)) {'
+    - '            return mk_val<value_float>(-operand_val->as_float());'
+    - '        }'
+    - '        throw std::runtime_error("Unary - operator requires numeric operand");'
+    - '    }'
+    - '    throw std::runtime_error("Unknown unary operator ''" + op.value + "''");'
+    - '}'
+    desc: 执行 not 和数值负号运算，并校验操作数类型。
+    line: 376-392
+    name: execute_impl
+  name: unary_expression
+- desc: 实现模板中的条件分支语句。
+  methods:
+  - code:
+    - value if_statement::execute_impl(context & ctx) {
+    - '    value test_val = test->execute(ctx);'
+    - '    auto out = mk_val<value_array>();'
+    - '    if (test_val->as_bool()) {'
+    - '        for (auto & stmt : body) {'
+    - '            out->push_back(stmt->execute(ctx));'
+    - '        }'
+    - '    } else {'
+    - '        for (auto & stmt : alternate) {'
+    - '            out->push_back(stmt->execute(ctx));'
+    - '        }'
+    - '    }'
+    - '    value_string str = mk_val<value_string>();'
+    - '    gather_string_parts_recursive(out, str);'
+    - '    return str;'
+    - '}'
+    desc: 根据条件执行 then 或 else 分支，并将结果聚合为字符串。
+    line: 394-413
+    name: execute_impl
+  name: if_statement
+- desc: 实现模板中的循环语句，包括数组和对象遍历、过滤、解包、循环元数据及 break/continue。
+  methods:
+  - code:
+    - value for_statement::execute_impl(context & ctx) {
+    - '    context scope(ctx);'
+    - '    statement_ptr & iter_expr = ...;'
+    - '    statement_ptr & test_expr = ...;'
+    - '    value iterable_val = iter_expr->execute(scope);'
+    - '    if (iterable_val->is_undefined()) {'
+    - '        iterable_val = mk_val<value_array>();'
+    - '    }'
+    - '    if (!is_val<value_array>(iterable_val) && !is_val<value_object>(iterable_val))
+      {'
+    - '        throw std::runtime_error("Expected iterable or object type in for loop:
+      got " + iterable_val->type());'
+    - '    }'
+    - '    std::vector<value> items;'
+    - '    if (is_val<value_object>(iterable_val)) {'
+    - '        for (auto & p : iterable_val->as_ordered_object()) {'
+    - '            items.push_back(mk_val<value_tuple>(p));'
+    - '        }'
+    - '    } else {'
+    - '        for (const auto & item : iterable_val->as_array()) {'
+    - '            items.push_back(item);'
+    - '        }'
+    - '    }'
+    - '    std::vector<value> filtered_items;'
+    - '    for (...) {'
+    - '        context loop_scope(scope);'
+    - '        // 绑定循环变量并执行可选过滤条件'
+    - '        filtered_items.push_back(current);'
+    - '    }'
+    - '    auto result = mk_val<value_array>();'
+    - '    for (...) {'
+    - '        // 设置 loop 元数据并执行循环体'
+    - '        for (auto & stmt : body) {'
+    - '            result->push_back(stmt->execute(scope));'
+    - '        }'
+    - '    }'
+    - '    if (noIteration) {'
+    - '        for (auto & stmt : default_block) {'
+    - '            result->push_back(stmt->execute(ctx));'
+    - '        }'
+    - '    }'
+    - '    value_string str = mk_val<value_string>();'
+    - '    gather_string_parts_recursive(result, str);'
+    - '    return str;'
+    - '}'
+    desc: 创建循环作用域，遍历数组或对象，执行可选过滤条件和循环体，并处理空循环默认块。
+    line: 415-551
+    name: execute_impl
+  name: for_statement
+- desc: 实现模板变量赋值，包括普通变量、元组解包和对象成员赋值。
+  methods:
+  - code:
+    - value set_statement::execute_impl(context & ctx) {
+    - '    auto rhs = val ? val->execute(ctx) : exec_statements(body, ctx);'
+    - '    if (is_stmt<identifier>(assignee)) {'
+    - '        ctx.set_val(cast_stmt<identifier>(assignee)->val, rhs);'
+    - '    } else if (is_stmt<tuple_literal>(assignee)) {'
+    - '        auto tuple = cast_stmt<tuple_literal>(assignee);'
+    - '        if (!is_val<value_array>(rhs)) {'
+    - '            throw std::runtime_error("Cannot unpack non-iterable type in set:
+      " + rhs->type());'
+    - '        }'
+    - '        for (size_t i = 0; i < tuple->val.size(); ++i) {'
+    - '            ctx.set_val(cast_stmt<identifier>(tuple->val[i])->val, rhs->as_array()[i]);'
+    - '        }'
+    - '    } else if (is_stmt<member_expression>(assignee)) {'
+    - '        auto member = cast_stmt<member_expression>(assignee);'
+    - '        value object = member->object->execute(ctx);'
+    - '        cast_val<value_object>(object)->insert(cast_stmt<identifier>(member->property)->val,
+      rhs);'
+    - '    } else {'
+    - '        throw std::runtime_error("Invalid LHS inside assignment expression:
+      " + assignee->type());'
+    - '    }'
+    - '    return mk_val<value_undefined>();'
+    - '}'
+    desc: 计算右值并根据左值类型写入上下文变量或对象属性。
+    line: 553-608
+    name: execute_impl
+  name: set_statement
+- desc: 实现 Jinja 宏定义和调用闭包。
+  methods:
+  - code:
+    - value macro_statement::execute_impl(context & ctx) {
+    - '    if (!is_stmt<identifier>(this->name)) {'
+    - '        throw std::runtime_error("Macro name must be an identifier");'
+    - '    }'
+    - '    std::string name = cast_stmt<identifier>(this->name)->val;'
+    - '    const func_handler func = [this, name, &ctx](const func_args & args) ->
+      value {'
+    - '        context macro_ctx(ctx);'
+    - '        for (size_t i = 0; i < this->args.size(); ++i) {'
+    - '            // 绑定普通参数或默认参数'
+    - '        }'
+    - '        auto res = exec_statements(this->body, macro_ctx);'
+    - '        return res;'
+    - '    };'
+    - '    ctx.set_val(name, mk_val<value_func>(name, func));'
+    - '    return mk_val<value_undefined>();'
+    - '}'
+    desc: 创建带参数绑定和默认参数处理的宏函数，并将其注册到当前上下文。
+    line: 610-691
+    name: execute_impl
+  name: macro_statement
+- desc: 实现对象、数组和字符串的成员访问、索引访问与切片访问。
+  methods:
+  - code:
+    - value member_expression::execute_impl(context & ctx) {
+    - '    value object = this->object->execute(ctx);'
+    - '    value property;'
+    - '    if (this->computed) {'
+    - '        if (is_stmt<slice_expression>(this->property)) {'
+    - '            auto s = cast_stmt<slice_expression>(this->property);'
+    - '            value start_val = s->start_expr ? s->start_expr->execute(ctx) :
+      mk_val<value_int>(0);'
+    - '            value stop_val = s->stop_expr ? s->stop_expr->execute(ctx) : mk_val<value_int>(arr_size);'
+    - '            value step_val = s->step_expr ? s->step_expr->execute(ctx) : mk_val<value_int>(1);'
+    - '            auto slice_func = try_builtin_func(ctx, "slice", object);'
+    - '            func_args args(ctx);'
+    - '            args.push_back(start_val);'
+    - '            args.push_back(stop_val);'
+    - '            args.push_back(step_val);'
+    - '            return slice_func->invoke(args);'
+    - '        } else {'
+    - '            property = this->property->execute(ctx);'
+    - '        }'
+    - '    } else {'
+    - '        property = mk_val<value_string>(cast_stmt<identifier>(this->property)->val);'
+    - '        value val = try_builtin_func(ctx, property->as_string().str(), object,
+      true);'
+    - '        if (!is_val<value_undefined>(val)) {'
+    - '            return val;'
+    - '        }'
+    - '    }'
+    - '    ensure_key_type_allowed(property);'
+    - '    if (is_val<value_object>(object)) {'
+    - '        val = object->at(property, val);'
+    - '    } else if (is_val<value_array>(object) || is_val<value_string>(object))
+      {'
+    - '        // 处理整数索引或字符串内置成员'
+    - '    } else {'
+    - '        val = try_builtin_func(ctx, property->as_string().str(), object, true);'
+    - '    }'
+    - '    return val;'
+    - '}'
+    desc: 根据访问形式解析内置成员、对象属性、数组或字符串索引及切片，并返回 undefined 或抛出类型错误。
+    line: 693-817
+    name: execute_impl
+  name: member_expression
+- desc: 表示属性访问表达式，负责根据属性键访问对象成员或调用对应的内置函数，并维护运行时访问统计信息。
+  methods:
+  - code:
+    - value property_expression::execute_impl(context & ctx) {
+    - '    ...'
+    - '    if (ctx.is_get_stats && val && object && property) {'
+    - '        value_t::stats_t::mark_used(val);'
+    - '        value_t::stats_t::mark_used(object);'
+    - '        value_t::stats_t::mark_used(property);'
+    - '        if (is_val<value_int>(property)) {'
+    - '            object->stats.ops.insert("array_access");'
+    - '        } else if (is_val<value_string>(property)) {'
+    - '            object->stats.ops.insert("object_access");'
+    - '        }'
+    - '    }'
+    - '    return val;'
+    - '}'
+    desc: 执行属性访问表达式，校验属性类型，获取对象属性或内置函数，并在启用统计时记录访问对象、属性及操作类型。
+    line: 847-870
+    name: execute_impl
+  name: property_expression
+- desc: 表示函数调用表达式，负责计算调用参数、解析被调用对象并执行函数调用。
+  methods:
+  - code:
+    - value call_expression::execute_impl(context & ctx) {
+    - '    // gather arguments'
+    - '    func_args args(ctx);'
+    - '    for (auto & arg_stmt : this->args) {'
+    - '        auto arg_val = arg_stmt->execute(ctx);'
+    - '        JJ_DEBUG("  Argument type: %s", arg_val->type().c_str());'
+    - '        args.push_back(arg_val);'
+    - '    }'
+    - '    // execute callee'
+    - '    value callee_val = callee->execute(ctx);'
+    - '    if (!is_val<value_func>(callee_val)) {'
+    - '        throw std::runtime_error("Callee is not a function: got " + callee_val->type());'
+    - '    }'
+    - '    auto * callee_func = cast_val<value_func>(callee_val);'
+    - '    JJ_DEBUG("Calling function ''%s'' with %zu arguments", callee_func->name.c_str(),
+      args.count());'
+    - '    return callee_func->invoke(args);'
+    - '}'
+    desc: 依次执行所有实参表达式，验证被调用对象是否为函数，然后传入参数并调用目标函数。
+    line: 872-889
+    name: execute_impl
+  name: call_expression
+- desc: 表示函数调用中的关键字参数表达式，负责校验参数名、执行参数值并构造关键字参数对象。
+  methods:
+  - code:
+    - value keyword_argument_expression::execute_impl(context & ctx) {
+    - '    if (!is_stmt<identifier>(key)) {'
+    - '        throw std::runtime_error("Keyword argument key must be identifiers");'
+    - '    }'
+    - ''
+    - '    std::string k = cast_stmt<identifier>(key)->val;'
+    - '    JJ_DEBUG("Keyword argument expression key: %s, value: %s", k.c_str(), val->type().c_str());'
+    - ''
+    - '    value v = val->execute(ctx);'
+    - '    JJ_DEBUG("Keyword argument value executed, type: %s", v->type().c_str());'
+    - ''
+    - '    return mk_val<value_kwarg>(k, v);'
+    - '}'
+    desc: 验证关键字参数名是否为标识符，执行参数值表达式，并返回包含参数名和值的关键字参数对象。
+    line: 891-905
+    name: execute_impl
+  name: keyword_argument_expression
+desc: 该文件实现 Jinja 模板运行时的核心执行逻辑，包括调试开关、语句执行与异常增强、标识符和对象字面量求值、二元与一元表达式运算、过滤器和测试表达式、条件与循环控制流、变量赋值、宏定义、成员访问以及相关内置函数绑定。代码通过
+  value、context 和 AST statement 体系完成模板表达式的动态求值，并在执行失败时提供源代码位置和上下文信息。该代码位于 common/jinja/runtime.cpp
+  的 jinja 命名空间中，实现运行时表达式求值相关逻辑：根据属性类型访问对象属性或内置函数，记录访问统计信息，执行函数调用表达式，并执行带关键字参数的表达式。当前代码片段从第847行开始，未包含类定义或全局函数定义，仅包含若干类方法实现。
+file: common/jinja/runtime.cpp
+funcs:
+- code:
+  - void enable_debug(bool enable) {
+  - '    g_jinja_debug = enable;'
+  - '}'
+  desc: 启用或关闭 Jinja 运行时调试模式。
+  line: 16-18
+  name: enable_debug
+- code:
+  - static value_string exec_statements(const statements & stmts, context & ctx) {
+  - '    auto result = mk_val<value_array>();'
+  - '    for (const auto & stmt : stmts) {'
+  - '        result->push_back(stmt->execute(ctx));'
+  - '    }'
+  - '    value_string str = mk_val<value_string>();'
+  - '    gather_string_parts_recursive(result, str);'
+  - '    return str;'
+  - '}'
+  desc: 按顺序执行语句集合，并将所有执行结果递归聚合为字符串。
+  line: 20-30
+  name: exec_statements
+- code:
+  - static std::string get_line_col(const std::string & source, size_t pos) {
+  - '    size_t line = 1;'
+  - '    size_t col = 1;'
+  - '    for (size_t i = 0; i < pos && i < source.size(); i++) {'
+  - '        if (source[i] == ''\n'') {'
+  - '            line++;'
+  - '            col = 1;'
+  - '        } else {'
+  - '            col++;'
+  - '        }'
+  - '    }'
+  - '    return "line " + std::to_string(line) + ", column " + std::to_string(col);'
+  - '}'
+  desc: 根据源码字符位置计算对应的行号和列号。
+  line: 34-46
+  name: get_line_col
+- code:
+  - static void ensure_key_type_allowed(const value & val) {
+  - '    if (!val->is_hashable()) {'
+  - '        throw std::runtime_error("Type: " + val->type() + " is not allowed as
+    object key");'
+  - '    }'
+  - '}'
+  desc: 验证值是否可以作为对象键使用，不可哈希时抛出异常。
+  line: 48-52
+  name: ensure_key_type_allowed
+- code:
+  - static value try_builtin_func(context & ctx, const std::string & name, value &
+    input, bool undef_on_missing = false) {
+  - '    auto builtins = input->get_builtins();'
+  - '    auto it = builtins.find(name);'
+  - '    if (it != builtins.end()) {'
+  - '        return mk_val<value_func>(name, it->second, input);'
+  - '    }'
+  - '    if (undef_on_missing) {'
+  - '        return mk_val<value_undefined>(name);'
+  - '    }'
+  - '    throw std::runtime_error("Unknown (built-in) filter ''" + name + "''");'
+  - '}'
+  desc: 从输入值支持的内置函数集合中查找并绑定指定函数。
+  line: 246-268
+  name: try_builtin_func
+- code:
+  - '#include "lexer.h"'
+  - '#include "runtime.h"'
+  - '#include "value.h"'
+  - '#include "utils.h"'
+  - '#include <string>'
+  - '#include <vector>'
+  - '#include <memory>'
+  - '#include <cmath>'
+  - '#define FILENAME "jinja-runtime"'
+  - bool g_jinja_debug = false;
+  desc: 文件级全局代码，包括头文件引入、调试宏定义、全局调试状态变量以及 jinja 命名空间中的运行时实现。
+  line: 1-14
+  name: __main__

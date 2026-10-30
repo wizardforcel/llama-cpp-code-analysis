@@ -1,0 +1,127 @@
+classes: []
+desc: 基于PDF.js的浏览器端PDF处理工具库，提供PDF文本提取、页面转图像及文件类型检查功能
+file: tools/server/webui/src/lib/utils/pdf-processing.ts
+funcs:
+- code:
+  - if (browser) {
+  - "\t// Import worker as text and create blob URL for inline bundling"
+  - "\timport('pdfjs-dist/build/pdf.worker.min.mjs?raw')"
+  - "\t\t.then((workerModule) => {"
+  - "\t\t\tconst workerBlob = new Blob([workerModule.default], { type: 'application/javascript'\
+    \ });"
+  - "\t\t\tpdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob);"
+  - "\t\t})"
+  - "\t\t.catch(() => {"
+  - "\t\t\tconsole.warn('Failed to load PDF.js worker, PDF processing may not work');"
+  - "\t\t});"
+  - '}'
+  desc: 初始化PDF.js Worker并设置浏览器环境下的Worker源
+  line: 13-23
+  name: __main__
+- code:
+  - 'async function getFileAsBuffer(file: File): Promise<ArrayBuffer> {'
+  - "\treturn new Promise((resolve, reject) => {"
+  - "\t\tconst reader = new FileReader();"
+  - "\t\treader.onload = (event) => {"
+  - "\t\t\tif (event.target?.result) {"
+  - "\t\t\t\tresolve(event.target.result as ArrayBuffer);"
+  - "\t\t\t} else {"
+  - "\t\t\t\treject(new Error('Failed to read file.'));"
+  - "\t\t\t}"
+  - "\t\t};"
+  - "\t\treader.onerror = () => {"
+  - "\t\t\treject(new Error('Failed to read file.'));"
+  - "\t\t};"
+  - "\t\treader.readAsArrayBuffer(file);"
+  - "\t});"
+  - '}'
+  desc: 将File对象转换为ArrayBuffer，用于PDF.js处理
+  line: 33-46
+  name: getFileAsBuffer
+- code:
+  - 'export async function convertPDFToText(file: File): Promise<string> {'
+  - "\tif (!browser) {"
+  - "\t\tthrow new Error('PDF processing is only available in the browser');"
+  - "\t}"
+  - "\ttry {"
+  - "\t\tconst buffer = await getFileAsBuffer(file);"
+  - "\t\tconst pdf = await pdfjs.getDocument(buffer).promise;"
+  - "\t\tconst numPages = pdf.numPages;"
+  - "\t\tconst textContentPromises: Promise<TextContent>[] = [];"
+  - "\t\tfor (let i = 1; i <= numPages; i++) {"
+  - "\t\t\t// eslint-disable-next-line @typescript-eslint/no-explicit-any"
+  - "\t\t\ttextContentPromises.push(pdf.getPage(i).then((page: any) => page.getTextContent()));"
+  - "\t\t}"
+  - "\t\tconst textContents = await Promise.all(textContentPromises);"
+  - "\t\tconst textItems = textContents.flatMap((textContent: TextContent) =>"
+  - "\t\t\ttextContent.items.map((item) => item.str ?? '')"
+  - "\t\t);"
+  - "\t\treturn textItems.join('\\n');"
+  - "\t} catch (error) {"
+  - "\t\tconsole.error('Error converting PDF to text:', error);"
+  - "\t\tthrow new Error("
+  - "\t\t\t`Failed to convert PDF to text: ${error instanceof Error ? error.message\
+    \ : 'Unknown error'}`"
+  - "\t\t);"
+  - "\t}"
+  - '}'
+  desc: 提取PDF文件的文本内容，返回拼接后的纯文本字符串
+  line: 51-82
+  name: convertPDFToText
+- code:
+  - 'export async function convertPDFToImage(file: File, scale: number = 1.5): Promise<string[]>
+    {'
+  - "\tif (!browser) {"
+  - "\t\tthrow new Error('PDF processing is only available in the browser');"
+  - "\t}"
+  - "\ttry {"
+  - "\t\tconst buffer = await getFileAsBuffer(file);"
+  - "\t\tconst doc = await pdfjs.getDocument(buffer).promise;"
+  - "\t\tconst pages: Promise<string>[] = [];"
+  - "\t\tfor (let i = 1; i <= doc.numPages; i++) {"
+  - "\t\t\tconst page = await doc.getPage(i);"
+  - "\t\t\tconst viewport = page.getViewport({ scale });"
+  - "\t\t\tconst canvas = document.createElement('canvas');"
+  - "\t\t\tconst ctx = canvas.getContext('2d');"
+  - "\t\t\tcanvas.width = viewport.width;"
+  - "\t\t\tcanvas.height = viewport.height;"
+  - "\t\t\tif (!ctx) {"
+  - "\t\t\t\tthrow new Error('Failed to get 2D context from canvas');"
+  - "\t\t\t}"
+  - "\t\t\tconst task = page.render({"
+  - "\t\t\t\tcanvasContext: ctx,"
+  - "\t\t\t\tviewport: viewport,"
+  - "\t\t\t\tcanvas: canvas"
+  - "\t\t\t});"
+  - "\t\t\tpages.push("
+  - "\t\t\t\ttask.promise.then(() => {"
+  - "\t\t\t\t\treturn canvas.toDataURL(MimeTypeImage.PNG);"
+  - "\t\t\t\t})"
+  - "\t\t\t);"
+  - "\t\t}"
+  - "\t\treturn await Promise.all(pages);"
+  - "\t} catch (error) {"
+  - "\t\tconsole.error('Error converting PDF to images:', error);"
+  - "\t\tthrow new Error("
+  - "\t\t\t`Failed to convert PDF to images: ${error instanceof Error ? error.message\
+    \ : 'Unknown error'}`"
+  - "\t\t);"
+  - "\t}"
+  - '}'
+  desc: 将PDF各页转换为PNG图像的Data URL数组，支持自定义缩放比例
+  line: 88-129
+  name: convertPDFToImage
+- code:
+  - 'export function isPdfFile(file: File): boolean {'
+  - "\treturn file.type === MimeTypeApplication.PDF;"
+  - '}'
+  desc: 检查文件是否为PDF类型（基于MIME类型）
+  line: 135-137
+  name: isPdfFile
+- code:
+  - 'export function isApplicationMimeType(mimeType: string): boolean {'
+  - "\treturn mimeType === MimeTypeApplication.PDF;"
+  - '}'
+  desc: 检查给定MIME类型是否为application/pdf
+  line: 143-145
+  name: isApplicationMimeType

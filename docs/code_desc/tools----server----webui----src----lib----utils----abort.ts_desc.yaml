@@ -1,0 +1,85 @@
+classes: []
+desc: 该文件提供了一组用于 AbortSignal 传播和取消处理的工具函数，确保异步操作在需要时能够被正确地中止，实现统一的取消信号管理。
+file: tools/server/webui/src/lib/utils/abort.ts
+funcs:
+- code:
+  - 'export function throwIfAborted(signal?: AbortSignal): void {'
+  - "\tif (signal?.aborted) {"
+  - "\t\tthrow new DOMException('Operation was aborted', 'AbortError');"
+  - "\t}"
+  - '}'
+  desc: 如果给定的 AbortSignal 已被中止，则抛出 AbortError，用于在异步操作开始时快速失败。
+  line: 25-29
+  name: throwIfAborted
+- code:
+  - 'export function isAbortError(error: unknown): boolean {'
+  - "\tif (error instanceof DOMException && error.name === 'AbortError') {"
+  - "\t\treturn true;"
+  - "\t}"
+  - "\tif (error instanceof Error && error.name === 'AbortError') {"
+  - "\t\treturn true;"
+  - "\t}"
+  - "\treturn false;"
+  - '}'
+  desc: 检查给定的错误是否为 AbortError，用于区分用户主动取消和实际错误。
+  line: 47-55
+  name: isAbortError
+- code:
+  - 'export function createLinkedController(...signals: (AbortSignal | undefined)[]):
+    AbortController {'
+  - "\tconst controller = new AbortController();"
+  - ''
+  - "\tfor (const signal of signals) {"
+  - "\t\tif (!signal) continue;"
+  - ''
+  - "\t\t// If already aborted, abort immediately"
+  - "\t\tif (signal.aborted) {"
+  - "\t\t\tcontroller.abort(signal.reason);"
+  - "\t\t\treturn controller;"
+  - "\t\t}"
+  - ''
+  - "\t\t// Link to parent signal"
+  - "\t\tsignal.addEventListener('abort', () => controller.abort(signal.reason), {\
+    \ once: true });"
+  - "\t}"
+  - ''
+  - "\treturn controller;"
+  - '}'
+  desc: 创建一个与多个父级 AbortSignal 关联的 AbortController，当任何父级信号中止时，该控制器也会中止。
+  line: 75-93
+  name: createLinkedController
+- code:
+  - 'export function createTimeoutSignal(ms: number): AbortSignal {'
+  - "\treturn AbortSignal.timeout(ms);"
+  - '}'
+  desc: 创建一个在指定毫秒后经超时后中止的 AbortSignal。
+  line: 105-107
+  name: createTimeoutSignal
+- code:
+  - 'export async function withAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal):
+    Promise<T> {'
+  - "\tif (!signal) return promise;"
+  - ''
+  - "\tthrowIfAborted(signal);"
+  - ''
+  - "\treturn new Promise<T>((resolve, reject) => {"
+  - "\t\tconst abortHandler = () => {"
+  - "\t\t\treject(new DOMException('Operation was aborted', 'AbortError'));"
+  - "\t\t};"
+  - ''
+  - "\t\tsignal.addEventListener('abort', abortHandler, { once: true });"
+  - ''
+  - "\t\tpromise"
+  - "\t\t\t.then((value) => {"
+  - "\t\t\t\tsignal.removeEventListener('abort', abortHandler);"
+  - "\t\t\t\tresolve(value);"
+  - "\t\t\t})"
+  - "\t\t\t.catch((error) => {"
+  - "\t\t\t\tsignal.removeEventListener('abort', abortHandler);"
+  - "\t\t\t\treject(error);"
+  - "\t\t\t});"
+  - "\t});"
+  - '}'
+  desc: 包装一个 Promise，使其在 AbortSignal 中止时拒绝，从而使不支持中止的操作能够响应取消信号。
+  line: 128-148
+  name: withAbortSignal

@@ -1,0 +1,193 @@
+classes:
+- desc: 混合内存管理类，继承自llama_memory_i，组合了注意力KV缓存和循环状态缓存以支持混合架构模型。
+  methods:
+  - code:
+    - llama_memory_hybrid(
+    - '    const llama_model & model,'
+    - '    ggml_type type_k,'
+    - '    ggml_type type_v,'
+    - '    bool v_trans,'
+    - '    uint32_t kv_size,'
+    - '    uint32_t n_pad,'
+    - '    uint32_t n_swa,'
+    - '    llama_swa_type swa_type,'
+    - '    ggml_type type_r,'
+    - '    ggml_type type_s,'
+    - '    uint32_t rs_size,'
+    - '    uint32_t n_seq_max,'
+    - '    bool offload,'
+    - '    bool unified,'
+    - '    const layer_filter_cb & filter_attn = nullptr,'
+    - '    const layer_filter_cb & filter_recr = nullptr);'
+    desc: 构造函数，接收模型参数、注意力KV缓存配置、循环状态缓存配置、序列数量限制及层过滤器，初始化混合内存系统。
+    line: 14-33
+    name: llama_memory_hybrid
+  - code:
+    - ~llama_memory_hybrid() = default;
+    desc: 析构函数，默认实现，负责清理资源。
+    line: '35'
+    name: ~llama_memory_hybrid
+  - code:
+    - llama_memory_context_ptr init_batch(
+    - '    llama_batch_allocr & balloc,'
+    - '    uint32_t n_ubatch,'
+    - '    bool embd_all) override;'
+    desc: 初始化批次内存分配，为微批次分配必要的内存资源。
+    line: 39-43
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr init_full() override;
+    desc: 完成内存的完整初始化，返回完整的内存上下文。
+    line: '45'
+    name: init_full
+  - code:
+    - llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
+    desc: 初始化内存更新流程，根据优化标志决定是否优化内存分配。
+    line: '47'
+    name: init_update
+  - code:
+    - bool get_can_shift() const override;
+    desc: 返回是否支持序列位置偏移（shift）操作的能力。
+    line: '49'
+    name: get_can_shift
+  - code:
+    - void clear(bool data) override;
+    desc: 清除所有内存数据，根据data参数决定是否同时清除底层缓存数据。
+    line: '51'
+    name: clear
+  - code:
+    - bool seq_rm(llama_seq_id seq_id,
+    - '            llama_pos p0, llama_pos p1) override;'
+    desc: 删除指定序列在位置[p0, p1]范围内的数据。
+    line: '53'
+    name: seq_rm
+  - code:
+    - void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst,
+    - '            llama_pos p0, llama_pos p1) override;'
+    desc: 将源序列的指定位置范围数据复制到目标序列。
+    line: '54'
+    name: seq_cp
+  - code:
+    - void seq_keep(llama_seq_id seq_id) override;
+    desc: 保留指定序列的数据，删除其他所有序列的数据。
+    line: '55'
+    name: seq_keep
+  - code:
+    - void seq_add(llama_seq_id seq_id,
+    - '             llama_pos p0, llama_pos p1, llama_pos shift) override;'
+    desc: 将指定序列的指定位置范围的数据位置偏移shift量。
+    line: '56'
+    name: seq_add
+  - code:
+    - void seq_div(llama_seq_id seq_id,
+    - '             llama_pos p0, llama_pos p1, int d) override;'
+    desc: 将指定序列的指定位置范围的数据位置除以d的因子。
+    line: '57'
+    name: seq_div
+  - code:
+    - llama_pos seq_pos_min(llama_seq_id seq_id) const override;
+    desc: 返回指定序列的最小位置值。
+    line: '59'
+    name: seq_pos_min
+  - code:
+    - llama_pos seq_pos_max(llama_seq_id seq_id) const override;
+    desc: 返回指定序列的最大位置值。
+    line: '60'
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+    desc: 返回每种后端缓冲区类型的内存占用统计信息。
+    line: '62'
+    name: memory_breakdown
+  - code:
+    - void state_write(llama_io_write_i & io,
+    - '                 llama_seq_id seq_id = -1,'
+    - '                 llama_state_seq_flags flags = 0) const override;'
+    desc: 将内存状态序列化写入IO流，可指定序列及状态标志。
+    line: 65-66
+    name: state_write
+  - code:
+    - void state_read(llama_io_read_i & io,
+    - '                llama_seq_id seq_id = -1,'
+    - '                llama_state_seq_flags flags = 0) override;'
+    desc: 从IO流读取并恢复内存状态，可指定序列及状态标志。
+    line: 67-68
+    name: state_read
+  - code:
+    - llama_kv_cache * get_mem_attn() const;
+    desc: 获取内部注意力KV缓存对象的指针。
+    line: '73'
+    name: get_mem_attn
+  - code:
+    - llama_memory_recurrent * get_mem_recr() const;
+    desc: 获取内部循环状态缓存对象的指针。
+    line: '74'
+    name: get_mem_recr
+  name: llama_memory_hybrid
+- desc: 混合内存上下文管理类，继承自llama_memory_context_i，负责管理注意力层和循环层的批次队列及初始化流程。
+  methods:
+  - code:
+    - explicit llama_memory_hybrid_context(llama_memory_status status);
+    desc: 初始化失败时的构造函数，仅记录失败状态。
+    line: '92'
+    name: llama_memory_hybrid_context
+  - code:
+    - explicit llama_memory_hybrid_context(llama_memory_hybrid * mem);
+    desc: 初始化完全完成时的构造函数，基于混合内存对象创建上下文。
+    line: '95'
+    name: llama_memory_hybrid_context
+  - code:
+    - explicit llama_memory_hybrid_context(
+    - '    llama_memory_hybrid * mem,'
+    - '          llama_context * lctx,'
+    - '                   bool optimize);'
+    desc: 初始化更新时的构造函数，根据优化标志配置上下文。
+    line: 98-101
+    name: llama_memory_hybrid_context
+  - code:
+    - llama_memory_hybrid_context(
+    - '          llama_memory_hybrid * mem,'
+    - '              slot_info_vec_t sinfos_attn,'
+    - '    std::vector<llama_ubatch> ubatches);'
+    desc: 初始化成功时的完整构造函数，接收注意力槽信息和批次队列。
+    line: 104-107
+    name: llama_memory_hybrid_context
+  - code:
+    - ~llama_memory_hybrid_context() = default;
+    desc: 析构函数，默认实现。
+    line: '109'
+    name: ~llama_memory_hybrid_context
+  - code:
+    - bool next() override;
+    desc: 切换到下一个微批次，返回是否还有更多批次可处理。
+    line: '113'
+    name: next
+  - code:
+    - bool apply() override;
+    desc: 应用当前微批次的内存分配操作。
+    line: '114'
+    name: apply
+  - code:
+    - llama_memory_status get_status() const override;
+    desc: 返回当前内存上下文的状态。
+    line: '116'
+    name: get_status
+  - code:
+    - const llama_ubatch & get_ubatch() const override;
+    desc: 返回当前正在处理的微批次引用。
+    line: '117'
+    name: get_ubatch
+  - code:
+    - const llama_kv_cache_context * get_attn() const;
+    desc: 获取注意力层上下文指针。
+    line: '124'
+    name: get_attn
+  - code:
+    - const llama_memory_recurrent_context * get_recr() const;
+    desc: 获取循环层上下文指针。
+    line: '125'
+    name: get_recr
+  name: llama_memory_hybrid_context
+desc: 该文件定义了llama_memory_hybrid类及其对应的上下文类llama_memory_hybrid_context。llama_memory_hybrid实现了llama_memory_i接口，通过组合llama_kv_cache（用于注意力层）和llama_memory_recurrent（用于循环层）来支持混合架构模型，其中每层既可以是基于注意力的也可以是基于循环的。llama_memory_hybrid_context实现了llama_memory_context_i接口，负责在推理过程中管理混合内存的批次初始化和更新流程。
+file: src/llama-memory-hybrid.h
+funcs: []

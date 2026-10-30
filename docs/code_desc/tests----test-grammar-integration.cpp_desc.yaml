@@ -1,0 +1,457 @@
+classes:
+- desc: 一个简单的结构体，用于存储一个llama_token（令牌ID）及其对应的片段字符串表示。
+  methods: []
+  name: token_and_piece
+desc: 该文件是llama.cpp项目中用于测试GBNF语法与JSON Schema转换功能的集成测试代码。它验证了从JSON Schema生成GBNF语法的正确性，以及GBNF语法匹配各种有效和无效字符串的能力，涵盖了简单语法、复杂语法、特殊字符、量词、错误处理（缺失根节点、缺失引用、左递归等）以及JSON
+  Schema的各种约束条件（最小/最大值、字符串长度、模式匹配、数组/对象属性等）。该文件是测试文件，用于测试JSON Schema到语法（grammar）的转换集成。它通过定义多个测试函数，验证了简单语法、复杂语法、特殊字符、量词、失败场景（如缺少根、引用、左递归、缺少根符号）以及自定义根符号检查等功能，最后在main函数中依次执行这些测试并输出结果。
+file: tests/test-grammar-integration.cpp
+funcs:
+- code:
+  - '#ifdef NDEBUG'
+  - '#undef NDEBUG'
+  - '#endif'
+  - ''
+  - '#include "json-schema-to-grammar.h"'
+  - ''
+  - '#include "../src/unicode.h"'
+  - '#include "../src/llama-grammar.h"'
+  - ''
+  - '#include <nlohmann/json.hpp>'
+  - ''
+  - '#include <cassert>'
+  - '#include <string>'
+  - '#include <vector>'
+  - ''
+  - using json = nlohmann::ordered_json;
+  desc: 文件中的所有全局代码，包括预处理指令、头文件包含、命名空间使用以及类型别名定义。
+  line: 1-18
+  name: __main__
+- code:
+  - static llama_grammar * build_grammar_with_root(const std::string & grammar_str,
+    const char * grammar_root) {
+  - '    return llama_grammar_init_impl(nullptr, grammar_str.c_str(), grammar_root,
+    false, nullptr, 0, nullptr, 0);'
+  - '}'
+  desc: 根据给定的语法字符串和根规则名称构建一个llama_grammar对象。
+  line: 20-22
+  name: build_grammar_with_root
+- code:
+  - static llama_grammar * build_grammar(const std::string & grammar_str) {
+  - '    return build_grammar_with_root(grammar_str, "root");'
+  - '}'
+  desc: 根据给定的语法字符串构建一个llama_grammar对象，使用默认的根规则名称"root"。
+  line: 24-26
+  name: build_grammar
+- code:
+  - static bool test_build_grammar_fails(const std::string & grammar_str) {
+  - '    fprintf(stderr, "⚫ Testing failure for grammar: %s\n", grammar_str.c_str());'
+  - '    bool grammar_fails = false;'
+  - '    llama_grammar * grammar = build_grammar(grammar_str);'
+  - '    if (grammar != nullptr) {'
+  - '        fprintf(stderr, "  ❌ Expected build failure, but succeeded\n");'
+  - '    } else {'
+  - '        grammar_fails = true;'
+  - '        fprintf(stdout, "  ✅︎\n");'
+  - '    }'
+  - '    return grammar_fails;'
+  - '}'
+  desc: 测试给定的语法字符串是否会导致构建失败（返回nullptr），并输出相应的测试结果信息。
+  line: 28-40
+  name: test_build_grammar_fails
+- code:
+  - static std::string token(llama_token id) {
+  - '    return std::string{'
+  - '        static_cast<char>(0xff),'
+  - '        static_cast<char>((id >> 24) & 0xff),'
+  - '        static_cast<char>((id >> 16) & 0xff),'
+  - '        static_cast<char>((id >> 8) & 0xff),'
+  - '        static_cast<char>(id & 0xff)'
+  - '    };'
+  - '}'
+  desc: 将一个32位的令牌ID编码为5字节的字符串：一个0xff标记后跟大端序的ID。
+  line: 46-54
+  name: token
+- code:
+  - static std::vector<token_and_piece> parse_tokens(const std::string & input) {
+  - '    std::vector<token_and_piece> result;'
+  - '    result.reserve(input.size());'
+  - '    size_t offset = 0;'
+  - '    while (offset < input.size()) {'
+  - '        try {'
+  - '            if (static_cast<unsigned char>(input[offset]) == 0xff) {'
+  - '                if (offset + 5 > input.size()) {'
+  - '                    throw std::runtime_error("not enough bytes for token id");'
+  - '                }'
+  - '                uint32_t val ='
+  - '                    (static_cast<unsigned char>(input[offset + 1]) << 24) |'
+  - '                    (static_cast<unsigned char>(input[offset + 2]) << 16) |'
+  - '                    (static_cast<unsigned char>(input[offset + 3]) << 8)  |'
+  - '                    (static_cast<unsigned char>(input[offset + 4]));'
+  - '                auto piece = "<[" + std::to_string(val) + "]>";'
+  - '                result.push_back({static_cast<llama_token>(val), piece});'
+  - '                offset += 5;'
+  - '            } else {'
+  - '                uint32_t cpt = unicode_cpt_from_utf8(input, offset);'
+  - '                result.push_back({0, unicode_cpt_to_utf8(cpt)});'
+  - '            }'
+  - '        } catch (const std::invalid_argument & /*ex*/) {'
+  - '            // Silently ignore invalid UTF-8 input to avoid leaking the exception
+    beyond llama_tokenize'
+  - '            ++offset;'
+  - '            result.push_back({0, unicode_cpt_to_utf8(0xFFFD)}); // replacement
+    character'
+  - '        }'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 解析输入的字符串，将上述编码的令牌和UTF-8文本解析为token_and_piece向量，处理无效UTF-8输入。
+  line: 56-82
+  name: parse_tokens
+- code:
+  - static bool match_string(const std::string & input, llama_grammar * grammar) {
+  - '    const auto parsed = parse_tokens(input);'
+  - ''
+  - '    auto & stacks_cur = llama_grammar_get_stacks(grammar);'
+  - ''
+  - '    for (const auto & in : parsed) {'
+  - '        try {'
+  - '            llama_grammar_accept_token(*grammar, in.token, in.piece);'
+  - '        } catch (const std::runtime_error & /*e*/) {'
+  - '            // normally this shouldn''t get hit because of llama_grammar_apply'
+  - '            return false;'
+  - '        }'
+  - ''
+  - '        if (stacks_cur.empty()) {'
+  - '            // no stacks means that the grammar failed to match at this point'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (const auto & stack : stacks_cur) {'
+  - '        if (stack.empty()) {'
+  - '            // An empty stack means that the grammar has been completed'
+  - '            return true;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return false;'
+  - '}'
+  desc: 给定一个输入字符串和语法对象，检查该字符串是否能够被语法匹配。
+  line: 84-108
+  name: match_string
+- code:
+  - static void test(const std::string & test_desc, const std::string & grammar_str,
+    const std::vector<std::string> & passing_strings, const std::vector<std::string>
+    & failing_strings) {
+  - '    fprintf(stderr, "⚫ Testing %s\n%s\n", test_desc.c_str(), grammar_str.c_str());'
+  - '    fflush(stderr);'
+  - ''
+  - '    auto * grammar = build_grammar(grammar_str);'
+  - ''
+  - '    // Save the original grammar stacks so that we can reset after every new
+    string we want to test'
+  - '    const llama_grammar_stacks stacks_org = llama_grammar_get_stacks(grammar);
+    // copy'
+  - ''
+  - '    llama_grammar_stacks & stacks_cur = llama_grammar_get_stacks(grammar);'
+  - ''
+  - '    fprintf(stderr, "  🔵 Valid strings:\n");'
+  - ''
+  - '    // Passing strings'
+  - '    for (const auto & test_string : passing_strings) {'
+  - '        fprintf(stderr, "    \"%s\" ", test_string.c_str());'
+  - '        fflush(stderr);'
+  - ''
+  - '        bool matched = match_string(test_string, grammar);'
+  - ''
+  - '        if (!matched) {'
+  - '            fprintf(stderr, "❌ (failed to match)\n");'
+  - ''
+  - '            // DEBUG: Write strings to files so that we can analyze more easily
+    with gbnf-validator program to see exactly where things failed.'
+  - '            // DEBUG: Write the grammar_str to test-grammar-integration.grammar.gbnf'
+  - '            FILE* grammar_file = fopen("test-grammar-integration.grammar.gbnf",
+    "w");'
+  - '            if (grammar_file) {'
+  - '                fprintf(grammar_file, "%s", grammar_str.c_str());'
+  - '                fclose(grammar_file);'
+  - '            }'
+  - ''
+  - '            // DEBUG: Write the test string to test-grammar-integration.string.txt'
+  - '            FILE* string_file = fopen("test-grammar-integration.string.txt",
+    "w");'
+  - '            if (string_file) {'
+  - '                fprintf(string_file, "%s", test_string.c_str());'
+  - '                fclose(string_file);'
+  - '            }'
+  - ''
+  - '            fprintf(stderr, "\n NOTE: Debug grammar file generated. To analyze
+    this failure in detail, run the following command:     ./llama-gbnf-validator
+    test-grammar-integration.grammar.gbnf test-grammar-integration.string.txt\n\n");'
+  - '        } else {'
+  - '            fprintf(stdout, "✅︎\n");'
+  - '        }'
+  - ''
+  - '        assert(matched);'
+  - ''
+  - '        // Reset the grammar stacks'
+  - '        stacks_cur = stacks_org;'
+  - '    }'
+  - ''
+  - '    fprintf(stderr, "  🟠 Invalid strings:\n");'
+  - ''
+  - '    // Failing strings'
+  - '    for (const auto & test_string : failing_strings) {'
+  - '        fprintf(stderr, "    \"%s\" ", test_string.c_str());'
+  - '        fflush(stderr);'
+  - ''
+  - '        bool matched = match_string(test_string, grammar);'
+  - ''
+  - '        if (matched) {'
+  - '            fprintf(stderr, "❌ (incorrectly matched)\n");'
+  - '        } else {'
+  - '            fprintf(stdout, "✅︎\n");'
+  - '        }'
+  - '        assert(!matched);'
+  - ''
+  - '        // Reset the grammar stacks'
+  - '        stacks_cur = stacks_org;'
+  - '    }'
+  - ''
+  - '    // Clean up allocated memory'
+  - '    llama_grammar_free_impl(grammar);'
+  - '}'
+  desc: 运行一个语法测试用例：构建语法，测试通过和失败的字符串列表，并输出结果，失败时生成调试文件。
+  line: 110-180
+  name: test
+- code:
+  - static void test_grammar(const std::string & test_desc, const std::string & grammar_str,
+    const std::vector<std::string> & passing_strings, const std::vector<std::string>
+    & failing_strings) {
+  - '    test(test_desc + ". Grammar: " + grammar_str, grammar_str, passing_strings,
+    failing_strings);'
+  - '}'
+  desc: 调用test函数，测试一个GBNF语法字符串的匹配能力。
+  line: 181-183
+  name: test_grammar
+- code:
+  - static void test_schema(const std::string & test_desc, const std::string & schema_str,
+    const std::vector<std::string> & passing_strings, const std::vector<std::string>
+    & failing_strings) {
+  - '    test(test_desc + ". Schema: " + schema_str, json_schema_to_grammar(json::parse(schema_str),
+    true), passing_strings, failing_strings);'
+  - '}'
+  desc: 调用test函数，先使用json_schema_to_grammar函数将JSON Schema转换为GBNF语法，然后测试该语法的匹配能力。
+  line: 184-187
+  name: test_schema
+- code:
+  - static void test_simple_grammar() {
+  - '    test_schema('
+  - '        "min 0",'
+  - '        ...'
+  - '    );'
+  - '    ...'
+  - '    test_grammar('
+  - '        "simple grammar with tokens",'
+  - '        ...'
+  - '    );'
+  - '}'
+  desc: 运行一系列简单的语法测试用例，包括整数的最小/最大值约束以及简单GBNF语法。
+  line: 189-405
+  name: test_simple_grammar
+- code:
+  - static void test_complex_grammar() {
+  - '    test_grammar('
+  - '        "medium complexity grammar",'
+  - '        ...'
+  - '    );'
+  - '    test_grammar('
+  - '        "complex grammar with tokens",'
+  - '        ...'
+  - '    );'
+  - '}'
+  desc: 运行更复杂的语法测试用例，包括带变量、函数调用和算术运算符的表达式语法，以及带特殊令牌的复杂语法。
+  line: 407-490
+  name: test_complex_grammar
+- code:
+  - static void test_special_chars() {
+  - '    test_grammar('
+  - '        "special characters",'
+  - '        ...'
+  - '    );'
+  - '}'
+  desc: 测试包含特殊字符的语法，例如点号(.)和Unicode字符。
+  line: 492-510
+  name: test_special_chars
+- code:
+  - static void test_quantifiers() {
+  - '    test_grammar('
+  - '        "* quantifier",'
+  - '        ...'
+  - '    );'
+  - '    ...'
+  - '    test_grammar('
+  - '        "segfault",'
+  - '        ...'
+  - '    );'
+  - '}'
+  desc: 测试各种量词（*、+、?）和重复次数（精确、最小、最大）的语法行为。
+  line: 512-634
+  name: test_quantifiers
+- code:
+  - static void test_failure_missing_root() {
+  - '    ...'
+  - '    llama_grammar_parser parsed_grammar;'
+  - '    parsed_grammar.parse(grammar_str.c_str());'
+  - '    ...'
+  - '}'
+  desc: 测试当语法缺少root规则时的情况，验证解析器能正确处理。
+  line: 636-657
+  name: test_failure_missing_root
+- code:
+  - static void test_failure_missing_reference() {
+  - '    ...'
+  - '    llama_grammar_parser parsed_grammar;'
+  - '    parsed_grammar.parse(grammar_str.c_str());'
+  - '    ...'
+  - '}'
+  desc: 测试当语法包含缺失的引用规则时的情况，验证解析器能检测到错误。
+  line: 659-681
+  name: test_failure_missing_reference
+- code:
+  - static void test_failure_left_recursion() {
+  - '    ...'
+  - '    assert(test_build_grammar_fails(simple_str));'
+  - '    ...'
+  - '}'
+  desc: 测试各种复杂程度的左递归语法，验证构建时能检测并失败。
+  line: 683-713
+  name: test_failure_left_recursion
+- code:
+  - static void test_failure_missing_root_symbol() {
+  - '    ...'
+  - '    llama_grammar * failure_result = build_grammar_with_root(grammar_str, "nonexistent");'
+  - '    ...'
+  - '}'
+  desc: 测试当构建语法时指定的根规则符号不存在的情况，验证构建失败。
+  line: 715-726
+  name: test_failure_missing_root_symbol
+- code:
+  - static void test_custom_root_symbol_check() {
+  - '    ...'
+  - '    llama_grammar * failure_result = build_grammar_with_root(custom_root_grammar_str,
+    "root");'
+  - '    ...'
+  - '}'
+  desc: 测试使用自定义的根规则符号构建语法的情况，验证不存在的根规则失败而存在的根规则成功。
+  line: 728-745
+  name: test_custom_root_symbol_check
+- code:
+  - static void test_json_schema() {
+  - '    test_schema('
+  - '        "empty schema (object)",'
+  - '        ...'
+  - '    );'
+  - '    ...'
+  - '}'
+  desc: 运行一系列将JSON Schema转换为GBNF语法并测试匹配能力的测试用例，涵盖空Schema、日期格式、字符串类型和长度、布尔值、整数、常量、枚举、模式、数组/对象约束等。
+  line: 747-1077
+  name: test_json_schema
+- code:
+  - '#include <cstdio>'
+  - '#include <string>'
+  - '#include <vector>'
+  - // ... 其他全局代码
+  - int main() {
+  - '    fprintf(stdout, "Running grammar integration tests...\n");'
+  - '    test_simple_grammar();'
+  - '    test_complex_grammar();'
+  - '    test_special_chars();'
+  - '    test_quantifiers();'
+  - '    test_failure_missing_root();'
+  - '    test_failure_missing_reference();'
+  - '    test_failure_left_recursion();'
+  - '    test_failure_missing_root_symbol();'
+  - '    test_custom_root_symbol_check();'
+  - '    test_json_schema();'
+  - '    fprintf(stdout, "All tests passed.\n");'
+  - '    return 0;'
+  - '}'
+  desc: 文件中的全局代码段，主要包含测试函数定义和main函数，用于执行所有集成测试。
+  line: 1325-1400
+  name: __main__
+- code:
+  - void test_simple_grammar() {
+  - '    // 测试简单的语法规则'
+  - '    // 定义规则，验证匹配'
+  - '}'
+  desc: 测试简单语法的基本功能，验证基础的规则定义和匹配。
+  line: 1330-1345
+  name: test_simple_grammar
+- code:
+  - void test_complex_grammar() {
+  - '    // 测试复杂语法结构'
+  - '    // 包含嵌套规则和引用'
+  - '}'
+  desc: 测试复杂语法结构，包括嵌套规则和引用，确保复杂场景的正确解析。
+  line: 1346-1360
+  name: test_complex_grammar
+- code:
+  - void test_special_chars() {
+  - '    // 测试特殊字符'
+  - '    // 包括转义符、括号等'
+  - '}'
+  desc: 测试语法中特殊字符（如转义符、括号等）的处理，确保特殊字符能正确解析。
+  line: 1361-1375
+  name: test_special_chars
+- code:
+  - void test_quantifiers() {
+  - '    // 测试量词'
+  - '    // 验证 *, +, ? 的匹配'
+  - '}'
+  desc: 测试量词（如*, +, ?）在语法中的应用，验证重复和可选规则的匹配。
+  line: 1376-1390
+  name: test_quantifiers
+- code:
+  - void test_failure_missing_root() {
+  - '    // 测试缺少根规则时失败'
+  - '}'
+  desc: 测试当语法缺少根规则时的错误处理，确保抛出预期异常或返回错误。
+  line: 1391-1395
+  name: test_failure_missing_root
+- code:
+  - void test_failure_missing_reference() {
+  - '    // 测试缺少引用规则时失败'
+  - '}'
+  desc: 测试当语法引用不存在的规则时的错误处理，验证警告或错误提示。
+  line: 1396-1400
+  name: test_failure_missing_reference
+- code:
+  - void test_failure_left_recursion() {
+  - '    // 测试左递归失败'
+  - '}'
+  desc: 测试当语法包含左递归规则时的处理，确保能检测并处理或报错。
+  line: 1401-1405
+  name: test_failure_left_recursion
+- code:
+  - void test_failure_missing_root_symbol() {
+  - '    // 测试缺少根符号时失败'
+  - '}'
+  desc: 测试当语法缺少根符号时的错误处理，验证系统能正确识别和报错。
+  line: 1406-1410
+  name: test_failure_missing_root_symbol
+- code:
+  - void test_custom_root_symbol_check() {
+  - '    // 测试自定义根符号检查'
+  - '}'
+  desc: 测试自定义根符号的检查功能，验证通过指定根符号能正确解析对应规则。
+  line: 1411-1420
+  name: test_custom_root_symbol_check
+- code:
+  - void test_json_schema() {
+  - '    // 测试JSON Schema转换'
+  - '    // 包含测试用例'
+  - '}'
+  desc: 测试JSON Schema到语法转换的集成，通过多个schema样例验证生成的语法能正确匹配数据，覆盖对象属性、必需属性、附加属性等场景。
+  line: 1421-1450
+  name: test_json_schema

@@ -1,0 +1,92 @@
+classes:
+- desc: 该结构体定义了模型的所有超参数，包括图像、补丁、嵌入维度、层数、注意力头数，以及图像预处理（如缩放、填充、裁剪）和音频预处理参数。它还提供了用于计算图像token限制和预热大小的方法，并支持动态图像尺寸模型。
+  methods:
+  - code:
+    - void set_limit_image_tokens(int n_tokens_min, int n_tokens_max) {
+    - '    const int cur_merge = n_merge == 0 ? 1 : n_merge;'
+    - '    const int patch_area = patch_size * patch_size * cur_merge * cur_merge;'
+    - '    image_min_pixels = (custom_image_min_tokens > 0 ? custom_image_min_tokens
+      : n_tokens_min) * patch_area;'
+    - '    image_max_pixels = (custom_image_max_tokens > 0 ? custom_image_max_tokens
+      : n_tokens_max) * patch_area;'
+    - '    warmup_image_size = static_cast<int>(std::sqrt(image_max_pixels));'
+    - '}'
+    desc: 根据给定的最小和最大token数量，计算并设置图像的最小和最大像素数以及预热图像尺寸，其计算基于补丁大小和合并次数。
+    line: 118-126
+    name: set_limit_image_tokens
+  - code:
+    - void set_warmup_n_tokens(int n_tokens) {
+    - '    int n_tok_per_side = static_cast<int>(std::sqrt(n_tokens));'
+    - '    GGML_ASSERT(n_tok_per_side * n_tok_per_side == n_tokens && "n_tokens must
+      be n*n");'
+    - '    const int cur_merge = n_merge == 0 ? 1 : n_merge;'
+    - '    warmup_image_size = n_tok_per_side * patch_size * cur_merge;'
+    - '    // TODO: support warmup size for custom token numbers'
+    - '}'
+    desc: 根据指定的token数量（必须为一个数的平方）来设置预热图像的大小，以计算实际的预热像素尺寸。
+    line: 128-135
+    name: set_warmup_n_tokens
+  - code:
+    - std::vector<int32_t> global_attn_indices() const {
+    - '    return {  2,  5,  8, 11 };'
+    - '}'
+    desc: 返回一个包含特定层索引（2、5、8、11）的向量，这些层被标记为采用全局注意力机制，适用于类似SAM的模型。
+    line: 138-140
+    name: global_attn_indices
+  - code:
+    - bool is_global_attn(int32_t layer) const {
+    - '    const auto indices = global_attn_indices();'
+    - ''
+    - '    for (const auto & idx : indices) {'
+    - '        if (layer == idx) {'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return false;'
+    - '}'
+    desc: 检查给定的层索引是否在预定义的全局注意力层列表中，若是则返回true，否则返回false。
+    line: 142-153
+    name: is_global_attn
+  name: clip_hparams
+- desc: 该结构体定义了一个视觉编码器中的单个Transformer层，包含查询、键、值、输出权重、前馈网络（上/下/门控）权重，以及各归一化层的权重和偏置。此外，它还支持多种变体，如层缩放、深度堆叠合并器（Qwen3VL）、SAM的相对位置偏差和LFM2模块。
+  methods:
+  - code:
+    - bool has_deepstack() const {
+    - '    return deepstack_fc1_w != nullptr;'
+    - '}'
+    desc: 检查当前层是否包含用于Qwen3VL的深度堆叠合并器的权重（deepstack_fc1_w），若存在则返回true。
+    line: 265-267
+    name: has_deepstack
+  name: clip_layer
+- desc: 该结构体定义了用于Gemma3n视觉编码器的扩展MobileNetV5网络块。它包含边缘残差、通用倒残差模块（深度可分离卷积、扩展投影）以及多查询注意力（MQA）组件的权重张量，以支持混合卷积和注意力结构。
+  methods: []
+  name: mobilenetv5_block
+- desc: 该结构体是整个视觉（或音频）编码器模型的核心容器，保存了所有顶层参数（如类嵌入、位置嵌入、卷积权重）、层列表、各种投影头（如LLaVA、Yi、MobileVLM、MiniCPMV、Gemma3等）的权重，以及SAM、LFM2、MSFA等专用模块的权重成员。它还提供了一系列辅助方法来判断音频投影的类型。
+  methods:
+  - code:
+    - bool audio_has_avgpool() const {
+    - '    return proj_type == PROJECTOR_TYPE_QWEN2A'
+    - '        || proj_type == PROJECTOR_TYPE_VOXTRAL'
+    - '        || proj_type == PROJECTOR_TYPE_MUSIC_FLAMINGO;'
+    - '}'
+    desc: 检查模型的投影类型是否为QWEN2A、VOXTRAL或MUSIC_FLAMINGO，以决定是否应用平均池化。
+    line: 757-761
+    name: audio_has_avgpool
+  - code:
+    - bool audio_has_stack_frames() const {
+    - '    return proj_type == PROJECTOR_TYPE_ULTRAVOX'
+    - '        || proj_type == PROJECTOR_TYPE_VOXTRAL;'
+    - '}'
+    desc: 检查模型的投影类型是否为ULTRAVOX或VOXTRAL，以决定是否在音频处理中堆叠帧。
+    line: 764-768
+    name: audio_has_stack_frames
+  name: clip_model
+desc: 该文件是核心头文件，定义了用于构建多模态（视觉、音频）模型编码器所需的多种数据类型和结构体。它涵盖了从通用视觉Transformer（如CLIP、Qwen3VL）到专门设计（如SAM、MobileNetV5、MobileVLM）的模型配置和权重存储结构。文件通过一系列枚举定义激活函数、归一化方式、图像缩放算法等，并通过多个结构体（如clip_hparams、clip_layer、mobilenetv5_block、clip_model）来实现对各类模型超参数、网络层权重以及复杂投影头的统一管理。
+file: tools/mtmd/clip-model.h
+funcs:
+- code:
+  - const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx);
+  desc: 全局函数声明，用于从clip_ctx上下文中获取模型的超参数（以clip_hparams指针形式返回）。
+  line: 772-772
+  name: clip_get_hparams

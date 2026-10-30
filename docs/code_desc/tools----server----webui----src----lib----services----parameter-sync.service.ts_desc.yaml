@@ -1,0 +1,230 @@
+classes:
+- desc: 参数同步服务类，封装了从服务器提取默认参数、与用户设置合并、查询参数来源信息、校验参数类型以及生成参数差异等全部静态方法。
+  methods:
+  - code:
+    - 'private static roundFloatingPoint(value: ParameterValue): ParameterValue {'
+    - '    return normalizeFloatingPoint(value) as ParameterValue;'
+    - '}'
+    desc: 私有静态辅助方法，调用 normalizeFloatingPoint 对参数值进行浮点精度归一化，避免 JavaScript 浮点运算精度问题。
+    line: 207-209
+    name: roundFloatingPoint
+  - code:
+    - static extractServerDefaults(
+    - '    serverParams: ApiLlamaCppServerProps[''default_generation_settings''][''params'']
+      | null,'
+    - '    webuiSettings?: Record<string, string | number | boolean>'
+    - '): ParameterRecord {'
+    - '    const extracted: ParameterRecord = {};'
+    - ''
+    - '    if (serverParams) {'
+    - '        for (const param of SYNCABLE_PARAMETERS) {'
+    - '            if (param.canSync && param.serverKey in serverParams) {'
+    - '                const value = (serverParams as unknown as Record<string, ParameterValue>)['
+    - '                    param.serverKey'
+    - '                ];'
+    - '                if (value !== undefined) {'
+    - '                    // Apply precision rounding to avoid JavaScript floating-point
+      issues'
+    - '                    extracted[param.key] = this.roundFloatingPoint(value);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - ''
+    - '        // Handle samplers array conversion to string'
+    - '        if (serverParams.samplers && Array.isArray(serverParams.samplers))
+      {'
+    - '            extracted.samplers = serverParams.samplers.join('';'');'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (webuiSettings) {'
+    - '        for (const param of SYNCABLE_PARAMETERS) {'
+    - '            if (param.canSync && param.serverKey in webuiSettings) {'
+    - '                const value = webuiSettings[param.serverKey];'
+    - '                if (value !== undefined) {'
+    - '                    extracted[param.key] = this.roundFloatingPoint(value);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return extracted;'
+    - '}'
+    desc: 从服务器 `/props` 响应中提取可同步的默认参数，处理生成参数和 webui 专属设置，将 samplers 数组转换为分号分隔字符串，并对数值做精度归一化。
+    line: 221-257
+    name: extractServerDefaults
+  - code:
+    - static mergeWithServerDefaults(
+    - '    currentSettings: ParameterRecord,'
+    - '    serverDefaults: ParameterRecord,'
+    - '    userOverrides: Set<string> = new Set()'
+    - '): ParameterRecord {'
+    - '    const merged = { ...currentSettings };'
+    - ''
+    - '    for (const [key, serverValue] of Object.entries(serverDefaults)) {'
+    - '        // Only update if user hasn''t explicitly overridden this parameter'
+    - '        if (!userOverrides.has(key)) {'
+    - '            merged[key] = this.roundFloatingPoint(serverValue);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return merged;'
+    - '}'
+    desc: 将服务器默认参数与当前用户设置合并，用户显式覆盖的参数优先保留，未被覆盖的参数使用服务器默认值。
+    line: 275-288
+    name: mergeWithServerDefaults
+  - code:
+    - static getParameterInfo(
+    - '    key: string,'
+    - '    currentValue: ParameterValue,'
+    - '    propsDefaults: ParameterRecord,'
+    - '    userOverrides: Set<string>'
+    - '): ParameterInfo {'
+    - '    const hasPropsDefault = propsDefaults[key] !== undefined;'
+    - '    const isUserOverride = userOverrides.has(key);'
+    - ''
+    - '    // Simple logic: either using default (from props) or custom (user override)'
+    - '    const source = isUserOverride ? ParameterSource.CUSTOM : ParameterSource.DEFAULT;'
+    - ''
+    - '    return {'
+    - '        value: currentValue,'
+    - '        source,'
+    - '        serverDefault: hasPropsDefault ? propsDefaults[key] : undefined, //
+      Keep same field name for compatibility'
+    - '        userOverride: isUserOverride ? currentValue : undefined'
+    - '    };'
+    - '}'
+    desc: 获取指定参数的来源信息（默认值或用户自定义），供设置 UI 中的参数来源指示器显示 Custom 或 Default 徽标。
+    line: 308-324
+    name: getParameterInfo
+  - code:
+    - 'static canSyncParameter(key: string): boolean {'
+    - '    return SYNCABLE_PARAMETERS.some((param) => param.key === key && param.canSync);'
+    - '}'
+    desc: 检查指定参数键是否在可同步参数列表中且允许同步。
+    line: 332-334
+    name: canSyncParameter
+  - code:
+    - 'static getSyncableParameterKeys(): string[] {'
+    - '    return SYNCABLE_PARAMETERS.filter((param) => param.canSync).map((param)
+      => param.key);'
+    - '}'
+    desc: 返回所有可同步参数的键名数组。
+    line: 341-343
+    name: getSyncableParameterKeys
+  - code:
+    - 'static validateServerParameter(key: string, value: ParameterValue): boolean
+      {'
+    - '    const param = SYNCABLE_PARAMETERS.find((p) => p.key === key);'
+    - '    if (!param) return false;'
+    - ''
+    - '    switch (param.type) {'
+    - '        case SyncableParameterType.NUMBER:'
+    - '            return typeof value === ''number'' && !isNaN(value);'
+    - '        case SyncableParameterType.STRING:'
+    - '            return typeof value === ''string'';'
+    - '        case SyncableParameterType.BOOLEAN:'
+    - '            return typeof value === ''boolean'';'
+    - '        default:'
+    - '            return false;'
+    - '    }'
+    - '}'
+    desc: 根据参数声明的类型（NUMBER/STRING/BOOLEAN）校验服务器返回的参数值是否合法。
+    line: 352-367
+    name: validateServerParameter
+  - code:
+    - static createParameterDiff(
+    - '    currentSettings: ParameterRecord,'
+    - '    serverDefaults: ParameterRecord'
+    - '): Record<string, { current: ParameterValue; server: ParameterValue; differs:
+      boolean }> {'
+    - '    const diff: Record<'
+    - '        string,'
+    - '        { current: ParameterValue; server: ParameterValue; differs: boolean
+      }'
+    - '    > = {};'
+    - ''
+    - '    for (const key of this.getSyncableParameterKeys()) {'
+    - '        const currentValue = currentSettings[key];'
+    - '        const serverValue = serverDefaults[key];'
+    - ''
+    - '        if (serverValue !== undefined) {'
+    - '            diff[key] = {'
+    - '                current: currentValue,'
+    - '                server: serverValue,'
+    - '                differs: currentValue !== serverValue'
+    - '            };'
+    - '        }'
+    - '    }'
+    - ''
+    - '    return diff;'
+    - '}'
+    desc: 生成当前设置与服务器默认值之间的差异记录，标明每个可同步参数的当前值、服务器值及两者是否不同，用于调试和“重置为默认值”功能。
+    line: 385-406
+    name: createParameterDiff
+  name: ParameterSyncService
+desc: 该文件实现了一个前端参数同步服务（ParameterSyncService），用于将 llama.cpp 服务器 `/props` 接口返回的默认生成参数与
+  WebUI 本地设置进行提取、合并、校验和差异对比；文件顶部定义了可同步参数的映射表 SYNCABLE_PARAMETERS，服务类通过一组静态方法完成浮点精度归一化、服务器默认值提取、用户覆盖优先的合并、参数来源信息查询、可同步性判断、类型校验以及当前设置与服务器默认值的
+  diff 生成。
+file: tools/server/webui/src/lib/services/parameter-sync.service.ts
+funcs:
+- code:
+  - import { normalizeFloatingPoint } from '$lib/utils';
+  - import type { SyncableParameter, ParameterRecord, ParameterInfo, ParameterValue
+    } from '$lib/types';
+  - import { SyncableParameterType, ParameterSource } from '$lib/enums';
+  - ''
+  - 'export const SYNCABLE_PARAMETERS: SyncableParameter[] = ['
+  - '    { key: ''temperature'', serverKey: ''temperature'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''top_k'', serverKey: ''top_k'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''top_p'', serverKey: ''top_p'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''min_p'', serverKey: ''min_p'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dynatemp_range'', serverKey: ''dynatemp_range'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dynatemp_exponent'', serverKey: ''dynatemp_exponent'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''xtc_probability'', serverKey: ''xtc_probability'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''xtc_threshold'', serverKey: ''xtc_threshold'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''typ_p'', serverKey: ''typ_p'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''repeat_last_n'', serverKey: ''repeat_last_n'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''repeat_penalty'', serverKey: ''repeat_penalty'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''presence_penalty'', serverKey: ''presence_penalty'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''frequency_penalty'', serverKey: ''frequency_penalty'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dry_multiplier'', serverKey: ''dry_multiplier'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dry_base'', serverKey: ''dry_base'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dry_allowed_length'', serverKey: ''dry_allowed_length'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''dry_penalty_last_n'', serverKey: ''dry_penalty_last_n'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''max_tokens'', serverKey: ''max_tokens'', type: SyncableParameterType.NUMBER,
+    canSync: true },'
+  - '    { key: ''samplers'', serverKey: ''samplers'', type: SyncableParameterType.STRING,
+    canSync: true },'
+  - '    { key: ''pasteLongTextToFileLen'', serverKey: ''pasteLongTextToFileLen'',
+    type: SyncableParameterType.NUMBER, canSync: true },'
+  - '    { key: ''pdfAsImage'', serverKey: ''pdfAsImage'', type: SyncableParameterType.BOOLEAN,
+    canSync: true },'
+  - '    ... (showThoughtInProgress, keepStatsVisible, showMessageStats, askForTitleConfirmation,
+    disableAutoScroll, renderUserContentAsMarkdown, autoMicOnEmpty, pyInterpreterEnabled,
+    enableContinueGeneration, fullHeightCodeBlocks, systemMessage, showSystemMessage,
+    theme, copyTextAttachmentsAsPlainText, showRawOutputSwitch, alwaysShowSidebarOnDesktop,
+    autoShowSidebarOnNewChat, showRawModelNames, mcpServers, agenticMaxTurns, agenticMaxToolPreviewLines,
+    showToolCallInProgress, alwaysShowAgenticTurns, excludeReasoningFromContext)'
+  - '];'
+  desc: 模块级全局代码：导入工具函数与类型定义，并定义导出常量 SYNCABLE_PARAMETERS——WebUI 设置键到服务器参数键的可同步参数映射表（含类型与同步开关），供
+    ParameterSyncService 各方法使用。
+  line: 1-194
+  name: __main__

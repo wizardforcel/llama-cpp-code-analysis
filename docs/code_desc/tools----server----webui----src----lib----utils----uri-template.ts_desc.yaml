@@ -1,0 +1,164 @@
+classes:
+- desc: An interface defining the structure of a parsed variable from a URI template
+    expression, containing the variable name and its operator prefix.
+  methods: []
+  name: UriTemplateVariable
+desc: This TypeScript file provides utility functions for URI template processing,
+  implementing a simplified RFC 6570 Level 2 specification. It supports extracting
+  variables from URI templates, expanding templates with provided values, normalizing
+  resource URIs by removing extra leading slashes, and checking whether all required
+  template variables have been provided with values.
+file: tools/server/webui/src/lib/utils/uri-template.ts
+funcs:
+- code:
+  - 'export function normalizeResourceUri(uri: string): string {'
+  - "\tconst schemeEnd = uri.indexOf(URI_SCHEME_SEPARATOR);"
+  - "\tif (schemeEnd === -1) return uri;"
+  - ''
+  - "\tconst scheme = uri.substring(0, schemeEnd);"
+  - "\tconst rest = uri"
+  - "\t\t.substring(schemeEnd + URI_SCHEME_SEPARATOR.length)"
+  - "\t\t.replace(LEADING_SLASHES_REGEX, '');"
+  - ''
+  - "\treturn `${scheme}${URI_SCHEME_SEPARATOR}${rest}`;"
+  - '}'
+  desc: Normalizes a resource URI by stripping extra leading slashes after the scheme
+    separator, enabling consistent comparison between template-expanded URIs and listed
+    resource URIs.
+  line: 28-37
+  name: normalizeResourceUri
+- code:
+  - 'export function extractTemplateVariables(template: string): UriTemplateVariable[]
+    {'
+  - "\tconst variables: UriTemplateVariable[] = [];"
+  - "\tconst seen = new Set<string>();"
+  - ''
+  - "\tlet match;"
+  - "\tTEMPLATE_EXPRESSION_REGEX.lastIndex = 0;"
+  - ''
+  - "\twhile ((match = TEMPLATE_EXPRESSION_REGEX.exec(template)) !== null) {"
+  - "\t\tconst operator = match[1] || '';"
+  - "\t\tconst varList = match[2];"
+  - ''
+  - "\t\t// RFC 6570 allows comma-separated variable lists: {x,y,z}"
+  - "\t\tfor (const varSpec of varList.split(',')) {"
+  - "\t\t\t// Strip explode modifier (*) and prefix modifier (:N)"
+  - "\t\t\tconst name = varSpec"
+  - "\t\t\t\t.replace(VARIABLE_EXPLODE_MODIFIER_REGEX, '')"
+  - "\t\t\t\t.replace(VARIABLE_PREFIX_MODIFIER_REGEX, '')"
+  - "\t\t\t\t.trim();"
+  - ''
+  - "\t\t\tif (name && !seen.has(name)) {"
+  - "\t\t\t\tseen.add(name);"
+  - "\t\t\t\tvariables.push({ name, operator });"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn variables;"
+  - '}'
+  desc: Extracts all unique variable names and their operators from a URI template
+    string, returning an array of UriTemplateVariable objects while handling comma-separated
+    variable lists and stripping explode/prefix modifiers.
+  line: 67-93
+  name: extractTemplateVariables
+- code:
+  - 'export function expandTemplate(template: string, values: Record<string, string>):
+    string {'
+  - "\tTEMPLATE_EXPRESSION_REGEX.lastIndex = 0;"
+  - ''
+  - "\treturn template.replace("
+  - "\t\tTEMPLATE_EXPRESSION_REGEX,"
+  - "\t\t(_match, operator: string, varList: string) => {"
+  - "\t\t\tconst varNames = varList"
+  - "\t\t\t\t.split(',')"
+  - "\t\t\t\t.map((v: string) =>"
+  - "\t\t\t\t\tv"
+  - "\t\t\t\t\t\t.replace(VARIABLE_EXPLODE_MODIFIER_REGEX, '')"
+  - "\t\t\t\t\t\t.replace(VARIABLE_PREFIX_MODIFIER_REGEX, '')"
+  - "\t\t\t\t\t\t.trim()"
+  - "\t\t\t\t);"
+  - ''
+  - "\t\t\tconst expandedParts = varNames"
+  - "\t\t\t\t.map((name: string) => values[name] ?? '')"
+  - "\t\t\t\t.filter((v: string) => v !== '');"
+  - ''
+  - "\t\t\tif (expandedParts.length === 0) return '';"
+  - ''
+  - "\t\t\tswitch (operator) {"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.RESERVED:"
+  - "\t\t\t\t\t// Reserved expansion: no encoding"
+  - "\t\t\t\t\treturn expandedParts.join(URI_TEMPLATE_SEPARATORS.COMMA);"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.FRAGMENT:"
+  - "\t\t\t\t\t// Fragment expansion"
+  - "\t\t\t\t\treturn ("
+  - "\t\t\t\t\t\tURI_TEMPLATE_OPERATORS.FRAGMENT + expandedParts.join(URI_TEMPLATE_SEPARATORS.COMMA)"
+  - "\t\t\t\t\t);"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.PATH_SEGMENT:"
+  - "\t\t\t\t\t// Path segments"
+  - "\t\t\t\t\treturn URI_TEMPLATE_SEPARATORS.SLASH + expandedParts.join(URI_TEMPLATE_SEPARATORS.SLASH);"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.LABEL:"
+  - "\t\t\t\t\t// Label expansion"
+  - "\t\t\t\t\treturn ("
+  - "\t\t\t\t\t\tURI_TEMPLATE_SEPARATORS.PERIOD + expandedParts.join(URI_TEMPLATE_SEPARATORS.PERIOD)"
+  - "\t\t\t\t\t);"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.PATH_PARAM:"
+  - "\t\t\t\t\t// Path-style parameters"
+  - "\t\t\t\t\treturn varNames"
+  - "\t\t\t\t\t\t.filter((_: string, i: number) => expandedParts[i])"
+  - "\t\t\t\t\t\t.map("
+  - "\t\t\t\t\t\t\t(name: string, i: number) =>"
+  - "\t\t\t\t\t\t\t\t`${URI_TEMPLATE_SEPARATORS.SEMICOLON}${name}=${expandedParts[i]}`"
+  - "\t\t\t\t\t\t)"
+  - "\t\t\t\t\t\t.join('');"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.FORM_QUERY:"
+  - "\t\t\t\t\t// Form-style query"
+  - "\t\t\t\t\treturn ("
+  - "\t\t\t\t\t\tURI_TEMPLATE_SEPARATORS.QUERY_PREFIX +"
+  - "\t\t\t\t\t\tvarNames"
+  - "\t\t\t\t\t\t\t.filter((_: string, i: number) => expandedParts[i])"
+  - "\t\t\t\t\t\t\t.map("
+  - "\t\t\t\t\t\t\t\t(name: string, i: number) =>"
+  - "\t\t\t\t\t\t\t\t\t`${encodeURIComponent(name)}=${encodeURIComponent(expandedParts[i])}`"
+  - "\t\t\t\t\t\t\t)"
+  - "\t\t\t\t\t\t\t.join(URI_TEMPLATE_SEPARATORS.COMMA)"
+  - "\t\t\t\t\t);"
+  - "\t\t\t\tcase URI_TEMPLATE_OPERATORS.FORM_CONTINUATION:"
+  - "\t\t\t\t\t// Form-style query continuation"
+  - "\t\t\t\t\treturn ("
+  - "\t\t\t\t\t\tURI_TEMPLATE_SEPARATORS.QUERY_CONTINUATION +"
+  - "\t\t\t\t\t\tvarNames"
+  - "\t\t\t\t\t\t\t.filter((_: string, i: number) => expandedParts[i])"
+  - "\t\t\t\t\t\t\t.map("
+  - "\t\t\t\t\t\t\t\t(name: string, i: number) =>"
+  - "\t\t\t\t\t\t\t\t\t`${encodeURIComponent(name)}=${encodeURIComponent(expandedParts[i])}`"
+  - "\t\t\t\t\t\t\t)"
+  - "\t\t\t\t\t\t\t.join(URI_TEMPLATE_SEPARATORS.COMMA)"
+  - "\t\t\t\t\t);"
+  - "\t\t\t\tdefault:"
+  - "\t\t\t\t\t// Simple string expansion (default operator)"
+  - "\t\t\t\t\treturn expandedParts"
+  - "\t\t\t\t\t\t.map((v: string) => encodeURIComponent(v))"
+  - "\t\t\t\t\t\t.join(URI_TEMPLATE_SEPARATORS.COMMA);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t);"
+  - '}'
+  desc: Expands a URI template by substituting variables with provided values, supporting
+    various RFC 6570 operators including reserved, fragment, path segment, label,
+    path parameter, form query, and form continuation expansions with appropriate
+    encoding and separators.
+  line: 111-185
+  name: expandTemplate
+- code:
+  - 'export function isTemplateComplete(template: string, values: Record<string, string>):
+    boolean {'
+  - "\tconst variables = extractTemplateVariables(template);"
+  - ''
+  - "\treturn variables.every((v) => (values[v.name] ?? '').trim() !== '');"
+  - '}'
+  desc: Checks whether all required variables in a URI template have been provided
+    with non-empty values, returning true only if every variable in the template has
+    a corresponding non-empty value in the provided values map.
+  line: 196-200
+  name: isTemplateComplete

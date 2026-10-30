@@ -1,0 +1,220 @@
+code_map:
+- tools/mtmd/debug/
+- ├── mtmd-debug.cpp
+- '│   ├── __main__                        # 主入口：参数解析、上下文初始化、模式分流'
+- '│   │   ├── 初始化阶段（52-87行）       # common_init、mmproj加载、cb_eval注入'
+- '│   │   ├── 输入生成阶段（96-158行）    # 根据-p参数分流到encode/preproc'
+- '│   │   └── 执行分流（166-189行）       # 调用对应调试接口'
+- '│   └── show_additional_info()          # 帮助信息展示：参数说明与测试类型列表'
+- │
+- ├── mtmd-debug.h
+- '│   ├── mtmd_debug_encode_image()       # 图像编码调试：float32 RGB输入验证ViT'
+- '│   ├── mtmd_debug_encode_audio()       # 音频编码调试：PCM样本广播至n_mel'
+- '│   ├── mtmd_debug_preprocess_image()   # 图像预处理调试：uint8原始数据验证缩放归一化'
+- '│   └── mtmd_debug_preprocess_audio()   # 音频预处理调试：验证分帧与梅尔滤波'
+- ''
+- tools/mtmd/deprecation-warning.cpp
+- '├── main()                              # 废弃入口处理'
+- '│   ├── setlocale(LC_NUMERIC, "C")     # 防御性区域设置'
+- '│   ├── argv[0]路径解析                 # 跨平台文件名提取（/与\）'
+- '│   └── EXIT_FAILURE返回                # 强制退出并提示迁移到llama-mtmd-cli'
+- ''
+- tools/mtmd/tests/test-deepseek-ocr.py
+- '├── run_mtmd_deepseek_ocr()             # 封装subprocess调用llama-mtmd-cli'
+- '│   ├── 固定参数配置                    # --temp 0、-n 1024、--chat-template deepseek-ocr'
+- '│   └── Free OCR与Markdown OCR双模式    # 分别调用不同提示词'
+- '├── compute_embedding_similarity()      # 语义相似度计算'
+- '│   ├── SentenceTransformer加载         # Qwen/Qwen3-Embedding-0.6B默认'
+- '│   └── 余弦相似度计算                  # util.similarity.cos_sim'
+- '├── read_expected_output()              # 参考输出文件读取（75-82行）'
+- '├── main()                              # 测试主流程：路径校验、双模式执行、阈值判定'
+- '└── __main__                            # 脚本入口点（156-157行）'
+exercises:
+- contents:
+  - 阅读 `tools/mtmd/debug/mtmd-debug.cpp` 第52-195行 `__main__` 函数，重点分析：
+  - 1. `params.prompt` 如何决定执行路径（encode vs preproc）？默认行为是什么？
+  - 2. 在encode模式下，为什么图像使用`std::vector<std::vector<float>>`而preproc模式使用`std::vector<uint8_t>`？
+  - 3. `inp_size`参数在图像和音频场景中分别代表什么含义？
+  - 4. 尝试扩展代码：添加一个新的合成图像类型`gradient`（从左到右0.0到1.0渐变），需要修改哪些分支？
+  'no': 1
+  title: 分析mtmd-debug的参数分流机制
+- contents:
+  - 阅读 `tools/mtmd/debug/mtmd-debug.h` 中的四个接口声明，回答以下问题：
+  - 1. `mtmd_debug_encode_image`与`mtmd_debug_preprocess_image`的输入数据类型有何本质区别？这反映了怎样的调试策略？
+  - 2. 为什么这些函数不返回处理结果，而是通过`cb_eval`回调输出中间值？这种设计有什么优势？
+  - 3. 如果要在音频编码调试中支持立体声（双声道）输入，接口需要如何修改？
+  - 4. 查看`mtmd-debug.cpp`第82-86行，解释`cb_eval_user_data`与`cb_eval`是如何被强制注入到mtmd_context_params中的？
+  'no': 2
+  title: 调试接口的契约分析
+- contents:
+  - 阅读 `tools/mtmd/deprecation-warning.cpp` 第6-25行，完成以下分析：
+  - 1. 为什么程序要主动返回`EXIT_FAILURE`而不是`EXIT_SUCCESS`？这体现了怎样的设计哲学？
+  - 2. `std::setlocale(LC_NUMERIC, "C")`的作用是什么？如果没有这行代码，在什么情况下会出现问题？
+  - 3. 代码如何处理Windows和Unix风格的路径分隔符？如果用户通过软链接调用程序，`argv[0]`会显示什么？
+  - 4. 尝试改进该程序：使其不仅提示使用`llama-mtmd-cli`，还能自动转发参数并执行新命令（提示：使用`execvp`或`system`调用）
+  'no': 3
+  title: 废弃命令迁移工具的实现细节
+- contents:
+  - 阅读 `tools/mtmd/tests/test-deepseek-ocr.py` 全文，设计一个实验方案：
+  - 1. 当前默认相似度阈值是0.7，如果将其提高到0.9或降低到0.5，分别会对测试结果产生什么影响？
+  - 2. 为什么测试脚本选择使用SentenceTransformer计算语义相似度，而不是直接对比编辑距离（Levenshtein Distance）或精确匹配？
+  - 3. `run_mtmd_deepseek_ocr`函数中通过`--temp 0`强制确定性输出，如果移除该参数，测试会变得不稳定吗？为什么？
+  - 4. 尝试修改`compute_embedding_similarity`函数，使其同时返回余弦相似度和欧氏距离，并对比两种度量在OCR文本对比中的敏感性差异
+  'no': 4
+  title: DeepSeek-OCR测试的阈值调优实验
+- contents:
+  - 阅读 `tools/mtmd/tests/test-deepseek-ocr.py` 第75-82行 `read_expected_output()` 函数，回答以下问题：
+  - 1. 为什么使用`Path(__file__).parent`而不是相对路径直接打开文件？这解决了什么问题？
+  - 2. 如果测试脚本被从其他目录调用（如`python tools/mtmd/tests/test-deepseek-ocr.py`），路径解析会如何变化？
+  - 3. 尝试扩展该函数：支持从压缩包（zip）中读取期望输出文件，需要添加哪些逻辑？
+  - 4. 查看第156-157行的`__main__`入口点，它对整个测试流程起到了什么作用？如果直接导入该模块而不运行，会发生什么？
+  'no': 5
+  title: 参考输出文件的加载机制与路径管理
+learning_targets:
+- 理解mtmd-debug工具的双模调试设计哲学（编码与预处理分离）
+- 掌握合成测试数据（纯色/棋盘格/正弦波）在多模态调试中的应用方法
+- 熟悉内部调试接口的隔离设计原则与cb_eval回调机制
+- 了解废弃二进制命令的优雅迁移策略与跨平台路径处理
+- 掌握基于SentenceTransformer的语义相似度计算在端到端测试中的应用
+- 理解Python测试脚本的路径解析与资源管理最佳实践
+life_analogy:
+- 想象多模态模型是一家**精密仪器制造厂**，mtmd-debug工具就是厂里的**「质量检测仪」**：
+- '- **合成图像/音频** = 标准测试件（纯白、纯黑、棋盘格如同标准的灰度卡、色块）'
+- '- **encode模式** = 成品性能测试（检验最终输出是否符合规格）'
+- '- **preproc模式** = 原材料检验（检查进料是否符合加工标准）'
+- '- **cb_eval回调** = 生产线上的透明观察窗（可以看到每个工序的中间状态）'
+- '- **deprecation-warning** = 旧设备上的「此设备已淘汰，请使用新型号」标签'
+- '- **DeepSeek-OCR测试** = 与进口设备（HuggingFace）进行「对表」验证，确保测量结果一致'
+- 就像质检员不会直接拆解成品来检查内部结构，而是通过标准测试信号观察中间过程，mtmd-debug也是通过标准输入和回调机制来「听诊」模型内部状态。
+'no': 77
+summary:
+- concept: mtmd-debug工具
+  desc: 多模态管线听诊器，支持encode/preproc双阶段调试
+- concept: 合成测试信号
+  desc: black/white/gray/cb(图像)与one/zero/half/1010/440(音频)，用于隔离验证特定功能
+- concept: cb_eval回调注入
+  desc: 强制注入common_debug_cb_eval<false>，实现非侵入式中间张量观测
+- concept: 调试接口矩阵
+  desc: encode/preproc × image/audio 四接口组合，覆盖两种数据类型与两种处理阶段
+- concept: 优雅弃用策略
+  desc: 打印警告+EXIT_FAILURE，而非静默失败，引导用户迁移至llama-mtmd-cli
+- concept: 跨平台路径处理
+  desc: 同时匹配/与\分隔符，确保argv[0]解析在Windows与Unix一致
+- concept: 语义相似度验证
+  desc: 使用SentenceTransformer计算余弦相似度，替代strict文本匹配，容忍措辞差异
+- concept: 双模式OCR测试
+  desc: 同时验证Free OCR与Markdown OCR两种任务，确保全部达标才算通过
+- concept: 防御性locale设置
+  desc: setlocale(LC_NUMERIC, "C")确保数字格式化不受系统区域设置影响
+- concept: 最小侵入式调试
+  desc: 通过回调输出中间值而非修改返回值，保持被测代码逻辑纯净
+- concept: 路径资源管理
+  desc: 基于__file__的相对路径解析，确保测试脚本可在任意工作目录运行
+units:
+- codes:
+  - file: tools/mtmd/debug/mtmd-debug.cpp
+    line: 52-195
+    method_or_func: __main__
+  - file: tools/mtmd/debug/mtmd-debug.cpp
+    line: 21-50
+    method_or_func: show_additional_info()
+  name: mtmd-debug：合成数据触发器 —— 多模态管线的「听诊器」
+  'no': 1
+  points:
+  - '**双模调试设计哲学**'
+  - '- 同时支持 `encode`（编码/前向传播）与 `preproc`（预处理）双阶段调试'
+  - '- `--image`/`--audio` 统一入口，内部自动区分图像与音频路径'
+  - '- 通过 `-n` 参数统一控制输入尺寸（图像边长或音频样本数）'
+  - '**合成输入类型：极简主义的测试信号**'
+  - '- 图像：`black`/`white`/`gray`（纯色棋盘）与 `cb`（棋盘格），用于验证基础色彩响应与空间结构'
+  - '- 音频：`one`/`zero`/`half`（直流偏置）与 `1010`（方波交替），检测直流响应与高频特性'
+  - '- 音频特别支持：`440` 生成 440Hz 正弦波，用于验证频谱特征提取（如梅尔滤波器组）'
+  - '**上下文初始化的特殊处理**'
+  - '- 强制要求 `--mmproj` 多模态投影文件，视觉/音频模型为必需参数'
+  - '- 调试回调强制注入：`cb_eval = common_debug_cb_eval<false>`，捕获中间张量值'
+  - '- 线程与 GPU 配置透传：`n_threads`、`use_gpu`、`flash_attn_type` 等参数继承自通用配置'
+  - '**执行分流逻辑**'
+  - '- `encode` 模式：图像使用 `float` RGB 格式（0.0-1.0），音频使用 `float` PCM；直接调用 `mtmd_debug_encode_*`'
+  - '- `preproc` 模式：图像使用 `uint8_t` RGB（0-255），音频使用 `float` PCM；调用 `mtmd_debug_preprocess_*`'
+  - '- 模式选择依据：`params.prompt == "preproc"` 为预处理，否则默认或 `encode` 为编码'
+- codes:
+  - file: tools/mtmd/debug/mtmd-debug.h
+    line: 9-9
+    method_or_func: mtmd_debug_encode_image()
+  - file: tools/mtmd/debug/mtmd-debug.h
+    line: 10-10
+    method_or_func: mtmd_debug_encode_audio()
+  - file: tools/mtmd/debug/mtmd-debug.h
+    line: 12-12
+    method_or_func: mtmd_debug_preprocess_image()
+  - file: tools/mtmd/debug/mtmd-debug.h
+    line: 13-13
+    method_or_func: mtmd_debug_preprocess_audio()
+  name: 调试接口契约 —— 中间值的「侦探工具包」
+  'no': 2
+  points:
+  - '**内部 API 的隔离设计**'
+  - '- 头文件明确标注「仅供内部调试」，不进入公开 API 表面'
+  - '- 四个函数对应两种输入类型（图像/音频）与两种处理阶段（编码/预处理）的矩阵组合'
+  - '**图像调试接口**'
+  - '- `mtmd_debug_encode_image`：接收已预处理的 `float32` 张量（RGB 0.0-1.0），验证 ViT 主干前向传播'
+  - '- `mtmd_debug_preprocess_image`：接收原始 `uint8` RGB 数据，验证图像缩放、归一化、通道重排等预处理'
+  - '**音频调试接口**'
+  - '- `mtmd_debug_encode_audio`：接收 `float` 样本，内部自动广播至 `n_mel` 维度，验证声学模型编码'
+  - '- `mtmd_debug_preprocess_audio`：接收原始 PCM，验证分帧、加窗、梅尔滤波器组计算'
+  - '**数据流向的可观测性**'
+  - '- 所有接口均通过 `cb_eval` 回调输出中间激活值，而非返回结果，符合「最小侵入式」调试原则'
+- codes:
+  - file: tools/mtmd/deprecation-warning.cpp
+    line: 6-25
+    method_or_func: main()
+  name: 废弃命令迁移引导 —— 旧用户的「路标置换」
+  'no': 3
+  points:
+  - '**优雅的弃用策略**'
+  - '- 不静默移除旧入口，而是打印醒目警告并返回 `EXIT_FAILURE`，强迫用户注意'
+  - '- 明确指示替代命令 `llama-mtmd-cli`，降低迁移成本'
+  - '**可执行文件名的自感知**'
+  - '- 从 `argv[0]` 提取程序名，无论用户通过何种路径调用（软链接、绝对路径、相对路径）'
+  - '- 跨平台路径分隔符处理：同时匹配 `/` 与 `\`（Windows）'
+  - '** locale 的防御性设置**'
+  - '- `setlocale(LC_NUMERIC, "C")` 确保打印信息不受系统区域设置影响（避免例如逗号 vs 小数点混淆）'
+- codes:
+  - file: tools/mtmd/tests/test-deepseek-ocr.py
+    line: 12-54
+    method_or_func: run_mtmd_deepseek_ocr()
+  - file: tools/mtmd/tests/test-deepseek-ocr.py
+    line: 57-72
+    method_or_func: compute_embedding_similarity()
+  - file: tools/mtmd/tests/test-deepseek-ocr.py
+    line: 75-82
+    method_or_func: read_expected_output()
+  - file: tools/mtmd/tests/test-deepseek-ocr.py
+    line: 85-153
+    method_or_func: main()
+  - file: tools/mtmd/tests/test-deepseek-ocr.py
+    line: 156-157
+    method_or_func: __main__
+  name: DeepSeek-OCR 端到端验证 —— 与 HuggingFace 的「镜像比对」
+  'no': 4
+  points:
+  - '**双重验证策略设计**'
+  - '- 同时测试 Free OCR（自由文本提取）与 Markdown OCR（结构化转换）两种模式'
+  - '- 每种模式独立计算相似度，确保两种任务均达标才算通过'
+  - '**llama.cpp 侧推理执行**'
+  - '- `run_mtmd_deepseek_ocr`：封装 `llama-mtmd-cli` 子进程调用，固定参数如 `--temp 0`（确定性输出）、`-n
+    1024`'
+  - '- 强制指定 `--chat-template deepseek-ocr`，确保提示词格式与多模态投影对齐'
+  - '**参考输出加载机制**'
+  - '- `read_expected_output()`：基于 `__file__` 动态解析参考文件路径，确保测试脚本可从任意工作目录执行'
+  - '- 支持文本文件（`test-1-extracted.txt`）与 Markdown 文件（`test-1-extracted.md`）两种期望输出'
+  - '**语义相似度计算**'
+  - '- 不依赖原始 logits 对比，而是使用 SentenceTransformer（默认 Qwen/Qwen3-Embedding-0.6B）提取语义向量'
+  - '- 采用余弦相似度作为指标，对文本顺序和措辞差异具有鲁棒性'
+  - '- 阈值判定：默认 0.7，可配置，平衡灵敏度与误报率'
+  - '**路径与资源管理**'
+  - '- 自动解析相对路径：基于 `__file__` 定位测试图像（`test-1.jpeg`）与期望输出'
+  - '- 入口点保护：`__main__` 确保脚本既可独立运行也可被导入复用'
+  - '**输出验证的完备性**'
+  - '- 不仅比对文本内容，还打印详细差异报告（参考输出 vs 实际输出）'
+  - '- 非零返回码处理：`llama-mtmd-cli` 失败时抛出 `RuntimeError`，中断测试流程'

@@ -1,0 +1,168 @@
+classes: []
+desc: This file contains unit tests for server security, covering public endpoint
+  access, API key authentication, CORS configuration, and local media file validation
+  for both OpenAI and Anthropic-style headers.
+file: tools/server/tests/unit/test_security.py
+funcs:
+- code:
+  - '@pytest.fixture(autouse=True)'
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.tinyllama2()'
+  - '    server.api_key = TEST_API_KEY'
+  desc: Pytest fixture (autouse) that initializes the server with a preset configuration
+    and sets a test API key for each test.
+  line: 10-14
+  name: create_server
+- code:
+  - '@pytest.mark.parametrize("endpoint", ["/health", "/models"])'
+  - 'def test_access_public_endpoint(endpoint: str):'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("GET", endpoint)'
+  - '    assert res.status_code == 200'
+  - '    assert "error" not in res.body'
+  desc: Parametrized test that verifies public endpoints return 200 without authentication
+    errors.
+  line: 16-22
+  name: test_access_public_endpoint
+- code:
+  - 'def test_access_static_assets_without_api_key():'
+  - '    """Static web UI assets should not require API key authentication (issue
+    #21229)"""'
+  - '    global server'
+  - '    server.start()'
+  - '    for path in ["/", "/bundle.js", "/bundle.css"]:'
+  - '        res = server.make_request("GET", path)'
+  - '        assert res.status_code == 200, f"Expected 200 for {path}, got {res.status_code}"'
+  desc: Tests that static web UI assets like bundle.js and bundle.css are accessible
+    without API key authentication.
+  line: 24-30
+  name: test_access_static_assets_without_api_key
+- code:
+  - '@pytest.mark.parametrize("api_key", [None, "invalid-key"])'
+  - 'def test_incorrect_api_key(api_key: str):'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completions", data={'
+  - '        "prompt": "I believe the meaning of life is",'
+  - '    }, headers={'
+  - '        "Authorization": f"Bearer {api_key}" if api_key else None,'
+  - '    })'
+  - '    assert res.status_code == 401'
+  - '    assert "error" in res.body'
+  - '    assert res.body["error"]["type"] == "authentication_error"'
+  desc: Parametrized test that verifies requests with missing or invalid API keys
+    are rejected with 401 authentication errors.
+  line: 32-41
+  name: test_incorrect_api_key
+- code:
+  - 'def test_correct_api_key():'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completions", data={'
+  - '        "prompt": "I believe the meaning of life is",'
+  - '    }, headers={'
+  - '        "Authorization": f"Bearer {TEST_API_KEY}",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert "error" not in res.body'
+  - '    assert "content" in res.body'
+  desc: Verifies that a correct API key in Authorization header grants access to protected
+    endpoints.
+  line: 43-52
+  name: test_correct_api_key
+- code:
+  - 'def test_correct_api_key_anthropic_header():'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completions", data={'
+  - '        "prompt": "I believe the meaning of life is",'
+  - '    }, headers={'
+  - '        "X-Api-Key": TEST_API_KEY,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert "error" not in res.body'
+  - '    assert "content" in res.body'
+  desc: Tests that the same API key works when sent in Anthropic-style 'X-Api-Key'
+    header instead of Bearer token.
+  line: 54-63
+  name: test_correct_api_key_anthropic_header
+- code:
+  - 'def test_openai_library_correct_api_key():'
+  - '    global server'
+  - '    server.start()'
+  - '    client = OpenAI(api_key=TEST_API_KEY, base_url=f"http://{server.server_host}:{server.server_port}")'
+  - '    res = client.chat.completions.create('
+  - '        model="gpt-3.5-turbo",'
+  - '        messages=['
+  - '            {"role": "system", "content": "You are a chatbot."},'
+  - '            {"role": "user", "content": "What is the meaning of life?"},'
+  - '        ],'
+  - '    )'
+  - '    assert len(res.choices) == 1'
+  desc: Validates the integration with OpenAI client library when connecting with
+    correct API key.
+  line: 65-77
+  name: test_openai_library_correct_api_key
+- code:
+  - '@pytest.mark.parametrize("origin,cors_header,cors_header_value", ['
+  - '    ("localhost", "Access-Control-Allow-Origin", "localhost"),'
+  - '    ("web.mydomain.fr", "Access-Control-Allow-Origin", "web.mydomain.fr"),'
+  - '    ("origin", "Access-Control-Allow-Credentials", "true"),'
+  - '    ("web.mydomain.fr", "Access-Control-Allow-Methods", "GET, POST"),'
+  - '    ("web.mydomain.fr", "Access-Control-Allow-Headers", "*"),'
+  - '])'
+  - 'def test_cors_options(origin: str, cors_header: str, cors_header_value: str):'
+  - '    global server'
+  - '    server.start()'
+  - '    res = server.make_request("OPTIONS", "/completions", headers={'
+  - '        "Origin": origin,'
+  - '        "Access-Control-Request-Method": "POST",'
+  - '        "Access-Control-Request-Headers": "Authorization",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert cors_header in res.headers'
+  - '    assert res.headers[cors_header] == cors_header_value'
+  desc: Parametrized test that checks CORS headers are correctly set for preflight
+    OPTIONS requests from allowed origins.
+  line: 79-95
+  name: test_cors_options
+- code:
+  - '@pytest.mark.parametrize('
+  - '    "media_path, image_url, success",'
+  - '    ['
+  - '        (None,             "file://mtmd/test-1.jpeg",    False), # disabled media
+    path, should fail'
+  - '        ("../../../tools", "file://mtmd/test-1.jpeg",    True),'
+  - '        ("../../../tools", "file:////mtmd//test-1.jpeg", True),  # should be
+    the same file as above'
+  - '        ("../../../tools", "file://mtmd/notfound.jpeg",  False), # non-existent
+    file'
+  - '        ("../../../tools", "file://../mtmd/test-1.jpeg", False), # no directory
+    traversal'
+  - '    ]'
+  - )
+  - 'def test_local_media_file(media_path, image_url, success,):'
+  - '    server = ServerPreset.tinygemma3()'
+  - '    server.media_path = media_path'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/chat/completions", data={'
+  - '        "max_tokens": 1,'
+  - '        "messages": ['
+  - '            {"role": "user", "content": ['
+  - '                {"type": "text", "text": "test"},'
+  - '                {"type": "image_url", "image_url": {'
+  - '                    "url": image_url,'
+  - '                }},'
+  - '            ]},'
+  - '        ],'
+  - '    })'
+  - '    if success:'
+  - '        assert res.status_code == 200'
+  - '    else:'
+  - '        assert res.status_code == 400'
+  desc: Parametrized test validating file path handling for local media, checking
+    directory traversal prevention and file existence requirements.
+  line: 97-121
+  name: test_local_media_file

@@ -1,0 +1,157 @@
+classes:
+- desc: 一个结构体，用于在JSON解析错误定位过程中跟踪当前解析栈中的元素类型（对象/键/数组）及其键名。
+  methods: []
+  name: common_json_stack_element
+- desc: 一个继承自nlohmann::json_sax的SAX回调类，用于在解析过程中精确定位JSON的错误位置，并记录解析栈状态以辅助后续修复。
+  methods:
+  - code:
+    - bool parse_error(std::size_t position, const std::string & last_token, const
+      json::exception & ex) override {
+    - '    this->position = position - 1;'
+    - '    this->found_error = true;'
+    - '    this->last_token = last_token;'
+    - '    this->exception_message = ex.what();'
+    - '    return false;'
+    - '}'
+    desc: SAX回调，在解析遇到语法错误时被调用，记录错误位置、最后标记及异常消息并停止解析。
+    line: 57-63
+    name: parse_error
+  - code:
+    - void close_value() {
+    - '    if (!stack.empty() && (stack.back().type == COMMON_JSON_STACK_ELEMENT_KEY))
+      {'
+    - '        stack.pop_back();'
+    - '    }'
+    - '}'
+    desc: 内部辅助方法，用于在值结束时弹出栈顶的键元素，以维护正确的解析栈状态。
+    line: 64-68
+    name: close_value
+  - code:
+    - bool null() override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON null值，调用close_value后返回true。
+    line: 69-73
+    name: 'null'
+  - code:
+    - bool boolean(bool) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON布尔值，调用close_value后返回true。
+    line: 74-78
+    name: boolean
+  - code:
+    - bool number_integer(number_integer_t) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON有符号整数，调用close_value后返回true。
+    line: 79-83
+    name: number_integer
+  - code:
+    - bool number_unsigned(number_unsigned_t) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON无符号整数，调用close_value后返回true。
+    line: 84-88
+    name: number_unsigned
+  - code:
+    - bool number_float(number_float_t, const string_t &) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON浮点数，调用close_value后返回true。
+    line: 89-93
+    name: number_float
+  - code:
+    - bool string(string_t &) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON字符串值，调用close_value后返回true。
+    line: 94-98
+    name: string
+  - code:
+    - bool binary(binary_t &) override {
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，处理JSON二进制值，调用close_value后返回true。
+    line: 99-103
+    name: binary
+  - code:
+    - bool start_object(std::size_t) override {
+    - '    stack.push_back({COMMON_JSON_STACK_ELEMENT_OBJECT, ""});'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，遇到'{'时压入对象栈元素并返回true。
+    line: 104-109
+    name: start_object
+  - code:
+    - bool end_object() override {
+    - '    GGML_ASSERT(!stack.empty() && stack.back().type == COMMON_JSON_STACK_ELEMENT_OBJECT);'
+    - '    stack.pop_back();'
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，遇到'}'时验证并弹出对象栈元素，然后调用close_value并返回true。
+    line: 110-116
+    name: end_object
+  - code:
+    - bool key(string_t & key) override {
+    - '    stack.push_back({COMMON_JSON_STACK_ELEMENT_KEY, key});'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，遇到对象键时压入键栈元素并返回true。
+    line: 117-121
+    name: key
+  - code:
+    - bool start_array(std::size_t) override {
+    - '    stack.push_back({COMMON_JSON_STACK_ELEMENT_ARRAY, ""});'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，遇到'['时压入数组栈元素并返回true。
+    line: 122-127
+    name: start_array
+  - code:
+    - bool end_array() override {
+    - '    GGML_ASSERT(!stack.empty() && stack.back().type == COMMON_JSON_STACK_ELEMENT_ARRAY);'
+    - '    stack.pop_back();'
+    - '    close_value();'
+    - '    return true;'
+    - '}'
+    desc: SAX回调，遇到']'时验证并弹出数组栈元素，然后调用close_value并返回true。
+    line: 128-134
+    name: end_array
+  name: json_error_locator
+desc: 该文件实现了对不完整或损坏JSON的修复（healing）功能，使用nlohmann JSON库的SAX接口来定位错误位置，并尝试通过推断结构、添加缺失的闭合括号或占位符来修复截断的JSON，以解析尽可能多的有效数据。
+file: common/json-partial.cpp
+funcs:
+- code:
+  - bool common_json_parse(
+  - '    const std::string & input,'
+  - '    const std::string & healing_marker,'
+  - '    common_json & out)'
+  - '{'
+  - '    std::string::const_iterator it = input.begin();'
+  - '    const auto end = input.end();'
+  - '    return common_json_parse(it, end, healing_marker, out);'
+  - '}'
+  desc: 重载函数，接受输入字符串和修复标记，调用迭代器版本的解析函数来解析并修复JSON。
+  line: 24-31
+  name: common_json_parse
+- code:
+  - bool common_json_parse(
+  - '    std::string::const_iterator & it,'
+  - '    const std::string::const_iterator & end,'
+  - '    const std::string & healing_marker,'
+  - '    common_json & out)'
+  - '{'
+  - '    // ... 核心逻辑（见代码）'
+  - '}'
+  desc: 核心解析函数，使用SAX接口定位JSON错误，然后尝试通过多种策略修复截断的JSON并解析出有效数据。
+  line: 33-244
+  name: common_json_parse

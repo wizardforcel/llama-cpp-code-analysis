@@ -1,0 +1,58 @@
+classes: []
+desc: 这个文件是测试文件tests/test-double-float.cpp，主要用于验证ggml.c中某些函数从double精度转换到float精度后，计算结果不会受到影响。测试方式是通过遍历所有有限（非NaN、非无穷）的浮点数，检查转换前（使用double运算）和转换后（使用float运算）的结果是否一致。除此之外，对于使用FP16查找表的SILU激活函数，还检查了在FP16转换后结果是否至少是最近的浮点数。
+file: tests/test-double-float.cpp
+funcs:
+- code:
+  - int main(void) {
+  - '    uint32_t x = UINT32_MAX;'
+  - '    do {'
+  - '        float f;'
+  - '        memcpy(&f, &x, sizeof(x));'
+  - '        assert(!std::isfinite(f) || (round_orig(f) == round_float(f)));'
+  - '    } while (x--);'
+  - ''
+  - '#ifdef __F16C__'
+  - '    // GELU and SILU implementations are used with a FP16 lookup table.'
+  - '    // The original and float-only results are not equal for all inputs after
+    converting to FP16.'
+  - '    // GELU is an approximation anyway (tanh), not tested here.'
+  - '    // For SILU, verify that the results are at least the closest floating point
+    numbers, if the FP16 values don''t match.'
+  - '    for (x = 0; x <= UINT16_MAX; x++) {'
+  - '        float f = _cvtsh_ss(x);'
+  - '        const float so = silu_orig(f);'
+  - '        const float sf = silu_float(f);'
+  - '        assert(   (_cvtss_sh(so, 0) == _cvtss_sh(sf, 0))'
+  - '               || (nextafterf(so, sf) == sf)'
+  - '               || (nextafterf(sf, so) == so));'
+  - '    }'
+  - '#endif'
+  - '}'
+  desc: 这是主函数，负责执行所有测试。它遍历所有32位浮点数，检查round函数在double和float精度下的结果是否一致，并在支持F16C指令集时，对SILU函数的结果进行进一步验证。
+  line: 36-54
+  name: __main__
+- code:
+  - inline static uint8_t round_orig(float v0) { return ((int8_t) (round(v0))) + 8;
+    }
+  desc: 这是一个内联静态函数，用于模拟ggml.c中quantize_row_q4_0_ref函数的舍入行为。它接受一个float参数，使用round函数（double精度）计算值并加8，然后转换为int8_t再加8，返回uint8_t结果。
+  line: 17-18
+  name: round_orig
+- code:
+  - inline static float silu_orig(float x) {
+  - '    return x/(1.0 + exp(-x));'
+  - '}'
+  desc: 这是一个内联静态函数，用于模拟ggml.c中ggml_silu_f32函数的SILU激活函数实现。它使用double精度的exp函数，计算x除以(1加上e的负x次方)的结果。
+  line: 20-23
+  name: silu_orig
+- code:
+  - inline static uint8_t round_float(float v0) { return (int8_t)roundf(v0) + 8; }
+  desc: 这是一个内联静态函数，用于测试float精度下的舍入行为。它使用roundf函数（float精度）计算值并转换为int8_t再加8，返回uint8_t结果，与round_orig形成对比。
+  line: 27-28
+  name: round_float
+- code:
+  - inline static float silu_float(float x) {
+  - '    return x/(1.0f + expf(-x));'
+  - '}'
+  desc: 这是一个内联静态函数，用于测试float精度下的SILU激活函数实现。它使用float精度的expf函数，计算x除以(1加上e的负x次方)的结果，与silu_orig形成对比。
+  line: 30-33
+  name: silu_float

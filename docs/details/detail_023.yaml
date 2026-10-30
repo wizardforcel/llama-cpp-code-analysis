@@ -1,0 +1,397 @@
+code_map:
+- src/llama-quant.cpp
+- ├── 辅助工具（40-100行）
+- '│   ├── remap_layer()          # 层裁剪/重命名（blk.N. 提取与重编号）'
+- '│   ├── remap_imatrix()        # imatrix 反向映射（按 mapped 表回查原层号）'
+- '│   └── zeros()                # 文件占位符写入（全零字节流）'
+- ├── 张量分类（102-150行）
+- '│   ├── tensor_category 枚举   # 11 类张量定义'
+- '│   ├── tensor_name_match_token_embd()  # 识别嵌入张量（精确匹配）'
+- '│   ├── tensor_name_match_output_weight() # 识别输出张量（精确匹配）'
+- '│   ├── tensor_get_category()  # 字符串匹配 → 类别映射'
+- '│   └── category_is_attn_v()   # V 类敏感张量判定'
+- ├── 量化状态结构（132-180行）
+- '│   ├── quantize_state_impl    # 持有 model + params + 计数器 + 正则模式'
+- '│   └── quantize_state_impl.quantize_state_impl()  # 构造函数：编译正则覆盖'
+- ├── 反量化（194-260行）
+- '│   └── llama_tensor_dequantize_impl()  # F16/BF16/Quantized → F32 多线程'
+- ├── 可量化判定（263-322行）
+- '│   └── tensor_allows_quantization()    # 维度检查 + 名称白名单 + 保留列表'
+- ├── 类型回退（343-370行）
+- '│   └── tensor_type_fallback()  # 形状与量化块不兼容时降级到更小块'
+- ├── 类型选择核心（373-560行）
+- '│   ├── llama_tensor_get_type_impl()    # 综合 category/层/ftype/arch 的策略表'
+- │   │   ├── 共享嵌入联动：OUTPUT + TOKEN_EMBD 联合提升精度
+- │   │   ├── MXFP4_MOE 分流：2D → Q8_0，3D → MXFP4
+- │   │   ├── Attention V 差异化：GQA 共享时升级到 Q4_K/Q5_K
+- │   │   ├── 70B 专属优化：attn_v 从 Q3_K/Q4_K → Q5_K
+- │   │   └── FFN_DOWN 层级感知：use_more_bits 选择性提升
+- '│   └── llama_tensor_get_type()  # 外层包装：manual override + fallback'
+- ├── 量化执行（601-643行）
+- '│   └── llama_tensor_quantize_impl()  # 多线程按行/专家切分 + 校验'
+- ├── imatrix 需求（617-637行）
+- '│   └── tensor_requires_imatrix()  # IQ1/IQ2/IQ3_XXS 必须有 imatrix'
+- ├── ftype 默认映射（649-699行）
+- '│   └── llama_ftype_get_default_type()  # LLAMA_FTYPE_MOSTLY_* → ggml_type'
+- ├── 计数器初始化（702-719行）
+- '│   └── init_quantize_state_counters()  # 扫描所有张量统计 n_attention_wv/n_ffn_*'
+- ├── 主驱动（730-1181行）
+- │   └── llama_model_quantize_impl()
+- │       ├── 加载模型 + imatrix
+- │       ├── 创建 GGUF ctx_out
+- │       ├── 应用 prune_list + kv_overrides
+- │       ├── 遍历张量 → tensor_metadata
+- │       ├── preliminary loop：计算 target_type + requires_imatrix
+- │       ├── main loop：dry_run 仅算大小 / 否则 dequantize + quantize
+- │       ├── 专家独立量化（按 ne[2] 切片）
+- │       └── 写出 GGUF（占位 → 回填 meta + tensor data）
+- ├── 公共接口（1188-1219行）
+- │   ├── llama_model_quantize_default_params()
+- '│   └── llama_model_quantize()  # 顶层 try/catch 入口'
+- └── 外部工具接口（1231-1303行）
+- '    ├── llama_quant_init/free()   # RAII 风格的 state 暴露'
+- '    ├── llama_quant_model_from_metadata()  # 从描述符构造 mock 模型'
+- '    ├── llama_quant_tensor_allows_quantization()  # 判定可量化性'
+- '    └── llama_quant_compute_types()  # 批量计算张量类型数组'
+- src/llama-quant.h
+- └── 空头文件（实现全在 .cpp 内）
+- src/llama-ext.h
+- '├── llama_graph_reserve()        # 计算图预留'
+- '├── llama_ftype_get_default_type() # ftype→ggml_type 映射导出'
+- '├── llama_quant_init/free()      # 量化状态句柄'
+- '├── llama_quant_model_desc       # 测试用 mock 模型描述符'
+- '├── llama_quant_model_from_metadata()  # mock 模型构造'
+- '├── llama_quant_tensor_allows_quantization() # 可量化判定'
+- '└── llama_quant_compute_types()  # 批量类型分配'
+exercises:
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第84-150行与第266-325行，理解以下函数：
+  - 1. `tensor_name_match_token_embd()` - 精确字符串匹配
+  - 2. `tensor_name_match_output_weight()` - 精确字符串匹配
+  - 3. `tensor_get_category()` - 11 类张量的字符串匹配逻辑
+  - 4. `category_is_attn_v()` - 敏感张量判定
+  - 5. `tensor_allows_quantization()` - 可量化的多条件检查
+  - 回答问题：
+  - '- `tensor_name_match_token_embd` 与 `tensor_get_category` 中查找 `token_embd.weight`
+    的方式有何不同？为什么前者用 `strcmp` 而后者用 `find`？'
+  - '- `tensor_allows_quantization` 的保留列表中，`altup`/`laurel`/`sam.*` 分别是哪些模型特有的张量？'
+  - '- 为什么 `ffn_gate_inp.weight` 不参与量化？（提示：它在 MoE 中扮演什么角色？）'
+  'no': 1
+  title: 阅读张量分类与可量化判定源码
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第376-560行的 `llama_tensor_get_type_impl()` 函数，理解以下场景：
+  - 1. 共享嵌入（OUTPUT + TOKEN_EMBD 联动）的处理逻辑
+  - 2. MXFP4_MOE 分流：2D 张量与 3D 张量的不同处理
+  - 3. 70B 模型的 attn_v 精度提升策略
+  - 4. FFN_DOWN 在 IQ3_XXS 与 Q3_K_M 下的层级感知策略
+  - 回答问题：
+  - '- 当 ftype = IQ2_XXS 且 n_gqa() >= 4 时，attn_v 会被强制升级到什么类型？为什么？'
+  - '- `use_more_bits(i_layer, n_layers)` 的判定规则是什么？为什么首尾 1/8 的层需要更多比特？'
+  - '- 70B 模型的 `n_gqa` 通常是多少？将 attn_v 从 Q4_K 升级到 Q5_K 会增加多少模型体积？'
+  'no': 2
+  title: 追踪量化类型选择策略
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第620-640行（`tensor_requires_imatrix`）以及第1000-1060行的 imatrix
+    校验逻辑：
+  - 回答问题：
+  - '- 哪些 ggml_type 必须搭配 imatrix 才能使用？为什么 K-quant 系列大多不需要？'
+  - '- 当 imatrix 张量大小与目标张量 ne[0]*ne[2] 不一致时，`token_embd` 与其他张量的处理策略有何不同？'
+  - '- 3D 专家张量（ne[2]>1）如何按 ne[2] 切片使用独立的 imatrix 子数组？'
+  'no': 3
+  title: 理解 imatrix 校验与缺失处理
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第733-1184行的 `llama_model_quantize_impl()` 函数：
+  - 1. 画出主循环的流程图（preliminary loop → main loop）
+  - 2. 找出 dry_run 模式与正常模式的分叉点
+  - 3. 找到「占位 → 回填」的代码位置
+  - 回答问题：
+  - '- preliminary loop 中计算 `target_type` 时，为什么要遍历所有张量一次但仅生成元数据？'
+  - '- 写出 GGUF 时，`gguf_set_tensor_data` 与 `fout.write` 的顺序是怎样的？为什么必须先设置 tensor data
+    再写文件？'
+  - '- `params->keep_split` 模式下，如何处理多文件输出与 n_split 计算？'
+  'no': 4
+  title: 模拟主量化驱动的完整流程
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第565-600行（`llama_tensor_get_type` 外层包装）以及第153-175行（`quantize_state_impl`
+    构造函数）：
+  - 回答问题：
+  - '- `tensor_type_patterns` 是什么数据结构？它为什么要在构造函数中编译一次？'
+  - '- 如何通过 `tt_overrides` 参数让所有 `attn_q.weight` 都使用 Q8_0 而忽略默认策略？'
+  - '- 用户自定义覆盖与 `tensor_type_fallback` 的优先级是怎样的？'
+  - 动手建议：尝试在源码中打印 `tensor_type_patterns` 的内容，观察其与 tensor 名称的匹配过程。
+  'no': 5
+  title: 设计自定义张量类型覆盖规则
+- contents:
+  - 阅读 `src/llama-ext.h` 与 `src/llama-quant.cpp` 第1231-1306行的外部工具接口：
+  - 回答问题：
+  - '- `llama_quant_model_from_metadata` 构造的 mock 模型与真实加载的模型有何差异？它能用于实际量化吗？'
+  - '- `llama_quant_compute_types` 与 `llama_model_quantize_impl` 中的类型计算逻辑有何不同？'
+  - '- 在不加载真实权重的情况下，如何利用这些接口验证某个 ftype 对特定张量的类型分配？'
+  - '- `llama_quant_compute_types` 为何在内部重置计数器？这一设计有什么好处？'
+  'no': 6
+  title: 使用外部工具接口进行测试
+- contents:
+  - 阅读 `src/llama-quant.cpp` 第1075-1095行的 `new_ofstream()` 与 `close_ofstream()` 闭包函数：
+  - 回答问题：
+  - '- `zeros()` 函数是如何实现文件占位的？为什么使用单字节循环写入而非 `std::vector<char>` 一次性写入？'
+  - '- `close_ofstream` 中 `fout.seekp(0)` 的作用是什么？为何要重新调用 `gguf_get_meta_size` 与 `gguf_get_meta_data`？'
+  - '- 如果量化过程在中途抛出异常，已经写出的 GGUF 文件会处于什么状态？是否可恢复？'
+  'no': 7
+  title: 理解 GGUF 占位-回填机制
+learning_targets:
+- 理解 llama.cpp 量化系统中张量分类（tensor_category）的设计与识别原理
+- 掌握 llama_tensor_get_type 如何综合张量类别、层位置、模型架构选择量化类型
+- 了解 tensor_allows_quantization 的可量化判定逻辑与特殊保留列表
+- 熟悉重要性矩阵（imatrix）在低比特量化中的作用与判定规则
+- 掌握 llama_model_quantize_impl 的主流程：加载、分类、量化、写出 GGUF
+- 理解 in-place / view 等内存优化技术在量化场景下的应用
+- 能够阅读并修改自定义量化策略与张量类型覆盖逻辑
+- 了解外部工具接口（llama-ext.h）如何暴露量化能力供第三方使用
+- 掌握 quantize_state_impl 的状态管理（计数器、正则模式编译、共享嵌入检测）
+- 理解 GGUF 文件占位-回填机制与最终元数据写入的协同
+life_analogy:
+- 想象 llama.cpp 的量化系统是一家**模型改造工厂的「瘦身车间」**
+- '- **张量分类（tensor_category）** = 入厂前按品类分拣（Q类零件、V类零件、FFN类零件、装饰件）'
+- '- **tensor_name_match_token_embd / tensor_name_match_output_weight** = 车间门口的「身份证核验机」，精确识别嵌入与输出两类特殊零件'
+- '- **tensor_allows_quantization** = 安检门：太小的零件、特殊材质、稀有型号一律不改造'
+- '- **llama_tensor_get_type** = 工艺工程师：根据零件类型、所在楼层、客户订单（ftype）决定用什么工艺'
+- '- **attention V 升级到 Q5_K** = 关键轴承精度不能省，宁可多花点材料也要保住精度'
+- '- **MXFP4_MOE 分流** = MoE 专家是「大件」，用专用工艺；其他零件走标准线'
+- '- **imatrix** = 「零件重要性地图」，告诉工厂哪些角落误差容忍度更低'
+- '- **tensor_type_fallback** = 紧急预案：原工艺不匹配时切换到备用方案（Q2_K → Q4_0）'
+- '- **layer_info / use_more_bits** = 楼层优先级：底层、顶层、每 3 层的关键层要重点打磨'
+- '- **prune_layers + remap_layer** = 「楼层拆除施工」，先标记要拆的，再给剩余楼层重新编号'
+- '- **占位 + 回填** = 先搭脚手架（meta_size 零字节），施工完成后再补上竣工图纸'
+- '- **quantize_state_impl 构造函数** = 车间开工准备会：一次性把客户定制规则（正则覆盖）编好，避免每次返工'
+- '- **外部接口（llama_ext）** = 工厂的「对外接待窗口」：第三方无需进厂（加载真实权重）就能委托加工'
+- 就像优秀的工厂经理需要在精度、体积、速度之间精妙平衡，llama.cpp 的量化系统也需要为每张张量找到最合适的精度档位。
+'no': 22
+summary:
+- concept: '`tensor_category`'
+  desc: 11 类张量分类（TOKEN_EMBD/ATTN_Q/V/K/QKV/KV_B/OUTPUT/FFN_UP/GATE/DOWN/OUTPUT/OTHER）
+- concept: '`tensor_name_match_token_embd()`'
+  desc: 精确字符串匹配识别 token_embd/per_layer_token_embd 张量
+- concept: '`tensor_name_match_output_weight()`'
+  desc: 精确字符串匹配识别 output.weight 输出张量
+- concept: '`tensor_get_category()`'
+  desc: 字符串匹配识别张量类别，驱动后续策略分发
+- concept: '`category_is_attn_v()`'
+  desc: 判定 V 类敏感张量（V/QKV/KV_B），通常需要更高精度
+- concept: '`quantize_state_impl`'
+  desc: 持有 model + params + 计数器 + 共享嵌入标志 + 编译好的正则覆盖模式
+- concept: '`quantize_state_impl.quantize_state_impl()`'
+  desc: 构造函数：一次性编译 tt_overrides 正则数组，避免每次重复编译
+- concept: '`tensor_allows_quantization()`'
+  desc: 维度+名称白名单+保留列表三重检查，决定张量是否参与量化
+- concept: '`llama_tensor_dequantize_impl()`'
+  desc: 任意类型→F32 的多线程反量化入口
+- concept: '`llama_tensor_get_type_impl()`'
+  desc: 综合类别/层/ftype/arch 的量化类型策略中枢
+- concept: '`tensor_type_fallback()`'
+  desc: 形状不兼容时自动降级到更小块（Q2_K→Q4_0 等）
+- concept: '`tensor_requires_imatrix()`'
+  desc: 低比特 IQ1/IQ2/IQ3_XXS 与 Q2_K_S 必须搭配 imatrix
+- concept: '`llama_tensor_quantize_impl()`'
+  desc: 多线程按行/专家切分的量化执行器，附 chunk 校验
+- concept: '`llama_model_quantize_impl()`'
+  desc: 主驱动：加载→分类→量化→写出 GGUF 的全流程
+- concept: '`init_quantize_state_counters()`'
+  desc: 扫描张量统计各类型总数（n_attention_wv、n_ffn_*）
+- concept: '`remap_layer() / remap_imatrix()`'
+  desc: 层裁剪时同步重命名模型与 imatrix
+- concept: '`llama_ftype_get_default_type()`'
+  desc: LLAMA_FTYPE_MOSTLY_* → ggml_type 的全局映射表
+- concept: '`zeros()`'
+  desc: 逐字节写入 0 占位符，实现文件头预分配
+- concept: '`llama_quant_compute_types()`'
+  desc: 外部工具批量预计算张量类型数组（无需真实权重）
+- concept: '`llama_quant_model_from_metadata()`'
+  desc: 从描述符构造 mock 模型，专为测试设计
+- concept: '`llama_graph_reserve()`'
+  desc: 外部头文件中暴露的计算图预留接口
+- concept: '`llama_quant_init() / llama_quant_free()`'
+  desc: RAII 风格的量化状态句柄暴露给外部
+units:
+- codes:
+  - file: src/llama-quant.cpp
+    line: 88-91
+    method_or_func: tensor_name_match_token_embd()
+  - file: src/llama-quant.cpp
+    line: 93-95
+    method_or_func: tensor_name_match_output_weight()
+  - file: src/llama-quant.cpp
+    line: 100-131
+    method_or_func: tensor_get_category()
+  - file: src/llama-quant.cpp
+    line: 133-137
+    method_or_func: category_is_attn_v()
+  - file: src/llama-quant.cpp
+    line: 270-328
+    method_or_func: tensor_allows_quantization()
+  - file: src/llama-quant.cpp
+    line: 201-268
+    method_or_func: llama_tensor_dequantize_impl()
+  - file: src/llama-quant.cpp
+    line: 655-705
+    method_or_func: llama_ftype_get_default_type()
+  name: 张量分类与可量化判定 —— 量化策略的"分流闸门"
+  'no': 1
+  points:
+  - '**为什么需要张量分类？**不同的张量（注意力 V、FFN、输出）对量化精度敏感度差异巨大，需要差异化处理'
+  - tensor_category 枚举定义了 11 类张量：TOKEN_EMBD、ATTENTION_Q/V/K、ATTENTION_QKV、ATTENTION_KV_B、ATTENTION_OUTPUT、FFN_UP/GATE/DOWN、OUTPUT、OTHER
+  - tensor_name_match_token_embd 通过 strcmp 精确匹配识别 token_embd.weight / per_layer_token_embd.weight
+  - tensor_name_match_output_weight 通过 strcmp 精确匹配识别 output.weight
+  - tensor_get_category 通过字符串匹配识别张量类别（attn_v.weight、ffn_down 等），为后续策略分发提供基础
+  - category_is_attn_v 标识对量化更敏感的 V 类张量（V、QKV、KV_B），这些张量通常需要保留更多比特
+  - '**tensor_allows_quantization 决策树**：先做维度检查（≥2D）、quick name check（以 weight 结尾）、排除归一化/位置嵌入/小型卷积/RWKV
+    时序混合等敏感张量'
+  - '**特殊保留列表**：norm.weight、ssm_conv1d、time_mix_*、attn_rel_b（T5）、SAM 多模态张量、altup/laurel（Gemma3n）等'
+  - '**反量化预处理入口**：llama_tensor_dequantize_impl 支持 F16/BF16/各类量化格式到 F32 的多线程反量化'
+  - '**FTYPE 与默认类型映射**：llama_ftype_get_default_type 把 LLAMA_FTYPE_MOSTLY_* 系列映射到对应的
+    ggml_type 默认值（Q2_K 到 Q6_K、IQ 系列、TQ 系列、MXFP4 等）'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 380-562
+    method_or_func: llama_tensor_get_type_impl()
+  - file: src/llama-quant.cpp
+    line: 568-604
+    method_or_func: llama_tensor_get_type()
+  - file: src/llama-quant.cpp
+    line: 350-377
+    method_or_func: tensor_type_fallback()
+  name: 核心量化类型选择 —— 智能选择每张量的精度档位
+  'no': 2
+  points:
+  - '**llama_tensor_get_type 是量化策略的中枢**：综合张量类别、层位置、FTYPE、模型架构四要素，决定最终 ggml_type'
+  - '**OUTPUT / 共享嵌入的特殊处理**：OUTPUT 与 TOKEN_EMBD 在权重共享场景下联动，可被强制提升到 Q8_0 或 Q6_K 以保留精度'
+  - '**MXFP4_MOE 的 MoE 分流**：2D 张量（非专家）走 Q8_0，3D 张量（专家）走 MXFP4，平衡精度与体积'
+  - '**Attention V 类差异化策略**：低比特 IQ2/IQ1 系列下，n_gqa≥4 或 n_expert≥4 时强制升级到 Q4_K，保护注意力精度'
+  - '**70B 模型专属优化**：attn_v 在 GQA 共享场景下从 Q3_K/Q4_K 自动升级到 Q5_K，仅增加约 128MB 但精度大幅提升'
+  - '**FFN_DOWN 层级感知策略**：结合 use_more_bits 模式（前 1/8、末 1/8、间隔 3 层）选择性提升关键层的量化精度'
+  - '**TT_OVERRIDE 手动覆盖**：用户通过正则模式（tensor_type_patterns）可强制指定特定张量的类型，覆盖默认选择'
+  - '**类型回退机制**：tensor_type_fallback 处理张量形状与量化块大小不兼容的情况，自动降级到更小的块（如 Q3_K→Q4_0）'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 622-642
+    method_or_func: tensor_requires_imatrix()
+  - file: src/llama-quant.cpp
+    line: 737-1188
+    method_or_func: llama_model_quantize_impl()
+  name: 重要性矩阵与 imatrix 需求判定 —— 精度敏感的"温度计"
+  'no': 3
+  points:
+  - '**tensor_requires_imatrix 判定逻辑**：低比特 IQ1/IQ2/IQ3_XXS 必须有 imatrix；Q2_K 仅在 Q2_K_S
+    时需要；K-quant 系列通常无需'
+  - '**token_embd / output.weight 豁免**：这两个张量即使 imatrix 不匹配也不会报错'
+  - '**imatrix 数据校验**：在 llama_model_quantize_impl 中遍历 imatrix_data 检查 NaN/Inf，发现异常即抛出'
+  - '**imatrix 张量大小匹配**：imatrix 张量必须与目标张量的 ne[0]*ne[2] 大小一致，否则对非 token_embd 张量抛出致命错误'
+  - '**imatrix 按专家切片**：3D 张量（专家）按 ne[2] 维度切片，每位专家使用独立的 imatrix 子数组'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 51-79
+    method_or_func: remap_layer()
+  - file: src/llama-quant.cpp
+    line: 81-97
+    method_or_func: remap_imatrix()
+  name: 层裁剪与重映射 —— 灵活重组模型层结构
+  'no': 4
+  points:
+  - '**remap_layer 实现**：通过正则 R"(blk\.(\d+)\.) " 提取层号，根据 prune 列表决定每层的最终 ID'
+  - '**裁剪策略**：< prune.front() 的层保持原编号；被裁剪的层映射为空字符串（在输出中跳过）；其余层按 next_id 重新连续编号'
+  - '**remap_imatrix 反向映射**：在量化时如果模型层被裁剪，imatrix 也要按相同规则反向重命名'
+  - '**块计数更新**：裁剪后通过 gguf_set_val_u32 更新 LLM_KV_BLOCK_COUNT 元数据'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 606-645
+    method_or_func: llama_tensor_quantize_impl()
+  name: 量化执行与多线程调度 —— 大规模权重的"并行瘦身流水线"
+  'no': 5
+  points:
+  - '**llama_tensor_quantize_impl 多线程策略**：按 chunk_size 切分行数，多线程并行调用 ggml_quantize_chunk'
+  - '**专家独立量化**：对 3D 张量（ne[2]>1）按 ne[2] 维度循环，每位专家单独调用 quantize_impl，支持不同 imatrix'
+  - '**校验机制**：每个 chunk 量化后调用 ggml_validate_row_data 验证有效性，发现非法数据立即终止'
+  - '**work buffer 复用**：f32_conv_buf 与 work 通过 std::vector::resize 上界分配，避免每张量重新分配'
+  - '**反量化到量化的完整链路**：原始数据 → llama_tensor_dequantize_impl → llama_tensor_quantize_impl
+    → 校验 → 写出'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 44-50
+    method_or_func: zeros()
+  - file: src/llama-quant.cpp
+    line: 737-1188
+    method_or_func: llama_model_quantize_impl()
+  - file: src/llama-quant.cpp
+    line: 709-725
+    method_or_func: init_quantize_state_counters()
+  - file: src/llama-quant.cpp
+    line: 1195-1212
+    method_or_func: llama_model_quantize_default_params()
+  - file: src/llama-quant.cpp
+    line: 1214-1227
+    method_or_func: llama_model_quantize()
+  - file: src/llama-quant.cpp
+    line: 44-1306
+    method_or_func: __main__
+  name: 主量化驱动与 GGUF 输出 —— 量化任务的"总指挥"
+  'no': 6
+  points:
+  - '**llama_model_quantize_impl 主流程**：加载模型 → 读取 imatrix → 计算 prune → 初始化 GGUF 上下文
+    → 遍历张量（meta + 实际量化）→ 写出文件'
+  - '**MMAP 跨平台策略**：Linux/Windows 默认开启 mmap 加速，macOS 默认关闭以避免内存压力'
+  - '**dry_run 模式**：仅计算目标文件大小与是否需要 imatrix，不实际量化，用于预估与校验'
+  - '**split 文件支持**：keep_split 模式保留多分片输出，自动计算 n_split 并按 idx 排序输出'
+  - '**KV 覆盖机制**：params->kv_overrides 支持在量化时动态覆盖元数据（Float/Int/Bool/Str 类型）'
+  - '**量化版本标记**：写入 general.quantization_version = GGML_QNT_VERSION 与 general.file_type
+    = ftype'
+  - '**文件占位与回填**：通过 zeros() 写入 meta_size 的零字节作为 placeholder，量化完成后通过 seekp 回填实际元数据'
+  - '**汇总统计**：输出原始大小 vs 量化大小（MiB）、BPW（bits per weight）、fallback 计数'
+- codes:
+  - file: src/llama-quant.cpp
+    line: 158-176
+    method_or_func: quantize_state_impl.quantize_state_impl()
+  - file: src/llama-quant.cpp
+    line: 1238-1241
+    method_or_func: llama_quant_init()
+  - file: src/llama-quant.cpp
+    line: 1243-1245
+    method_or_func: llama_quant_free()
+  - file: src/llama-quant.cpp
+    line: 1247-1272
+    method_or_func: llama_quant_model_from_metadata()
+  - file: src/llama-quant.cpp
+    line: 1274-1277
+    method_or_func: llama_quant_tensor_allows_quantization()
+  - file: src/llama-quant.cpp
+    line: 1279-1310
+    method_or_func: llama_quant_compute_types()
+  - file: src/llama-ext.h
+    line: 8-12
+    method_or_func: llama_graph_reserve()
+  - file: src/llama-ext.h
+    line: '15'
+    method_or_func: llama_ftype_get_default_type()
+  - file: src/llama-ext.h
+    line: 20-22
+    method_or_func: llama_quant_init()
+  - file: src/llama-ext.h
+    line: '24'
+    method_or_func: llama_quant_free()
+  - file: src/llama-ext.h
+    line: 40-41
+    method_or_func: llama_quant_model_from_metadata()
+  - file: src/llama-ext.h
+    line: 45-48
+    method_or_func: llama_quant_tensor_allows_quantization()
+  - file: src/llama-ext.h
+    line: 53-59
+    method_or_func: llama_quant_compute_types()
+  name: 外部工具接口（llama-ext.h）—— 让"第三方"也能调动量化能力
+  'no': 7
+  points:
+  - '**llama_quant_init / llama_quant_free**：将 quantize_state_impl 暴露给外部工具（如 quantize
+    命令行），实现 RAII 风格的资源管理'
+  - '**llama_quant_model_from_metadata**：从描述符（llama_quant_model_desc）构造一个 mock 模型，专为不需要真实权重的测试场景设计'
+  - '**llama_quant_tensor_allows_quantization**：将内部判定逻辑导出，供外部工具在不创建完整量化器的情况下预判可量化性'
+  - '**llama_quant_compute_types**：批量计算张量类型数组，重置内部计数器并按 ftype 分配类型，方便测试与对比'
+  - '**llama_ftype_get_default_type**：将 ftype→ggml_type 的映射独立导出，供其他模块复用'
+  - '**llama_graph_reserve**：暴露计算图预留接口，方便外部工具在不完整上下文下预分配资源'

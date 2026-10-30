@@ -1,0 +1,391 @@
+code_map:
+- common/preset.h
+- '├── struct common_preset                    # 预设实体：选项映射与转换接口'
+- '│   ├── name : std::string                  # 预设名称'
+- '│   ├── options : map<common_arg, string>   # 选项键值对'
+- '│   ├── to_args(bin_path)                   # 预设 → 命令行参数列表'
+- '│   ├── to_ini()                            # 预设 → INI 格式文本'
+- '│   ├── set_option(ctx, env, value)         # 按环境变量名设置选项'
+- '│   ├── unset_option(env)                   # 按环境变量名移除选项'
+- '│   ├── get_option(env, value)              # 按环境变量名查询选项值'
+- '│   ├── merge(other)                        # 合并另一预设（同名覆盖）'
+- '│   └── apply_to_params(params)             # 将选项写入运行时参数对象'
+- │
+- '└── struct common_preset_context            # 预设调度中枢：加载与级联'
+- '    ├── key_to_opt : map<string, common_arg># 键名 → 参数定义映射表'
+- '    ├── filter_allowed_keys : bool          # 是否启用远程白名单过滤'
+- '    ├── allowed_keys : set<string>          # 远程允许的键集合'
+- '    ├── common_preset_context(ex, only_remote_allowed)  # 构造函数'
+- '    ├── load_from_ini(path, global)         # 从 INI 文件加载预设集合'
+- '    ├── load_from_cache()                   # 从 HF 缓存扫描生成预设'
+- '    ├── load_from_models_dir(models_dir)    # 从本地目录扫描模型生成预设'
+- '    ├── load_from_args(argc, argv)          # 从命令行参数构建预设'
+- '    ├── cascade(base_presets, added_presets)# 集合层级联合并'
+- '    └── cascade(base_preset, presets)       # 单基础预设广播级联'
+- ''
+- common/preset.cpp
+- ├── 安全白名单层（20-41行）
+- '│   └── get_remote_preset_whitelist()       # 生成远程预设允许的选项键集合'
+- │
+- ├── 格式转换层（43-178行）
+- '│   ├── common_preset::to_args()            # 处理布尔负向、值选项序列化'
+- '│   ├── common_preset::to_ini()             # 转义换行符，输出标准 INI'
+- '│   ├── common_preset::set_option()         # 查找或新增选项'
+- '│   ├── common_preset::unset_option()       # 遍历擦除匹配选项'
+- '│   ├── common_preset::get_option()         # 只读查询选项值'
+- '│   ├── common_preset::merge()              # 逐项覆盖合并'
+- '│   └── common_preset::apply_to_params()    # 按 handler 类型分发赋值'
+- │
+- ├── INI 解析层（180-253行）
+- '│   └── parse_ini_from_file()               # PEG 语法解析节名与键值对'
+- │
+- ├── 上下文构建层（255-264行）
+- '│   └── common_preset_context::common_preset_context()  # 初始化映射与白名单'
+- │
+- ├── 多源加载层（266-406行）
+- '│   ├── common_preset_context::load_from_ini()          # 解析节、校验白名单'
+- '│   ├── common_preset_context::load_from_cache()        # 遍历缓存模型列表'
+- '│   ├── common_preset_context::load_from_models_dir()   # 识别分片与 mmproj'
+- '│   └── common_preset_context::load_from_args()         # CLI 参数转预设'
+- │
+- ├── 级联合并层（408-434行）
+- │   ├── common_preset_context::cascade(presets, presets)# 集合对集合合并
+- '│   └── common_preset_context::cascade(preset, presets) # 单基础广播到集合'
+- │
+- └── 工具函数
+- '    ├── rm_leading_dashes()                 # 去除键名前导连字符'
+- '    ├── get_map_key_opt()                   # 构建 键名 → 参数定义 映射'
+- '    ├── is_bool_arg()                       # 判断是否为布尔型参数'
+- '    └── parse_bool_arg()                    # 解析布尔值并处理负向反转'
+exercises:
+- contents:
+  - 在 llama.cpp 根目录创建一个 `my-presets.ini` 文件，内容如下：
+  - '```ini'
+  - '[*]'
+  - ctx-size = 4096
+  - temp = 0.7
+  - ''
+  - '[fast]'
+  - batch-size = 512
+  - ubatch-size = 256
+  - ''
+  - '[llama3-chat]'
+  - model-url = https://example.com/llama3.gguf
+  - jinja = true
+  - '```'
+  - 然后阅读 `common/preset.cpp` 第180-253行的 `parse_ini_from_file()` 与第266-315行的 `common_preset_context::load_from_ini()`：
+  - 1. 画出该 PEG 语法规则中 `header_line`、`kv_line`、`value` 匹配的优先级关系图
+  - 2. 说明 `[*]` 与 `[fast]` 在解析后分别进入了什么变量
+  - 3. 解释 `version` 键为什么被显式跳过
+  - 4. 如果把 `jinja = true` 改成 `no-jinja = true`，最终存入 `options` 的值会发生什么变化？为什么？
+  'no': 1
+  title: 手工构造 INI 预设并追踪解析
+- contents:
+  - 构造一个模拟远程预设的场景：
+  - '```cpp'
+  - common_preset_context ctx(LLAMA_EXAMPLE_SERVER, /*only_remote_allowed=*/ true);
+  - common_preset global;
+  - // 假设从远程 URL 下载得到如下 INI 文本
+  - '```'
+  - INI 内容：
+  - '```ini'
+  - '[恶意配置]'
+  - hf-repo = ggml-org/gemma-3-4b-it-GGUF
+  - model = /etc/passwd
+  - threads = 99
+  - batch-size = 128
+  - '```'
+  - 阅读第20-41行 `get_remote_preset_whitelist()` 与第266-315行 `common_preset_context::load_from_ini()`：
+  - 1. 列出预期会抛出异常的所有键名，并说明理由
+  - 2. 说明 `is_sparam` 类型的选项是否会被白名单放行，举例说明哪些采样参数属于此类
+  - 3. 解释为什么 `model` 被拒绝但 `model-url` 被允许，这种设计背后的安全考量是什么
+  - 4. 如果构造一个 `LLAMA_ARG_HF_REPO` 环境变量形式的键，是否也会在白名单中？为什么？
+  'no': 2
+  title: 验证远程预设白名单过滤
+- contents:
+  - 基于 `common_preset_context::cascade()` 的两个重载（第408-421行与第423-434行），设计一组测试用例：
+  - '```cpp'
+  - // 场景 A：全局预设 + 覆盖预设
+  - common_presets base = {
+  - '    {"default", preset_with({{"ctx-size", "2048"}, {"temp", "0.8"}})}'
+  - '};'
+  - common_presets added = {
+  - '    {"default", preset_with({{"temp", "0.2"}})},'
+  - '    {"creative", preset_with({{"temp", "1.0"}})}'
+  - '};'
+  - '```'
+  - 回答问题：
+  - 1. 调用 `cascade(base, added)` 后，`default` 预设中的 `ctx-size` 和 `temp` 分别是多少？`creative`
+    预设是否存在？
+  - 2. 调用 `cascade(base["default"], added)` 后，`creative` 预设会继承哪些选项？
+  - 3. 这两种级联模式分别适用于什么实际场景（例如：llama-server 的默认参数 vs 用户自定义预设）
+  - 4. 编写一段伪代码，演示如何将 INI 预设、缓存预设和命令行预设三者级联，并说明最终生效顺序
+  'no': 3
+  title: 设计并实现预设级联的单元测试
+- contents:
+  - 当前 `common_preset::to_args()` 在遇到同时具有 `value_hint` 与 `value_hint_2` 的选项时会直接抛出异常（见第67-71行）。
+  - 假设 llama.cpp 未来新增了一个 `--lora-scaled <path> <scale>` 双值选项（虽然当前实际不存在，但可模拟）。
+  - 请思考如何修改 `to_args()` 以支持双值选项：
+  - 1. `options` 的值类型 `std::string` 是否足以存储两个值？如果不够，应如何调整数据结构（提示：考虑 `std::pair` 或自定义
+    struct）
+  - 2. 修改后的 `to_args()` 中，序列化双值选项时应插入几个 `args` 元素？顺序如何保证
+  - 3. `common_preset::to_ini()` 与 `common_preset::apply_to_params()` 需要做哪些同步修改才能与新的
+    `to_args()` 兼容
+  - 4. 撰写一个 `common_preset::set_option()` / `common_preset::get_option()` 同时兼容单值与双值选项的接口草案，并说明如何保持向后兼容
+  'no': 4
+  title: 改造 to_args() 支持双值选项
+- contents:
+  - 基于 `common_preset` 的选项管理接口（`set_option`、`unset_option`、`get_option`、`merge`），完成以下任务：
+  - 1. 创建一个空预设，使用 `common_preset::set_option()` 分别通过 CLI 键名（如 `--ctx-size`）和环境变量名（如
+    `LLAMA_ARG_CTX_SIZE`）设置同一选项，观察是否会产生重复
+  - 2. 使用 `common_preset::get_option()` 查询刚设置的值，验证环境变量名查找是否生效
+  - 3. 使用 `common_preset::unset_option()` 移除该选项，再次查询确认返回 false
+  - 4. 创建两个预设 A 和 B，A 包含 `temp=0.7`，B 包含 `temp=0.9` 和 `top-k=40`，调用 `A.merge(B)` 后分析结果
+  - 5. 结合 `get_map_key_opt()`（第236-247行）说明为什么环境变量名和 CLI 键名都能被识别
+  'no': 5
+  title: 选项生命周期管理实战
+learning_targets:
+- 理解 common_preset 与 common_preset_context 的核心数据结构与设计理念
+- 掌握预设（preset）的多源加载机制：INI 文件、缓存模型、本地目录与命令行
+- 理解远程预设白名单的安全防护机制及其过滤逻辑
+- 掌握预设配置在命令行参数、INI 文本与运行时参数之间的双向转换原理
+- 理解级联（cascade）机制如何实现配置的分层继承与覆盖
+life_analogy:
+- 想象 common 预设系统是一家**连锁餐厅的标准化运营体系**：
+- '- **common_preset** = 一份**单店运营手册**（SOP），记录了这家店所有可用的配置项及取值'
+- '- **common_preset_context** = **总部运营中心**，负责从各种渠道收集各分店的配置，并统一协调合并'
+- '- **key_to_opt 映射表** = **菜品编号对照表**，无论顾客说的是菜品名还是编号，都能准确对应到后厨的实际操作'
+- '- **INI 文件** = 总部下发的**标准配置单**，每家分店按照 `[分店名] 参数 = 值` 的格式填写'
+- '- **缓存模型预设** = **常用套餐预订单**，系统自动为经常点单的顾客生成快捷入口'
+- '- **本地目录扫描** = **巡店督导**，主动走访各家门店，检查库存（GGUF文件）并登记可用的设备（mmproj）'
+- '- **级联（cascade）** = **区域配置继承**，全国默认菜单（基础预设）可以被省级特色（新增预设）局部覆盖'
+- '- **远程白名单** = **食品安全红线**，门店只能使用总部审核通过的食材（选项），防止有害配置入侵'
+- 就像餐厅经理不需要记住每道菜的所有细节，只需要翻开对应的手册一样，用户也可以通过预设名称快速应用一整套经过验证的参数配置，而无需手动输入冗长的命令行。
+'no': 44
+summary:
+- concept: '`common_preset`'
+  desc: 单个预设实体，封装选项映射并提供序列化、查询、合并与参数应用能力
+- concept: '`common_preset_context`'
+  desc: 预设调度中枢，维护参数映射表与白名单，统一负责多源加载与级联
+- concept: '`key_to_opt`'
+  desc: 键名到 common_arg 定义的映射表，支持命令行/环境变量/INI键的统一查找
+- concept: '`common_preset::to_args()`'
+  desc: 将预设转换为命令行参数列表，自动处理布尔负向选项与值类型差异
+- concept: '`common_preset::to_ini()`'
+  desc: 将预设序列化为标准 INI 文本，自动转义换行符并保持节结构
+- concept: '`common_preset::set_option()`'
+  desc: 按环境变量名定位并设置或新增预设选项
+- concept: '`common_preset::unset_option()`'
+  desc: 按环境变量名从预设中移除指定选项
+- concept: '`common_preset::get_option()`'
+  desc: 按环境变量名查询预设中的选项值
+- concept: '`common_preset::merge()`'
+  desc: 将另一预设的选项合并到当前预设并覆盖同名项
+- concept: '`common_preset::apply_to_params()`'
+  desc: 按 handler 类型分发，将预设值真正写入 common_params 运行时对象
+- concept: '`parse_ini_from_file()`'
+  desc: 基于 PEG 解析器的 INI 文件读取器，提取节名称与键值对为嵌套映射
+- concept: '`get_map_key_opt()`'
+  desc: 构建环境变量与命令行别名到 common_arg 的映射关系
+- concept: '`common_preset_context::load_from_ini()`'
+  desc: 从 INI 文件加载多个预设，支持全局节（*）与远程白名单校验
+- concept: '`common_preset_context::load_from_cache()`'
+  desc: 扫描 HuggingFace 缓存目录，为每个已缓存模型自动生成同名预设
+- concept: '`common_preset_context::load_from_models_dir()`'
+  desc: 扫描本地目录识别 GGUF 模型与 mmproj，自动处理分片与多模态投影器
+- concept: '`common_preset_context::load_from_args()`'
+  desc: 将命令行参数解析结果封装为默认名称的预设对象
+- concept: '`common_preset_context::cascade()`'
+  desc: 配置级联合并：同名预设选项覆盖，异名直接并入，支持集合与单基础两种模式
+- concept: '`common_preset_context::common_preset_context()`'
+  desc: 初始化参数上下文与选项映射，按需构建远程白名单
+- concept: '`get_remote_preset_whitelist()`'
+  desc: 构建远程安全白名单，仅放行 model-url、hf-repo、jinja 等非敏感选项
+- concept: '`rm_leading_dashes()`'
+  desc: 规范化键名，去除前导连字符以统一 CLI 与 INI 键格式
+- concept: '`is_bool_arg()`'
+  desc: 检测 common_arg 是否具备负向布尔形式（args_neg）
+- concept: '`parse_bool_arg()`'
+  desc: 解析布尔参数值，检测负向形式并自动反转语义
+units:
+- codes:
+  - file: common/preset.h
+    line: 10-41
+    method_or_func: common_preset.*
+  - file: common/preset.h
+    line: 43-78
+    method_or_func: common_preset_context.*
+  - file: common/preset.cpp
+    line: 1-434
+    method_or_func: __main__
+  name: 预设数据结构与接口 —— 参数配置的「乐高积木」
+  'no': 1
+  points:
+  - '**common_preset 的核心设计理念**'
+  - '- 封装一组命令行选项的键值对（common_arg → string）'
+  - '- 支持双向转换：命令行参数 ↔ INI 文本 ↔ 运行时参数'
+  - '- 提供 option 级别的增删改查接口，实现精细化管理'
+  - '**common_preset_context 的「中枢调度」作用**'
+  - '- 维护参数定义上下文与选项映射表（key_to_opt）'
+  - '- 支持多种预设来源：INI 文件、缓存模型、本地目录、命令行'
+  - '- 通过级联机制（cascade）实现配置的灵活组合'
+- codes:
+  - file: common/preset.h
+    line: 28-28
+    method_or_func: common_preset.set_option
+  - file: common/preset.cpp
+    line: 102-119
+    method_or_func: common_preset.set_option
+  - file: common/preset.h
+    line: 31-31
+    method_or_func: common_preset.unset_option
+  - file: common/preset.cpp
+    line: 121-133
+    method_or_func: common_preset.unset_option
+  - file: common/preset.h
+    line: 34-34
+    method_or_func: common_preset.get_option
+  - file: common/preset.cpp
+    line: 135-144
+    method_or_func: common_preset.get_option
+  - file: common/preset.h
+    line: 37-37
+    method_or_func: common_preset.merge
+  - file: common/preset.cpp
+    line: 146-151
+    method_or_func: common_preset.merge
+  - file: common/preset.cpp
+    line: 236-247
+    method_or_func: get_map_key_opt()
+  name: 预设的增删改查 —— 选项管理的「四象限」
+  'no': 2
+  points:
+  - '**set_option：智能写入与更新**'
+  - '- 通过环境变量名精确定位选项，支持键名自动补全'
+  - '- 区分存在即更新与不存在则插入两种策略'
+  - '**unset_option 与 get_option：对称的删除与查询**'
+  - '- 遍历选项映射实现精准删除与只读查询'
+  - '- 环境变量名作为统一键，屏蔽 CLI 与 INI 的差异'
+  - '**merge：配置的「化学反应」**'
+  - '- 将另一预设的选项并入当前预设，同名覆盖实现继承'
+  - '- 为级联机制提供基础的合并语义'
+- codes:
+  - file: common/preset.cpp
+    line: 180-253
+    method_or_func: parse_ini_from_file()
+  - file: common/preset.h
+    line: 59-59
+    method_or_func: common_preset_context.load_from_ini
+  - file: common/preset.cpp
+    line: 266-315
+    method_or_func: common_preset_context.load_from_ini
+  - file: common/preset.h
+    line: 62-62
+    method_or_func: common_preset_context.load_from_cache
+  - file: common/preset.cpp
+    line: 317-329
+    method_or_func: common_preset_context.load_from_cache
+  - file: common/preset.h
+    line: 66-66
+    method_or_func: common_preset_context.load_from_models_dir
+  - file: common/preset.cpp
+    line: 338-394
+    method_or_func: common_preset_context.load_from_models_dir
+  - file: common/preset.h
+    line: 69-69
+    method_or_func: common_preset_context.load_from_args
+  - file: common/preset.cpp
+    line: 396-406
+    method_or_func: common_preset_context.load_from_args
+  - file: common/preset.h
+    line: 74-77
+    method_or_func: common_preset_context.cascade
+  - file: common/preset.cpp
+    line: 408-434
+    method_or_func: common_preset_context.cascade
+  name: 预设的加载与级联 —— 多源配置的「合流艺术」
+  'no': 3
+  points:
+  - '**INI 文件解析：结构化配置的「读取器」**'
+  - '- parse_ini_from_file 基于 PEG 解析器提取节名称与键值对'
+  - '- load_from_ini 将解析结果转换为 common_preset 对象'
+  - '- 支持全局预设（[*]）与具名预设的差异化处理'
+  - '**缓存模型预设：自动生成的「快捷方式」**'
+  - '- load_from_cache 从 HuggingFace 缓存目录扫描模型'
+  - '- 为每个缓存模型生成以模型标识为名称的预设'
+  - '**本地目录扫描：文件系统的「侦察兵」**'
+  - '- load_from_models_dir 扫描 GGUF 模型与 mmproj 文件'
+  - '- 识别模型分片（-00001-of-）与多模态投影器'
+  - '**命令行参数转换：用户意图的「捕获器」**'
+  - '- load_from_args 将 CLI 参数直接转换为预设对象'
+  - '**级联机制：配置的「CSS 式继承」**'
+  - '- 基础预设作为默认层，新增预设按名称覆盖同名选项'
+  - '- 支持批量级联与单预设应用到集合两种模式'
+- codes:
+  - file: common/preset.cpp
+    line: 20-41
+    method_or_func: get_remote_preset_whitelist()
+  - file: common/preset.h
+    line: 56-56
+    method_or_func: common_preset_context.common_preset_context
+  - file: common/preset.cpp
+    line: 255-264
+    method_or_func: common_preset_context.common_preset_context
+  name: 远程预设的安全白名单 —— 防止「恶意注射」的防火墙
+  'no': 4
+  points:
+  - '**为什么需要白名单机制？**'
+  - '- 远程预设可能包含危险选项（如 --model 指向恶意文件）'
+  - '- 仅允许安全选项（model-url、hf-repo、jinja 等）'
+  - '**白名单的自动构建逻辑**'
+  - '- get_remote_preset_whitelist 生成允许的键集合'
+  - '- 包含选项的命令行别名与环境变量名称'
+  - '- 通过 filter_allowed_keys 标志控制是否启用过滤'
+  - '**应用场景**'
+  - '- llama-server 加载远程配置的预设时的安全防护'
+  - '- 防止远程配置覆盖本地敏感设置'
+- codes:
+  - file: common/preset.h
+    line: 20-20
+    method_or_func: common_preset.to_args
+  - file: common/preset.cpp
+    line: 43-83
+    method_or_func: common_preset.to_args
+  - file: common/preset.h
+    line: 23-23
+    method_or_func: common_preset.to_ini
+  - file: common/preset.cpp
+    line: 85-100
+    method_or_func: common_preset.to_ini
+  - file: common/preset.h
+    line: 40-40
+    method_or_func: common_preset.apply_to_params
+  - file: common/preset.cpp
+    line: 153-178
+    method_or_func: common_preset.apply_to_params
+  - file: common/preset.cpp
+    line: 8-14
+    method_or_func: rm_leading_dashes()
+  - file: common/preset.cpp
+    line: 249-251
+    method_or_func: is_bool_arg()
+  - file: common/preset.cpp
+    line: 253-263
+    method_or_func: parse_bool_arg()
+  name: 命令行与 INI 互转 —— 配置格式的「双向翻译官」
+  'no': 5
+  points:
+  - '**to_args：预设 → 命令行参数**'
+  - '- 遍历选项映射，处理布尔选项的负向形式'
+  - '- 跳过仅预设专用选项（is_preset_only）'
+  - '- 处理带值选项与双值选项（暂未支持）的差异化逻辑'
+  - '**to_ini：预设 → INI 文本**'
+  - '- 序列化为 [section] key = value 格式，自动转义换行符'
+  - '- 保持选项的顺序与命名一致性'
+  - '**apply_to_params：预设 → 运行时对象**'
+  - '- 根据 common_arg 的 handler 类型分发处理'
+  - '- 支持 string/int/bool 等不同类型的参数赋值'
+  - '**辅助工具函数**'
+  - '- rm_leading_dashes：规范化键名，移除前导连字符'
+  - '- is_bool_arg：检测是否为带负向形式的布尔参数'
+  - '- parse_bool_arg：处理负向布尔参数的语义反转'

@@ -1,0 +1,337 @@
+code_map:
+- tools/server/server-tools.h
+- '├── server_tool.*                 # 工具抽象基类（通用契约）'
+- '│   ├── ~server_tool()            # 虚析构函数（多态清理）'
+- '│   ├── get_definition()          # [纯虚] 返回JSON Schema定义'
+- '│   ├── invoke(json)              # [纯虚] 执行工具逻辑'
+- '│   └── to_json()                 # 序列化工具元数据'
+- '└── server_tools.*                # 工具集合管理器'
+- '    ├── setup(enabled_tools)      # 筛选启用工具并注册HTTP'
+- '    └── invoke(name, params)      # 按名分发工具调用'
+- tools/server/server-tools.cpp
+- '├── __main__                      # 全局基础设施（1-183行）'
+- '│   ├── to_cstr_vec()             # string vector转C字符串数组'
+- '│   ├── run_process()             # 子进程执行（超时/输出限制）'
+- '│   ├── run_proc_result           # 进程结果结构体（output/exit_code/timeout）'
+- '│   └── server_tool::to_json()    # 基类元数据序列化实现'
+- ├── 只读工具三剑客
+- │   ├── server_tool_read_file.* (184-271行)
+- '│   │   ├── server_tool_read_file()  # 构造函数：name="read_file", permission_write=false'
+- '│   │   ├── get_definition()      # 返回path/start_line/end_line参数Schema'
+- '│   │   └── invoke()              # 按行范围读取文件，支持行号前缀'
+- │   ├── server_tool_file_glob_search.* (284-351行)
+- '│   │   ├── server_tool_file_glob_search()  # 构造函数：name="file_glob_search"'
+- '│   │   ├── get_definition()      # 返回path/pattern参数Schema'
+- '│   │   └── invoke()              # 递归glob匹配，返回相对路径列表'
+- │   └── server_tool_grep_search.* (364-469行)
+- '│       ├── server_tool_grep_search()  # 构造函数：name="grep_search"'
+- '│       ├── get_definition()      # 返回pattern/path/max_results等Schema'
+- '│       └── invoke()              # 正则搜索，支持行号与最大匹配数'
+- ├── 执行工具（483-544行）
+- │   └── server_tool_exec_shell_command.*
+- '│       ├── server_tool_exec_shell_command()  # 构造函数：name="exec_shell_command",
+  permission_write=true'
+- '│       ├── get_definition()      # command/timeout/max_output_bytes参数'
+- '│       └── invoke()              # 调用run_process，捕获stdout/stderr/exit_code'
+- ├── 写操作工具
+- │   ├── server_tool_write_file.* (557-609行)
+- '│   │   ├── server_tool_write_file()  # 构造函数：name="write_file", permission_write=true'
+- '│   │   ├── get_definition()      # path/content参数Schema'
+- '│   │   └── invoke()              # create_directories + 写入，返回字节数'
+- │   ├── server_tool_edit_file.* (620-790行)
+- '│   │   ├── server_tool_edit_file()  # 构造函数：name="edit_file"'
+- '│   │   ├── get_definition()      # replace/delete/append三种操作Schema'
+- '│   │   └── invoke()              # 行号验证→应用变更→写回文件'
+- │   └── server_tool_apply_diff.* (803-853行)
+- '│       ├── server_tool_apply_diff()  # 构造函数：name="apply_diff"'
+- '│       ├── get_definition()      # diff参数Schema'
+- '│       └── invoke()              # 写临时文件→git apply→返回结果'
+- └── 工具注册与调度（856-931行）
+- '    ├── __main__ (build_tools)    # 工厂函数：创建全部7个工具实例（856-863行）'
+- '    ├── server_tools.setup()      # 按enabled_tools过滤 + 注册GET/POST'
+- '    └── server_tools.invoke()     # 按名查找→调用→统一错误处理'
+exercises:
+- contents:
+  - 阅读 `tools/server/server-tools.cpp` 第184-469行，对比三个只读工具：
+  - 1. `server_tool_read_file.invoke()` — 行范围读取
+  - 2. `server_tool_file_glob_search.invoke()` — 递归glob匹配
+  - 3. `server_tool_grep_search.invoke()` — 正则搜索
+  - 回答问题：
+  - '- read_file如何处理start_line/end_line越界的情况？'
+  - '- grep_search的max_results默认值是多少，超过后如何截断？'
+  - '- 三个工具的`permission_write`值是什么？如果改成true会在HTTP层触发什么不同的行为？'
+  'no': 1
+  title: 阅读只读工具的实现边界
+- contents:
+  - 阅读 `tools/server/server-tools.cpp` 第620-790行的 `server_tool_edit_file.invoke()`：
+  - 1. 梳理replace/delete/append三种操作的行号验证流程
+  - 2. 观察变更应用后如何重新组装文件内容
+  - 3. 对比apply_diff（803-853行）的临时文件+git apply方案
+  - 回答问题：
+  - '- edit_file在哪些情况下会拒绝编辑并返回错误？'
+  - '- apply_diff为什么要写临时文件而不是直接管道传输？'
+  - '- 如果edit_file与apply_diff修改同一文件冲突，llama.cpp如何感知？'
+  'no': 2
+  title: 剖析写工具的编辑验证逻辑
+- contents:
+  - 阅读 `tools/server/server-tools.cpp` 第100-180行的 `run_process()` 与第483-544行的 `server_tool_exec_shell_command.invoke()`：
+  - 1. 梳理子进程创建、stdout/stderr捕获、超时kill的完整链路
+  - 2. 分析run_proc_result结构体中三个字段的填充时机
+  - 3. 思考默认60秒超时与10MB输出限制的攻防意义
+  - 回答问题：
+  - '- 如果LLM请求执行`sleep 120`，run_process会如何表现？'
+  - '- 输出超过max_output_bytes时是静默截断还是报错？'
+  - '- 为何不直接用system()而要手写run_process？'
+  'no': 3
+  title: 攻破exec_shell_command的安全围栏
+- contents:
+  - 基于 `tools/server/server-tools.h` 第6-22行的契定，设计一个新工具 `server_tool_word_count`（统计文件字数）：
+  - 1. 在头文件中声明类，继承server_tool
+  - 2. 实现get_definition()，定义path与count_lines/count_chars参数
+  - 3. 实现invoke()，读取文件并返回统计JSON
+  - 4. 修改 `__main__` 中的工厂代码（856-863行）将新工具加入向量
+  - 回答问题：
+  - '- 新工具的permission_write应该设为true还是false？为什么？'
+  - '- 如果enabled_tools参数未包含你的工具名，setup()会如何处理？'
+  - '- handle_post收到未知工具名时返回什么格式的错误？'
+  'no': 4
+  title: 设计并注册一个自定义工具
+- contents:
+  - 阅读 `tools/server/server-tools.cpp` 第865-931行的 `server_tools.setup()` 与 `server_tools.invoke()`：
+  - 1. 梳理GET /tools端点如何序列化所有启用工具的Schema
+  - 2. 梳理POST /tools/call端点从JSON请求到工具invoke的调用链
+  - 3. 观察 invoke() 中按名称匹配的线性查找实现
+  - 回答问题：
+  - '- 当工具数量增长到100个时，线性查找是否会成为瓶颈？如何优化？'
+  - '- setup()中的lambda捕获this指针，如果server_tools对象销毁会发生什么？'
+  - '- to_json()与get_definition()返回的内容有何本质区别，各自服务于谁？'
+  'no': 5
+  title: 追踪HTTP工具调用的完整链路
+learning_targets:
+- 理解server_tool抽象基类如何定义工具的通用契约（JSON Schema + invoke接口）
+- 掌握只读工具三剑客（read_file/glob_search/grep_search）的安全边界与实现原理
+- 掌握写操作工具（write_file/edit_file/apply_diff）的精准编辑与原子化修改机制
+- 理解exec_shell_command工具的多层安全围栏（超时/输出限制/权限标记）
+- 掌握server_tools注册表的可插拔架构与HTTP端点暴露机制
+- 能基于server_tool基类开发自定义Agent工具并注册到工具生态
+life_analogy:
+- 想象llama-server的Agent工具系统是一家**全能装修公司的工具箱体系**：
+- '- **server_tool基类** = 工具的统一安全认证标准（就像电动工具都必须有3C认证），规定每件工具必须有「说明书」（get_definition）和「使用开关」（invoke）'
+- '- **permission_write** = 工具上的红黄标签：绿色标签（read_file/grep_search）是测量工具，随便用；红色标签（write_file/exec_shell）是电钻切割机，必须业主签字确认'
+- '- **只读三剑客** = 装修前的勘察装备：read_file是望远镜（看指定行范围）、glob_search是金属探测器（找文件位置）、grep_search是显微镜（搜细节内容）'
+- '- **写操作三件套** = 施工装备梯度：write_file是推土机（整体重建）、edit_file是手术刀（精准行编辑）、apply_diff是专业焊枪（处理复杂补丁）'
+- '- **exec_shell_command** = 租借的大型机械，不仅要红色标签，还要操作时限时（超时60秒）、限载（10MB输出），完工后强制熄火（kill进程）'
+- '- **server_tools注册表** = 公司的工具调度室：tool清单在册（vector管理），按需启用（enabled_tools），对外服务窗口统一接单（handle_post），按单派工（invoke按名分发）'
+- 就像装修公司不会让学徒直接操作切割机，llama.cpp通过权限分层与HTTP确认机制，确保LLM的每一次「动手」都在安全围栏之内。
+'no': 85
+summary:
+- concept: server_tool
+  desc: Agent工具的抽象基类，定义get_definition/invoke/to_json三大契约与permission_write安全标记
+- concept: get_definition()
+  desc: 返回OpenAI Function Calling格式的JSON Schema，向LLM描述工具参数与用法
+- concept: invoke(json)
+  desc: 统一输入输出接口，JSON入JSON出，屏蔽底层实现差异
+- concept: permission_write
+  desc: 布尔安全标记：false=只读工具自由调用，true=写操作需用户确认
+- concept: read_file
+  desc: 只读工具，支持start_line/end_line行范围读取与行号前缀
+- concept: file_glob_search
+  desc: 只读工具，基于glob模式递归搜索文件，返回相对路径列表
+- concept: grep_search
+  desc: 只读工具，正则表达式搜索，支持文件/目录模式与最大匹配数限制
+- concept: write_file
+  desc: 写工具，自动create_directories创建父目录后写入内容
+- concept: edit_file
+  desc: 写工具，replace/delete/append三种行级精准编辑，带行号合法性验证
+- concept: apply_diff
+  desc: 写工具，接收unified diff写临时文件后调用git apply原子应用
+- concept: exec_shell_command
+  desc: 高危写工具，通过run_process执行shell，默认60秒超时+10MB输出限制
+- concept: run_process()
+  desc: 进程执行基础设施，fork子进程、捕获stdout/stderr、超时强制kill
+- concept: server_tools
+  desc: 工具注册表，vector管理unique_ptr工具实例，setup筛选+HTTP路由注册
+- concept: __main__ (build_tools)
+  desc: 工厂函数，集中创建全部7个内置工具实例
+- concept: handle_get/handle_post
+  desc: HTTP处理器：GET返回工具Schema列表，POST按名分发工具调用
+units:
+- codes:
+  - file: tools/server/server-tools.h
+    line: 6-11
+    method_or_func: server_tool.*
+  - file: tools/server/server-tools.h
+    line: '7'
+    method_or_func: server_tool.~server_tool()
+  - file: tools/server/server-tools.h
+    line: '8'
+    method_or_func: server_tool.get_definition()
+  - file: tools/server/server-tools.h
+    line: '9'
+    method_or_func: server_tool.invoke()
+  - file: tools/server/server-tools.h
+    line: '11'
+    method_or_func: server_tool.to_json()
+  name: server_tool：工具的『通用契约』 —— Agent 能力的抽象接口
+  'no': 1
+  points:
+  - '**server_tool 抽象基类的设计哲学**'
+  - '- 定义了所有工具的『通用契约』：`get_definition()` 返回 JSON Schema 定义、`invoke()` 执行工具逻辑'
+  - '- 通过 `permission_write` 标志区分只读工具（读文件、搜索）和写操作工具（写文件、执行命令）'
+  - '- `display_name` 用于前端界面展示，`name` 用于 API 调用标识'
+  - '**JSON Schema 生成机制**'
+  - '- `get_definition()` 返回 OpenAI Function Calling 格式的工具定义'
+  - '- 包含工具名称、描述、参数类型、必需字段等完整元数据'
+  - '- 为 LLM 提供结构化的工具调用说明'
+  - '**多态调用与 JSON 序列化**'
+  - '- `invoke(json params)` 接收 JSON 参数并返回 JSON 结果，统一输入输出格式'
+  - '- `to_json()` 方法序列化工具元数据，用于 API 响应'
+  - '- 虚析构函数确保派生类正确析构'
+- codes:
+  - file: tools/server/server-tools.cpp
+    line: 184-271
+    method_or_func: server_tool_read_file.*
+  - file: tools/server/server-tools.cpp
+    line: 191-210
+    method_or_func: server_tool_read_file.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 212-271
+    method_or_func: server_tool_read_file.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 284-351
+    method_or_func: server_tool_file_glob_search.*
+  - file: tools/server/server-tools.cpp
+    line: 291-307
+    method_or_func: server_tool_file_glob_search.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 309-351
+    method_or_func: server_tool_file_glob_search.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 364-469
+    method_or_func: server_tool_grep_search.*
+  - file: tools/server/server-tools.cpp
+    line: 371-390
+    method_or_func: server_tool_grep_search.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 392-469
+    method_or_func: server_tool_grep_search.invoke()
+  name: 只读工具三剑客：read_file / glob_search / grep_search —— 信息检索的『侦察兵』
+  'no': 2
+  points:
+  - '**read_file：文件内容的安全读取**'
+  - '- 支持指定行范围（`start_line` / `end_line`），避免读取超大文件'
+  - '- 可选行号前缀显示，便于 LLM 定位代码位置'
+  - '- `permission_write = false` 标记为只读工具，确保安全'
+  - '**file_glob_search：递归文件搜索**'
+  - '- 基于 glob 模式（如 `**/*.cpp`）递归搜索匹配文件'
+  - '- 返回匹配文件的相对路径列表，用于项目结构探索'
+  - '- 同样标记为只读，不会修改文件系统'
+  - '**grep_search：正则表达式搜索**'
+  - '- 支持在单个文件或整个目录中执行正则搜索'
+  - '- 可选显示行号、设置最大匹配数，防止输出过大'
+  - '- 三个只读工具共同构成 Agent 的『信息收集三剑客』'
+- codes:
+  - file: tools/server/server-tools.cpp
+    line: 557-609
+    method_or_func: server_tool_write_file.*
+  - file: tools/server/server-tools.cpp
+    line: 564-579
+    method_or_func: server_tool_write_file.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 581-609
+    method_or_func: server_tool_write_file.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 620-790
+    method_or_func: server_tool_edit_file.*
+  - file: tools/server/server-tools.cpp
+    line: 627-671
+    method_or_func: server_tool_edit_file.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 673-790
+    method_or_func: server_tool_edit_file.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 803-853
+    method_or_func: server_tool_apply_diff.*
+  - file: tools/server/server-tools.cpp
+    line: 810-822
+    method_or_func: server_tool_apply_diff.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 824-853
+    method_or_func: server_tool_apply_diff.invoke()
+  name: 写操作工具：write_file / edit_file / apply_diff —— 文件系统的『改造工程师』
+  'no': 3
+  points:
+  - '**write_file：文件的创建与覆盖**'
+  - '- 自动创建父目录（`create_directories`），简化路径处理'
+  - '- 支持写入文本内容，返回写入的字节数'
+  - '- `permission_write = true` 标记为写操作，需要用户确认'
+  - '**edit_file：基于行的精准编辑**'
+  - '- 支持三种操作：`replace`（替换行）、`delete`（删除行）、`append`（追加内容）'
+  - '- 通过行号定位修改位置，实现精准编辑'
+  - '- 对变更进行验证（行号合法性、范围检查），确保编辑正确性'
+  - '**apply_diff：Git 风格的补丁应用**'
+  - '- 接收 unified diff 格式，写入临时文件后调用 `git apply`'
+  - '- 利用 Git 的原生能力处理复杂的代码变更'
+  - '- 三个写工具形成从简单到复杂的完整编辑能力链'
+- codes:
+  - file: tools/server/server-tools.cpp
+    line: 1-183
+    method_or_func: __main__
+  - file: tools/server/server-tools.cpp
+    line: 483-544
+    method_or_func: server_tool_exec_shell_command.*
+  - file: tools/server/server-tools.cpp
+    line: 490-509
+    method_or_func: server_tool_exec_shell_command.get_definition()
+  - file: tools/server/server-tools.cpp
+    line: 512-544
+    method_or_func: server_tool_exec_shell_command.invoke()
+  name: 执行工具：exec_shell_command —— 沙箱边界的『守门人』
+  'no': 4
+  points:
+  - '**Shell 命令执行的安全边界**'
+  - '- 通过 `run_process()` 函数启动子进程执行命令'
+  - '- 设置超时限制（默认 60 秒），防止长时间阻塞'
+  - '- 限制输出大小（默认 10MB），避免内存溢出'
+  - '**进程控制与错误处理**'
+  - '- 捕获标准输出和标准错误，统一返回给 LLM'
+  - '- 记录退出码，判断命令执行成功与否'
+  - '- 超时后强制终止进程（`kill`），并标记超时状态'
+  - '**write 权限的深层含义**'
+  - '- 标记为 `permission_write = true`，因为 shell 命令可能修改文件系统'
+  - '- 通过用户确认机制（HTTP 接口层）确保危险操作得到授权'
+  - '- 体现了「能力越大，限制越多」的安全设计哲学'
+- codes:
+  - file: tools/server/server-tools.h
+    line: 13-22
+    method_or_func: server_tools.*
+  - file: tools/server/server-tools.h
+    line: '19'
+    method_or_func: server_tools.setup()
+  - file: tools/server/server-tools.h
+    line: '20'
+    method_or_func: server_tools.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 865-922
+    method_or_func: server_tools.setup()
+  - file: tools/server/server-tools.cpp
+    line: 925-931
+    method_or_func: server_tools.invoke()
+  - file: tools/server/server-tools.cpp
+    line: 856-863
+    method_or_func: __main__
+  name: server_tools 注册表与 HTTP 暴露 —— 工具生态的『调调度中心』
+  'no': 5
+  points:
+  - '**工具集合的统一管理**'
+  - '- `server_tools` 类持有 `std::vector<std::unique_ptr<server_tool>>`，管理所有工具实例'
+  - '- `setup()` 方法根据 `enabled_tools` 列表筛选启用的工具'
+  - '- 通过全局工厂代码（`__main__` 中的 `build_tools` 逻辑）创建所有可用工具的实例'
+  - '**HTTP 接口的自动注册**'
+  - '- `handle_get` 返回所有启用工具的 JSON Schema 定义列表'
+  - '- `handle_post` 接收工具调用请求（工具名 + 参数），分发到对应工具'
+  - '- 错误处理：工具不存在时返回友好错误信息'
+  - '**工具名到实例的快速查找**'
+  - '- `invoke()` 方法遍历工具列表，按名称匹配并调用'
+  - '- 返回统一的 JSON 格式结果或错误信息'
+  - '- 整个设计实现了工具系统的可插拔架构'

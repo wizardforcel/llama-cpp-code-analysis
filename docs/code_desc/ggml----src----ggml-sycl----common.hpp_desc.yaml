@@ -1,0 +1,663 @@
+classes:
+- desc: 表示SYCL后端的优化特性集合，目前包含一个是否启用重排序的布尔标志。
+  methods: []
+  name: optimize_feature
+- desc: 描述单个SYCL设备的信息，包括计算能力（cc）、流式多处理器数量（nsm）、支持的最大共享内存、warp大小、每计算单元最大工作组数以及显存容量等特性。
+  methods: []
+  name: sycl_device_info
+- desc: 全局的SYCL设备信息集合，记录设备数量、每个设备的详细信息、默认张量分割比例以及最大工作组大小数组。
+  methods: []
+  name: ggml_sycl_device_info
+- desc: 定义一个抽象的内存池接口，用于在SYCL设备上分配和释放内存。
+  methods:
+  - code:
+    - virtual void * alloc(size_t size, size_t * actual_size) = 0;
+    desc: 纯虚函数，从内存池分配指定大小的内存，并返回实际分配的大小。
+    line: 1-1
+    name: alloc
+  - code:
+    - virtual void free(void * ptr, size_t size) = 0;
+    desc: 纯虚函数，释放之前由alloc函数分配的内存。
+    line: 1-1
+    name: free
+  name: ggml_sycl_pool
+- desc: 一个模板RAII辅助类，自动管理通过ggml_sycl_pool分配的内存，在析构时自动释放。
+  methods:
+  - code:
+    - "explicit ggml_sycl_pool_alloc(ggml_sycl_pool & pool) : pool(&pool) {\n    }"
+    desc: 构造函数，接受一个ggml_sycl_pool的引用并保存它。
+    line: 1-1
+    name: ggml_sycl_pool_alloc
+  - code:
+    - "ggml_sycl_pool_alloc(ggml_sycl_pool & pool, size_t size) : pool(&pool) {\n\
+      \        alloc(size);\n    }"
+    desc: 构造函数，接受内存池和大小并立即分配内存。
+    line: 1-1
+    name: ggml_sycl_pool_alloc
+  - code:
+    - "~ggml_sycl_pool_alloc() {\n        if (ptr != nullptr) {\n            pool->free(ptr,\
+      \ actual_size);\n        }\n    }"
+    desc: 析构函数，如果持有指针则释放内存。
+    line: 1-1
+    name: ~ggml_sycl_pool_alloc
+  - code:
+    - "T * realloc(size_t size) {\n        GGML_ASSERT(pool != nullptr);\n       \
+      \ if (ptr)\n            pool->free(ptr, actual_size);\n        ptr = (T *) pool->alloc(size\
+      \ * sizeof(T), &this->actual_size);\n        return ptr;\n    }"
+    desc: 重新分配内存，如果已有指针则先释放旧内存。
+    line: 1-1
+    name: realloc
+  - code:
+    - "T * alloc(size_t size) {\n        GGML_ASSERT(pool != nullptr);\n        GGML_ASSERT(ptr\
+      \ == nullptr);\n        ptr = (T *) pool->alloc(size * sizeof(T), &this->actual_size);\n\
+      \        return ptr;\n    }"
+    desc: 分配指定元素数量的内存，并返回类型化指针。
+    line: 1-1
+    name: alloc
+  - code:
+    - "T * alloc(ggml_sycl_pool & pool, size_t size) {\n        this->pool = &pool;\n\
+      \        return alloc(size);\n    }"
+    desc: 使用指定的内存池分配内存，并保存该池的引用。
+    line: 1-1
+    name: alloc
+  - code:
+    - "T * get() {\n        return ptr;\n    }"
+    desc: 返回内部持有的指针。
+    line: 1-1
+    name: get
+  name: ggml_sycl_pool_alloc
+- desc: 用于存储SYCL后端张量的额外信息，包括每个设备上的数据指针、同步事件和优化特性。
+  methods: []
+  name: ggml_tensor_extra_gpu
+- desc: 代表SYCL后端的上下文，管理设备队列、内存池、DNNL资源（可选）以及命令图（可选），提供对设备的访问和资源管理。
+  methods:
+  - code:
+    - "explicit ggml_backend_sycl_context(int device) :\n        device(device),\n\
+      \        name(GGML_SYCL_NAME + std::to_string(device)) {\n        opt_feature\
+      \ = ggml_sycl_info().devices[device].opt_feature;\n    }"
+    desc: 构造函数，初始化设备ID、名称和优化特性。
+    line: 1-1
+    name: ggml_backend_sycl_context
+  - code:
+    - "queue_ptr stream(int device, int stream) {\n        if (qptrs[device][stream]\
+      \ == nullptr) {\n            qptrs[device][stream] = &(dpct::get_device(device).default_queue());\n\
+      \        }\n        return qptrs[device][stream];\n    }"
+    desc: 获取指定设备的指定流（队列），如果为空则返回默认队列。
+    line: 1-1
+    name: stream
+  - code:
+    - "queue_ptr stream() {\n        return stream(device, 0);\n    }"
+    desc: 获取当前设备的默认流。
+    line: 1-1
+    name: stream
+  - code:
+    - "dnnl::engine make_engine(sycl::queue* q) {\n        // Get the device associated\
+      \ with the queue\n        sycl::device dev = q->get_device();\n        // Get\
+      \ the context associated with the queue\n        sycl::context ctx = q->get_context();\n\
+      \        const dnnl::engine eng = dnnl::sycl_interop::make_engine(dev, ctx);\n\
+      \        return eng;\n    }"
+    desc: 根据SYCL队列创建DNNL引擎（仅当启用DNNL时）。
+    line: 1-1
+    name: make_engine
+  - code:
+    - "dnnl::stream stream_dnnl(int device, int _stream) {\n        auto q = stream(device,\
+      \ _stream);\n        return stream_dnnl(q);\n    }"
+    desc: 获取指定设备和流的DNNL流。
+    line: 1-1
+    name: stream_dnnl
+  - code:
+    - "dnnl::engine engine_dnnl(sycl::queue* qptr) {\n        auto it = engine_map.find(qptr);\n\
+      \        if (it == engine_map.end()) {\n            auto eng = make_engine(qptr);\n\
+      \            engine_map[qptr] = eng;\n            return eng;\n        }\n \
+      \       else\n        {\n            return it->second;\n        }\n    }"
+    desc: 获取与SYCL队列关联的DNNL引擎，如果不存在则创建并缓存。
+    line: 1-1
+    name: engine_dnnl
+  - code:
+    - "dnnl::stream stream_dnnl(sycl::queue* qptr) {\n        auto it = stream_map.find(qptr);\n\
+      \        if (it == stream_map.end()) {\n            auto eng = engine_dnnl(qptr);\n\
+      \            auto stream = dnnl::sycl_interop::make_stream(eng, *qptr);\n  \
+      \          stream_map[qptr] = stream;\n            return stream;\n        }\n\
+      \        else\n        {\n            return it->second;\n        }\n    }"
+    desc: 获取与SYCL队列关联的DNNL流，如果不存在则创建并缓存。
+    line: 1-1
+    name: stream_dnnl
+  - code:
+    - "dnnl::stream stream_dnnl() {\n        return stream_dnnl(device, 0);\n    }"
+    desc: 获取当前设备和默认流的DNNL流。
+    line: 1-1
+    name: stream_dnnl
+  - code:
+    - "dnnl::memory get_scratchpad_mem(const dnnl::memory::desc & scratchpad_md,\n\
+      \                                    const dnnl::engine & eng, const queue_ptr\
+      \ q) {\n        ggml_sycl_pool_alloc<uint8_t> * pool;\n        auto it = scratchpad_map.find(q);\n\
+      \        if (it == scratchpad_map.end()) {\n            scratchpad_map[q] =\
+      \ std::make_unique<ggml_sycl_pool_alloc<uint8_t>>(this->pool());\n         \
+      \   pool = scratchpad_map[q].get();\n        } else {\n            pool = it->second.get();\n\
+      \        }\n\n        size_t scratchpad_size = scratchpad_md.get_size();\n \
+      \       if (scratchpad_size > pool->actual_size) {\n            pool->realloc(scratchpad_size);\n\
+      \        }\n        void * mem_ptr = pool->get();\n        return dnnl::memory(scratchpad_md,\
+      \ eng, mem_ptr);\n    }"
+    desc: 从scratchpad内存池获取DNNL所需的暂存内存对象。
+    line: 1-1
+    name: get_scratchpad_mem
+  - code:
+    - "ggml_sycl_pool & pool(int device) {\n        if (pools[device] == nullptr)\
+      \ {\n            pools[device] = new_pool_for_device(stream(device,0), device);\n\
+      \        }\n        return *pools[device];\n    }"
+    desc: 获取指定设备的内存池，如果为空则创建。
+    line: 1-1
+    name: pool
+  - code:
+    - "ggml_sycl_pool & pool() {\n        return pool(device);\n    }"
+    desc: 获取当前设备的内存池。
+    line: 1-1
+    name: pool
+  - code:
+    - "ggml_sycl_pool & host_pool(int device) {\n        if (host_pools[device] ==\
+      \ nullptr) {\n            host_pools[device] = new_pool_for_host(stream(device,\
+      \ 0), device);\n        }\n        return *host_pools[device];\n    }"
+    desc: 获取指定设备的主机内存池，如果为空则创建。
+    line: 1-1
+    name: host_pool
+  - code:
+    - ggml_sycl_pool & host_pool() { return host_pool(device); }
+    desc: 获取当前设备的主机内存池。
+    line: 1-1
+    name: host_pool
+  name: ggml_backend_sycl_context
+- desc: 用于编译时循环展开的模板类，在编译期执行递归调用。
+  methods:
+  - code:
+    - "void operator()(const Func & f, Args... args) const {\n        f(n - 1, args...);\n\
+      \        ggml_sycl_unroll<n - 1>{}(f, args...);\n    }"
+    desc: 执行展开操作，先调用f(n-1, args...)再递归调用自身。
+    line: 1-1
+    name: operator()
+  name: ggml_sycl_unroll
+- desc: 模板类，用于定义块归约的策略，包括求和和最大值归约。
+  methods:
+  - code:
+    - "static T reduce(T val) {\n        if constexpr (is_any<T, float, sycl::float2,\
+      \ sycl::half2, int>) {\n            return warp_reduce_sum<warp_size>(val);\n\
+      \        } else {\n            static_assert(ggml_sycl_dependent_false_v<T>,\
+      \ \"Unsupported type for block reduce sum\");\n        }\n    }"
+    desc: 对输入值执行归约操作（求和或最大值）。
+    line: 1-1
+    name: reduce
+  - code:
+    - "static T sentinel() {\n        if constexpr (std::is_same_v<T, float>) {\n\
+      \            return 0.0f;\n        } else if constexpr (std::is_same_v<T, sycl::float2>)\
+      \ {\n            return sycl::float2(0.0f, 0.0f);\n        } else if constexpr\
+      \ (std::is_same_v<T, sycl::half2>) {\n            return sycl::half2(0.0f, 0.0f);\n\
+      \        } else if constexpr (std::is_same_v<T, int>) {\n            return\
+      \ 0;\n        } else {\n            static_assert(ggml_sycl_dependent_false_v<T>,\
+      \ \"Unsupported type for block reduce sum\");\n        }\n    }"
+    desc: 返回该类型的归约哨兵值（如0.0f或-INFINITY）。
+    line: 1-1
+    name: sentinel
+  name: block_reduce_policy
+- desc: 用于调试的RAII类，在作用域开始时打印操作的输入和输出张量信息，结束时打印操作完成信息。
+  methods:
+  - code:
+    - "scope_op_debug_print(const std::string_view & func, const std::string_view\
+      \ & func_suffix, const ggml_tensor * dst,\n                         std::size_t\
+      \ num_src, const std::string_view & suffix = \"\") :\n        func(func),\n\
+      \        func_suffix(func_suffix) {\n        if (LIKELY(!g_ggml_sycl_debug))\
+      \ {\n            return;\n        }\n        GGML_SYCL_DEBUG(\"[SYCL][OP] call\
+      \ %s%s:\", func.data(), func_suffix.data());\n        GGML_SYCL_DEBUG(\"%s\"\
+      , debug_get_tensor_str(\" dst\", dst).c_str());\n        if (dst) {\n      \
+      \      for (std::size_t i = 0; i < num_src; ++i) {\n                GGML_SYCL_DEBUG(\"\
+      %s\", debug_get_tensor_str(\"\\tsrc\" + std::to_string(i), dst->src[i]).c_str());\n\
+      \            }\n        }\n        GGML_SYCL_DEBUG(\"%s\\n\", suffix.data());\n\
+      \    }"
+    desc: 构造函数，记录函数名、后缀、目标张量、源张量数量和可选后缀。
+    line: 1-1
+    name: scope_op_debug_print
+  - code:
+    - "scope_op_debug_print(const std::string_view & func, const ggml_tensor * dst,\
+      \ std::size_t num_src,\n                         const std::string_view & suffix\
+      \ = \"\") :\n        scope_op_debug_print(func, \"\", dst, num_src, suffix)\
+      \ {}"
+    desc: 构造函数，使用空后缀调用主构造函数。
+    line: 1-1
+    name: scope_op_debug_print
+  - code:
+    - ~scope_op_debug_print() { GGML_SYCL_DEBUG("[SYCL][OP] call %s%s done\n", func.data(),
+      func_suffix.data()); }
+    desc: 析构函数，打印操作完成信息。
+    line: 1-1
+    name: ~scope_op_debug_print
+  name: scope_op_debug_print
+desc: 该头文件是SYCL后端的基础公共组件，定义了平台相关的宏、设备信息结构、内存池抽象、SYCL队列上下文封装，以及在线程块级别进行归约（求和、求最大值等）、快速除法、半精度浮点转换等运算的辅助函数和模板函数，为SYCL内核的实现提供基础支持。
+file: ggml/src/ggml-sycl/common.hpp
+funcs:
+- code:
+  - "static void crash() {\n  int* ptr = NULL;\n  *ptr = 0;\n}"
+  desc: 故意触发段错误以终止程序，用于调试和错误处理。
+  line: 1-1
+  name: crash
+- code:
+  - "[[noreturn]] static void ggml_sycl_error(\n    const char* stmt,\n    const char*\
+    \ func,\n    const char* file,\n    const int line,\n    const char* msg) {\n\
+    \  fprintf(stderr, \"SYCL error: %s: %s\\n\", stmt, msg);\n  fprintf(stderr, \"\
+    \  in function %s at %s:%d\\n\", func, file, line);\n  GGML_ABORT(\"SYCL error\"\
+    );\n}"
+  desc: 打印SYCL错误消息并终止程序，是SYCL_CHECK宏的核心错误处理函数。
+  line: 1-1
+  name: ggml_sycl_error
+- code:
+  - "[[noreturn]] static inline void bad_arch(const sycl::stream& stream_ct1) {\n\
+    \  stream_ct1 << \"ERROR: ggml-sycl was compiled without support for the \"\n\
+    \                \"current GPU architecture.\\n\";\n  // __trap();\n  std::exit(1);\n\
+    \n  (void)bad_arch; // suppress unused function warning\n}"
+  desc: 当SYCL后端在不支持的GPU架构上被调用时，打印错误信息并退出程序。
+  line: 1-1
+  name: bad_arch
+- code:
+  - int get_current_device_id();
+  desc: 获取当前SYCL设备的ID。
+  line: 1-1
+  name: get_current_device_id
+- code:
+  - "inline int ggml_sycl_get_device() {\n    return get_current_device_id();\n}"
+  desc: 内联函数，返回当前SYCL设备ID。
+  line: 1-1
+  name: ggml_sycl_get_device
+- code:
+  - "inline dpct::err0 ggml_sycl_set_device(const int device) try {\n  int current_device_id;\n\
+    \  SYCL_CHECK(CHECK_TRY_ERROR(current_device_id = get_current_device_id()));\n\
+    \n  // GGML_SYCL_DEBUG(\"ggml_sycl_set_device device_id=%d,\n  // current_device_id=%d\\\
+    n\", device, current_device);\n  if (device == current_device_id) {\n    return\
+    \ 0;\n  }\n\n  return CHECK_TRY_ERROR(dpct::select_device(device));\n} catch (sycl::exception\
+    \ const& exc) {\n  std::cerr << exc.what() << \"Exception caught at file:\" <<\
+    \ __FILE__\n            << \", line:\" << __LINE__ << std::endl;\n  crash();\n\
+    \  std::exit(1);\n}"
+  desc: 设置当前SYCL设备，如果设备ID不同则进行切换。
+  line: 1-1
+  name: ggml_sycl_set_device
+- code:
+  - const ggml_sycl_device_info & ggml_sycl_info();
+  desc: 返回全局SYCL设备信息结构体的常量引用。
+  line: 1-1
+  name: ggml_sycl_info
+- code:
+  - "static __dpct_inline__ float warp_reduce_sum(float x,\n    const sycl::nd_item<3>&\
+    \ item_ct1) {\n#pragma unroll\n    for (int mask = WARP_SIZE / 2; mask > 0; mask\
+    \ >>= 1) {\n        x += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(),\
+    \ x, mask);\n    }\n    return x;\n}"
+  desc: 在warp内对浮点值进行求和归约，使用异或置换实现全warp归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "static __dpct_inline__ sycl::float2\nwarp_reduce_sum(sycl::float2 a, const sycl::nd_item<3>&\
+    \ item_ct1) {\n#pragma unroll\n    for (int mask = WARP_SIZE / 2; mask > 0; mask\
+    \ >>= 1) {\n        a.x() += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(),\
+    \ a.x(),\n            mask);\n        a.y() += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(),\
+    \ a.y(),\n            mask);\n    }\n    return a;\n}"
+  desc: 在warp内对两个浮点组成的向量进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "template <int width>\nstatic __dpct_inline__ int warp_reduce_sum(int x) {\n \
+    \ return sycl::reduce_over_group(\n      sycl::ext::oneapi::this_work_item::get_sub_group(),\
+    \ x, sycl::plus<>());\n}"
+  desc: 使用指定宽度在warp内对整数进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "template <int width>\nstatic __dpct_inline__ float warp_reduce_sum(float x) {\n\
+    #pragma unroll\n  for (int offset = width / 2; offset > 0; offset >>= 1) {\n \
+    \   x += dpct::permute_sub_group_by_xor(\n        sycl::ext::oneapi::this_work_item::get_sub_group(),\
+    \ x, offset, width);\n  }\n  return x;\n}"
+  desc: 使用指定宽度在warp内对浮点值进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "template <int width>\nstatic __dpct_inline__ float warp_reduce_sum(float x, const\
+    \ sycl::nd_item<3>& item_ct1) {\n#pragma unroll\n  for (int offset = width / 2;\
+    \ offset > 0; offset >>= 1) {\n    x += dpct::permute_sub_group_by_xor(\n    \
+    \    item_ct1.get_sub_group(), x, offset);\n  }\n  return x;\n}"
+  desc: 使用指定宽度和nd_item在warp内对浮点值进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "template <int width>\nstatic __dpct_inline__ sycl::float2 warp_reduce_sum(sycl::float2\
+    \ a) {\n#pragma unroll\n  for (int offset = width / 2; offset > 0; offset >>=\
+    \ 1) {\n    a.x() += dpct::permute_sub_group_by_xor(\n        sycl::ext::oneapi::this_work_item::get_sub_group(),\
+    \ a.x(), offset,\n        width);\n    a.y() += dpct::permute_sub_group_by_xor(\n\
+    \        sycl::ext::oneapi::this_work_item::get_sub_group(), a.y(), offset,\n\
+    \        width);\n  }\n  return a;\n}"
+  desc: 使用指定宽度在warp内对sycl::float2向量进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "template <int width>\nstatic __dpct_inline__ sycl::half2 warp_reduce_sum(sycl::half2\
+    \ a) {\n#pragma unroll\n  for (int offset = width / 2; offset > 0; offset >>=\
+    \ 1) {\n    a = a + dpct::permute_sub_group_by_xor(\n                sycl::ext::oneapi::this_work_item::get_sub_group(),\
+    \ a, offset,\n                width);\n  }\n  return a;\n}"
+  desc: 使用指定宽度在warp内对sycl::half2向量进行求和归约。
+  line: 1-1
+  name: warp_reduce_sum
+- code:
+  - "static constexpr int ggml_sycl_get_physical_warp_size() {\n  // todo: for old\
+    \ iGPU + dGPU case, need to be changed.\n  return WARP_SIZE;\n}"
+  desc: 返回物理warp大小，目前固定为WARP_SIZE。
+  line: 1-1
+  name: ggml_sycl_get_physical_warp_size
+- code:
+  - "template <int width>\nstatic __dpct_inline__ int warp_reduce_all(int x) {\n \
+    \   if (width == ggml_sycl_get_physical_warp_size()) {\n        return sycl::all_of_group(\n\
+    \            sycl::ext::oneapi::this_work_item::get_sub_group(),\n           \
+    \ (~0xffffffff &\n             (0x1 << sycl::ext::oneapi::this_work_item::get_sub_group()\n\
+    \                         .get_local_linear_id())) ||\n                x);\n \
+    \   } else {\n#pragma unroll\n        for (int offset = width / 2; offset > 0;\
+    \ offset >>= 1) {\n            x = dpct::permute_sub_group_by_xor(\n         \
+    \           sycl::ext::oneapi::this_work_item::get_sub_group(), x,\n         \
+    \           offset, width) &&\n                x;\n        }\n        return x;\n\
+    \    }\n}"
+  desc: 在warp内对所有线程的值进行与（AND）归约，返回归约结果。
+  line: 1-1
+  name: warp_reduce_all
+- code:
+  - "template <int width>\nstatic __dpct_inline__ int warp_reduce_any(int x) {\n \
+    \   if (width == ggml_sycl_get_physical_warp_size()) {\n        return sycl::any_of_group(\n\
+    \            sycl::ext::oneapi::this_work_item::get_sub_group(),\n           \
+    \ (0xffffffff &\n             (0x1 << sycl::ext::oneapi::this_work_item::get_sub_group()\n\
+    \                         .get_local_linear_id())) &&\n                x);\n \
+    \   } else {\n#pragma unroll\n        for (int offset = width / 2; offset > 0;\
+    \ offset >>= 1) {\n            x = dpct::permute_sub_group_by_xor(\n         \
+    \           sycl::ext::oneapi::this_work_item::get_sub_group(), x,\n         \
+    \           offset, width) ||\n                x;\n        }\n        return x;\n\
+    \    }\n}"
+  desc: 在warp内对所有线程的值进行或（OR）归约，返回归约结果。
+  line: 1-1
+  name: warp_reduce_any
+- code:
+  - "template <int width>\nstatic __dpct_inline__ float warp_reduce_max(float x) {\n\
+    #pragma unroll\n  for (int offset = width / 2; offset > 0; offset >>= 1) {\n \
+    \   x = sycl::fmax(x, dpct::permute_sub_group_by_xor(\n                      \
+    \    sycl::ext::oneapi::this_work_item::get_sub_group(), x,\n                \
+    \          offset, width));\n  }\n  return x;\n}"
+  desc: 使用指定宽度在warp内对浮点值进行最大值归约。
+  line: 1-1
+  name: warp_reduce_max
+- code:
+  - "static __dpct_inline__ float warp_reduce_max(float x,\n    const sycl::nd_item<3>&\
+    \ item_ct1) {\n#pragma unroll\n    for (int mask = WARP_SIZE / 2; mask > 0; mask\
+    \ >>= 1) {\n        x = sycl::fmax(x, dpct::permute_sub_group_by_xor(\n      \
+    \      item_ct1.get_sub_group(), x, mask));\n    }\n    return x;\n}"
+  desc: 在warp内使用nd_item对浮点值进行最大值归约。
+  line: 1-1
+  name: warp_reduce_max
+- code:
+  - "template<int N>\n__dpct_inline__ size_t calculate_offset(const std::array<int,\
+    \ N> & strides, const std::array<int, N> & indices) {\n    size_t offset = 0;\n\
+    #pragma unroll\n    for (int i = 0; i < N; i++) {\n        auto index_i = indices[i];\n\
+    \        offset += strides[i] * index_i;\n    }\n    return offset;\n}"
+  desc: 根据张量的步长和索引计算线性偏移量。
+  line: 1-1
+  name: calculate_offset
+- code:
+  - "template <typename Tp, int n>\ninline sycl::vec<Tp, n> vec_aligned_load(const\
+    \ Tp* aligned_ptr) {\n    return *reinterpret_cast<const sycl::vec<Tp, n>*>(aligned_ptr);\n\
+    }"
+  desc: 从对齐指针加载SYCL向量类型的数据。
+  line: 1-1
+  name: vec_aligned_load
+- code:
+  - "template <typename Tp, int dim>\nstatic __dpct_inline__ Tp* get_pointer(sycl::local_accessor<Tp,\
+    \ dim> acc) {\n    return acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n\
+    }"
+  desc: 从SYCL局部访问器中获取原始指针。
+  line: 1-1
+  name: get_pointer
+- code:
+  - int64_t downsample_sycl_global_range(int64_t accumulate_block_num, int64_t block_size);
+  desc: 将全局范围下采样到合适的块大小。
+  line: 1-1
+  name: downsample_sycl_global_range
+- code:
+  - "constexpr size_t ceil_div(const size_t m, const size_t n) {\n    return (m +\
+    \ n - 1) / n;\n}"
+  desc: 返回两个整数相除后向上取整的结果。
+  line: 1-1
+  name: ceil_div
+- code:
+  - bool gpu_has_xmx(sycl::device &dev);
+  desc: 检查GPU设备是否支持XMX（扩展矩阵扩展）。
+  line: 1-1
+  name: gpu_has_xmx
+- code:
+  - "template <int N, class T> std::string debug_get_array_str(const std::string &\
+    \ prefix, const T array[N]) {\n    if (LIKELY(!g_ggml_sycl_debug)) {\n       \
+    \ return \"\";\n    }\n    std::stringstream ss;\n    ss << prefix << \"=[\";\n\
+    \    for (std::size_t i = 0; i < N - 1; ++i) {\n        ss << array[i] << \",\
+    \ \";\n    }\n    if constexpr (N > 0) {\n        ss << array[N - 1];\n    }\n\
+    \    ss << \"]\";\n    return ss.str();\n}"
+  desc: 生成数组的调试字符串表示，当调试关闭时返回空字符串。
+  line: 1-1
+  name: debug_get_array_str
+- code:
+  - "inline std::string debug_get_tensor_str(const std::string &prefix,\n        const\
+    \ ggml_tensor *tensor, const std::string &suffix = \"\") {\n    std::stringstream\
+    \ ss;\n    if (LIKELY(!g_ggml_sycl_debug)) { return ss.str(); }\n    ss << prefix.c_str()\
+    \ << \"=\";\n    if (tensor) {\n        ss << \"'\" << tensor->name << \"':type=\"\
+    \ << ggml_type_name(tensor->type);\n        ss << debug_get_array_str<GGML_MAX_DIMS>(\"\
+    ;ne\", tensor->ne);\n        ss << debug_get_array_str<GGML_MAX_DIMS>(\";nb\"\
+    , tensor->nb);\n\n        if (!ggml_is_contiguous(tensor)) { ss << \";strided\"\
+    ; }\n        if (ggml_is_permuted(tensor)) { ss << \";permuted\"; }\n    } else\
+    \ {\n        ss << \"nullptr\";\n    }\n    ss << suffix;\n    return ss.str();\n\
+    }"
+  desc: 生成张量调试信息的字符串表示，当调试关闭时返回空字符串。
+  line: 1-1
+  name: debug_get_tensor_str
+- code:
+  - "static __dpct_inline__ float get_alibi_slope(const float    max_bias,\n     \
+    \                                        const uint32_t h,\n                 \
+    \                            const uint32_t n_head_log2,\n                   \
+    \                          const float    m0,\n                              \
+    \               const float    m1) {\n    if (max_bias <= 0.0f) {\n        return\
+    \ 1.0f;\n    }\n    const float base = h < n_head_log2 ? m0 : m1;\n    const int\
+    \   exph = h < n_head_log2 ? h + 1 : 2*(h - n_head_log2) + 1;\n\n    return dpct::pow(base,\
+    \ exph);\n}"
+  desc: 计算ALiBi（注意力线性偏置）的斜率值，根据头索引和max_bias参数。
+  line: 1-1
+  name: get_alibi_slope
+- code:
+  - "static const sycl::uint3 init_fastdiv_values(uint32_t d) {\n    GGML_ASSERT(d\
+    \ != 0);\n\n    uint32_t L = 0;\n    while (L < 32 && (uint32_t{ 1 } << L) < d)\
+    \ {\n        L++;\n    }\n\n    uint32_t mp = (uint32_t) ((uint64_t{ 1 } << 32)\
+    \ * ((uint64_t{ 1 } << L) - d) / d + 1);\n    return sycl::uint3(mp, L, d);\n}"
+  desc: 初始化快速除法所需的参数，返回包含乘法器、移位和除数的sycl::uint3。
+  line: 1-1
+  name: init_fastdiv_values
+- code:
+  - "static constexpr int ggml_sycl_get_max_cpy_bytes() {\n    return 16;\n}"
+  desc: 返回单次指令能复制的最大字节数，固定为16。
+  line: 1-1
+  name: ggml_sycl_get_max_cpy_bytes
+- code:
+  - "template <int nbytes, int alignment = 0>\nstatic __dpct_inline__ void ggml_sycl_memcpy_1(void\
+    \ * dst, const void * src) {\n    if constexpr (alignment != 0) {\n        static_assert(nbytes\
+    \ % alignment == 0, \"bad alignment\");\n    }\n    constexpr int nb_per_cpy =\
+    \ alignment == 0 ? nbytes : alignment;\n\n#pragma unroll\n    for (int i = 0;\
+    \ i < nbytes/nb_per_cpy; ++i) {\n        if constexpr (nb_per_cpy == 1) {\n  \
+    \          ((char *) dst)[i] = ((const char *) src)[i];\n        } else if constexpr\
+    \ (nb_per_cpy == 2) {\n            ((short *) dst)[i] = ((const short *) src)[i];\n\
+    \        } else if constexpr (nb_per_cpy == 4) {\n            ((int *) dst)[i]\
+    \ = ((const int *) src)[i];\n        } else if constexpr (nb_per_cpy == 8) {\n\
+    \            ((sycl::int2 *) dst)[i] = ((const sycl::int2 *) src)[i];\n      \
+    \  } else if constexpr (nb_per_cpy == 16) {\n            ((sycl::int4 *) dst)[i]\
+    \ = ((const sycl::int4 *) src)[i];\n        } else {\n            static_assert(nbytes\
+    \ == 0 && nbytes == -1, \"bad nbytes\");\n        }\n    }\n}"
+  desc: 执行对齐的内存拷贝，支持1、2、4、8、16字节的拷贝宽度。
+  line: 1-1
+  name: ggml_sycl_memcpy_1
+- code:
+  - "template <typename T>\nsycl::half2 __dpct_inline__ make_half2( T x, T y) {\n\
+    \    sycl::half2 res(static_cast<sycl::half>(x),static_cast<sycl::half>(y));\n\
+    \    return res;\n}"
+  desc: 从两个数值创建一个sycl::half2类型。
+  line: 1-1
+  name: make_half2
+- code:
+  - "static __dpct_inline__ uint32_t fastdiv(uint32_t n, const sycl::uint3 fastdiv_values)\
+    \ {\n    const uint32_t hi = sycl::mul_hi<unsigned>(n, fastdiv_values.x());\n\
+    \    return (hi + n) >> fastdiv_values.y();\n}"
+  desc: 使用预计算的快速除法参数执行无符号整数的快速除法。
+  line: 1-1
+  name: fastdiv
+- code:
+  - "template <typename T>\nsycl::float2 __dpct_inline__ make_float2( T x, T y) {\n\
+    \    sycl::float2 res(static_cast<float>(x),static_cast<float>(y));\n    return\
+    \ res;\n}"
+  desc: 从两个数值创建一个sycl::float2类型。
+  line: 1-1
+  name: make_float2
+- code:
+  - "sycl::float2 __dpct_inline__ __half22float2(sycl::half2 &H) {\n    sycl::float2\
+    \ float2_value(static_cast<float>(H.x()), static_cast<float>(H.y()));\n    return\
+    \ float2_value;\n}"
+  desc: 将sycl::half2转换为sycl::float2。
+  line: 1-1
+  name: __half22float2
+- code:
+  - "static __dpct_inline__ sycl::uint2 fast_div_modulo(uint32_t n, const sycl::uint3\
+    \ fastdiv_values) {\n    const uint32_t div_val = fastdiv(n, fastdiv_values);\n\
+    \    const uint32_t mod_val = n - div_val * fastdiv_values.z();\n    return sycl::uint2(div_val,\
+    \ mod_val);\n}"
+  desc: 使用预计算的快速除法参数同时计算除法和取模结果。
+  line: 1-1
+  name: fast_div_modulo
+- code:
+  - "static __dpct_inline__ int ggml_sycl_dp4a(const int a, const int b, int c) {\n\
+    \    return dpct::dp4a(a, b, c);\n}"
+  desc: 执行DP4A（点积4个8位整数累加）操作。
+  line: 1-1
+  name: ggml_sycl_dp4a
+- code:
+  - "static __dpct_inline__ float ggml_sycl_e8m0_to_fp32(uint8_t x) {\n    uint32_t\
+    \ bits;\n    if (x == 0) {\n        bits = 0x00400000;\n    } else {\n       \
+    \ bits = (uint32_t) x << 23;\n    }\n\n    float result;\n    memcpy(&result,\
+    \ &bits, sizeof(float));\n    return result;\n}"
+  desc: 将E8M0格式的8位值转换为32位浮点数。
+  line: 1-1
+  name: ggml_sycl_e8m0_to_fp32
+- code:
+  - "sycl::float2 __dpct_inline__ __half22float2(const sycl::half2 &H) {\n    sycl::float2\
+    \ float2_value(static_cast<float>(H.x()), static_cast<float>(H.y()));\n    return\
+    \ float2_value;\n}"
+  desc: 将const sycl::half2转换为sycl::float2。
+  line: 1-1
+  name: __half22float2
+- code:
+  - "float __dpct_inline__ __half2float(sycl::half H) {\n    return static_cast<float>(H);\n\
+    }"
+  desc: 将sycl::half转换为float。
+  line: 1-1
+  name: __half2float
+- code:
+  - "static __dpct_inline__ void ggml_sycl_mad(float & acc, const float v, const float\
+    \ u) {\n    acc += v*u;\n}"
+  desc: 执行浮点乘加运算，累加v乘以u。
+  line: 1-1
+  name: ggml_sycl_mad
+- code:
+  - "static __dpct_inline__ void ggml_sycl_mad(float & acc, const sycl::float2 v,\
+    \ const sycl::float2 u) {\n    acc += v.x() * u.x();\n    acc += v.y() * u.y();\n\
+    }"
+  desc: 执行float2向量的浮点乘加运算。
+  line: 1-1
+  name: ggml_sycl_mad
+- code:
+  - "static __dpct_inline__ void ggml_sycl_mad(float & acc, const sycl::half2 v, const\
+    \ sycl::half2 u) {\n#ifdef GGML_SYCL_F16\n    const sycl::float2 tmp = (v * u).template\
+    \ convert<float, sycl::rounding_mode::automatic>();\n    acc += tmp.x() + tmp.y();\n\
+    #else\n    const sycl::float2 tmpv = __half22float2(v);\n    const sycl::float2\
+    \ tmpu = __half22float2(u);\n    acc += tmpv.x() * tmpu.x();\n    acc += tmpv.y()\
+    \ * tmpu.y();\n#endif // GGML_SYCL_F16\n}"
+  desc: 执行half2向量的浮点乘加累加到float。
+  line: 1-1
+  name: ggml_sycl_mad
+- code:
+  - "static __dpct_inline__ void ggml_sycl_mad(sycl::half2 & acc, const sycl::half2\
+    \ v, const sycl::half2 u) {\n#ifdef GGML_SYCL_F16\n    acc += v*u;\n#else\n  \
+    \  const sycl::float2 tmpv = __half22float2(v);\n    const sycl::float2 tmpu =\
+    \ __half22float2(u);\n    sycl::float2 tmpacc = __half22float2(acc);\n    // tmpacc.x\
+    \ += tmpv.x() * tmpu.x();\n    // tmpacc.y += tmpv.y() * tmpu.y();\n    sycl::float2\
+    \ tmp1(tmpacc.x() + tmpv.x() * tmpu.x(), tmpacc.y() + tmpv.y() * tmpu.y());\n\
+    \    acc = make_half2(tmp1.x(), tmp1.y());\n#endif // GGML_SYCL_F16\n}"
+  desc: 执行half2向量的乘加累加到half2。
+  line: 1-1
+  name: ggml_sycl_mad
+- code:
+  - "static __dpct_inline__ sycl::half2 ggml_sycl_hmax2(const sycl::half2 a, const\
+    \ sycl::half2 b) {\n    sycl::half2 ret;\n    reinterpret_cast<sycl::half &>(ret.x())\
+    \ =\n        sycl::vec<float, 1>(sycl::fmax(a[0], b[0])).convert<sycl::half, sycl::rounding_mode::automatic>()[0];\n\
+    \    reinterpret_cast<sycl::half &>(ret.y()) =\n        sycl::vec<float, 1>(sycl::fmax(a[1],\
+    \ b[1])).convert<sycl::half, sycl::rounding_mode::automatic>()[0];\n    return\
+    \ ret;\n}"
+  desc: 对两个sycl::half2的各个分量取最大值。
+  line: 1-1
+  name: ggml_sycl_hmax2
+- code:
+  - "static __dpct_inline__ sycl::half ggml_sycl_hmax(const sycl::half a, const sycl::half\
+    \ b) {\n    return sycl::vec<float, 1>(\n               sycl::fmax(sycl::vec<sycl::half,\
+    \ 1>(a).convert<float, sycl::rounding_mode::automatic>()[0],\n               \
+    \           sycl::vec<sycl::half, 1>(b).convert<float, sycl::rounding_mode::automatic>()[0]))\n\
+    \        .convert<sycl::half, sycl::rounding_mode::automatic>()[0];\n}"
+  desc: 对两个sycl::half值取最大值。
+  line: 1-1
+  name: ggml_sycl_hmax
+- code:
+  - "static __dpct_inline__ uint32_t __hgt2_mask(const sycl::half2 a, const sycl::half2\
+    \ b) {\n    const uint32_t mask_low  = 0x0000FFFF * (float(a[0]) > float(b[0]));\n\
+    \    const uint32_t mask_high = 0xFFFF0000 * (float(a[1]) > float(b[1]));\n  \
+    \  return mask_low | mask_high;\n}"
+  desc: 比较两个half2，返回一个位掩码，表示各分量是否大于。
+  line: 1-1
+  name: __hgt2_mask
+- code:
+  - "static __dpct_inline__ uint32_t fastmodulo(uint32_t n, const sycl::uint3 fastdiv_values)\
+    \ {\n    // expects  fastdiv_values to contain <mp, L, divisor> in <x, y, z> (see\
+    \ init_fastdiv_values)\n    return n - fastdiv(n, fastdiv_values) * fastdiv_values.z();\n\
+    }"
+  desc: 使用预计算的快速除法参数计算模运算。
+  line: 1-1
+  name: fastmodulo
+- code:
+  - "static bool fast_fp16_available(const int cc) {\n    GGML_UNUSED(cc);\n    return\
+    \ true;   //Intel GPUs always support FP16.\n}"
+  desc: 检查给定的计算能力（cc）是否支持快速FP16，当前实现总是返回true。
+  line: 1-1
+  name: fast_fp16_available
+- code:
+  - "template <block_reduce_method reduce_method_t, int warp_size, typename T>\nstatic\
+    \ T block_reduce(T val, T * shared_vals, int block_size_template) {\n    auto\
+    \ item_ct1                 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();\n\
+    \    val                           = block_reduce_policy<reduce_method_t, T,warp_size>::reduce(val);\n\
+    \    const int block_size = block_size_template == 0 ? item_ct1.get_local_range(2)\
+    \ : block_size_template;\n    const int nthreads = item_ct1.get_local_range(2);\n\
+    \    const int nwarps = nthreads / WARP_SIZE;\n\n    if (block_size > warp_size)\
+    \ {\n        assert((block_size <= 1024) && (block_size % warp_size) == 0);\n\
+    \        const int warp_id = item_ct1.get_local_id(2) / warp_size;\n        const\
+    \ int lane_id = item_ct1.get_local_id(2) % warp_size;\n        if (lane_id ==\
+    \ 0) {\n            shared_vals[warp_id] = val;\n        }\n        item_ct1.barrier(sycl::access::fence_space::local_space);\n\
+    \n        size_t nreduce = nwarps / WARP_SIZE;\n        float tmp = 0.f;\n   \
+    \     if (lane_id < (static_cast<int>(block_size) / warp_size)) {\n          \
+    \  for (size_t i = 0; i < nreduce; i += 1)\n            {\n                tmp\
+    \ += shared_vals[lane_id + i * WARP_SIZE];\n            }\n        }\n       \
+    \ return block_reduce_policy<reduce_method_t, T, warp_size>::reduce(tmp);\n  \
+    \  }\n    return val;\n}"
+  desc: 在块内执行归约，先进行warp内归约，然后在warp间进行归约。
+  line: 1-1
+  name: block_reduce
+- code:
+  - "static __dpct_inline__ float ggml_sycl_ue4m3_to_fp32(uint8_t x) {\n    const\
+    \ uint32_t bits = x * (x != 0x7F && x != 0xFF);\n    const __nv_fp8_e4m3 xf =\
+    \ *reinterpret_cast<const __nv_fp8_e4m3 *>(&bits);\n    return static_cast<float>(xf)\
+    \ / 2;\n}"
+  desc: 将UE4M3格式的8位值转换为32位浮点数。
+  line: 1-1
+  name: ggml_sycl_ue4m3_to_fp32

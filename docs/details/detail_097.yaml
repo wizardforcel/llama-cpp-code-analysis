@@ -1,0 +1,318 @@
+code_map:
+- examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+- ├── __main__ (全局函数与 JNI 接口)
+- '│   ├── join()                            # 字符串拼接工具'
+- '│   ├── get_backend()                     # 获取后端名称'
+- '│   ├── init_context()                    # 初始化上下文（多线程配置）'
+- '│   ├── new_sampler()                     # 创建采样器'
+- '│   ├── reset_long_term_states()          # 重置长期状态'
+- '│   ├── shift_context()                   # 上下文滑动窗口'
+- '│   ├── chat_add_and_format()             # 聊天消息格式化'
+- '│   ├── reset_short_term_states()         # 重置短期状态'
+- '│   ├── decode_tokens_in_batches()        # 分批解码 Token'
+- '│   ├── is_valid_utf8()                   # UTF-8 有效性校验'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_init()           # 初始化后端与日志'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_load()           # 加载模型文件'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_prepare()        # 准备上下文与采样器'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_systemInfo()     # 获取系统信息'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_benchModel()     # 性能基准测试'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt()  #
+  处理系统提示词'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt()    #
+  处理用户提示词'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken()    #
+  生成下一个 Token'
+- '│   ├── Java_com_arm_aichat_internal_InferenceEngineImpl_unload()               #
+  释放资源'
+- '│   └── Java_com_arm_aichat_internal_InferenceEngineImpl_shutdown()             #
+  关闭后端'
+- ''
+- examples/llama.android/lib/src/main/cpp/logging.h
+- ├── __main__ (宏定义与配置)
+- '│   ├── LOG_TAG / LOG_MIN_LEVEL           # 日志标签与最低级别'
+- '│   └── LOGv/LOGd/LOGi/LOGw/LOGe          # 五级日志宏'
+- └── (文件级函数)
+- '    ├── ai_should_log()                   # 判断是否应记录日志'
+- '    ├── android_log_prio_from_ggml()      # GGML 到 Android 日志级别映射'
+- '    └── aichat_android_log_callback()     # 日志回调函数'
+- ''
+- examples/sycl/ls-sycl-device.cpp
+- └── (文件级函数)
+- '    └── main()                            # SYCL 设备查询入口'
+exercises:
+- contents:
+  - 阅读 `ai_chat.cpp` 第 269-277 行的 `shift_context()` 函数，回答以下问题：
+  - 1. 为什么只丢弃 `system_prompt_position` 之后的内容，而不是从开头丢弃？
+  - 2. `llama_memory_seq_rm()` 和 `llama_memory_seq_add()` 分别承担什么角色？
+  - 3. 如果 `current_position` 为 4000，`system_prompt_position` 为 500，会丢弃多少 Token？
+  - 4. 这种滑动窗口机制与 Transformer 的 Sliding Window Attention（SWA）有何异同？
+  - 5. 思考：为什么系统提示词需要保留？如果丢弃会有什么后果？
+  'no': 1
+  title: 分析上下文滑动窗口的实现细节
+- contents:
+  - 阅读 `ai_chat.cpp` 第 404-438 行的 `generateNextToken()` 函数和第 365-394 行的 `is_valid_utf8()`
+    函数，回答问题：
+  - 1. 为什么需要 `cached_token_chars` 缓存？直接用 `common_token_to_piece()` 返回不行吗？
+  - 2. `is_valid_utf8()` 如何判断一个字节序列是 1/2/3/4 字节字符？（提示：观察前几位二进制模式）
+  - 3. 如果一个汉字（3 字节 UTF-8）被分成 3 个 Token 生成，这个流程是如何处理的？
+  - 4. 为什么选择返回空字符串而不是等待完整字符？这对用户体验有何影响？
+  - 5. 绘制流程图：从 `common_sampler_sample()` 到最终返回 `jstring` 的完整路径
+  'no': 2
+  title: 追踪 UTF-8 字符的完整生命周期
+- contents:
+  - 分析 `logging.h` 中的日志系统设计，完成以下任务：
+  - 1. 解释 `LOG_MIN_LEVEL` 在 Debug/Release 构建中的默认行为差异
+  - 2. 为什么使用宏而不是函数来控制日志级别？（提示：考虑编译期优化）
+  - 3. `ai_should_log()` + `__android_log_is_loggable()` 的组合有什么优势？仅使用 `if (level >=
+    LOG_MIN_LEVEL)` 有何不足？
+  - 4. 设计一个改进方案：支持运行时动态调整日志级别，但不重新编译代码（提示：考虑使用全局变量或 SharedPreferences）
+  - 5. 如果要在日志中添加线程 ID，你会修改哪些部分？
+  'no': 3
+  title: 设计一个更智能的日志级别控制机制
+- contents:
+  - 对比本章的 Android JNI 实现（`ai_chat.cpp`）与第 68 章的 `llama-cli` 桌面实现（`tools/cli/cli.cpp`），回答：
+  - 1. 线程数配置策略有何不同？为什么移动端要保留 `N_THREADS_HEADROOM`？
+  - 2. 批处理大小（BATCH_SIZE）的选择考虑了什么因素？移动端与桌面端应该一致吗？
+  - 3. Android 版本的 `benchModel()` 与 `llama-bench` 的输出格式有何异同？各自适合什么场景？
+  - 4. 如果让你为 iOS 开发类似的 JNI 封装，你会复用哪些设计？需要改变什么？
+  - 5. 阅读 `init_context()` 中的 `llama_model_n_ctx_train()` 调用，思考：如果用户强制设置超大上下文会发生什么？
+  'no': 4
+  title: 对比移动端与桌面端的推理策略差异
+- contents:
+  - 当前的 `ls-sycl-device.cpp` 只有 4 行核心代码，功能较为简单。设计一个增强版本：
+  - 1. 添加命令行参数支持：`--verbose` 显示详细信息，`--json` 输出 JSON 格式
+  - 2. 除了打印设备名称，还应输出：设备内存、计算单元数、驱动版本、是否支持 FP16 等
+  - 3. 如何检测 SYCL 设备是否支持当前模型的量化格式（如 Q4_0、Q8_0）？
+  - 4. 设计返回值约定：检测到可用设备返回 0，无设备返回 1，检测到但配置错误返回 2
+  - 5. 思考：为什么需要在运行 `llama-cli` 之前先运行设备查询工具？这个工具应该在 CI/CD 流程中扮演什么角色？
+  'no': 5
+  title: 扩展 SYCL 设备查询工具
+- contents:
+  - 参考 `ai_chat.cpp` 中的 `chat_add_and_format()` 和 `reset_long_term_states()`，实现一个独立的聊天历史管理器：
+  - 1. 支持最多保存 N 轮对话（用户+助手为一轮），超出后自动丢弃最早的对话
+  - 2. 提供 `get_formatted_history()` 方法，返回应用了聊天模板的完整提示词
+  - 3. 计算当前历史的总 Token 数，并在接近上下文上限时发出警告
+  - 4. 思考：如何与 `shift_context()` 配合，在滑动窗口时同步更新聊天历史？
+  - 5. 如果用户要求「清除历史但保留系统提示词」，你的实现应该如何处理？
+  'no': 6
+  title: 实现一个简化的聊天历史管理器
+learning_targets:
+- 理解 JNI 在 llama.cpp Android 集成中的桥梁作用与生命周期管理
+- 掌握 llama.cpp 后端动态加载机制与多线程上下文初始化策略
+- 理解上下文滑动窗口（Context Shifting）的实现原理与无限对话机制
+- 掌握逐 Token 生成流程中的 UTF-8 有效性校验与缓存机制
+- 了解跨平台日志系统的设计：GGML 日志到 Android Logcat 的映射
+- 熟悉 SYCL 设备查询工具的作用与异构计算环境验证方法
+life_analogy:
+- 想象 llama.cpp 的 Android 集成是一位**跨国翻译官**的工作日常：
+- '- **JNI 层** = 翻译官本人，负责在 Java（客户）和 C++（引擎）之间传递指令'
+- '- **后端动态加载** = 翻译官根据现场情况选择最合适的翻译设备（CPU/GPU/DSP）'
+- '- **上下文滑动窗口** = 记忆宫殿的「记忆整理术」：当对话太长时，丢弃中间部分，保留开头和结尾'
+- '- **UTF-8 校验** = 质量检查员：确保每次递交给 Java 的文字都是完整无缺的（半个汉字不能交付）'
+- '- **日志系统** = 同声传译耳机：把底层引擎的「方言」（GGML 日志）转换成 Android 能听懂的「普通话」（Logcat）'
+- '- **SYCL 设备查询** = 开工前的设备检查：确认 Intel GPU 这台「高级翻译机」是否就绪'
+- 就像翻译官需要管理大量资料（KV 缓存）、控制翻译节奏（Token 生成）、并确保每次输出都准确无误（UTF-8 校验），llama.cpp 的 Android
+  集成也需要精细的状态管理和跨语言协作。
+'no': 96
+summary:
+- concept: JNI 桥梁
+  desc: Java 与 C++ 之间的翻译层，管理 llama.cpp 生命周期
+- concept: ggml_backend_load_all_from_path()
+  desc: 动态加载所有可用后端，支持运行时选择最优计算路径
+- concept: init_context()
+  desc: 初始化推理上下文，自动计算最优线程数，校验模型训练上下文长度
+- concept: shift_context()
+  desc: 上下文滑动窗口：丢弃中间部分，保留系统提示词，实现无限对话
+- concept: decode_tokens_in_batches()
+  desc: 分批解码 Token，每批不超过 BATCH_SIZE（512），接近上限时触发滑动
+- concept: is_valid_utf8()
+  desc: 校验 UTF-8 完整性，确保多字节字符（如汉字）完整后才返回 Java
+- concept: cached_token_chars
+  desc: 缓存不完整的 UTF-8 字节，直到形成完整字符再输出
+- concept: chat_add_and_format()
+  desc: 使用 Jinja 模板格式化聊天消息，确保符合模型训练时的格式
+- concept: common_sampler_sample()
+  desc: 采样下一个 Token，支持温度、Top-K/P 等多种采样策略
+- concept: llama_memory_seq_rm/add()
+  desc: KV 缓存的删除与移动操作，支撑上下文滑动的内存管理
+- concept: aichat_android_log_callback()
+  desc: 日志回调函数，将 GGML 日志重定向到 Android Logcat
+- concept: android_log_prio_from_ggml()
+  desc: 日志级别映射函数，将 GGML 日志级别转换为 Android 日志优先级
+- concept: ai_should_log()
+  desc: 运行时日志级别检查，结合编译期与运行期双重过滤
+- concept: LOG_MIN_LEVEL
+  desc: 编译期日志级别控制，Release 版本自动裁剪低级别日志
+- concept: ggml_backend_sycl_print_sycl_devices()
+  desc: 打印所有可用 SYCL 设备，用于验证 Intel GPU 环境配置
+- concept: benchModel()
+  desc: 性能基准测试，分别测试 Prompt Processing 和 Text Generation 速度
+- concept: EOG Token
+  desc: End of Generation 标记，检测到后自动停止生成并保存助手回复
+- concept: reset_short_term_states()
+  desc: 重置生成相关状态：停止位置、UTF-8 缓存、助手回复流
+- concept: reset_long_term_states()
+  desc: 重置对话相关状态：聊天历史、位置追踪、KV 缓存（可选）
+- concept: new_sampler()
+  desc: 基于温度参数创建采样器实例，控制生成多样性
+units:
+- codes:
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 60-74
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_init()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 76-87
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_load()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 184-191
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_prepare()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 202-205
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_systemInfo()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 142-157
+    method_or_func: __main__.init_context()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 159-182
+    method_or_func: __main__.new_sampler()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 334-363
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 365-402
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 269-277
+    method_or_func: __main__.shift_context()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 303-332
+    method_or_func: __main__.decode_tokens_in_batches()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 404-438
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 365-394
+    method_or_func: __main__.is_valid_utf8()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 207-254
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_benchModel()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 184-200
+    method_or_func: __main__.get_backend()
+  name: Android JNI 桥梁与推理引擎生命周期 —— Java 与 C++ 的「翻译官」
+  'no': 1
+  points:
+  - '**为什么需要 JNI 封装层？**'
+  - '- Android 应用基于 Java/Kotlin，而 llama.cpp 是 C++ 库，需要 JNI 作为跨语言桥梁'
+  - '- 封装模型加载、推理、采样等复杂逻辑，对上层暴露简洁的 Java 接口'
+  - '- 管理全局状态（g_model、g_context、g_sampler 等），确保线程安全与资源正确释放'
+  - '**后端动态加载机制的设计哲学**'
+  - '- `ggml_backend_load_all_from_path()` 从指定目录加载所有 CPU 后端变体（如 ARM NEON、x86 AVX 等）'
+  - '- `llama_backend_init()` 初始化后端，允许运行时动态选择最优计算路径'
+  - '- 日志回调 `aichat_android_log_callback` 将 ggml 日志重定向到 Android Logcat，便于调试'
+  - '**上下文初始化与多线程优化**'
+  - '- `init_context()` 根据设备 CPU 核心数自动计算最优线程数（保留余量避免系统卡顿）'
+  - '- 检查模型训练时的上下文长度，防止用户设置超出模型能力导致错误'
+  - '- 设置 `n_batch` 与 `n_ubatch` 实现批量推理，提升吞吐效率'
+  - '**系统提示词与用户提示词的处理流程**'
+  - '- 通过 `common_chat_format_single()` 应用 Jinja 聊天模板，确保符合模型训练格式'
+  - '- 分词（tokenize）后检查长度，防止超出上下文窗口（CONTEXT_SIZE - OVERFLOW_HEADROOM）'
+  - '- 调用 `decode_tokens_in_batches()` 分批解码，每批不超过 BATCH_SIZE（512）'
+  - '**上下文滑动窗口：无限对话的关键技术**'
+  - '- 当位置接近上下文上限时，`shift_context()` 丢弃系统提示词之后的中间内容'
+  - '- 通过 `llama_memory_seq_rm()` 与 `llama_memory_seq_add()` 移动剩余 token，保持 KV 缓存连续性'
+  - '- 这种「滑动注意力」机制允许无限长对话，但会遗忘早期上下文'
+  - '**逐 Token 生成与 UTF-8 有效性校验**'
+  - '- `generateNextToken()` 每次生成一个 token，通过 `common_sampler_sample()` 采样'
+  - '- 累积 `cached_token_chars` 直到形成完整 UTF-8 字符（可能多个字节组成一个汉字），再返回 Java 层'
+  - '- 检测 EOG（End of Generation）token 自动停止生成，并保存助手回复到聊天历史'
+  - '**基准测试：衡量设备推理性能**'
+  - '- `benchModel()` 分别测试 Prompt Processing（PP）与 Text Generation（TG）速度'
+  - '- 计算平均值与标准差，生成 Markdown 表格展示模型大小、后端类型、吞吐量（t/s）'
+  - '- 帮助开发者评估不同模型在特定 Android 设备上的表现'
+- codes:
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 297-301
+    method_or_func: __main__.reset_short_term_states()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 260-267
+    method_or_func: __main__.reset_long_term_states()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 279-287
+    method_or_func: __main__.chat_add_and_format()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 440-449
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_unload()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 451-454
+    method_or_func: __main__.Java_com_arm_aichat_internal_InferenceEngineImpl_shutdown()
+  - file: examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+    line: 8-16
+    method_or_func: __main__.join()
+  name: 会话状态管理与资源清理 —— 推理引擎的「记忆管理师」
+  'no': 2
+  points:
+  - '**状态分层设计：短期 vs 长期**'
+  - '- `reset_short_term_states()` 只重置生成相关状态：停止位置、UTF-8 缓存、助手回复字符串流'
+  - '- `reset_long_term_states()` 清除对话历史与位置追踪，可选择性清空 KV 缓存'
+  - '- 这种分层设计允许精确控制状态重置粒度，避免不必要的内存操作'
+  - '**聊天历史的动态格式化**'
+  - '- `chat_add_and_format()` 使用 Jinja 模板引擎将新消息追加到 `chat_msgs`'
+  - '- 区分用户消息（`ROLE_USER`）与助手消息（`ROLE_ASSISTANT`）的角色标记'
+  - '- 返回格式化后的字符串用于 tokenize，同时保持完整对话历史供模板使用'
+  - '**资源释放的完整性保障**'
+  - '- `unload()` 按依赖关系逆序释放：先释放高层资源（采样器、模板），再释放底层（batch、context、model）'
+  - '- `shutdown()` 调用 `llama_backend_free()` 彻底关闭后端'
+  - '- 防止内存泄漏，确保多次加载/卸载模型不会累积资源占用'
+  - '**辅助工具函数的精巧设计**'
+  - '- `join()` 模板函数支持任意类型向量的字符串拼接，用于后端名称汇总'
+  - '- 通过 `get_backend()` 动态检测可用后端，为基准测试提供上下文信息'
+- codes:
+  - file: examples/llama.android/lib/src/main/cpp/logging.h
+    line: 10-37
+    method_or_func: __main__
+  - file: examples/llama.android/lib/src/main/cpp/logging.h
+    line: 18-20
+    method_or_func: ai_should_log()
+  - file: examples/llama.android/lib/src/main/cpp/logging.h
+    line: 39-47
+    method_or_func: android_log_prio_from_ggml()
+  - file: examples/llama.android/lib/src/main/cpp/logging.h
+    line: 49-55
+    method_or_func: aichat_android_log_callback()
+  name: Android 日志系统封装 —— 跨平台调试的「信使」
+  'no': 3
+  points:
+  - '**为什么需要统一的日志封装？**'
+  - '- llama.cpp 使用 ggml 日志系统，Android 使用 Logcat，需要桥接层转换格式'
+  - '- 通过宏定义 `LOGv/LOGd/LOGi/LOGw/LOGe` 提供与 Android 原生日志一致的 API'
+  - '- 编译期通过 `LOG_MIN_LEVEL` 控制日志级别，Debug 版本输出 VERBOSE，Release 版本仅 INFO 及以上'
+  - '**日志级别映射机制**'
+  - '- `android_log_prio_from_ggml()` 将 ggml 的日志级别（ERROR/WARN/INFO/DEBUG）映射到 Android
+    优先级'
+  - '- `ai_should_log()` 检查当前日志是否满足最低输出级别，避免不必要的字符串格式化开销'
+  - '**日志回调注册流程**'
+  - '- `aichat_android_log_callback` 作为函数指针传递给 `llama_log_set()`，接管所有 ggml 日志输出'
+  - '- 使用 `__android_log_write()` 直接写入 Logcat，支持 TAG 过滤与级别筛选'
+  - '**条件编译优化性能**'
+  - '- 通过 `#if LOG_MIN_LEVEL <= ANDROID_LOG_VERBOSE` 在预处理阶段裁剪低级别日志代码'
+  - '- Release 版本中 VERBOSE/DEBUG 日志被编译为空操作 `((void)0)`，零运行时开销'
+- codes:
+  - file: examples/sycl/ls-sycl-device.cpp
+    line: 11-15
+    method_or_func: main()
+  name: SYCL 设备查询工具 —— 异构计算的「侦察兵」
+  'no': 4
+  points:
+  - '**为什么需要独立的设备查询工具？**'
+  - '- SYCL 后端依赖 Intel oneAPI 运行时与 GPU 驱动，配置复杂，需要独立工具验证环境'
+  - '- 在运行完整推理前，先确认 SYCL 设备是否被正确识别，避免调试时混淆问题来源'
+  - '**工具实现的极简设计**'
+  - '- 仅 15 行代码，调用 `ggml_backend_sycl_print_sycl_devices()` 打印所有可用 SYCL 设备'
+  - '- `std::setlocale(LC_NUMERIC, "C")` 确保数字格式化使用标准小数点（避免某些locale使用逗号）'
+  - '**典型使用场景**'
+  - '- 开发者在 Intel GPU/集成显卡上部署 llama.cpp 前，运行此工具确认 SYCL 后端可用'
+  - '- 输出包含设备名称、驱动版本、内存容量等信息，辅助性能调优'
+  - '**与主程序的集成方式**'
+  - '- 作为独立的可执行文件（`ls-sycl-device`），与 llama-cli 等工具一同编译'
+  - '- 验证通过后，主程序可通过环境变量或参数选择 SYCL 后端进行 GPU 加速推理'

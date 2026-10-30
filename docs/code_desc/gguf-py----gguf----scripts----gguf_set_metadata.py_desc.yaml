@@ -1,0 +1,124 @@
+classes: []
+desc: 该文件是gguf-py包中用于设置GGUF格式模型文件元数据的命令行工具，允许用户修改GGUF文件中的简单标量字段值。它通过读取GGUF文件，查找指定键对应的字段，并将字段值更改为指定的新值，同时提供dry-run（试运行）、force（强制修改）和verbose（详细输出）等选项。
+file: gguf-py/gguf/scripts/gguf_set_metadata.py
+funcs:
+- code:
+  - '#!/usr/bin/env python3'
+  - import logging
+  - import argparse
+  - import os
+  - import sys
+  - from pathlib import Path
+  - ''
+  - '# Necessary to load the local gguf package'
+  - 'if "NO_LOCAL_GGUF" not in os.environ and (Path(__file__).parent.parent.parent.parent
+    / ''gguf-py'').exists():'
+  - '    sys.path.insert(0, str(Path(__file__).parent.parent.parent))'
+  - ''
+  - 'from gguf import GGUFReader  # noqa: E402'
+  - ''
+  - logger = logging.getLogger("gguf-set-metadata")
+  - ''
+  - ''
+  - 'if __name__ == ''__main__'':'
+  - '    main()'
+  desc: 文件顶层代码，包含模块导入、环境配置、logger初始化以及条件执行main函数的逻辑
+  line: 1-18
+  name: __main__
+- code:
+  - 'def minimal_example(filename: str) -> None:'
+  - '    reader = GGUFReader(filename, ''r+'')'
+  - '    field = reader.fields[''tokenizer.ggml.bos_token_id'']'
+  - '    if field is None:'
+  - '        return'
+  - '    part_index = field.data[0]'
+  - '    field.parts[part_index][0] = 2  # Set tokenizer.ggml.bos_token_id to 2'
+  - '    #'
+  - '    # So what''s this field.data thing? It''s helpful because field.parts contains'
+  - '    # _every_ part of the GGUF field. For example, tokenizer.ggml.bos_token_id
+    consists'
+  - '    # of:'
+  - '    #'
+  - '    #  Part index 0: Key length (27)'
+  - '    #  Part index 1: Key data ("tokenizer.ggml.bos_token_id")'
+  - '    #  Part index 2: Field type (4, the id for GGUFValueType.UINT32)'
+  - '    #  Part index 3: Field value'
+  - '    #'
+  - '    # Note also that each part is an NDArray slice, so even a part that'
+  - '    # is only a single value like the key length will be a NDArray of'
+  - '    # the key length type (numpy.uint32).'
+  - '    #'
+  - '    # The .data attribute in the Field is a list of relevant part indexes'
+  - '    # and doesn''t contain internal GGUF details like the key length part.'
+  - '    # In this case, .data will be [3] - just the part index of the'
+  - '    # field value itself.'
+  desc: 展示如何修改GGUF文件中一个字段值的最小示例函数，演示了通过reader.fields和field.data属性定位并修改tokenizer.ggml.bos_token_id的值
+  line: 19-50
+  name: minimal_example
+- code:
+  - 'def set_metadata(reader: GGUFReader, args: argparse.Namespace) -> None:'
+  - '    field = reader.get_field(args.key)'
+  - '    if field is None:'
+  - '        logger.error(f''! Field {repr(args.key)} not found'')'
+  - '        sys.exit(1)'
+  - '    # Note that field.types is a list of types. This is because the GGUF'
+  - '    # format supports arrays. For example, an array of UINT32 would'
+  - '    # look like [GGUFValueType.ARRAY, GGUFValueType.UINT32]'
+  - '    handler = reader.gguf_scalar_to_np.get(field.types[0]) if field.types else
+    None'
+  - '    if handler is None:'
+  - '        logger.error(f''! This tool only supports changing simple values, {repr(args.key)}
+    has unsupported type {field.types}'')'
+  - '        sys.exit(1)'
+  - '    current_value = field.parts[field.data[0]][0]'
+  - '    new_value = handler(args.value)'
+  - '    logger.info(f''* Preparing to change field {repr(args.key)} from {current_value}
+    to {new_value}'')'
+  - '    if current_value == new_value:'
+  - '        logger.info(f''- Key {repr(args.key)} already set to requested value
+    {current_value}'')'
+  - '        sys.exit(0)'
+  - '    if args.dry_run:'
+  - '        sys.exit(0)'
+  - '    if not args.force:'
+  - '        logger.warning(''*** Warning *** Warning *** Warning **'')'
+  - '        logger.warning(''* Changing fields in a GGUF file can make it unusable.
+    Proceed at your own risk.'')'
+  - '        logger.warning(''* Enter exactly YES if you are positive you want to
+    proceed:'')'
+  - '        response = input(''YES, I am sure> '')'
+  - '        if response != ''YES'':'
+  - '            logger.info("You didn''t enter YES. Okay then, see ya!")'
+  - '            sys.exit(0)'
+  - '    field.parts[field.data[0]][0] = new_value'
+  - '    logger.info(''* Field changed. Successful completion.'')'
+  desc: 核心函数，负责在GGUF文件中查找指定键对应的字段，根据字段类型将字符串值转换为对应的数值类型，并进行一系列检查（字段是否启用、类型支持性、值是否相同、是否dry-run或需要确认），最后修改字段值
+  line: 51-80
+  name: set_metadata
+- code:
+  - 'def main() -> None:'
+  - '    parser = argparse.ArgumentParser(description="Set a simple value in GGUF
+    file metadata")'
+  - '    parser.add_argument("model",     type=str,            help="GGUF format model
+    filename")'
+  - '    parser.add_argument("key",       type=str,            help="Metadata key
+    to set")'
+  - '    parser.add_argument("value",     type=str,            help="Metadata value
+    to set")'
+  - '    parser.add_argument("--dry-run", action="store_true", help="Don''t actually
+    change anything")'
+  - '    parser.add_argument("--force",   action="store_true", help="Change the field
+    without confirmation")'
+  - '    parser.add_argument("--verbose",      action="store_true",    help="increase
+    output verbosity")'
+  - ''
+  - '    args = parser.parse_args(None if len(sys.argv) > 1 else ["--help"])'
+  - ''
+  - '    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)'
+  - ''
+  - '    logger.info(f''* Loading: {args.model}'')'
+  - '    reader = GGUFReader(args.model, ''r'' if args.dry_run else ''r+'')'
+  - '    set_metadata(reader, args)'
+  desc: 程序入口函数，负责解析命令行参数、配置日志级别、加载GGUF模型文件并调用set_metadata函数执行元数据修改操作
+  line: 81-100
+  name: main

@@ -1,0 +1,749 @@
+code_map:
+- src/llama-model.h
+- '├── enum llm_type                            # 模型规模枚举（14M/7B/671B/8x7B 等 100+ 规模标签）'
+- '├── std::string llama_rope_scaling_type_name(...) # RoPE 缩放类型名称'
+- '├── struct llama_layer_posnet                # WavTokenizer PosNet 子结构'
+- '│   ├── norm1 / norm1_b / conv1 / conv1_b    # resnet 块'
+- '│   ├── attn_q / attn_k / attn_v / attn_o    # 注意力投影'
+- '│   └── norm / norm_b                        # 输出归一化'
+- '├── struct llama_layer_convnext              # ConvNeXt 子结构'
+- '│   ├── dw / dw_b / norm / norm_b            # 深度卷积 + LN'
+- '│   ├── pw1 / pw1_b / pw2 / pw2_b / gamma    # 点卷积 + 缩放'
+- '├── struct llama_layer_shortconv             # LFM2 短卷积子结构'
+- │   └── in_proj / conv / out_proj
+- '├── struct llama_layer_nextn                 # NextN/MTP 预测层'
+- │   └── eh_proj / embed_tokens / enorm / en_hnorm / shared_head_*
+- '├── struct llama_layer                       # 单层张量容器（最大结构）'
+- '│   ├── attn_norm / attn_q_norm / attn_k_norm # 归一化家族'
+- '│   ├── wq / wk / wv / wo / wqkv / wq_a / wq_b # 注意力权重'
+- '│   ├── ffn_gate / ffn_up / ffn_down         # 稠密 FFN'
+- '│   ├── ffn_gate_exps / ffn_up_exps / ffn_down_exps # MoE 专家'
+- '│   ├── ffn_gate_shexp / ffn_up_shexp / ffn_down_shexp # 共享专家'
+- '│   ├── ssm_in / ssm_x / ssm_dt / ssm_a / ssm_d # Mamba/SSM 状态'
+- '│   ├── time_mix_* (RWKV6/7) / channel_mix_* # RWKV 时间/通道混合'
+- '│   ├── rope_long / rope_short / rope_freqs  # RoPE 因子'
+- '│   ├── per_layer_inp_gate / per_layer_proj / altup_* # Gemma3n AltUp'
+- '│   ├── attn_sinks (OpenAI-MoE) / indexer_* (DSA) # 特殊架构'
+- '│   └── posnet / convnext / shortconv / nextn # 内嵌子结构'
+- '├── struct llama_model                       # 模型主对象'
+- │   ├── llm_type type / llm_arch arch / std::string name
+- │   ├── llama_hparams hparams / llama_vocab vocab
+- '│   ├── tok_embd / type_embd / pos_embd / tok_norm # 嵌入家族'
+- '│   ├── output_norm / output / output_b      # 输出投影'
+- '│   ├── cls / cls_b / cls_out / cls_out_b / cls_norm # 分类头'
+- '│   ├── tok_embd_per_layer / altup_proj / per_layer_model_proj # Gemma3n/4'
+- '│   ├── std::vector<llama_layer> layers      # 层数组'
+- '│   ├── dense_2_out_layers / dense_3_out_layers # SentenceTransformers'
+- │   ├── gguf_kv / devices / tensors_by_name / loras
+- '│   ├── llama_model() / ~llama_model()      # 构造/析构'
+- '│   ├── load_stats/load_arch/load_hparams/load_vocab/load_tensors # 加载流水线'
+- │   ├── arch_name / type_name / desc / size / n_tensors / n_devices
+- │   ├── n_gpu_layers / split_mode / memory_breakdown
+- │   ├── dev_layer / dev_output / select_buft / get_tensor
+- │   ├── get_rope_freq_base / get_rope_freq_scale / get_rope_factors
+- '│   ├── create_memory / build_graph          # 内存与图构造'
+- '│   └── struct impl / std::unique_ptr<impl> pimpl # Pimpl 隐藏'
+- src/llama-model.cpp
+- '├── const char * llm_type_name(llm_type)    # 100+ 规模字符串映射'
+- '├── static llama_expert_gating_func_name(...) # 门控函数名'
+- '├── static llama_rope_scaling_type_from_string(...) # RoPE 字符串→枚举'
+- '├── static make_cpu_buft_list(...)          # CPU 缓冲类型优先级装配'
+- '├── static make_gpu_buft_list(...)          # GPU 缓冲类型装配（含 split）'
+- '├── struct llama_model::impl                # 私有实现'
+- │   ├── n_elements / n_bytes / desc_str
+- │   ├── mappings / mlock_bufs / mlock_mmaps
+- │   ├── ctxs_bufs / cpu_buft_list / gpu_buft_list
+- │   └── dev_input / dev_layer / dev_output
+- '├── llama_model::llama_model()              # 构造（pimpl 初始化）'
+- '├── llama_model::~llama_model()             # 析构（释放 LoRA）'
+- '├── llama_model::load_stats()               # 写入元素统计'
+- '├── llama_model::load_arch()                # 读取 arch（未知则抛）'
+- '├── llama_model::load_hparams()             # 解析 GGUF KV（100+ 架构 switch）'
+- '├── llama_model::load_vocab()               # 委托 llama_vocab.load'
+- '├── llama_model::load_tensors()             # 创建设备映射 + 张量创建（80+ 架构 switch）'
+- ├── llama_model::arch_name/type_name/desc()
+- ├── llama_model::size/n_tensors/n_devices()
+- ├── llama_model::n_gpu_layers() / split_mode()
+- '├── llama_model::memory_breakdown()         # 按 buft 聚合缓冲'
+- '├── llama_model::n_elements() / print_info() # 打印详细模型信息'
+- ├── llama_model::dev_layer/dev_output()
+- '├── buft_supported<F>() / select_buft<F>()  # 能力探测选 buft'
+- ├── llama_model::select_buft() / has_tensor_overrides() / get_tensor()
+- '├── llama_model::get_rope_freq_base/scale() # SWA 双源切换'
+- '├── llama_model::get_rope_factors()         # LongRoPe 长短因子选择'
+- '├── llama_model::create_memory()            # 五种缓存架构分支'
+- │   ├── return nullptr（编码器/扩散/无状态）
+- '│   ├── llama_memory_recurrent              # Mamba/RWKV'
+- '│   ├── llama_memory_hybrid / _iswa        # Jamba/Falcon-H1/Nemotron-H'
+- '│   ├── llama_kv_cache_iswa                # Gemma3/Gemma4（带 SWA）'
+- '│   └── llama_kv_cache                      # 标准 Transformer'
+- '├── llama_model::build_graph()              # 80+ 架构 → llm_build_* 路由'
+- │   ├── switch (arch) 模板类分发（<false>/<true>）
+- '│   ├── llm->build_pooling()                # 分类头'
+- '│   ├── llm->build_sampling()               # 后端采样'
+- '│   ├── llm->build_dense_out()              # dense 投影'
+- │   └── llm->res->set_outputs() / get_gf()
+- '├── llama_model_default_params()            # 默认参数（设备、张量分割等）'
+- '├── llama_model_get_vocab/free/n_*         # C API 实现'
+- '├── llama_model_rope_type()                  # arch → RoPE 类型'
+- '├── llama_model_meta_val_str/count/key_*/val_*_by_index() # 元数据查询'
+- ├── llama_model_desc/size/chat_template()
+- ├── llama_model_n_params/has_encoder/has_decoder/decoder_start_token()
+- ├── llama_model_is_recurrent/is_hybrid/is_diffusion()
+- '└── llama_internal_get_tensor_map()          # 内部测试用'
+- src/llama-graph.h
+- ├── enum llm_graph_type / llm_ffn_op_type / llm_ffn_gate_type / llm_norm_type
+- '├── struct llama_cross                       # 跨注意力临时容器'
+- '├── class llm_graph_input_i                 # 输入抽象基类'
+- │   ├── set_input / can_reuse / LLAMA_GRAPH_INPUT_DEBUG
+- ├── class llm_graph_input_embd / llm_graph_input_pos
+- '├── class llm_graph_input_attn_temp           # 温度缩放'
+- '├── class llm_graph_input_pos_bucket / _kv    # T5 相对位置桶'
+- ├── class llm_graph_input_out_ids / mean / cls
+- '├── class llm_graph_input_rs                  # 循环状态'
+- ├── class llm_graph_input_cross_embd
+- ├── class llm_graph_input_attn_no_cache / _kv / _k / _kv_iswa / _cross
+- ├── class llm_graph_input_mem_hybrid / _k / _iswa / _sampling
+- '├── class llm_graph_result                   # 图构建产物'
+- │   ├── t_inp_tokens / t_inp_embd / t_logits / t_embd / t_embd_pooled
+- │   ├── t_sampled_logits / t_candidates / t_sampled / t_sampled_probs
+- │   ├── inputs / ctx_compute / gf / max_nodes
+- │   ├── reset / set_inputs / set_outputs / can_reuse
+- │   └── add_input / set_params / get_*
+- '├── struct llm_graph_params                  # 图构建参数 + allow_reuse'
+- │   ├── arch / hparams / cparams / ubatch / gtype
+- │   ├── sched / backend_cpu / cvec / loras / mctx / cross
+- │   ├── samplers / n_outputs / cb / res
+- │   ├── samplers_equal()
+- '│   └── allow_reuse()                        # 图拓扑复用判定'
+- '└── struct llm_graph_context                 # 图构建上下文 + 各种 build_*'
+- '    ├── build_lora_mm / build_lora_mm_id'
+- '    ├── build_norm / build_ffn / build_moe_ffn (双版本)'
+- '    ├── build_inp_embd / pos / attn_scale / out_ids / mean / cls'
+- '    ├── build_inp_cross_embd / pos_bucket_enc / pos_bucket_dec'
+- '    ├── build_pos_bias / build_attn_mha'
+- '    ├── build_attn_inp_no_cache / kv / k / kv_iswa / cross'
+- '    ├── build_rs / build_rs_inp / build_rwkv_token_shift_load/store'
+- '    ├── build_inp_mem_hybrid / _k / _iswa'
+- '    ├── build_pooling / build_sampling / build_dense_out'
+- '    └── cb / ctx0 / gf / res'
+exercises:
+- contents:
+  - 阅读 `src/llama-model.h` 与 `src/llama-model.cpp` 中构造函数与析构函数的实现，回答问题：
+  - 1. 构造时 llama_model 如何利用 Pimpl 模式隔离哪些重资源？
+  - 2. 析构时如何保证所有已关联的 LoRA 适配器被正确回收？
+  - 3. `pimpl->has_tensor_overrides` 的初始化逻辑与 `params.tensor_buft_overrides` 是什么关系？
+  - 4. impl 默认析构是否能释放 ctxs_bufs 中的 ggml_backend_buffer？
+  'no': 1
+  title: 追踪 llama_model 的生命周期
+- contents:
+  - 阅读 `src/llama-model.cpp` 中 `llama_model::load_hparams()` 完整实现，回答问题：
+  - 1. 第一段循环 `for (int i = 0; i < gguf_get_n_kv(ctx); i++)` 把所有 KV 字符串化存入 gguf_kv
+    的目的是什么？
+  - 2. 读取 `LLM_KV_GENERAL_NAME` 时为何 `required=false`？
+  - 3. 当模型是 CLIP（LLM_ARCH_CLIP）时为何只加载 tensors、不加载 hparams？
+  - 4. 找到为 LLM_ARCH_LLAMA4 解析 ISWA 滑动窗口 KV 的代码，描述 `n_no_rope_layer_step` 在什么情况下被设为
+    `n_layer`？
+  - 5. 解释 `rope_yarn_log_mul` 字段的 0.1f 后处理的目的（参考 [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX]）。
+  'no': 2
+  title: 解剖 load_hparams 的 GGUF KV 解析
+- contents:
+  - 阅读 `src/llama-model.cpp` 中 `llama_model::load_tensors()` 中关于设备分配的部分，回答问题：
+  - 1. `tensor_split == nullptr` 或全零时如何按可用内存自动分配？
+  - 2. `i_gpu_start = std::max(int(hparams.n_layer) + 1 - n_gpu_layers, 0)` 的含义是什么？
+  - 3. `act_gpu_layers` 为什么是 `std::min(n_gpu_layers, int(n_layer) + 1)`？
+  - 4. 在 `get_layer_buft_list` 闭包中，`std::upper_bound(splits.begin(), splits.begin()
+    + n_devices(), float(il - i_gpu_start)/act_gpu_layers)` 的累计分布查找如何把层分配到 GPU？
+  - 5. 为什么 `dev_input` 永远指向 CPU 设备？
+  - 6. `dev_output = get_layer_buft_list(n_layer)` 意味着输出层与最后一层设备相同，这是出于什么考量？
+  'no': 3
+  title: 理解张量按设备分配
+- contents:
+  - 阅读 `src/llama-model.cpp` 中 `llama_model::build_graph()` 的 switch 语句（80+ case），回答问题：
+  - 1. LLM_ARCH_LLAMA4 为何根据 `swa_type` 选择 `llm_build_llama<false>` 或 `llm_build_llama_iswa`？
+  - 2. LLM_ARCH_PHI3 如何用模板特化处理 SWA 与非 SWA 变体？
+  - 3. LLM_ARCH_T5 通过什么参数在 encoder / decoder 之间分发？
+  - 4. 找到 LLM_ARCH_GEMMA3 的 case，描述 `llm_build_gemma3<true>` 与 `llm_build_gemma3<false>`
+    的选择条件。
+  - 5. build_graph 末尾依次调用 `build_pooling` / `build_sampling` / `build_dense_out` /
+    `set_outputs`，各自的目的是什么？
+  'no': 4
+  title: 对比 build_graph 中的架构路由
+- contents:
+  - 阅读 `src/llama-model.cpp` 中 `get_rope_freq_base` / `get_rope_freq_scale` / `get_rope_factors`
+    的实现，回答问题：
+  - 1. SWA 层与普通层为何使用使用不同的频率源？
+  - 2. `hparams.is_swa(il)` 的判定逻辑在 llama_hparams 中如何实现？
+  - 3. `get_rope_factors` 中三种优先级：rope_freqs > rope_long > rope_short 的判断条件分别是什么？
+  - 4. 在何种情况下 `rope_freqs` 不为空（由 load_tensors 何时填充）？
+  'no': 5
+  title: 跟踪 RoPE 参数的双源切换
+- contents:
+  - 阅读 `src/llama-model.cpp` 中 `llama_model::create_memory()` 的完整实现，回答问题：
+  - 1. 哪些架构直接返回 nullptr（无状态）？为何这样设计？
+  - 2. `llm_arch_is_recurrent(arch)` 与 `llm_arch_is_hybrid(arch)` 如何判定，分别落到哪种 memory？
+  - 3. Falcon-H1 与 Nemotron-H 作为 hybrid 架构，layer_filter 的差异在哪里？
+  - 4. Gemma3n / Gemma4 通过 `reuse` lambda 实现什么优化？`hparams.n_layer_kv_from_start` 的含义？
+  - 5. 当 `swa_type != LLAMA_SWA_TYPE_NONE` 但不是 hybrid 时，为何选择 `llama_kv_cache_iswa`
+    而非 `llama_kv_cache`？
+  'no': 6
+  title: 理解 create_memory 的五大分支
+- contents:
+  - 阅读 `src/llama-model.h` 中 `struct llama_layer` 完整字段，回答问题：
+  - 1. 归一化家族包含哪些成员？分别对应 attn/ffn/moe/post/output 哪几个位置？
+  - 2. MoE 专家张量（ffn_gate_exps / ffn_down_exps / ffn_up_exps）与共享专家张量（ffn_*_shexp）的形状区别是什么？
+  - 3. `ffn_latent_down / ffn_latent_up` 出现在哪些架构？推测其用途。
+  - 4. `per_layer_inp_gate / per_layer_proj / per_layer_post_norm / altup_* / laurel_*`
+    这些字段对应哪个特殊架构？
+  - 5. RWKV7 相比 RWKV6 多出哪些 time_mix_* 字段？
+  - 6. RWKV6Qwen2 的 的 `time_mix_lerp_*` 与 RWKV6 有什么本质差异？
+  'no': 7
+  title: 摸清 llama_layer 的张量全景
+- contents:
+  - 阅读 `src/llama-graph.h` 中 `llm_graph_input_*` 类族，回答问题：
+  - 1. 基类 `llm_graph_input_i` 的 `set_input` 与 `can_reuse` 抽象方法分别在什么阶段被调用？
+  - 2. `llm_graph_input_attn_no_cache` / `_kv` / `_k` / `_kv_iswa` / `_cross` 五种 attn
+    输入类分别对应哪类模型？
+  - 3. `llm_graph_input_mem_hybrid` / `_k` / `_iswa` 的成员 inp_attn 与 inp_rs 的作用是什么？
+  - 4. `llm_graph_input_rs` 如何支持 RNN 状态读写？`s_copy_main` 与 `s_copy_extra` 的用途差异是什么？
+  - 5. `llm_graph_input_attn_temp` 是为哪个架构的温度缩放机制服务的？
+  'no': 8
+  title: 理解图输入家族的设计
+- contents:
+  - 阅读 `src/llama-graph.h` 中 `llm_graph_result` 与 `llm_graph_params::allow_reuse`
+    的实现，回答问题：
+  - 1. `llm_graph_result::can_reuse` 与 `llm_graph_params::allow_reuse` 的区别是什么？两者的判定时机有何不同？
+  - 2. `t_inp_tokens / t_inp_embd / t_logits / t_embd / t_embd_pooled` 分别保存哪类计算产物？
+  - 3. `t_sampled_logits / t_candidates / t_sampled / t_sampled_probs` 这四个 map 在何时被填充？
+  - 4. `allow_reuse` 中如何通过 `seq_id_unq` 数组保证 equal_seqs 模式下复用安全？
+  'no': 9
+  title: 追踪 llm_graph_result 的复用机制
+- contents:
+  - 阅读 `src/llama-graph.h` 中 `llm_graph_context` 的公共方法，回答问题：
+  - 1. `build_norm` 如何通过 `llm_norm_type` 切换 LLM_NORM/LLM_NORM_RMS/LLM_NORM_GROUP？
+  - 2. `build_ffn` 接受 `type_op`（SILU/GELU/RELU/RELU_SQR/SWIGLU/GEGLU/REGLU）和 `type_gate`（SEQ/PAR）参数的意义是什么？
+  - 3. 两个 `build_moe_ffn` 重载分别用于什么场景？带 bias 的版本与不带 bias 的版本如何在调用点选择？
+  - 4. `build_attn_mha` 的 `sinks` 与 `v_mla` 参数分别服务于哪些模型？
+  - 5. `build_rs` 通过 `state_copy_main` 与 `state_copy_extra` 如何避免不必要的数据拷贝？
+  'no': 10
+  title: 理解公共子图构造函数
+learning_targets:
+- 理解 llama_model 类的整体架构、生命周期（构造、析构、Pimpl 模式）以及与 llama_hparams、llama_vocab、llama_layer
+  的关系
+- 掌握模型元数据的四阶段加载流水线（load_arch → load_hparams → load_vocab → load_tensors）的协作机制
+- 理解张量按设备分配策略（make_cpu_buft_list / make_gpu_buft_list / select_buft）的实现原理
+- 熟悉 llama_layer 与各子结构体（posnet、convnext、shortconv、nextn）如何承载 80+ 架构的张量差异
+- 掌握 build_graph 如何根据 arch 路由到对应 llm_build_* 类的实现，以及 create_memory 的多种缓存分配
+- 了解 RoPE 双源频率切换（hparams vs cparams）与 LongRoPe 长短因子自动选择机制
+- 理解模型信息查询接口（arch_name/type_name/desc/print_info 等）的输出格式与调试用途
+- 理解 llm_graph_input_i 家族如何抽象不同模型架构的计算图输入并支持图复用
+- 掌握 llm_graph_result 如何承载图构建产物与 can_reuse 机制复用已有计算图
+- 了解 llm_graph_context 提供的 build_norm/build_ffn/build_moe_ffn/build_attn_mha 等公共子图构造函数
+- 熟悉 graph 类型枚举（DEFAULT/ENCODER/DECODER）与 T5 等 encoder-decoder 架构的分发逻辑
+- 理解图构建中的归一化、注意力、FFN、循环状态、池化、采样等模块化协作方式
+life_analogy:
+- 想象 llama_model 是一座**大型图书馆**的核心管理机构：
+- '- **arch / type** = 图书馆的牌匾与分类号（LLaMA 类、Gemma 类、MoE 类）'
+- '- **hparams** = 馆藏目录（层数、卷册数、开本尺寸等基础编目信息）'
+- '- **vocab** = 索引卡柜（所有 Token 与词典信息）'
+- '- **layers** = 楼层办公室的**集装箱**（每层存放归一化、注意力、FFN 各种零件）'
+- '- **pimpl** = 地下仓库（存放 mmap、mlock、buffer、device 等 重资源，对外只暴露层）'
+- '- **load_arch / load_hparams / load_vocab / load_tensors** = **四阶段审阅流程**：先验牌匾、再核目录、再查索引、最后清点藏书'
+- '- **make_cpu_buft_list / make_gpu_buft_list** = **分配货架**（按 ACCEL→Host→Extra→CPU
+  优先级摆放）'
+- '- **select_buft** = **临时试放货物**，看哪条货架能装下这个大家伙'
+- '- **build_graph** = 依据图纸书把藏书重新装订成**一本书**（计算图）'
+- '- **create_memory** = **阅览室**：标准阅览室、滑动窗口阅览室（ISWA）、循环阅览室（RNN）、混合阅览室'
+- '- **get_rope_factors** = **翻书节奏**：短诗用短节奏、长篇用长节奏'
+- ''
+- 想象 llama_graph 系统是一套**印刷厂的装订流水线**：
+- '- **llm_graph_input_i 家族** = 不同类型的**纸张输入口**（正文纸、插图纸、索引纸），各司其职'
+- '- **llm_graph_context** = **装订工坊**，持有所有工具与半成品'
+- '- **build_norm / build_ffn / build_attn_mha / build_moe_ffn** = 流水线上的**通用机器**（裁切机、装订机、压膜机）'
+- '- **llm_graph_result** = 最终装订好的**书册**（含 logits、embeddings 等成品章节）'
+- '- **can_reuse** = 如果新订单内容与旧订单相同，**复用旧书**（跳过装订）'
+- '- **build_pooling / build_sampling / build_dense_out** = 最后的**封面包装**与**书签插入**工序'
+- 就像图书馆馆长需要按楼层、书架、读者类型精心分配每本书的位置，llama_model 也要精确规划每个张量在哪个设备、哪个 buffer 上安家；而装订工坊则需要把不同类型的纸张与零件按图组装成最终可印刷的成品书。
+'no': 13
+summary:
+- concept: '`llama_model`'
+  desc: 模型状态中央枢纽，持有 hparams/vocab/layers/pimpl 等所有推理期状态
+- concept: '`Pimpl 模式`'
+  desc: 将 mappings/mlock/ctxs_bufs/dev_layer 等重资源隐藏在 impl 中，头文件保持轻量
+- concept: '`load_arch`'
+  desc: 读取模型架构枚举，未知架构直接抛异常
+- concept: '`load_hparams`'
+  desc: 把 GGUF KV 先全量字符串化到 gguf_kv，再用结构化读取派生 n_layer/n_head/n_embd 等 等数值字段
+- concept: '`load_tensors`'
+  desc: 按架构 switch（80+）逐层填充 llama_layer 张量，最后统一加载 .scale 与 .input_scale 通用 pass
+- concept: '`make_cpu_buft_list`'
+  desc: 按 ACCEL→Host→Extra→CPU 优先级装配 CPU 缓冲类型候选
+- concept: '`make_gpu_buft_list`'
+  desc: 装配 GPU 缓冲类型，支持 split 模式并追加 CPU fallback
+- concept: '`dev_layer`'
+  desc: 通过 upper_bound 在累积 split 数组中查表，把每一层分配到合适的设备
+- concept: '`select_buft`'
+  desc: 通过临时 ggml_add 算子测试设备能力，返回第一个支持当前 op 的 buft
+- concept: '`buft_supported`'
+  desc: 构造临时算子与缓冲，调用 ggml_backend_dev_supports_op 判断设备能力
+- concept: '`llama_layer`'
+  desc: 容纳 attn/ffn/moe/ssm/rwkv/rope/altup 等几十上百个张量指针的容器
+- concept: '`llama_layer_posnet`'
+  desc: WavTokenizer PosNet 的 4 类 block 子结构（resnet×4 + attn + norm）
+- concept: '`llama_layer_convnext`'
+  desc: ConvNeXt 的 dw/norm/pw1/pw2/gamma 子结构
+- concept: '`llama_layer_shortconv`'
+  desc: LFM2 短卷积的 in_proj/conv/out_proj 三件套
+- concept: '`build_graph`'
+  desc: 依据 arch 路由到对应 llm_build_* 类实例化，追加 pooling/sampling/dense_out，返回 ggml_cgraph
+- concept: '`create_memory`'
+  desc: 依据 arch 分发到 nullptr/recurrent/hybrid/iswa/kv_cache 五种内存实现
+- concept: '`get_rope_freq_base/scale`'
+  desc: SWA 层使用训练期频率，否则使用 cparams 当前频率
+- concept: '`get_rope_factors`'
+  desc: LongRoPe 短长因子按 n_ctx_seq 自动切换
+- concept: '`print_info`'
+  desc: 输出架构/层数/头数/专家配置/SSM 参数等完整诊断报告
+- concept: '`llm_graph_input_*`'
+  desc: 图输入抽象类家族，按注意力类型分为 no_cache/kv/k/1kv_iswa/cross 等
+- concept: '`llm_graph_result`'
+  desc: 图构建产物，承载 logits/embd/embd_pooled 与 can_reuse 复用机制
+- concept: '`llm_graph_params::allow_reuse`'
+  desc: 通过比较 ubatch/samplers/cparams/arch 判断图拓扑是否可复用
+- concept: '`llm_graph_input_i::can_reuse`'
+  desc: 子类可重写以检查 hparams/cparams/ubatch 等参数是否兼容复用
+- concept: '`llm_graph_input_mem_hybrid_*`'
+  desc: 混合内存输入，组合 attn 与 rs 两种输入以支持 Transformer+RNN 混合架构
+- concept: '`llm_graph_context::build_moe_ffn`'
+  desc: MoE FFN 的统一子图构造函数，支持带/不带 bias 与归一化变体
+- concept: '`llm_graph_context::build_attn_mha`'
+  desc: 多头注意力的统一子图构造函数，支持 ALiBi、sinks、MLA 等扩展
+- concept: '`llm_graph_context::build_rs`'
+  desc: 循环状态（R/S）的读写子图，支持视图与副本操作以避免不必要拷贝
+- concept: '`llm_graph_type`'
+  desc: 图类型枚举，区分 DEFAULT/ENCODER/DECODER 以支持 T5 等 encoder-decoder 架构
+- concept: '`llama_model_rope_type`'
+  desc: 依据 arch 返回 NORM/NEOX/MROPE/IMROPE/NONE 等 RoPE 类型
+- concept: '`llama_model_meta_*`'
+  desc: 对外元数据查询接口（val_str/count/key/val_by_index）便于调试与日志输出
+- concept: '`llama_internal_get_tensor_map`'
+  desc: 返回内部张量名映射，供测试与调试使用
+units:
+- codes:
+  - file: src/llama-model.h
+    line: 1-260
+    method_or_func: struct llama_model
+  - file: src/llama-model.cpp
+    line: 1-50
+    method_or_func: llama_model::llama_model()
+  - file: src/llama-model.cpp
+    line: 1-20
+    method_or_func: llama_model::~llama_model()
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: llama_model::impl.impl
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: llama_model::impl.~impl
+  name: llama_model 类骨架与生命周期 —— 模型对象的"主入口"与"幕后管家"
+  'no': 1
+  points:
+  - '**`llama_model` 是 llama.cpp 中所有模型状态的"中央枢纽"**'
+  - '- 持有 `llm_type type`（如 LLM_TYPE_7B）与 `llm_arch arch`（如 LLM_ARCH_LLAMA）两大身份标识'
+  - '- 聚合超参数 `llama_hparams hparams`、词表 `llama_vocab vocab` 与层数组 `std::vector<llama_layer>
+    layers`'
+  - '- 嵌入/输出张量（tok_embd、output_norm、output）、分类头（cls、cls_out）、Dense 输出层（dense_2_out_layers
+    等）都直接挂在模型对象上'
+  - '- `tensors_by_name` 是张量名 → 张量指针的映射，供量化、调试、量化统计等模块按名查找'
+  - '- `loras` 集合跟踪已关联的 LoRA 适配器，确保析构时统一释放'
+  - '**Pimpl 模式隔离实现细节**'
+  - '- `std::unique_ptr<impl> pimpl` 隐藏 `mappings`、`mlock_bufs`、`ctxs_bufs`、`dev_layer`
+    等重资源'
+  - '- 构造函数 `llama_model(const llama_model_params&)` 记录参数并初始化 pimpl'
+  - '- 析构函数遍历 `loras` 调用 `delete` 保证适配器被回收'
+  - '**单元名词表：化身"模型档案馆"**'
+  - '- 类比：llama_model 像一座"模型档案馆"——`arch/type` 是档案馆门牌号，hparams 是规格清单，layers 是楼层办公室，pimpl
+    是地下仓库'
+- codes:
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: llama_model::load_arch()
+  - file: src/llama-model.cpp
+    line: 1-200
+    method_or_func: llama_model::load_hparams()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::load_vocab()
+  - file: src/llama-model.cpp
+    line: 1-500
+    method_or_func: llama_model::load_tensors()
+  - file: src/llama-model.cpp
+    line: 1-20
+    method_or_func: llama_model::load_stats()
+  name: 模型元数据加载流水线 —— 四阶段"档案审阅"的接力
+  'no': 2
+  points:
+  - '**四阶段流水线：load_arch → load_hparams → load_vocab → load_tensors**'
+  - '- `load_arch`：从 `llama_model_loader` 中读取 `llm_arch`，非法则抛异常'
+  - '- `load_hparams`：先把 GGUF 元数据全部转字符串存进 `gguf_kv`，再按 KV 名逐项解析为 `hparams` 字段'
+  - '- `load_vocab`：调用 `vocab.load(ml, kv)` 把 tokenizer 字段装入 `llama_vocab`'
+  - '- `load_tensors`：是最重的一步，负责把 GGUF 张量元数据映射到 `llama_layer` 数组'
+  - '**GGUF 元数据的双重用途**'
+  - '- 一方面通过 `gguf_kv` 保留原始键值对，供后续 `llama_model_meta_*` 等接口按名查询'
+  - '- 另一方面通过结构化读取（`ml.get_key`、`ml.get_key_or_arr`）派生出 `hparams.n_layer`、`n_head`、`n_embd`
+    等数值字段'
+  - '- 特殊架构 KV（如 Gemma 的 attention_logit_softcap、Mamba 的 ssm_d_state）通过巨大的 switch
+    分支精确解析'
+  - '**load_tensors 是模型灵魂的"组装车间"**'
+  - '- 先建立 CPU/GPU 的 buffer type 列表（make_cpu_buft_list / make_gpu_buft_list）'
+  - '- 按按设备划分 dev_layer、dev_input、dev_output'
+  - '- 通过庞大的 switch (arch) 语句为每个架构创建对应张量（attn_norm、wq/wk/wv/wo、ffn_*）'
+  - '- 末尾调用通用 pass 加载 `.scale` 与 `.input_scale` 张量（NVFP4 等量化场景）'
+- codes:
+  - file: src/llama-model.cpp
+    line: 1-70
+    method_or_func: make_cpu_buft_list()
+  - file: src/llama-model.cpp
+    line: 1-50
+    method_or_func: make_gpu_buft_list()
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: llama_model::select_buft()
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: buft_supported()
+  - file: src/llama-model.cpp
+    line: 1-20
+    method_or_func: select_buft()
+  name: 张量按设备分配策略 —— 把"楼层"分给"租户"
+  'no': 3
+  points:
+  - '**设备分配的"自动分租"机制**'
+  - '- `make_cpu_buft_list` 按优先级把 ACCEL → Host → CPU Extra → CPU 的 buft 顺序装入'
+  - '- `make_gpu_buft_list` 在 GPU 上叠加 split 模式与 extra 缓冲'
+  - '- `tensor_split` 可以是全零（按可用内存自动分配）或自定义比例'
+  - '- 默认 split 模式下 `splits[i] = free_memory`，最后做归一化累积'
+  - '**层设备表的的"楼层分配"**'
+  - '- `dev_input` 永远放在 CPU（嵌入层极小，offload 收益低）'
+  - '- `dev_layer[i]` 通过 `upper_bound` 在 `splits` 累积数组中查表'
+  - '- `dev_output` 跟随最后一层的设备'
+  - '**buft 选择：操作能力 + 设备亲和**'
+  - '- `select_buft` 用一个简单的 ggml_add 算子来测试设备能力'
+  - '- `buft_supported` 通过临时 ctx 创建算子并调用 `ggml_backend_dev_supports_op`'
+  - '- 在多 buft list 中按顺序挑选第一个支持当前 op 的 buft'
+- codes:
+  - file: src/llama-model.h
+    line: 1-180
+    method_or_func: struct llama_layer
+  - file: src/llama-model.h
+    line: 1-60
+    method_or_func: struct llama_layer_posnet
+  - file: src/llama-model.h
+    line: 1-30
+    method_or_func: struct llama_layer_convnext
+  - file: src/llama-model.h
+    line: 1-10
+    method_or_func: struct llama_layer_shortconv
+  - file: src/llama-model.h
+    line: 1-15
+    method_or_func: struct llama_layer_nextn
+  name: 层结构体与张量映射 —— "千面模型"的"零件仓库"
+  'no': 4
+  points:
+  - '**`llama_layer`：层是张量指针的"集装箱"**'
+  - '- 容纳归一化（attn_norm、attn_q_norm、attn_k_norm、attn_post_norm）、注意力（wq/wk/wv/wo）、FFN（ffn_gate/up/down）、可选
+    bias、RoPE 因子等几十个指针'
+  - '- MoE 专用：ffn_gate_inp、ffn_gate_exps、ffn_down_exps、ffn_up_exps、ffn_exp_probs_b，以及共享专家
+    ffn_gate_shexp 等'
+  - '- 包含 AltUp/Laurel、Gemma4 per-layer、SSM、Mamba、RWKV、KDA 等多种特殊张量'
+  - '- 内嵌 `llama_layer_posnet`、`llama_layer_convnext`、`llama_layer_shortconv`、`llama_layer_nextn`
+    四个子结构体支持 WavTokenizer、ConvNeXt、T5、NextN 等'
+  - '**子结构体：把"专项零件"打包管理**'
+  - '- `llama_layer_posnet` 容纳 WavTokenizer PosNet 的 4 类 block（resnet/resnet/attn/...）'
+  - '- `llama_layer_convnext` 容纳 ConvNeXt 的 dw/pw1/pw2/gamma'
+  - '- `llama_layer_shortconv` 容纳 LFM2 的 in_proj/conv/out_proj'
+  - '- `llama_layer_nextn` 容纳 GLM/EXAONE/BailingMoe2 等的 NextN 预测层（eh_proj、embed_tokens、enorm/hnorm
+    等）'
+  - '**switch (arch) 的的"百架构的工坊"**'
+  - '- load_tensors 内一个超长 switch 处理 80+ 种架构'
+  - '- 每种架构都按 attn/ffn/moe/ssm 各自的张量名约定填充 `layer.*` 字段'
+  - '- 通过 `TENSOR_NOT_REQUIRED` 标记可选张量，`TENSOR_DUPLICATED` 让 output 复用 tok_embd'
+- codes:
+  - file: src/llama-model.cpp
+    line: 1-250
+    method_or_func: llama_model::build_graph()
+  - file: src/llama-model.cpp
+    line: 1-100
+    method_or_func: llama_model::create_memory()
+  name: 构建计算图 +build_graph 的的"调度总指挥"
+  'no': 5
+  points:
+  - '**build_graph 是"模型 → GGML 计算图"的总装车间**'
+  - '- 第二个超长 switch 根据 `arch` 选择对应的 `llm_build_*` 类实例化'
+  - '- 同一架构可能有多个模板特化，例如 Gemma3 通过 `<iswa>` 区分 SWA 与非 SWA'
+  - '- T5 等 encoder-decoder 通过 `params.gtype` 在 `llm_build_t5_enc` 与 `llm_build_t5_dec`
+    之间分流'
+  - '**统一的"尾部装配线"**'
+  - '- `llm->build_pooling(cls, cls_b, cls_out, cls_out_b, cls_norm)`：把分类头接入'
+  - '- `llm->build_sampling()`：若启用 backend sampling，把采样器接进图'
+  - '- `llm->build_dense_out(...)`：处理 SentenceTransformers 等的 dense 投影'
+  - '- `llm->res->set_outputs()`：标记哪些张量作为图输出（logits/embeddings 等）'
+  - '**返回 ggml_cgraph 给推理循环**'
+  - '- `get_gf()` 把构建好的 cgraph 返回给 `llama_context::decode`/`encode`'
+  - '- 调度器 ggml_backend_sched 会按图拓扑拆分到各后端执行'
+  - '**`create_memory` 与 build_graph 协同**'
+  - '- 提前在 create_memory 中分配好 KV cache、recurrent state、hybrid 缓存'
+  - '- build_graph 中的 `mctx` 指针读取已分配好的内存上下文'
+- codes:
+  - file: src/llama-model.h
+    line: 1-5
+    method_or_func: llama_model::get_rope_freq_base()
+  - file: src/llama-model.h
+    line: 1-5
+    method_or_func: llama_model::get_rope_freq_scale()
+  - file: src/llama-model.h
+    line: 1-15
+    method_or_func: llama_model::get_rope_factors()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model.get_rope_freq_base
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model.get_rope_freq_scale
+  - file: src/llama-model.cpp
+    line: 1-20
+    method_or_func: llama_model.get_rope_factors
+  name: RoPE 频率与因子获取 +位置编码的的"调音台"
+  'no': 6
+  points:
+  - '**RoPE 参数的"双轨制"**'
+  - '- `rope_freq_base_train` 与 `rope_freq_scale_train` 来自训练阶段 (hparams)'
+  - '- `rope_freq_base` 与 `rope_freq_scale` 来自推理上下文 (cparams)，运行时可调'
+  - '- 滑动窗口层 (SWA) 有独立的 `rope_freq_base_train_swa` 与 `rope_freq_scale_train_swa`'
+  - '**get_rope_freq_base / get_rope_freq_scale 的的"双源切换"**'
+  - '- 若 `hparams.is_swa(il)` 为真，使用训练时的 SWA 频率'
+  - '- 否则使用 cparams 中的当前频率'
+  - '**LongRoPe 短长因子自动切换**'
+  - '- `get_rope_factors`：当 `rope_freqs` 张量存在时优先使用'
+  - '- 否则若当前序列长度 `n_ctx_seq` 超过 `n_ctx_orig_yarn`，使用 `rope_long` 因子'
+  - '- 否则回退到 `rope_short` 因子'
+  - '- 这是实现"短上下文用短因子、长上下文用长因子"的"自动调音"机制'
+- codes:
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::arch_name()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::type_name()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::desc()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::size()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::n_tensors()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::n_elements()
+  - file: src/llama-model.cpp
+    line: 1-30
+    method_or_func: llama_model::memory_breakdown()
+  - file: src/llama-model.cpp
+    line: 1-130
+    method_or_func: llama_model::print_info()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::dev_layer()
+  - file: src/llama-model.cpp
+    line: 1-10
+    method_or_func: llama_model::dev_output()
+  - file: src/llama-model.cpp
+    line: 1-20
+    method_or_func: llama_model::get_tensor()
+  name: 模型信息查询与打印 ++"产品说明书"与"体检报告"
+  'no': 7
+  points:
+  - '**模型状态查询的"窗口台"**'
+  - '- `arch_name()` / `type_name()`：返回字符串标识'
+  - '- `desc()`：拼接 "arch type ftype" 形成可读描述'
+  - '- `n_tensors()` / `n_devices()` / `size()`：张量数、设备数、文件大小'
+  - '- `n_gpu_layers()`：若参数未指定，则等于 n_layer+1（全 offload）'
+  - '- `n_elements()`：参数总量'
+  - '- `memory_breakdown()`：按 buft 汇总缓冲大小'
+  - '- `dev_layer(int il)` / `dev_output()`：查某层或 output 在哪个设备上'
+  - '- `get_tensor(name)`：按名查找张量（量化、统计、调试使用）'
+  - '- `select_buft(int il)`：基于能力探测选择缓冲类型'
+  - '- `has_tensor_overrides()` / `get_rope_*` / `desc()`：辅助元信息'
+  - '**print_info 输出"体检报告"**'
+  - '- 打印架构、词表-only 标记、no_alloc 标记'
+  - '- 打印 n_ctx_train、n_embd、n_layer、n_head(逐层变化用 [])、n_swa、n_embd_head_k/v'
+  - '- 打印 norm eps、clamp kqv、alibi bias、logit scale、attention scale、ffn 维度'
+  - '- 打印 expert 配置、causal/pooling/rope 类型、freq_base/scale、yarn 配置、rope_sections'
+  - '- SSM 模型额外打印 ssm_d_conv、ssm_d_inner、ssm_d_state、ssm_dt_rank 等'
+  - '- 计算总参数量并格式化为 T/B/M/K'
+  - '- DeepSeek 系列额外打印 dense lead、n_lora_q/kv、MLA 头维等专家配置'
+  - '- 最后调用 `vocab.print_info()` 打印词表信息'
+- codes:
+  - file: src/llama-graph.h
+    line: 1-100
+    method_or_func: llm_graph_input_i
+  - file: src/llama-graph.h
+    line: 1-30
+    method_or_func: llm_graph_input_embd
+  - file: src/llama-graph.h
+    line: 1-30
+    method_or_func: llm_graph_input_pos
+  - file: src/llama-graph.h
+    line: 1-40
+    method_or_func: llm_graph_input_attn_temp
+  - file: src/llama-graph.h
+    line: 1-40
+    method_or_func: llm_graph_input_pos_bucket
+  - file: src/llama-graph.h
+    line: 1-50
+    method_or_func: llm_graph_input_out_ids
+  - file: src/llama-graph.h
+    line: 1-60
+    method_or_func: llm_graph_input_rs
+  - file: src/llama-graph.h
+    line: 1-100
+    method_or_func: llm_graph_input_attn_kv
+  - file: src/llama-graph.h
+    line: 1-100
+    method_or_func: llm_graph_input_attn_kv_iswa
+  - file: src/llama-graph.h
+    line: 1-60
+    method_or_func: llm_graph_input_mem_hybrid
+  - file: src/llama-graph.h
+    line: 1-30
+    method_or_func: llm_graph_input_sampling
+  name: 计算图输入抽象 +llm_graph_input_i 家族的的"纸张入口"
+  'no': 8
+  points:
+  - '**llm_graph_input_i：图输入的"通用纸张"**'
+  - '- 基类提供 `set_input(const llama_ubatch*)` 与 `can_reuse(const llm_graph_params&)`
+    两个核心虚方法'
+  - '- 通过 `LLAMA_GRAPH_INPUT_DEBUG` 环境变量控制输出'
+  - '**attn 输入的"五种纸张"**'
+  - '- `llm_graph_input_attn_no_cache`：无缓存的注意力（BERT 等编码器）'
+  - '- `llm_graph_input_attn_kv`：标准 KV 缓存注意力（Transformer 解码器）'
+  - '- `llm_graph_input_attn_k`：仅 K 缓存的注意力（V-less 优化）'
+  - '- `llm_graph_input_attn_kv_iswa`：ISWA 双缓存（基+SWA）注意力（Gemma3、Gemma4）'
+  - '- `llm_graph_input_attn_cross`：跨注意力（T5 decoder）'
+  - '**混合内存输入：把 attn 与 rs 打包**'
+  - '- `llm_graph_input_mem_hybrid` 组合 attn_kv 与 rs（Jamba、Falcon-H1）'
+  - '- `llm_graph_input_mem_hybrid_k` 组合 attn_k 与 rs'
+  - '- `llm_graph_input_mem_hybrid_iswa` 组合 attn_kv_iswa 与 rs（Nemotron-H）'
+  - '**位置、采样与状态输入**'
+  - '- `llm_graph_input_embd/pos`：token 嵌入与位置 ID'
+  - '- `llm_graph_input_attn_temp`：Llama4 风格的注意力温度缩放'
+  - '- `llm_graph_input_pos_bucket/_kv`：T5 相对位置桶'
+  - '- `llm_graph_input_rs`：Mamba/RWKV 的循环状态读写（s_copy_main/extra 区分 seq_id_unq）'
+  - '- `llm_graph_input_sampling`：把 sampler 链挂入图，实现 backend sampling'
+  - '**out_ids/mean/cls：输出选择器**'
+  - '- `llm_graph_input_out_ids`：标记哪些 token 的输出需要采样'
+  - '- `llm_graph_input_mean`：embedding mean pooling'
+  - '- `llm_graph_input_cls`：分类头的 token 选择'
+- codes:
+  - file: src/llama-graph.h
+    line: 1-150
+    method_or_func: llm_graph_result
+  - file: src/llama-graph.h
+    line: 1-80
+    method_or_func: llm_graph_params.allow_reuse()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_result.set_inputs()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_result.set_outputs()
+  - file: src/llama-graph.h
+    line: 1-20
+    method_or_func: llm_graph_result.can_reuse()
+  name: 计算图产物与复用 +llm_graph_result 的的"成品书"
+  'no': 9
+  points:
+  - '**llm_graph_result：图构建的"成品仓库"**'
+  - '- 保存图输入对象数组（`inputs`）、`ggml_context` 计算上下文、`ggml_cgraph` 图指针'
+  - '- 持有 `t_inp_tokens / t_inp_embd / t_logits / t_embd / t_embd_pooled` 等关键输出张量'
+  - '- 持有 `t_sampled_logits / t_candidates / t_sampled / t_sampled_probs` 四张按 seq_id
+    索引的采样张量表'
+  - '**复用机制：can_reuse 的的"双层校验"**'
+  - '- `llm_graph_result::can_reuse`：综合 `inputs` 各自 `can_reuse` 的结果'
+  - '- `llm_graph_params::allow_reuse`：通过比较 ubatch/samplers/cparams/arch 等判断图拓扑是否可复用'
+  - '- 只有两层都返回 true 时才真正复用旧图'
+  - '**输入复用检查**'
+  - '- `llm_graph_input_embd/pos/out_ids` 等会重写 `can_reuse` 检查 n_tokens/n_outputs 是否一致'
+  - '- `llm_graph_input_attn_kv/iswa` 会重写检查 KV cache context 是否变化'
+  - '- `llm_graph_input_sampling` 会重写检查 sampler map 是否一致'
+  - '**输出装配线**'
+  - '- `set_inputs(ubatch)`：把当前 batch 数据写入 input 张量'
+  - '- `set_outputs()`：标记哪些张量作为图输出（logits/embeddings 等）'
+  - '- `reset()` / `~llm_graph_result()`：释放图与上下文'
+- codes:
+  - file: src/llama-graph.h
+    line: 1-30
+    method_or_func: llm_graph_context.build_norm()
+  - file: src/llama-graph.h
+    line: 1-40
+    method_or_func: llm_graph_context.build_ffn()
+  - file: src/llama-graph.h
+    line: 1-60
+    method_or_func: llm_graph_context.build_moe_ffn()
+  - file: src/llama-graph.h
+    line: 1-40
+    method_or_func: llm_graph_context.build_attn_mha()
+  - file: src/llama-graph.h
+    line: 1-30
+    method_or_func: llm_graph_context.build_rs()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_context.build_attn_inp_kv()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_context.build_attn_inp_kv_iswa()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_context.build_inp_mem_hybrid()
+  - file: src/llama-graph.h
+    line: 1-15
+    method_or_func: llm_graph_context.build_pooling()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_context.build_sampling()
+  - file: src/llama-graph.h
+    line: 1-10
+    method_or_func: llm_graph_context.build_dense_out()
+  name: 计算图上下文与公共子图 +llm_graph_context 的的"装订工坊"
+  'no': 10
+  points:
+  - '**llm_graph_context：装订工坊的"工具箱"**'
+  - '- 持有 hparams.hparams/cparams/ubatch 等构造等与 sched/cvec/loras/mctx/samplers 等 运行时上下文'
+  - '- 通过 cb_func 回调把每个算子登记到 backend scheduler'
+  - '- 提供 `ctx0` (ggml_context) 与 `gf` (ggml_cgraph) 给 build_* 系列使用'
+  - '**公共子图构造函数：通用机器**'
+  - '- `build_norm(cur, w, b, type, il)`：根据 type 切换 LN/RMSNorm/GroupNorm'
+  - '- `build_ffn(...)`：根据 type_op (SILU/GELU/RELU 等) 与 type_gate (SEQ/PAR) 拼装 FFN'
+  - '- `build_moe_ffn(...)`：两个重载支持带/不带 bias 版本，处理路由 + 专家加权求和'
+  - '- `build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il)`：多头注意力核心'
+  - '- `build_rs(s, main, extra, ...)`：循环状态读写，支持自定义 get_rows 函数'
+  - '**输入构建助手：纸张装入工坊**'
+  - '- `build_inp_embd(tok_embd)` / `build_inp_pos()` / `build_inp_attn_scale()` 等'
+  - '- `build_inp_out_ids()` / `build_inp_mean()` / `build_inp_cls()`：输出位置选择'
+  - '- `build_inp_cross_embd()` / `build_inp_pos_bucket_enc/dec()`：T5 encoder/decoder
+    专用'
+  - '**attn 输入工厂**'
+  - '- `build_attn_inp_no_cache/kv/k/kv_iswa/cross`：根据 mctx 类型分发到对应 attn 输入类'
+  - '- `build_inp_mem_hybrid/k/iswa`：组合 attn 与 rs 输入形成混合内存输入'
+  - '- `build_rs_inp()`：构建循环状态输入'
+  - '**输出与采样**'
+  - '- `build_pooling(cls, cls_b, cls_out, cls_out_b, cls_norm)`：把分类头接入图'
+  - '- `build_sampling()`：若 sampler 非空，构建 backend sampling 子图'
+  - '- `build_dense_out(dense_2, dense_2_b, dense_3)`：把 SentenceTransformers dense
+    投影接入图'
+  - '**LoRA 适配**'
+  - '- `build_lora_mm(w, cur, w_s)`：矩阵乘并可选应用 LoRA 与 per-tensor scale'
+  - '- `build_lora_mm_id(w, cur, ids)`：带索引的矩阵乘（专家路由场景）'
+  - '- `build_cvec(cur, il)`：把控制向量 (cvec) 应用到指定层'

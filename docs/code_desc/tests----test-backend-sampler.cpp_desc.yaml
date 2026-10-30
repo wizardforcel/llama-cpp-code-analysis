@@ -1,0 +1,723 @@
+classes:
+- desc: 'A simple struct to encapsulate command-line arguments for the test: model
+    path, test name, and device selection (auto/gpu/cpu).'
+  methods: []
+  name: test_args
+- desc: A struct that holds the loaded model pointer (llama_model_ptr) for use by
+    the test functions.
+  methods: []
+  name: test_params
+- desc: A struct managing a llama context for testing, providing methods for decoding
+    prompts/tokens, tracking sequence positions and batch info, and converting tokens
+    back to text pieces.
+  methods:
+  - code:
+    - test_context(const test_params & params, std::vector<llama_sampler_seq_config>
+      & configs, int32_t n_seq_max = -1) {
+    - '    auto * model = params.model.get();'
+    - '    GGML_ASSERT(model);'
+    - '    GGML_ASSERT(!ctx);'
+    - '    llama_context_params cparams = llama_context_default_params();'
+    - '    cparams.n_ctx = 512;'
+    - '    cparams.n_batch = 512;'
+    - '    cparams.samplers = configs.data();'
+    - '    cparams.n_samplers = configs.size();'
+    - '    cparams.kv_unified = true;'
+    - '    if (n_seq_max < 0) {'
+    - '        int32_t max_seq_id = 0;'
+    - '        for (const auto & config : configs) { max_seq_id = std::max(config.seq_id,
+      max_seq_id); }'
+    - '        cparams.n_seq_max = max_seq_id + 1;'
+    - '    } else { cparams.n_seq_max = n_seq_max; }'
+    - '    ctx.reset(llama_init_from_model(model, cparams));'
+    - '    if (!ctx) { throw std::runtime_error("failed to create context"); }'
+    - '    llama_set_warmup(ctx.get(), false);'
+    - '    vocab = llama_model_get_vocab(model);'
+    - '    n_vocab = llama_vocab_n_tokens(vocab);'
+    - '}'
+    desc: Initializes a llama context with specified sampler configurations and a
+      maximum sequence count, setting up the vocabulary and warmup.
+    line: 75-119
+    name: test_context (constructor)
+  - code:
+    - bool decode(const std::map<llama_seq_id, std::string> & prompts) {
+    - '    GGML_ASSERT(ctx);'
+    - '    last_batch_info.clear();'
+    - '    llama_batch batch = llama_batch_init(512, 0, prompts.size());'
+    - '    for (const auto & [seq_id, prompt] : prompts) {'
+    - '        std::vector<llama_token> tokens; tokens.push_back(llama_vocab_bos(vocab));'
+    - '        std::vector<llama_token> prompt_tokens(32);'
+    - '        int n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
+      prompt_tokens.data(), prompt_tokens.size(), false, false);'
+    - '        if (n_tokens < 0) { fprintf(stderr, "Warning: tokenization failed\n");
+      llama_batch_free(batch); return false; }'
+    - '        for (int i = 0; i < n_tokens; i++) { tokens.push_back(prompt_tokens[i]);
+      }'
+    - '        if (seq_positions.find(seq_id) == seq_positions.end()) { seq_positions[seq_id]
+      = 0; }'
+    - '        int32_t start_pos = seq_positions[seq_id];'
+    - '        for (size_t i = 0; i < tokens.size(); i++) { common_batch_add(batch,
+      tokens[i], start_pos + i, { seq_id }, i == tokens.size() - 1); }'
+    - '        seq_positions[seq_id] = start_pos + tokens.size();'
+    - '    }'
+    - '    printf("Batch contents:\n");'
+    - '    // ... (printf statements for batch contents)'
+    - '    if (llama_decode(ctx.get(), batch) != 0) { fprintf(stderr, "Warning: llama_decode
+      failed\n"); llama_batch_free(batch); return false; }'
+    - '    for (int i = 0; i < batch.n_tokens; i++) { if (batch.logits[i]) { llama_seq_id
+      seq_id = batch.seq_id[i][0]; last_batch_info[seq_id] = i; } }'
+    - '    llama_batch_free(batch); return true;'
+    - '}'
+    desc: Tokenizes prompt strings for multiple sequences, adds them to a single batch
+      with BOS tokens, decodes the batch, and updates the last batch info mapping.
+    line: 121-173
+    name: decode
+  - code:
+    - int32_t idx_for_seq(llama_seq_id seq_id) {
+    - '    auto it = last_batch_info.find(seq_id);'
+    - '    if (it == last_batch_info.end()) { fprintf(stderr, "Error: no batch index
+      found\n"); return -1; }'
+    - '    return it->second;'
+    - '}'
+    desc: Returns the batch index for a given sequence ID from the last batch information.
+    line: 175-181
+    name: idx_for_seq
+  - code:
+    - void update_batch_info(const llama_batch & batch) {
+    - '    last_batch_info.clear();'
+    - '    for (int i = 0; i < batch.n_tokens; i++) { if (batch.logits[i]) { llama_seq_id
+      cur_seq = batch.seq_id[i][0]; last_batch_info[cur_seq] = i; } }'
+    - '}'
+    desc: Updates the last_batch_info map from a given batch, storing the batch index
+      for sequences with logits.
+    line: 183-189
+    name: update_batch_info
+  - code:
+    - bool decode_token(llama_token token, llama_seq_id seq_id = 0) {
+    - '    GGML_ASSERT(ctx);'
+    - '    llama_batch batch = llama_batch_init(1, 0, 1);'
+    - '    int32_t pos = seq_positions[seq_id];'
+    - '    common_batch_add(batch, token, pos, { seq_id }, true);'
+    - '    if (llama_decode(ctx.get(), batch) != 0) { fprintf(stderr, "Warning: llama_decode
+      failed\n"); llama_batch_free(batch); return false; }'
+    - '    update_batch_info(batch); seq_positions[seq_id]++; llama_batch_free(batch);'
+    - '    return true;'
+    - '}'
+    desc: Encodes and decodes a single token for a given sequence ID, updating batch
+      info and sequence position.
+    line: 191-203
+    name: decode_token
+  - code:
+    - bool decode_tokens(const std::map<llama_seq_id, llama_token> & seq_tokens) {
+    - '    GGML_ASSERT(ctx);'
+    - '    llama_batch batch = llama_batch_init(seq_tokens.size(), 0, seq_tokens.size());'
+    - '    for (const auto & [seq_id, token] : seq_tokens) { int32_t pos = seq_positions[seq_id];
+      common_batch_add(batch, token, pos, { seq_id }, true); }'
+    - '    if (llama_decode(ctx.get(), batch) != 0) { fprintf(stderr, "Warning: llama_decode
+      failed\n"); llama_batch_free(batch); return false; }'
+    - '    for (const auto & [seq_id, _] : seq_tokens) { seq_positions[seq_id]++;
+      }'
+    - '    update_batch_info(batch); llama_batch_free(batch);'
+    - '    return true;'
+    - '}'
+    desc: Decodes a batch of tokens for multiple sequences (one token per sequence)
+      and updates positions and batch info.
+    line: 205-218
+    name: decode_tokens
+  - code:
+    - std::string token_to_piece(llama_token token, bool special) const {
+    - '    std::string piece; piece.resize(piece.capacity());'
+    - '    const int n_chars = llama_token_to_piece(vocab, token, &piece[0], piece.size(),
+      0, special);'
+    - '    if (n_chars < 0) { piece.resize(-n_chars); int check = llama_token_to_piece(vocab,
+      token, &piece[0], piece.size(), 0, special); GGML_ASSERT(check == -n_chars);
+      }'
+    - '    else { piece.resize(n_chars); }'
+    - '    return piece;'
+    - '}'
+    desc: Converts a token ID back into its string representation, handling dynamic
+      buffer size requirements.
+    line: 220-232
+    name: token_to_piece
+  name: test_context
+- desc: A structure that defines a single backend sampling test case with a name,
+    a function pointer to the test implementation, and a flag indicating whether the
+    test is enabled by default.
+  methods: []
+  name: backend_test_case
+desc: This file is a test suite for the llama.cpp backend sampler functionality. It
+  contains a series of test cases that verify the correctness of various sampling
+  strategies (e.g., greedy, top-k, temperature, top-p, min-p, and distribution-based
+  sampling) when performed on the GPU/CPU backend, including multi-sequence scenarios
+  and hybrid (backend + CPU) sampling approaches.The file tests/test-backend-sampler.cpp
+  contains backend sampling tests for the llama.cpp library, verifying that backend
+  sampler chains work correctly with various sampling strategies including greedy,
+  logit bias, temperature, top-k, top-p, min-p, distribution sampling, multi-sequence
+  sampling, mixed CPU/backend sampling, and sampler lifecycle management (set, clear,
+  reset). The test framework provides a command-line interface to select individual
+  tests, collects them for execution, and validates correctness through assertions
+  and debug output.
+file: tests/test-backend-sampler.cpp
+funcs:
+- code:
+  - static llama_model_ptr load_model(const test_args & args) {
+  - '    auto mparams = llama_model_default_params();'
+  - '    ggml_backend_dev_t devs[2] = { nullptr, nullptr };'
+  - '    if (args.device != "auto") {'
+  - '        if (args.device == "gpu") { devs[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (devs[0] == nullptr) { fprintf(stderr, "Error: GPU not available\n"); return
+    nullptr; } mparams.n_gpu_layers = 999; }'
+  - '        else if (args.device == "cpu") { devs[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    mparams.n_gpu_layers = 0; }'
+  - '        else { fprintf(stderr, "Error: invalid device\n"); return nullptr; }'
+  - '        mparams.devices = devs; fprintf(stderr, "Using device: %s\n", ggml_backend_dev_name(devs[0]));'
+  - '    }'
+  - '    llama_model_ptr res; res.reset(llama_model_load_from_file(args.model.c_str(),
+    mparams));'
+  - '    if (!res) { fprintf(stderr, "Warning: failed to load model\n"); return nullptr;
+    }'
+  - '    return res;'
+  - '}'
+  desc: Loads a llama model based on test arguments, configuring GPU/CPU device and
+    layer count.
+  line: 39-70
+  name: load_model
+- code:
+  - static void test_backend_greedy_sampling(const test_params & params) {
+  - '    const int seq_id = 0;'
+  - '    struct llama_sampler_chain_params backend_sampler_params = llama_sampler_chain_default_params();'
+  - '    llama_sampler_ptr backend_sampler_chain(llama_sampler_chain_init(backend_sampler_params));'
+  - '    llama_sampler_chain_add(backend_sampler_chain.get(), llama_sampler_init_greedy());'
+  - '    std::vector<llama_sampler_seq_config> backend_sampler_configs = {{ seq_id,
+    backend_sampler_chain.get() }};'
+  - '    test_context test_ctx(params, backend_sampler_configs);'
+  - '    if (!test_ctx.decode({{seq_id, "Some"}})) { GGML_ASSERT(false && "Failed
+    to decode token"); }'
+  - '    int32_t batch_idx = test_ctx.idx_for_seq(seq_id);'
+  - '    llama_token token = llama_get_sampled_token_ith(test_ctx.ctx.get(), batch_idx);'
+  - '    printf("greedy sampled id:%d\n", token);'
+  - '    GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    // ... (rest of the test)'
+  - '}'
+  desc: Tests greedy sampling using a backend sampler, checking token validity and
+    generating multiple tokens.
+  line: 234-264
+  name: test_backend_greedy_sampling
+- code:
+  - static void test_backend_top_k_sampling(const test_params & params) {
+  - '    const int seq_id = 0; const int32_t k = 8;'
+  - '    // ... (setup and decode)'
+  - '    float * logits = llama_get_sampled_logits_ith(test_ctx.ctx.get(), batch_idx);'
+  - '    // ... (print logits and candidates)'
+  - '    llama_sampler_chain_add(chain.get(), llama_sampler_init_dist(18));'
+  - '    llama_token token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '    GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    printf("backend top-k hybrid sampling test PASSED\n");'
+  - '}'
+  desc: Tests top-k sampling on the backend and hybrid sampling with a CPU distribution
+    sampler.
+  line: 266-311
+  name: test_backend_top_k_sampling
+- code:
+  - static void test_backend_temp_sampling(const test_params & params) {
+  - '    { /* Test with two different temperatures */ }'
+  - '    auto test_argmax_temp = [&](float temp) { /* lambda for non-positive temp
+    */ };'
+  - '    test_argmax_temp(0.0f); test_argmax_temp(-1.0f);'
+  - '    printf("backend temp sampling test PASSED\n");'
+  - '}'
+  desc: Tests temperature sampling with multiple sequences, including edge cases of
+    non-positive temperatures.
+  line: 313-371
+  name: test_backend_temp_sampling
+- code:
+  - static void test_backend_temp_ext_sampling(const test_params & params) {
+  - '    { /* Test with temp_ext */ }'
+  - '    auto test_argmax_temp = [&](float temp, float delta, float exponent) { /*
+    lambda */ };'
+  - '    test_argmax_temp(0.0f,  0.3f, 1.0f); test_argmax_temp(-1.0f, 0.3f, 2.0f);
+    test_argmax_temp(0.8f,  0.0f, 2.0f);'
+  - '    printf("backend temp_ext sampling test PASSED\n");'
+  - '}'
+  desc: Tests extended temperature sampling with delta and exponent parameters, including
+    edge cases.
+  line: 373-426
+  name: test_backend_temp_ext_sampling
+- code:
+  - static void test_backend_min_p_sampling(const test_params & params) {
+  - '    const int seq_id = 0; const float p = 0.1;'
+  - '    // ... (setup and decode)'
+  - '    // ... (filter logits and assert)'
+  - '    llama_token token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '    // ... (generate 10 more tokens)'
+  - '    printf("min-p sampling test PASSED\n");'
+  - '}'
+  desc: Tests min-p sampling on the backend, verifying filtered logits and generating
+    tokens with CPU sampler.
+  line: 428-467
+  name: test_backend_min_p_sampling
+- code:
+  - static void test_backend_top_p_sampling(const test_params & params) {
+  - '    const int seq_id = 0; const float p = 0.9;'
+  - '    // ... (setup and decode)'
+  - '    // ... (filter logits and assert)'
+  - '    llama_token token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '    // ... (generate 10 more tokens)'
+  - '    printf("top-p sampling test PASSED\n");'
+  - '}'
+  desc: Tests top-p sampling on the backend, verifying filtered logits and generating
+    tokens.
+  line: 469-506
+  name: test_backend_top_p_sampling
+- code:
+  - static void test_backend_multi_sequence_sampling(const test_params & params) {
+  - '    // ... (setup two sampler chains)'
+  - '    test_context test_ctx(params, backend_sampler_configs);'
+  - '    // ... (decode prompts, verify tokens for seq 0 and 1)'
+  - '    // ... (generate tokens for both sequences)'
+  - '    printf("backend multi-sequence sampling test PASSED\n");'
+  - '}'
+  desc: Tests multi-sequence sampling with different samplers (greedy and temp+greedy)
+    for two sequences.
+  line: 508-560
+  name: test_backend_multi_sequence_sampling
+- code:
+  - static void test_backend_dist_sampling(const test_params & params) {
+  - '    const int seq_id = 189; const int32_t seed = 88;'
+  - '    // ... (setup and decode)'
+  - '    llama_token token = llama_get_sampled_token_ith(test_ctx.ctx.get(), batch_idx);'
+  - '    printf("dist sampled id:%d\n", token);'
+  - '    GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    printf("backend dist sampling test PASSED\n");'
+  - '}'
+  desc: Tests distribution-based sampling on the backend and validates the sampled
+    token.
+  line: 562-583
+  name: test_backend_dist_sampling
+- code:
+  - static void test_backend_dist_sampling_and_cpu(const test_params & params) {
+  - '    // ... (setup and decode)'
+  - '    llama_token backend_token = llama_get_sampled_token_ith(test_ctx.ctx.get(),
+    batch_idx);'
+  - '    llama_token cpu_token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '    GGML_ASSERT(backend_token == cpu_token);'
+  - '    printf("backend dist & cpu sampling test PASSED\n");'
+  - '}'
+  desc: Tests that backend distribution sampling produces the same token as a CPU
+    distribution sampler.
+  line: 585-607
+  name: test_backend_dist_sampling_and_cpu
+- code:
+  - static void test_backend_logit_bias_sampling(const test_params & params) {
+  - '    // ... (get token for ''World'')'
+  - '    logit_bias.push_back({ bias_token, +10.0f });'
+  - '    // ... (setup and decode)'
+  - '    llama_token backend_token = llama_get_sampled_token_ith(test_ctx.ctx.get(),
+    test_ctx.idx_for_seq(seq_id));'
+  - '    GGML_ASSERT(backend_token == bias_token);'
+  - '    printf("backend logit bias sampling test PASSED\n");'
+  - '}'
+  desc: Tests logit bias sampling by biasing a specific token and verifying it is
+    sampled.
+  line: 609-651
+  name: test_backend_logit_bias_sampling
+- code:
+  - static void test_backend_mixed_sampling(const test_params & params) {
+  - '    // ... (setup two sampler chains)'
+  - '    // ... (verify seq 0 dist and seq 1 top-k)'
+  - '    printf("backend mixed sampling test PASSED\n");'
+  - '}'
+  desc: Tests mixing backend dist and top-k samplers for two different sequences.
+  line: 653-695
+  name: test_backend_mixed_sampling
+- code:
+  - static void test_backend_set_sampler(const test_params & params) {
+  - '    // ... (setup and decode)'
+  - '    llama_set_sampler(test_ctx.ctx.get(), seq_id, nullptr);'
+  - '    // ... (decode and verify no backend tokens)'
+  - '    llama_token token2 = ll'
+  - '}'
+  desc: Tests the ability to clear a backend sampler and use a CPU sampler as a fallback.
+  line: 697-741
+  name: test_backend_set_sampler
+- code:
+  - int main(int argc, char ** argv) {
+  - '    // ... (parse args, load model, dispatch tests)'
+  - '}'
+  desc: The main entry point of the program, parses command-line arguments, loads
+    the model, and runs the specified test(s).
+  line: 742-770
+  name: __main__
+- code:
+  - static void test_backend_set_sampler(const test_params & params) {
+  - '    const int seq_id = 0;'
+  - '    const int32_t seed = 88;'
+  - '    struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();'
+  - '    llama_sampler_ptr chain(llama_sampler_chain_init(chain_params));'
+  - '    llama_sampler_chain_add(chain.get(), llama_sampler_init_top_k(40));'
+  - '    llama_sampler_chain_add(chain.get(), llama_sampler_init_dist(seed));'
+  - ''
+  - '    std::vector<llama_sampler_seq_config> backend_sampler_configs = { { seq_id,
+    chain.get() } };'
+  - '    test_context test_ctx(params, backend_sampler_configs);'
+  - '    const std::string prompt = "Hello";'
+  - ''
+  - '    // Decode the prompt with the backend sampler'
+  - '    if (!test_ctx.decode(prompt)) {'
+  - '        GGML_ASSERT(false && "Failed to decode prompt");'
+  - '    }'
+  - ''
+  - '    // Ensure that a sampled token is available'
+  - '    int32_t idx = test_ctx.idx_for_seq(seq_id);'
+  - '    llama_token token = llama_get_sampled_token_ith(test_ctx.ctx.get(), idx);'
+  - '    GGML_ASSERT(token != LLAMA_TOKEN_NULL);'
+  - ''
+  - '    // Clear the backend sampler for the sequence'
+  - '    llama_set_sampler(test_ctx.ctx.get(), seq_id, nullptr);'
+  - ''
+  - '    // Continue evaluating the same tokens to ensure the clearing works'
+  - '    if (!test_ctx.decode_tokens(tokens)) {'
+  - '        GGML_ASSERT(false && "Failed to decode token");'
+  - '    }'
+  - ''
+  - '    // Should not have any sampled token or probs after clearing the backend
+    sampler.'
+  - '    const int32_t idx = test_ctx.idx_for_seq(seq_id);'
+  - '    GGML_ASSERT(llama_get_sampled_token_ith(test_ctx.ctx.get(), idx) == LLAMA_TOKEN_NULL);'
+  - '    GGML_ASSERT(llama_get_sampled_probs_ith(test_ctx.ctx.get(), idx) == nullptr);'
+  - ''
+  - '    // Sample the token using the CPU sampler chain.'
+  - '    llama_token token2 = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    seq_id);'
+  - '    const std::string token2_str = test_ctx.token_to_piece(token2, false);'
+  - '    printf("CPU sampled token after clearing backend sampler: id=%d, string=''%s''\n",
+    token2, token2_str.c_str());'
+  - '    std::map<llama_seq_id, llama_token> tokens2 = { { seq_id, token2}, };'
+  - ''
+  - '    // Set a new backend sampler for the sequence.'
+  - '    struct llama_sampler_chain_params new_backend_chain_params = llama_sampler_chain_default_params();'
+  - '    llama_sampler_ptr new_backend_sampler_chain(llama_sampler_chain_init(new_backend_chain_params));'
+  - '    llama_sampler_chain_add(new_backend_sampler_chain.get(), llama_sampler_init_top_k(20));'
+  - '    llama_sampler_chain_add(new_backend_sampler_chain.get(), llama_sampler_init_dist(seed));'
+  - '    llama_set_sampler(test_ctx.ctx.get(), seq_id, new_backend_sampler_chain.get());'
+  - ''
+  - '    if (!test_ctx.decode_tokens(tokens2)) {'
+  - '        GGML_ASSERT(false && "Failed to decode token");'
+  - '    }'
+  - ''
+  - '    llama_token new_backend_token = llama_get_sampled_token_ith(test_ctx.ctx.get(),
+    test_ctx.idx_for_seq(seq_id));'
+  - '    const std::string new_backend_token_str = test_ctx.token_to_piece(new_backend_token,
+    false);'
+  - '    printf("dist sampled token = %d, string=''%s''\n", new_backend_token, new_backend_token_str.c_str());'
+  - ''
+  - '    printf("backend set sampler test PASSED\n");'
+  - '}'
+  desc: Tests that backend samplers can be cleared and replaced per sequence, verifying
+    that after clearing, the sampler returns to using the CPU, and after setting a
+    new backend sampler, it works correctly.
+  line: 861-920
+  name: test_backend_set_sampler
+- code:
+  - static void test_backend_cpu_mixed_batch(const test_params & params) {
+  - '    // Sequence 0 uses backend sampling'
+  - '    struct llama_sampler_chain_params chain_params_0 = llama_sampler_chain_default_params();'
+  - '    llama_sampler_ptr sampler_chain_0(llama_sampler_chain_init(chain_params_0));'
+  - '    llama_sampler_chain_add(sampler_chain_0.get(), llama_sampler_init_dist(88));'
+  - ''
+  - '    std::vector<llama_sampler_seq_config> backend_sampler_configs = {'
+  - '        { 0, sampler_chain_0.get() },'
+  - '    };'
+  - ''
+  - '    // We need 2 sequences: seq 0 with backend sampling, seq 1 with CPU sampling'
+  - '    test_context test_ctx(params, backend_sampler_configs, 2);'
+  - ''
+  - '    std::map<llama_seq_id, std::string> prompts = {'
+  - '        {0, "Hello"}, // Will use backend sampling'
+  - '        {1, "Some"}   // Will use CPU sampling'
+  - '    };'
+  - ''
+  - '    if (!test_ctx.decode(prompts)) {'
+  - '        GGML_ASSERT(false && "Failed to decode token");'
+  - '    }'
+  - ''
+  - '    // Verify sequence 0 (backend sampled)'
+  - '    {'
+  - '        int32_t batch_idx = test_ctx.idx_for_seq(0);'
+  - '        llama_token token = llama_get_sampled_token_ith(test_ctx.ctx.get(), batch_idx);'
+  - '        const std::string token_str = test_ctx.token_to_piece(token, false);'
+  - '        printf("Seq 0 (backend) sampled token id=%d, string=''%s''\n", token,
+    token_str.c_str());'
+  - '        GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    }'
+  - ''
+  - '    // Verify sequence 1 (CPU sampled)'
+  - '    {'
+  - '        int32_t batch_idx = test_ctx.idx_for_seq(1);'
+  - ''
+  - '        llama_token backend_token = llama_get_sampled_token_ith(test_ctx.ctx.get(),
+    batch_idx);'
+  - '        GGML_ASSERT(backend_token == LLAMA_TOKEN_NULL);'
+  - ''
+  - '        struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();'
+  - '        llama_sampler_ptr chain(llama_sampler_chain_init(chain_params));'
+  - '        llama_sampler_chain_add(chain.get(), llama_sampler_init_greedy());'
+  - ''
+  - '        llama_token token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '        const std::string token_str = test_ctx.token_to_piece(token, false);'
+  - '        printf("Seq 1 (CPU) sampled token id=%d, string=''%s''\n", token, token_str.c_str());'
+  - '        GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    }'
+  - ''
+  - '    // Clear/remove the backend sampler, and sample again'
+  - '    {'
+  - '        // clear the backend sampler for seq 0 so that there are no backend'
+  - '        // samplers.'
+  - '        llama_set_sampler(test_ctx.ctx.get(), 0, nullptr);'
+  - ''
+  - '        // Create a CPU sampler and verify we can sample from it.'
+  - '        struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();'
+  - '        llama_sampler_ptr chain(llama_sampler_chain_init(chain_params));'
+  - '        llama_sampler_chain_add(chain.get(), llama_sampler_init_greedy());'
+  - ''
+  - '        int32_t batch_idx = test_ctx.idx_for_seq(1);'
+  - '        llama_token token = llama_sampler_sample(chain.get(), test_ctx.ctx.get(),
+    batch_idx);'
+  - '        if (!test_ctx.decode_token(token, 1)) {'
+  - '            GGML_ASSERT(false && "Failed to decode token");'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // Set a backend sampler so that we can verify that it can be reset'
+  - '    {'
+  - '        struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();'
+  - '        llama_sampler_ptr sampler_chain(llama_sampler_chain_init(chain_params));'
+  - '        llama_sampler_chain_add(sampler_chain.get(), llama_sampler_init_dist(88));'
+  - ''
+  - '        llama_set_sampler(test_ctx.ctx.get(), 0, sampler_chain.get());'
+  - ''
+  - '        if (!test_ctx.decode_token(3834, 0)) {'
+  - '            GGML_ASSERT(false && "Failed to decode token");'
+  - '        }'
+  - ''
+  - '        int32_t batch_idx = test_ctx.idx_for_seq(0);'
+  - '        llama_token token = llama_get_sampled_token_ith(test_ctx.ctx.get(), batch_idx);'
+  - '        const std::string token_str = test_ctx.token_to_piece(token, false);'
+  - '        printf("re-added backend sampled token id=%d, string=''%s''\n", token,
+    token_str.c_str());'
+  - '        GGML_ASSERT(token >= 0 && token < test_ctx.n_vocab);'
+  - '    }'
+  - ''
+  - '    printf("backend-cpu mixed batch test PASSED\n");'
+  - '}'
+  desc: Tests that a batch can contain a mix of sequences using backend sampling and
+    CPU sampling simultaneously, and that clearing/re-adding backend samplers for
+    one sequence doesn't affect another.
+  line: 922-1010
+  name: test_backend_cpu_mixed_batch
+- code:
+  - static void test_backend_max_outputs(const test_params & params) {
+  - '    const int seq_id = 0;'
+  - '    const int32_t seed = 88;'
+  - ''
+  - '    llama_sampler_chain_params backend_chain_params = llama_sampler_chain_default_params();'
+  - '    llama_sampler_ptr backend_sampler_chain(llama_sampler_chain_init(backend_chain_params));'
+  - '    llama_sampler_chain_add(backend_sampler_chain.get(), llama_sampler_init_dist(seed));'
+  - '    std::vector<llama_sampler_seq_config> backend_sampler_configs = {{ seq_id,
+    backend_sampler_chain.get() }};'
+  - ''
+  - '    test_context test_ctx(params, backend_sampler_configs);'
+  - ''
+  - '    llama_batch batch = llama_batch_init(512, 0, 1);'
+  - '    std::string prompt = "Hello";'
+  - ''
+  - '    std::vector<llama_token> tokens;'
+  - '    tokens.push_back(llama_vocab_bos(test_ctx.vocab));'
+  - ''
+  - '    std::vector<llama_token> prompt_tokens(32);'
+  - '    int n_tokens = llama_tokenize(test_ctx.vocab, prompt.c_str(), prompt.length(),'
+  - '                                   prompt_tokens.data(), prompt_tokens.size(),'
+  - '                                   false, false);'
+  - '    for (int i = 0; i < n_tokens; i++) {'
+  - '        tokens.push_back(prompt_tokens[i]);'
+  - '    }'
+  - ''
+  - '    for (size_t i = 0; i < tokens.size(); i++) {'
+  - '        // set all tokens as output to trigger error'
+  - '        common_batch_add(batch, tokens[i], i, { seq_id }, true);'
+  - '    }'
+  - ''
+  - '    printf(">>> test_max_outputs expected error start:\n");'
+  - '    const int ret = llama_decode(test_ctx.ctx.get(), batch);'
+  - '    GGML_ASSERT(ret != 0 && "llama_decode should not succeed multiple outputs
+    per sequence");'
+  - '    printf("<<< test_max_outputs expected error end.\n");'
+  - '    llama_batch_free(batch);'
+  - ''
+  - '    printf("backend max outputs test PASSED\n");'
+  - '}'
+  desc: Tests that llama_decode correctly rejects batches where multiple tokens are
+    marked as outputs for the same sequence, which is an invalid configuration.
+  line: 1012-1058
+  name: test_backend_max_outputs
+- code:
+  - static test_args parse_cli(int argc, char ** argv) {
+  - '    test_args out;'
+  - ''
+  - '    for (int i = 1; i < argc; ++i) {'
+  - '        const char * arg = argv[i];'
+  - ''
+  - '        if (std::strcmp(arg, "--test") == 0) {'
+  - '            if (i + 1 >= argc) {'
+  - '                fprintf(stderr, "--test expects a value\n");'
+  - '                exit(EXIT_FAILURE);'
+  - '            }'
+  - '            out.test = argv[++i];'
+  - '            continue;'
+  - '        }'
+  - '        if (std::strncmp(arg, "--test=", 7) == 0) {'
+  - '            out.test = arg + 7;'
+  - '            continue;'
+  - '        }'
+  - '        if (std::strcmp(arg, "--model") == 0) {'
+  - '            if (i + 1 >= argc) {'
+  - '                fprintf(stderr, "--model expects a value\n");'
+  - '                exit(EXIT_FAILURE);'
+  - '            }'
+  - '            out.model = argv[++i];'
+  - '            continue;'
+  - '        }'
+  - '        if (std::strncmp(arg, "--model=", 8) == 0) {'
+  - '            out.model = arg + 8;'
+  - '            continue;'
+  - '        }'
+  - '        if (std::strcmp(arg, "--device") == 0) {'
+  - '            if (i + 1 >= argc) {'
+  - '                fprintf(stderr, "--device expects a value (cpu or gpu)\n");'
+  - '                exit(EXIT_FAILURE);'
+  - '            }'
+  - '            out.device = argv[++i];'
+  - '            continue;'
+  - '        }'
+  - '        if (std::strncmp(arg, "--device=", 9) == 0) {'
+  - '            out.device = arg + 9;'
+  - '            continue;'
+  - '        }'
+  - '        if (out.model.empty()) {'
+  - '            out.model = arg;'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        fprintf(stderr, "Unexpected argument: %s\n", arg);'
+  - '        exit(EXIT_FAILURE);'
+  - '    }'
+  - ''
+  - '    if (out.device != "cpu" && out.device != "gpu" && out.device != "auto") {'
+  - '        fprintf(stderr, "Invalid device ''%s''. Must be ''cpu'', ''gpu'' or ''auto''\n",
+    out.device.c_str());'
+  - '        exit(EXIT_FAILURE);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: Parses command-line arguments to configure test execution, supporting --test,
+    --model, --device flags and positional model path.
+  line: 1078-1140
+  name: parse_cli
+- code:
+  - static std::vector<const backend_test_case *> collect_tests_to_run(const std::string
+    & requested) {
+  - '    std::vector<const backend_test_case *> selected;'
+  - ''
+  - '    if (!requested.empty()) {'
+  - '        for (const auto & test : BACKEND_TESTS) {'
+  - '            if (test.name == requested) {'
+  - '                selected.push_back(&test);'
+  - '                break;'
+  - '            }'
+  - '        }'
+  - '        if (selected.empty()) {'
+  - '            fprintf(stderr, "Unknown test ''%s''. Available tests:\n", requested.c_str());'
+  - '            for (const auto & test : BACKEND_TESTS) {'
+  - '                fprintf(stderr, "  %s\n", test.name.c_str());'
+  - '            }'
+  - '            exit(EXIT_FAILURE);'
+  - '        }'
+  - '    } else {'
+  - '        for (const auto & test : BACKEND_TESTS) {'
+  - '            if (test.enabled_by_default) {'
+  - '                selected.push_back(&test);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - ''
+  - '    if (selected.empty()) {'
+  - '        fprintf(stderr, "No backend sampling tests selected. Use --test=<name>
+    to pick one.\n");'
+  - '    }'
+  - ''
+  - '    return selected;'
+  - '}'
+  desc: Collects the list of test cases to execute based on the requested test name,
+    either selecting a single test or all enabled-by-default tests.
+  line: 1142-1182
+  name: collect_tests_to_run
+- code:
+  - static void run_tests(const std::vector<const backend_test_case *> & tests, const
+    test_params & args) {
+  - '    for (const auto & test : tests) {'
+  - '        fprintf(stderr, "\n=== %s ===\n", test->name.c_str());'
+  - '        try {'
+  - '            test->fn(args);'
+  - '        } catch (const std::exception & e) {'
+  - '            fprintf(stderr, "Error running test ''%s'': %s\n", test->name.c_str(),
+    e.what());'
+  - '            exit(EXIT_FAILURE);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Executes a collection of test cases, catching exceptions and exiting with
+    an error message if any test fails.
+  line: 1184-1198
+  name: run_tests
+- code:
+  - int main(int argc, char ** argv) {
+  - '    test_args args = parse_cli(argc, argv);'
+  - ''
+  - '    if (args.model.empty()) {'
+  - '        args.model = get_model_or_exit(1, argv);'
+  - '    }'
+  - ''
+  - '    {'
+  - '        std::ifstream file(args.model);'
+  - '        if (!file.is_open()) {'
+  - '            fprintf(stderr, "no model ''%s'' found\n", args.model.c_str());'
+  - '            return EXIT_FAILURE;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    fprintf(stderr, "using ''%s''\n", args.model.c_str());'
+  - ''
+  - '    llama_backend_init();'
+  - ''
+  - '    test_params params = {'
+  - '        /*.model =*/ load_model(args),'
+  - '    };'
+  - ''
+  - '    const std::vector<const backend_test_case *> tests = collect_tests_to_run(args.test);'
+  - '    if (!tests.empty()) {'
+  - '        run_tests(tests, params);'
+  - '    }'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 'The main function that orchestrates the test suite: parses command-line arguments,
+    loads the model, initializes the backend, collects tests to run, and executes
+    them.'
+  line: 1200-1230
+  name: __main__

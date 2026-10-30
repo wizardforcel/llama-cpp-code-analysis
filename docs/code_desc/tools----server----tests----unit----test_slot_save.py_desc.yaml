@@ -1,0 +1,114 @@
+classes: []
+desc: 该文件是服务器槽位保存与恢复功能的单元测试，验证llama.cpp服务器在保存槽位状态后能正确恢复，并验证了缓存的prompt处理逻辑，确保每个槽位的独立性以及擦除操作的正确性。
+file: tools/server/tests/unit/test_slot_save.py
+funcs:
+- code:
+  - '@pytest.fixture(autouse=True)'
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.tinyllama2()'
+  - '    server.slot_save_path = "./tmp"'
+  - '    server.temperature = 0.0'
+  desc: 这是一个pytest夹具函数，在每个测试执行前都会重置全局的server对象，设置槽位保存路径和温度参数。
+  line: 8-13
+  name: create_server
+- code:
+  - 'def test_slot_save_restore():'
+  - '    global server'
+  - '    server.start()'
+  - ''
+  - '    # First prompt in slot 1 should be fully processed'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of France?",'
+  - '        "id_slot": 1,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Whiskers|Flana)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed'
+  - ''
+  - '    # Save state of slot 1'
+  - '    res = server.make_request("POST", "/slots/1?action=save", data={'
+  - '        "filename": "slot1.bin",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert res.body["n_saved"] == 84'
+  - ''
+  - '    # Since we have cache, this should only process the last tokens'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of Germany?",'
+  - '        "id_slot": 1,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Jack|said)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 6  # only different part is processed'
+  - ''
+  - '    # Loading the saved cache into slot 0'
+  - '    res = server.make_request("POST", "/slots/0?action=restore", data={'
+  - '        "filename": "slot1.bin",'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert res.body["n_restored"] == 84'
+  - ''
+  - '    # Since we have cache, slot 0 should only process the last tokens'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of Germany?",'
+  - '        "id_slot": 0,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Jack|said)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 6  # only different part is processed'
+  - ''
+  - '    # For verification that slot 1 was not corrupted during slot 0 load, same
+    thing should work'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of Germany?",'
+  - '        "id_slot": 1,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Jack|said)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 1'
+  desc: 测试槽位保存和恢复功能，验证保存状态后重新加载能正确利用缓存，只处理未缓存的令牌，并确保多个槽位之间互不干扰。
+  line: 15-64
+  name: test_slot_save_restore
+- code:
+  - 'def test_slot_erase():'
+  - '    global server'
+  - '    server.start()'
+  - ''
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of France?",'
+  - '        "id_slot": 1,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Whiskers|Flana)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed'
+  - ''
+  - '    # erase slot 1'
+  - '    res = server.make_request("POST", "/slots/1?action=erase")'
+  - '    assert res.status_code == 200'
+  - ''
+  - '    # re-run the same prompt, it should process all tokens again'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "What is the capital of France?",'
+  - '        "id_slot": 1,'
+  - '        "cache_prompt": True,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert match_regex("(Whiskers|Flana)+", res.body["content"])'
+  - '    assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed'
+  desc: 测试槽位擦除功能，验证擦除后再次运行相同prompt时，所有令牌需要重新处理，即缓存彻底被清除。
+  line: 66-89
+  name: test_slot_erase
+- code:
+  - import pytest
+  - from utils import *
+  - ''
+  - server = ServerPreset.tinyllama2()
+  desc: 模块的全局代码部分，初始化全局服务器对象为tinyllama2预设，使每个测试函数可以访问该全局实例。
+  line: 1-6
+  name: __main__

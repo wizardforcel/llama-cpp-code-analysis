@@ -1,0 +1,590 @@
+code_map:
+- tests/test-alloc.cpp —— GGML 内存分配器测试
+- ├── 虚拟后端定义（第21-115行）
+- '│   ├── dummy_backend_context                  # 虚拟后端上下文'
+- '│   │   └── allocated_total()                  # 统计已分配总内存（25-31行）'
+- '│   ├── dummy_backend                          # 虚拟后端实例（context + buffer_type）'
+- '│   ├── dummy_backend_buffer_type_get_name()   # 缓冲区类型名称（34-36行）'
+- '│   ├── dummy_backend_buffer_type_alloc_buffer() # 分配缓冲区（39-44行）'
+- '│   ├── dummy_backend_buffer_type_get_alignment() # 返回对齐要求（47-50行）'
+- '│   ├── dummy_backend_buffer_type_get_max_size()  # 返回最大缓冲区限制（53-56行）'
+- '│   ├── dummy_backend_buffer_type_is_host()       # 标记为主机内存（59-61行）'
+- '│   ├── dummy_backend_buffer_free_buffer()        # 从列表中移除并释放缓冲区（66-73行）'
+- '│   ├── dummy_backend_buffer_get_base()           # 返回固定基地址（76-78行）'
+- '│   ├── dummy_backend_buffer_init_tensor()        # 空操作初始化（81-83行）'
+- '│   ├── dummy_backend_buffer_memset_tensor()      # 空操作（85行）'
+- '│   ├── dummy_backend_buffer_set_tensor()         # 空操作（87行）'
+- '│   ├── dummy_backend_buffer_get_tensor()         # 空操作（89行）'
+- '│   ├── dummy_backend_buffer_clear()              # 空操作（91行）'
+- '│   └── dummy_backend_init(max_buffer_size, alignment) # 初始化虚拟后端（96-115行）'
+- ├── 测试辅助工具（第125-265行）
+- '│   ├── make_context()                    # 创建 ggml 上下文与计算图（125-133行）'
+- '│   ├── make_input_1d()                   # 创建一维输入张量（136-140行）'
+- '│   ├── make_input_with_size()            # 按字节大小创建输入张量（143-146行）'
+- '│   ├── assign_names()                    # 为上下文所有张量统一命名（148-153行）'
+- '│   ├── get_leaf_id()                     # 按名称查找叶子节点索引（156-165行）'
+- '│   ├── get_node_id()                     # 按名称查找节点索引（167-176行）'
+- '│   ├── allocate_graph()                  # 分配图内存（gallocr 封装）（181-188行）'
+- '│   ├── check_all_allocated()             # 验证所有节点已分配（193-199行）'
+- '│   ├── check_max_size()                  # 验证张量不超出缓冲区上限（204-211行）'
+- '│   ├── can_reuse_memory()                # 判断其他张量是否仍被引用（213-231行）'
+- '│   ├── memory_overlap()                  # 检查两区间是否交叠（234-242行）'
+- '│   ├── get_view_source()                 # 回溯到最终视图源张量（244-249行）'
+- '│   └── check_no_overlap()                # 全图张量重叠检查（251-265行）'
+- ├── 分配器行为测试（第269-556行）
+- '│   ├── test_max_size_too_many_tensors()  # 缓冲区容量耗尽→自动分裂（273-291行）'
+- '│   ├── test_max_size_tensor_too_large()  # 大张量跨越缓冲区剩余空间（294-309行）'
+- '│   ├── test_tensor_larger_than_max_size() # 单张量超上限→分配更大缓冲区（313-325行）'
+- '│   ├── test_not_enough_chunks()           # 超出最大块数→动态增长（329-349行）'
+- '│   ├── test_fill_leftover_space()         # 填充缓冲区剩余空间（352-366行）'
+- '│   ├── test_view_inplace()                # 视图+in-place 零额外内存（369-385行）'
+- '│   ├── test_reuse_and_free()              # 释放块的复用与再分配（388-406行）'
+- '│   ├── test_merge_free_block()            # 相邻空闲块合并（409-428行）'
+- '│   ├── test_prefer_already_allocated_memory() # 优先复用已分配内存（432-444行）'
+- '│   ├── test_multiple_buffer_types()       # 多缓冲区类型手动映射（448-503行）'
+- '│   ├── test_buffer_size_zero()            # 零尺寸缓冲区的安全处理（506-528行）'
+- '│   └── test_reallocation()                # gallocr 复用时的重新分配（531-556行）'
+- '├── run()                                 # 测试执行辅助函数（559-564行）'
+- '└── main()                                # 按序运行全部 13 个测试（566-583行）'
+- ''
+- tests/test-barrier.cpp —— 线程池同步压力测试
+- '├── test_barrier(n_threads, n_rounds)     # 大量小算子图的屏障开销基准（12-86行）'
+- │   ├── 构造 1000×2 个 mul_mat 链式图（Q4_0 量化）
+- │   └── 输出每节点纳秒耗时统计
+- '├── test_active(n_threads, n_rounds)      # 动态线程数切换竞态检测（89-135行）'
+- │   ├── (i%4)==0 → 1 线程，否则 → n_threads
+- │   └── 每轮重建 cplan 验证竞态安全
+- '├── test_multi_graph(n_threads, n_rounds) # 多图交替执行测试（138-204行）'
+- '│   ├── gf0: 64维 2层链  vs  gf1: 256维 4层链'
+- │   └── 交替计算验证 work_data 隔离
+- '└── __main__                              # 解析线程数/轮数参数，调度三个测试（207-222行）'
+- ''
+- tests/test-llama-archs.cpp —— 跨后端架构一致性测试
+- ├── 随机数据与工具
+- '│   ├── nmse()                            # 归一化均方误差计算（30-46行）'
+- '│   ├── set_tensor_data()                 # 按名称哈希生成确定性随机权重（49-70行）'
+- '│   ├── usage()                           # 打印程序用法（73-75行）'
+- '│   ├── get_tokens()                      # 生成随机 token 序列（77-87行）'
+- '│   └── silent_model_load_progress()      # 静默进度回调（192-194行）'
+- ├── 模型构造与推理
+- '│   ├── get_gguf_ctx()                    # 按架构生成随机权重 GGUF（89-190行）'
+- '│   ├── get_model_and_ctx()               # 从 GGUF 上下文或文件创建模型+上下文（196-224行）'
+- '│   ├── get_logits()                      # 编码/解码获取全部 logits（226-260行）'
+- '│   ├── moe_mandatory()                   # 判断架构是否强制 MoE（262-306行）'
+- '│   └── moe_implemented()                 # 判断架构是否支持 MoE 变体（308-324行）'
+- ├── 测试入口
+- '│   ├── save_models()                     # 保存全部架构 GGUF 到目录模式（326-389行）'
+- '│   └── test_backends()                   # CPU vs 各后端 NMSE 对比+往返测试（391-491行）'
+- '└── main()                                # CLI 参数解析，二选一入口（493-547行）'
+- ''
+- tests/test-thread-safety.cpp —— 多线程并发推理测试
+- '└── __main__                              # 主测试流程（16-137行）'
+- '    ├── 枚举 GPU 设备列表，加载 num_models = gpu_count + 2 个模型副本'
+- '    ├── 每模型派生 n_parallel 个上下文线程执行 decode 循环'
+- '    └── std::atomic<bool> failed 聚合错误'
+- ''
+- tests/test-autorelease.cpp —— 自动释放简单测试
+- '└── main()                                # 在独立线程中执行完整 init/free 周期（11-26行）'
+- ''
+- tests/test-model-load-cancel.cpp —— 加载取消测试
+- '└── main()                                # 加载进度超过 50% 时取消（5-26行）'
+- ''
+- tests/test-state-restore-fragmented.cpp —— KV 碎片状态恢复测试
+- '└── __main__                              # 三序列 KV 碎片制造与恢复（14-119行）'
+- '    ├── 交错解码 3 序列创建共享 KV 缓存'
+- '    ├── llama_state_seq_get_data() 保存序列 1 状态'
+- '    ├── llama_memory_seq_rm() 删除序列 1 → 制造碎片'
+- '    └── llama_state_seq_set_data() 非连续槽位恢复'
+- ''
+- tests/test-log.cpp —— 日志系统压力测试
+- '└── __main__                              # 8线程×1000条随机类型日志并发写入（5-32行）'
+- '    ├── 随机选择 INF/WRN/ERR/DBG 日志级别'
+- '    └── 随机切换 timestamps / prefixes 配置'
+exercises:
+- contents:
+  - 打开 `tests/test-alloc.cpp`，精读以下两个函数：
+  - 1. `test_max_size_too_many_tensors()`（第273-291行）
+  - 2. `test_reuse_and_free()`（第388-406行）
+  - ''
+  - 画出每个测试的内存布局图，标注：
+  - '- x[0]..x[n] 各自占用的缓冲区编号、起始偏移、大小'
+  - '- 每次分配后空闲块的变化（哪些被使用，哪些被合并）'
+  - '- 原地操作（in-place）张量复用了谁的内存'
+  - ''
+  - 然后回答：
+  - '- 为什么 `test_max_size_too_many_tensors` 断言 `allocated_total() <= 16 + 16`？'
+  - '- 在 `test_reuse_and_free` 中，x[6] 复用了哪个张量的内存？为什么 x[7] 没有额外内存？'
+  - '- 如果把 `ggml_pad(ctx, x[0], 2, 0, 0, 0)` 改为 `ggml_pad(ctx, x[0], 4, 0, 0, 0)`，最多需要多大的
+    max_buffer_size 才能保证该测试通过？'
+  'no': 1
+  title: 手工推演 gallocr 分配流程
+- contents:
+  - 打开 `tests/test-alloc.cpp` 第213-265行，精读以下函数：
+  - '- `can_reuse_memory()`'
+  - '- `memory_overlap()`'
+  - '- `check_no_overlap()`'
+  - '- `get_view_source()`'
+  - ''
+  - 构造并分析以下场景：
+  - 1. 一个张量被标记为 OUTPUT，还能复用吗？
+  - 2. 如果张量 t1 是 INPLACE 操作的输入且位于第 i 个节点，后续第 i+1 个节点也读取 t1，t1 的内存还能被当前节点复用吗？
+  - 3. 构造一个视图链（view → view → view），验证 `check_no_overlap` 是否正确允许它们在视图源共享同一内存区块。
+  - ''
+  - 然后实现一个新的测试用例 `test_inplace_after_view()`：
+  - '- 创建一个数据张量 x，对它做 view 得到 v'
+  - '- 用 v 作为 in-place add 的第一个操作数'
+  - '- 验证 `can_reuse_memory` 在这种情况下是否正确返回 false（防止覆写视图源）'
+  'no': 2
+  title: can_reuse_memory 边界场景分析
+- contents:
+  - 精读 `tests/test-llama-archs.cpp` 第391-491行 `test_backends()` 函数的完整实现，以及第30-46行的
+    `nmse()` 函数。
+  - ''
+  - 回答以下问题：
+  - 1. `test_backends` 中为什么先计算 CPU logits 作为基准，再逐个设备对比？如果把某个 GPU 作为基准会发生什么？
+  - 2. NMSE 阈值为什么是 1e-4 而不是 1e-6？改成 1e-6 会导致哪些后端测试失败？为什么？（提示：考虑 FP16 vs FP32、SDPA
+    精度差异）
+  - 3. 为什么 `encode` 只对 `LLM_ARCH_T5` 为 true？T5 的输入路径与普通解码器有什么本质区别？
+  - 4. 解释 `logits_roundtrip[i] != logits_dev[i]` 这个逐字节精确比对为何能捕获内存布局或序列化的细微差异。
+  - 5. 统计 `moe_mandatory()` 中列出的架构数量，与 `llm_arch_all()` 总数对比，说明 MoE 架构在当前模型生态中的占比趋势。
+  - ''
+  - 扩展练习：尝试在本地（需有 GPU）运行该测试，验证 QWEN3MOE 架构在 CUDA 后端的 NMSE 值和 Roundtrip 结果。
+  'no': 3
+  title: 多后端 NMSE 对比矩阵
+- contents:
+  - 精读 `tests/test-thread-safety.cpp` 的完整 `main()` 函数（第16-137行）。
+  - ''
+  - 回答以下问题：
+  - 1. `num_models = gpu_dev_count + 2`，这多出的两个模型副本分别对应什么场景（split_mode 如何配置）？
+  - 2. `std::atomic<bool> failed` 用在这里有什么意义？如果改用一个普通的 `bool failed` 会发生什么？
+  - 3. 每个线程内部 sampler 和 batch 都是线程局部的，是否存在共享状态？如果有，是什么？它是线程安全的吗？为什么？
+  - 4. 假设你只有一个 CPU，没有 GPU，这个测试退化成什么场景？结论是否仍然有效？
+  - ''
+  - 进阶：在 `test-barrier.cpp` 的 `test_active` 中，如果 `(i%4)==0` 改为 `(i%2)==0`（更频繁切换），测试会更加严格吗？为什么？（从竞态窗口大小的角度分析）
+  'no': 4
+  title: 并发压力测试的正确性证明
+- contents:
+  - 精读 `tests/test-state-restore-fragmented.cpp`（第14-119行），理解完整的碎片制造与恢复流程。
+  - ''
+  - 画出 KV 缓存的槽位状态图，标注：
+  - '- 初始状态：3 个序列交错填充后的槽位占用模式'
+  - '- 删除序列 1 后的「空洞」分布'
+  - '- 状态恢复时的新槽位分配方式（非连续 vs 连续）'
+  - ''
+  - 然后回答：
+  - 1. 为什么 `llama_state_seq_set_data` 需要支持非连续写入？如果它只能写入连续槽位，什么场景下会失败？
+  - 2. `seq_state` 的大小包含哪些内容？为什么 KV 缓存的状态比模型 weights 更需要支持碎片恢复？
+  - 3. 如果把 `params.n_parallel` 从 3 改为 5，测试逻辑需要做什么调整？
+  - 4. 设计一个更极端的碎片场景（例如 10 个序列，删除第 2、4、6 个），思考 `llama_state_seq_set_data` 该如何应对。
+  'no': 5
+  title: 构造 KV 碎片恢复的完整状态机
+- contents:
+  - 基于 `tests/test-alloc.cpp` 中的 `dummy_backend_init()` 和 `dummy_backend_context`，设计并编码实现以下新测试用例：
+  - ''
+  - 1. `test_alignment_constraint()`：测试当 alignment 设置为 32 或 64 时，分配器是否正确处理内存对齐，验证
+    `check_max_size` 的行为变化。
+  - 2. `test_empty_graph()`：构建一个不包含任何节点的空计算图（只有 leaf 输入），验证 gallocr 是否能正确处理这种边界情况而不崩溃。
+  - 3. `test_view_chain_overlap()`：构造三层视图链（A → view → B → view → C），在 C 上执行 inplace
+    操作，验证 `get_view_source` 和 `can_reuse_memory` 是否正确识别内存冲突。
+  - ''
+  - 要求：为每个新测试编写完整的测试函数，使用 `run()` 注册到 main 中，并确保通过 `check_all_allocated` 和 `check_no_overlap`
+    验证。
+  'no': 6
+  title: 构建虚拟后端的扩展测试
+learning_targets:
+- 理解 gallocr 内存分配器的虚拟后端测试架构，包括 dummy_backend 与 dummy_backend_context 的设计意图、接口实现与内存统计机制
+- 掌握 GGML 内存分配器的关键行为：缓冲区分裂、碎片整理、张量复用、视图零拷贝、多缓冲区类型分配与重新分配
+- 理解线程池屏障同步的压力测试方法，包括动态线程数切换、多图交替计算的竞态与隔离性验证
+- 掌握跨后端数值一致性验证的完整流程：随机权重 GGUF 构造、NMSE 误差度量、保存-加载往返测试与 MoE 架构分类
+- 理解多模型 × 多上下文笛卡尔积并发测试的设计模式与原子标志位错误聚合机制
+- 掌握模型加载取消与 KV 缓存碎片状态恢复的工程细节，以及日志库并发压力测试方法
+- 能够独立编写针对内存分配器、并发场景和模型架构的白盒测试用例
+life_analogy:
+- 想象 llama.cpp 的测试体系是一个**综合质检实验室**：
+- ''
+- '**虚拟后端（dummy_backend）= 压力测试沙盘**'
+- '- 就像工程师在风洞中测试飞机机翼而非直接装机试飞，dummy_backend 用纯内存模拟 GPU/CPU 硬件行为'
+- '- 可精确配置最大缓冲区大小和对齐约束，如同调节风洞的气流参数，专测极端工况'
+- ''
+- '**gallocr 分配器 = 智能仓库管理员**'
+- '- 张量 = 货物，缓冲区 = 货架，空闲块 = 空出的隔间'
+- '- 管理员必须高效利用货架空间：满载时新建货架（缓冲区分裂）、相邻空格合并成更大空间（碎片整理）、优先重用腾出的空格（已分配复用）'
+- '- 视图操作 = 给同一批货物贴不同标签，不需要新存储空间'
+- '- get_view_source = 溯源系统，确保任何标签都能找回原始货物位置'
+- ''
+- '**屏障测试 = 交响乐团指挥考核**'
+- '- 大量小算子 = 大量短音符，指挥必须在极短时间内精确同步所有乐手'
+- '- 动态线程数切换 = 演出中途更换乐手数量，考验指挥的实时调度能力'
+- '- 多图交替 = 同时指挥两首不同乐曲，防止乐谱（work_data）混淆'
+- ''
+- '**多线程推理 = 多车道高速收费站**'
+- '- 每个上下文 = 一条独立车道，每个模型副本 = 一个收费站'
+- '- 管理不善（缺乏线程安全）会导致车辆碰撞（数据竞争）或收费站崩溃（段错误）'
+- ''
+- '**模型加载取消 = 紧急制动**'
+- '- 下载/加载大模型如同高速列车运行，用户点击「取消」时必须在 50% 进度时安全停车，不损轨道不浪费燃料（无内存泄漏）'
+- ''
+- '**KV 碎片恢复 = 碎片化的停车位**'
+- '- 序列在 KV 缓存中交错停放，删除中间序列后形成不连续空位'
+- '- 状态恢复必须能跨碎片重新组装完整序列，就像把一辆被拆分停放的卡车重新拼起来'
+'no': 106
+summary:
+- concept: dummy_backend / dummy_backend_context
+  desc: 虚拟后端沙盘，纯内存模拟硬件，可配置容量/对齐约束，专注测试分配策略逻辑
+- concept: dummy_backend_buffer_type_*
+  desc: 缓冲区类型接口家族：名称/对齐/大小/主机标识，定义虚拟后端的内存属性边界
+- concept: dummy_backend_buffer_*
+  desc: 缓冲区操作接口：分配/释放/基地址/初始化/读写清空，全空实现剥离硬件依赖
+- concept: ggml_backend_buffer
+  desc: GGML 缓冲区抽象，虚拟后端通过空接口实现记录分配行为，剥离真实硬件依赖
+- concept: ggml_gallocr / gallocr
+  desc: GGML 全局分配器，负责计算图内存的自动布局：缓冲区分裂、碎片整理、张量复用
+- concept: make_context / make_input_1d / make_input_with_size
+  desc: 测试夹具工厂：快速构建标准化 ggml 上下文与输入张量，确保测试一致性
+- concept: assign_names / get_leaf_id / get_node_id
+  desc: 图节点标识工具：统一命名与索引查找，支撑多缓冲区手动映射与调试
+- concept: allocate_graph
+  desc: gallocr 分配入口封装：设置输出、构建前向图、执行内存分配的一站式辅助
+- concept: check_all_allocated / check_max_size
+  desc: 分配完备性校验：确保所有张量已分配缓冲区且不超出后端容量限制
+- concept: can_reuse_memory()
+  desc: 引用生命周期分析：检查后续节点是否仍引用某张量，决定内存能否安全复用
+- concept: memory_overlap() / check_no_overlap()
+  desc: 内存安全警卫：严格校验张量区间是否交叠，仅允许声明 in-place 的算子复用
+- concept: get_view_source()
+  desc: 视图链溯源：沿 view_src 回溯到最终源张量，确保视图不占用新内存
+- concept: 缓冲区分裂（test_max_size_too_many_tensors）
+  desc: 当缓冲区容量耗尽时，gallocr 自动分配新缓冲区或更大缓冲区
+- concept: 碎片整理（merge_free_block）
+  desc: 相邻空闲块自动合并为更大可用块，减少碎片，提升大对象分配成功率
+- concept: test_prefer_already_allocated_memory
+  desc: 优先复用已释放内存块，减少真实分配开销，验证分配器的空间局部性优化
+- concept: test_multiple_buffer_types
+  desc: 多缓冲区类型手动映射测试，验证跨设备 leaf/node 分配策略的正确性
+- concept: test_reallocation
+  desc: gallocr 复用场景：不同图复用同一分配器时，自动检测块大小变化并重新分配
+- concept: test_barrier（线程池压力测试）
+  desc: 1000 层链式小算子图强制高频线程同步，暴露屏障开销的 ACM 复杂度
+- concept: test_active（动态线程切换）
+  desc: 每4轮在1线程和n线程间切换，验证 cplan 重建与数据竞争的线程安全性
+- concept: test_multi_graph（多图交替）
+  desc: 不同大小图交替计算，验证 work_data 缓冲区在图切换时的隔离正确性
+- concept: set_tensor_data / get_tokens
+  desc: 确定性测试数据生成器：基于名称哈希的随机权重与随机 token 序列，保证可复现性
+- concept: get_gguf_ctx()
+  desc: 架构-权重解耦的「空白模型」工厂，用随机权重+GGUF 元数据构造全部架构的可测试模型
+- concept: get_model_and_ctx / get_logits
+  desc: 模型-上下文创建与推理结果提取封装，屏蔽 llama_model 与 GGUF 的底层交互细节
+- concept: NMSE（归一化均方误差）
+  desc: 跨后端数值精度的度量衡：CPU vs GPU logits 对比，阈值 1e-4 判定一致性
+- concept: moe_mandatory / moe_implemented
+  desc: MoE 架构分类器：标记哪些架构必须启用专家路由、哪些可选，驱动测试矩阵生成
+- concept: save_models / test_backends
+  desc: 模型保存与后端验证双模式：支持批量生成 GGUF 或执行跨后端 NMSE 对比
+- concept: 往返一致性（Roundtrip）
+  desc: 模型保存→回载→推理，验证序列化/反序列化无损，确保保存操作不破坏权重精度
+- concept: std::atomic<bool> failed（错误聚合）
+  desc: 多线程测试的「安全网」：不立即 abort，让所有线程跑完收集完整错误信息
+- concept: 进度回调取消（progress_callback）
+  desc: 优雅的加载中断机制：返回 true 即触发取消，验证取消后无内存泄漏且返回 nullptr
+- concept: KV 碎片状态恢复
+  desc: llama_state_seq_set_data 支持非连续槽位写入，解决长期运行导致的缓存碎片化问题
+- concept: 多模型×多上下文并发
+  desc: 笛卡尔积压测：每个 GPU/CPU 设备各加载模型副本，每副本再派生多上下文并行推理，验证全矩阵稳定性
+- concept: 自动释放（autorelease）
+  desc: 在独立线程中执行完整 init/free 周期，验证全局状态在任意线程入口/出口处的清理正确性
+- concept: 日志并发压力（test-log）
+  desc: 8线程并发写入与配置热切换，验证日志库在高压环境下的线程安全性
+units:
+- codes:
+  - file: tests/test-alloc.cpp
+    line: 25-31
+    method_or_func: dummy_backend_context.allocated_total()
+  - file: tests/test-alloc.cpp
+    line: 34-36
+    method_or_func: dummy_backend_buffer_type_get_name()
+  - file: tests/test-alloc.cpp
+    line: 39-44
+    method_or_func: dummy_backend_buffer_type_alloc_buffer()
+  - file: tests/test-alloc.cpp
+    line: 47-50
+    method_or_func: dummy_backend_buffer_type_get_alignment()
+  - file: tests/test-alloc.cpp
+    line: 53-56
+    method_or_func: dummy_backend_buffer_type_get_max_size()
+  - file: tests/test-alloc.cpp
+    line: 59-61
+    method_or_func: dummy_backend_buffer_type_is_host()
+  - file: tests/test-alloc.cpp
+    line: 66-73
+    method_or_func: dummy_backend_buffer_free_buffer()
+  - file: tests/test-alloc.cpp
+    line: 76-78
+    method_or_func: dummy_backend_buffer_get_base()
+  - file: tests/test-alloc.cpp
+    line: 81-83
+    method_or_func: dummy_backend_buffer_init_tensor()
+  - file: tests/test-alloc.cpp
+    line: 85-85
+    method_or_func: dummy_backend_buffer_memset_tensor()
+  - file: tests/test-alloc.cpp
+    line: 87-87
+    method_or_func: dummy_backend_buffer_set_tensor()
+  - file: tests/test-alloc.cpp
+    line: 89-89
+    method_or_func: dummy_backend_buffer_get_tensor()
+  - file: tests/test-alloc.cpp
+    line: 91-91
+    method_or_func: dummy_backend_buffer_clear()
+  - file: tests/test-alloc.cpp
+    line: 96-115
+    method_or_func: dummy_backend_init()
+  - file: tests/test-alloc.cpp
+    line: 125-133
+    method_or_func: make_context()
+  - file: tests/test-alloc.cpp
+    line: 136-140
+    method_or_func: make_input_1d()
+  - file: tests/test-alloc.cpp
+    line: 143-146
+    method_or_func: make_input_with_size()
+  - file: tests/test-alloc.cpp
+    line: 148-153
+    method_or_func: assign_names()
+  - file: tests/test-alloc.cpp
+    line: 156-165
+    method_or_func: get_leaf_id()
+  - file: tests/test-alloc.cpp
+    line: 167-176
+    method_or_func: get_node_id()
+  - file: tests/test-alloc.cpp
+    line: 181-188
+    method_or_func: allocate_graph()
+  - file: tests/test-alloc.cpp
+    line: 193-199
+    method_or_func: check_all_allocated()
+  - file: tests/test-alloc.cpp
+    line: 204-211
+    method_or_func: check_max_size()
+  - file: tests/test-alloc.cpp
+    line: 213-231
+    method_or_func: can_reuse_memory()
+  - file: tests/test-alloc.cpp
+    line: 234-242
+    method_or_func: memory_overlap()
+  - file: tests/test-alloc.cpp
+    line: 244-249
+    method_or_func: get_view_source()
+  - file: tests/test-alloc.cpp
+    line: 251-265
+    method_or_func: check_no_overlap()
+  name: 虚拟后端与测试基础设施 —— 内存分配的「模拟沙盘与度量衡」
+  'no': 1
+  points:
+  - '**为什么需要 dummy_backend_context 与 dummy_backend？**'
+  - '- 真实 GPU/CPU 后端不可控且依赖硬件，测试需要可编程的「内存演练场」'
+  - '- dummy_backend_context 通过 max_buffer_size 和 alignment 精确模拟显存受限、对齐要求等真实场景'
+  - '- allocated_total() 实时统计已分配内存，是验证分配器行为正确性的核心断言依据'
+  - '**ggml_backend_buffer 接口的空操作艺术**'
+  - '- buffer_interface 全空操作实现（set/get/memset/clear），剥离硬件细节，专注验证 gallocr 的分配策略而非数据传输'
+  - '- get_base() 返回固定地址 alloc_base，使得所有张量地址可预测，便于计算精确的内存布局断言'
+  - '**测试夹具的标准化构造**'
+  - '- make_context() 统一创建 48 倍张量开销的 ggml 上下文，确保所有测试在一致环境下运行'
+  - '- make_input_1d/make_input_with_size 快速生成标记为 GGML_TENSOR_FLAG_INPUT 的标准输入张量'
+  - '- assign_names/get_leaf_id/get_node_id 建立张量名称与图节点索引的映射，支撑多缓冲区类型的手动指定'
+  - '**内存安全的三重校验机制**'
+  - '- check_all_allocated 确保每个节点都关联了有效缓冲区（buffer != nullptr, data != nullptr）'
+  - '- check_max_size 验证张量地址+大小不超出 buffer_type 的 max_size 限制'
+  - '- memory_overlap/can_reuse_memory/check_no_overlap 构成图级内存安全网：检测区间交叠、判断引用生命周期、允许
+    in-place 复用'
+  - '- get_view_source 递归回溯 view_src，确保视图张量不会被误判为占用独立内存'
+- codes:
+  - file: tests/test-alloc.cpp
+    line: 273-291
+    method_or_func: test_max_size_too_many_tensors()
+  - file: tests/test-alloc.cpp
+    line: 294-309
+    method_or_func: test_max_size_tensor_too_large()
+  - file: tests/test-alloc.cpp
+    line: 313-325
+    method_or_func: test_tensor_larger_than_max_size()
+  - file: tests/test-alloc.cpp
+    line: 329-349
+    method_or_func: test_not_enough_chunks()
+  - file: tests/test-alloc.cpp
+    line: 352-366
+    method_or_func: test_fill_leftover_space()
+  - file: tests/test-alloc.cpp
+    line: 369-385
+    method_or_func: test_view_inplace()
+  - file: tests/test-alloc.cpp
+    line: 388-406
+    method_or_func: test_reuse_and_free()
+  - file: tests/test-alloc.cpp
+    line: 409-428
+    method_or_func: test_merge_free_block()
+  - file: tests/test-alloc.cpp
+    line: 432-444
+    method_or_func: test_prefer_already_allocated_memory()
+  - file: tests/test-alloc.cpp
+    line: 448-503
+    method_or_func: test_multiple_buffer_types()
+  - file: tests/test-alloc.cpp
+    line: 506-528
+    method_or_func: test_buffer_size_zero()
+  - file: tests/test-alloc.cpp
+    line: 531-556
+    method_or_func: test_reallocation()
+  - file: tests/test-alloc.cpp
+    line: 559-564
+    method_or_func: run()
+  - file: tests/test-alloc.cpp
+    line: 566-583
+    method_or_func: main()
+  name: gallocr 分配器行为测试矩阵 —— 内存策略的「十三道极限考题」
+  'no': 2
+  points:
+  - '**缓冲区容量的极限挑战**'
+  - '- test_max_size_too_many_tensors：7 个 8B 张量超过 16B 容量，验证自动分裂第二个缓冲区'
+  - '- test_max_size_tensor_too_large：大张量跨越缓冲区剩余空间，验证「不够就新开」策略'
+  - '- test_tensor_larger_than_max_size：单张量 24B 超过 16B 上限，验证分配器自动扩大缓冲区'
+  - '- test_not_enough_chunks：17 个张量超过 16 个 chunk，验证动态增长 chunk 数或合并空闲块'
+  - '**内存复用与碎片整理**'
+  - '- test_view_inplace：reshape/permute/view 创建视图链，in-place add 复用内存，全程零额外分配'
+  - '- test_reuse_and_free：释放 x2 后复用其空间给 x4，验证 free list 的正确性'
+  - '- test_merge_free_block：相邻空闲块（x3/x4 释放后）合并为 32B 大块，容纳 28B 新张量'
+  - '- test_prefer_already_allocated_memory：优先复用已释放的 24B 块而非剩余 8B 空间，减少实际分配'
+  - '**多缓冲区与生命周期管理**'
+  - '- test_multiple_buffer_types：leaf_buffer_ids/node_buffer_ids 手动映射 a/b 两个后端，验证
+    gallocr_reserve_n 的跨设备分配'
+  - '- test_buffer_size_zero：验证 backend_b（SIZE_MAX）未被分配时保持 0 字节，不浪费资源'
+  - '- test_reallocation：首次分配 40B，第二次图更大时 gallocr 复用分配器并重新分配，无泄漏'
+  - '- run/main：测试套件的执行框架与断言汇总'
+- codes:
+  - file: tests/test-barrier.cpp
+    line: 12-86
+    method_or_func: test_barrier()
+  - file: tests/test-barrier.cpp
+    line: 89-135
+    method_or_func: test_active()
+  - file: tests/test-barrier.cpp
+    line: 138-204
+    method_or_func: test_multi_graph()
+  - file: tests/test-barrier.cpp
+    line: 207-222
+    method_or_func: __main__
+  - file: tests/test-log.cpp
+    line: 5-32
+    method_or_func: __main__
+  name: 线程同步与图调度压力测试 —— 并发计算的「极限体能测试」
+  'no': 3
+  points:
+  - '**为什么专门构造「大量小算子」的计算图？**'
+  - '- 大规模矩阵乘易被 GEMM 优化掩盖调度开销，1000 层链式 mul_mat（Q4_0 量化）强制触发频繁线程同步'
+  - '- 屏障（barrier）成为性能瓶颈，直接暴露 ggml_threadpool 的同步延迟与 work_data 分配开销'
+  - '**动态线程数切换的竞态检测**'
+  - '- test_active：每 4 轮迭代在 1 线程与 n_threads 间切换，验证 cplan 重建与线程池调整时的数据竞争安全'
+  - '- 模拟真实环境中用户动态调整线程数的场景，确保无竞态条件'
+  - '**多图交替执行的缓存污染测试**'
+  - '- test_multi_graph：gf0（64维 2层）与 gf1（256维 4层）交替计算，测试 work_data 缓冲区在不同图间复用时的隔离正确性'
+  - '- 验证调度器对多图场景的内存隔离能力，防止 work_data 越界或污染'
+  - '**性能基准与日志压力**'
+  - '- test_barrier：输出每节点纳秒耗时，建立线程同步的性能基线'
+  - '- test-log.cpp：8 线程并发写入 1000 条随机日志，随机切换时间戳/前缀，验证日志库线程安全'
+  - '**测试调度中心**'
+  - '- __main__：解析命令行参数（线程数、轮数），设置合理默认值，并依次调度 test_barrier、test_active、test_multi_graph
+    三个压力测试'
+- codes:
+  - file: tests/test-llama-archs.cpp
+    line: 30-46
+    method_or_func: nmse()
+  - file: tests/test-llama-archs.cpp
+    line: 49-70
+    method_or_func: set_tensor_data()
+  - file: tests/test-llama-archs.cpp
+    line: 73-75
+    method_or_func: usage()
+  - file: tests/test-llama-archs.cpp
+    line: 77-87
+    method_or_func: get_tokens()
+  - file: tests/test-llama-archs.cpp
+    line: 192-194
+    method_or_func: silent_model_load_progress()
+  - file: tests/test-llama-archs.cpp
+    line: 89-190
+    method_or_func: get_gguf_ctx()
+  - file: tests/test-llama-archs.cpp
+    line: 196-224
+    method_or_func: get_model_and_ctx()
+  - file: tests/test-llama-archs.cpp
+    line: 226-260
+    method_or_func: get_logits()
+  - file: tests/test-llama-archs.cpp
+    line: 262-306
+    method_or_func: moe_mandatory()
+  - file: tests/test-llama-archs.cpp
+    line: 308-324
+    method_or_func: moe_implemented()
+  - file: tests/test-llama-archs.cpp
+    line: 326-389
+    method_or_func: save_models()
+  - file: tests/test-llama-archs.cpp
+    line: 391-491
+    method_or_func: test_backends()
+  - file: tests/test-llama-archs.cpp
+    line: 493-547
+    method_or_func: main()
+  name: 模型架构与后端交叉验证 —— 推理引擎的「跨平台一致性测试」
+  'no': 4
+  points:
+  - '**确定性随机权重的「空白模型」工厂**'
+  - '- get_gguf_ctx：为每个架构生成带随机正态分布权重的 GGUF，无需下载真实模型，支持 LLaMA4/GEMMA3N 等特殊维度硬编码'
+  - '- set_tensor_data：基于张量名称哈希 + seed 生成确定性随机数，确保跨后端测试的可复现性'
+  - '- get_tokens：生成随机 token 序列作为标准输入'
+  - '**NMSE 作为数值精度的「测距仪」**'
+  - '- nmse()：计算 CPU 与 GPU logits 的归一化均方误差，阈值 1e-4 判定跨后端计算一致性'
+  - '- get_model_and_ctx/get_logits：封装模型创建与推理执行，屏蔽 llama_model 与 GGUF 的底层交互'
+  - '**MoE 架构的强制/可选开关**'
+  - '- moe_mandatory：标记 LLAMA4/GROK/QWEN3MOE 等 30+ 必须启用专家路由的架构'
+  - '- moe_implemented：判断架构是否支持 dense 模式，指导测试矩阵生成（dense/MoE 双模式）'
+  - '**保存-加载往返一致性（Roundtrip）**'
+  - '- save_models：批量生成各架构 GGUF 到磁盘模式'
+  - '- test_backends：使用 tmpfile() 避免磁盘 I/O 污染，保存→回载→推理，验证序列化无损'
+  - '- silent_model_load_progress：静默加载进度，避免测试输出污染'
+- codes:
+  - file: tests/test-thread-safety.cpp
+    line: 16-137
+    method_or_func: __main__
+  - file: tests/test-autorelease.cpp
+    line: 11-26
+    method_or_func: main()
+  - file: tests/test-model-load-cancel.cpp
+    line: 5-26
+    method_or_func: main()
+  name: 多线程并发推理与资源管理 —— 高压环境下的「稳定性试炼」
+  'no': 5
+  points:
+  - '**多模型 × 多上下文的笛卡尔积压测**'
+  - '- 为每个 GPU 和 CPU 分别加载模型副本（SPLIT_MODE_NONE/LAYER），各模型再派生 n_parallel 个上下文并行推理'
+  - '- 验证多实例、多设备、多上下文同时运行时的稳定性'
+  - '**原子标志位的失败聚合机制**'
+  - '- std::atomic<bool> failed 跨线程收集错误，相比立即 abort 允许所有线程完成以收集完整错误信息'
+  - '- 线程局部 sampler 与 batch 管理，确保采样状态无共享污染'
+  - '**优雅的中断与清理**'
+  - '- test-model-load-cancel：progress_callback 返回 true 强制中断 llama_model_load_from_file，验证取消后返回
+    nullptr 且无内存泄漏'
+  - '- test-autorelease：在独立线程中执行完整 init/free 周期后立即退出，检测全局状态残留与析构函数线程安全性'
+- codes:
+  - file: tests/test-state-restore-fragmented.cpp
+    line: 14-119
+    method_or_func: __main__
+  name: KV 缓存碎片整理 —— 运行时状态的「外科手术」
+  'no': 6
+  points:
+  - '**人为制造 KV 缓存碎片**'
+  - '- 三序列交错解码（0,1,2,0,1,2...）创建共享 KV 缓存，制造序列间物理依赖'
+  - '- llama_memory_seq_rm 删除中间序列 1，在 KV cache 中制造「空洞」（0.2.0.2. 模式）'
+  - '**非连续槽位的状态恢复**'
+  - '- llama_state_seq_get_data 保存序列 1 的完整状态（KV 缓存内容）'
+  - '- llama_state_seq_set_data 恢复状态到碎片化的缓存中，验证支持非连续槽位写入'
+  - '- 恢复后验证 decode 功能正常，确保状态恢复不依赖物理连续内存'

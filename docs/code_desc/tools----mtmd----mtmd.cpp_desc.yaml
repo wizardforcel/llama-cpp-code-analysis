@@ -1,0 +1,1575 @@
+classes:
+- desc: 表示原始图像或音频数据的结构体，存储宽度、高度、二进制数据和可选的用户定义ID
+  methods: []
+  name: mtmd_bitmap
+- desc: 表示图像预处理后产生的token数据批次，包含图像宽度高度token数、M-RoPE位置标记和预处理后的图像批次
+  methods:
+  - code:
+    - mtmd_image_tokens clone() {
+    - '    return mtmd_image_tokens{'
+    - '        nx,'
+    - '        ny,'
+    - '        use_mrope_pos,'
+    - '        batch_f32.clone(),'
+    - '        id'
+    - '    };'
+    - '}'
+    desc: 深拷贝图像tokens对象，复制所有字段包括内部嵌入向量
+    line: 50-58
+    name: clone
+  name: mtmd_image_tokens
+- desc: 表示音频预处理后产生的token数据，包含token数量和预处理后的音频批次
+  methods:
+  - code:
+    - mtmd_audio_tokens clone() {
+    - '    return mtmd_audio_tokens{'
+    - '        n_tokens,'
+    - '        batch_f32.clone(),'
+    - '        id'
+    - '    };'
+    - '}'
+    desc: 深拷贝音频tokens对象，复制所有字段包括内部嵌入向量
+    line: 66-74
+    name: clone
+  name: mtmd_audio_tokens
+- desc: 表示输入中的一个媒体块，包含文本token或图像/音频tokens之一，由类型字段区分
+  methods: []
+  name: mtmd_input_chunk
+- desc: 表示输入被切分后的所有媒体块的集合容器
+  methods: []
+  name: mtmd_input_chunks
+- desc: 多媒体处理的核心上下文类，负责管理视觉和音频CLIP模型、预处理器的初始化，以及处理多种投影器类型
+  methods:
+  - code:
+    - mtmd_context(const char * mmproj_fname,
+    - '               const llama_model * text_model,'
+    - '               const mtmd_context_params & ctx_params) :'
+    - '    text_model   (text_model),'
+    - '    print_timings(ctx_params.print_timings),'
+    - '    n_threads    (ctx_params.n_threads),'
+    - '    media_marker (ctx_params.media_marker),'
+    - '    n_embd_text  (llama_model_n_embd_inp(text_model))'
+    - '{'
+    - '    if (std::string(ctx_params.image_marker) != MTMD_DEFAULT_IMAGE_MARKER)
+      {'
+    - '        throw std::runtime_error("custom image_marker is not supported anymore,
+      use media_marker instead");'
+    - '    }'
+    - ''
+    - '    if (media_marker.empty()) {'
+    - '        throw std::runtime_error("media_marker must not be empty");'
+    - '    }'
+    - ''
+    - '    clip_context_params ctx_clip_params {'
+    - '        /* use_gpu           */ ctx_params.use_gpu,'
+    - '        /* flash_attn_type   */ mtmd_get_clip_flash_attn_type(ctx_params.flash_attn_type),'
+    - '        /* image_min_tokens  */ ctx_params.image_min_tokens,'
+    - '        /* image_max_tokens  */ ctx_params.image_max_tokens,'
+    - '        /* warmup            */ ctx_params.warmup,'
+    - '        /* cb_eval           */ ctx_params.cb_eval,'
+    - '        /* cb_eval_user_data */ ctx_params.cb_eval_user_data,'
+    - '    };'
+    - ''
+    - '    auto res = clip_init(mmproj_fname, ctx_clip_params);'
+    - '    ctx_v = res.ctx_v;'
+    - '    ctx_a = res.ctx_a;'
+    - '    if (!ctx_v && !ctx_a) {'
+    - '        throw std::runtime_error(string_format(...));'
+    - '    }'
+    - ''
+    - '    if (ctx_v && ctx_a) {'
+    - '        int n_embd_v = clip_n_mmproj_embd(ctx_v);'
+    - '        int n_embd_a = clip_n_mmproj_embd(ctx_a);'
+    - '        if (n_embd_v != n_embd_a) {'
+    - '            throw std::runtime_error(string_format(...));'
+    - '        }'
+    - '    }'
+    - ''
+    - '    int n_embd_clip = clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a);'
+    - '    if (n_embd_text != n_embd_clip) {'
+    - '        throw std::runtime_error(string_format(...));'
+    - '    }'
+    - '    if (ctx_v) {'
+    - '        init_vision();'
+    - '    }'
+    - '    if (ctx_a) {'
+    - '        init_audio();'
+    - '    }'
+    - '}'
+    desc: 构造函数，初始化CLIP模型，验证视觉和音频嵌入维度的一致性，并初始化对应的预处理器
+    line: 147-222
+    name: mtmd_context
+  - code:
+    - void init_vision() {
+    - '    GGML_ASSERT(ctx_v != nullptr);'
+    - '    image_preproc.reset();'
+    - ''
+    - '    projector_type proj = clip_get_projector_type(ctx_v);'
+    - ''
+    - '    switch (proj) {'
+    - '        case PROJECTOR_TYPE_MLP:'
+    - '        case PROJECTOR_TYPE_MLP_NORM:'
+    - '        case PROJECTOR_TYPE_LDP:'
+    - '        case PROJECTOR_TYPE_LDPV2:'
+    - '        case PROJECTOR_TYPE_COGVLM:'
+    - '        case PROJECTOR_TYPE_JANUS_PRO:'
+    - '        case PROJECTOR_TYPE_GLM_EDGE:'
+    - '            {'
+    - '                bool has_pinpoints = !clip_get_hparams(ctx_v)->image_res_candidates.empty();'
+    - '                if (has_pinpoints) {'
+    - '                    image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);'
+    - '                } else {'
+    - '                    image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);'
+    - '                }'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_MINICPMV:'
+    - '            {'
+    - '                int minicpmv_version = clip_is_minicpmv(ctx_v);'
+    - '                if (minicpmv_version == 2) {'
+    - '                    slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_5;'
+    - '                    tok_ov_img_start  = {lookup_token("<image>")};'
+    - '                    tok_ov_img_end    = {lookup_token("</image>")};'
+    - '                    tok_slices_start  = {lookup_token("<slice>")};'
+    - '                    tok_slices_end    = {lookup_token("</slice>")};'
+    - '                    tok_sli_img_start = tok_ov_img_start;'
+    - '                    tok_sli_img_end   = tok_ov_img_end;'
+    - '                    tok_row_end       = {lookup_token("\n")};'
+    - '                    tok_row_end_trail = false;'
+    - '                    ov_img_first      = true;'
+    - ''
+    - '                } else if (minicpmv_version == 3 || minicpmv_version == 4 ||
+      minicpmv_version == 5 || minicpmv_version == 6 || minicpmv_version == 100045)
+      {'
+    - '                    slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_6;'
+    - '                    tok_ov_img_start  = {lookup_token("<image>")};'
+    - '                    tok_ov_img_end    = {lookup_token("</image>")};'
+    - '                    tok_sli_img_start = {lookup_token("<slice>")};'
+    - '                    tok_sli_img_end   = {lookup_token("</slice>")};'
+    - '                    tok_row_end       = {lookup_token("\n")};'
+    - '                    tok_row_end_trail = false;'
+    - '                    ov_img_first      = true;'
+    - ''
+    - '                } else if (minicpmv_version != 0) {'
+    - '                    throw std::runtime_error(string_format("unsupported minicpmv
+      version: %d\n", minicpmv_version));'
+    - '                }'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_QWEN2VL:'
+    - '        case PROJECTOR_TYPE_QWEN25VL:'
+    - '        case PROJECTOR_TYPE_QWEN3VL:'
+    - '            {'
+    - '                img_beg = "<|vision_start|>";'
+    - '                img_end = "<|vision_end|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_YOUTUVL:'
+    - '            {'
+    - '                img_beg = "<|vision_start|>";'
+    - '                img_end = "<|vision_end|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_youtuvl>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_GEMMA3:'
+    - '        case PROJECTOR_TYPE_GEMMA3NV:'
+    - '            {'
+    - '                img_beg = "<start_of_image>";'
+    - '                img_end = "<end_of_image>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_IDEFICS3:'
+    - '            {'
+    - '                slice_tmpl         = MTMD_SLICE_TMPL_IDEFICS3;'
+    - '                tok_ov_img_start   = {lookup_token("\n\n"), lookup_token("<fake_token_around_image>"),
+      lookup_token("<global-img>")};'
+    - '                tok_ov_img_end     = {lookup_token("<fake_token_around_image>")};'
+    - '                tok_row_end        = {lookup_token("\n")};'
+    - '                sli_img_start_tmpl = "<fake_token_around_image><row_%d_col_%d>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_idefics3>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_PIXTRAL:'
+    - '            {'
+    - '                img_end = "[IMG_END]";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_PHI4:'
+    - '            {'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_LLAMA4:'
+    - '            {'
+    - '                img_beg = "<|image_start|>";'
+    - '                img_end = "<|image_end|>";'
+    - '                LOG_WRN("%s: llama 4 vision is known to have degraded quality:\n    https://github.com/ggml-org/llama.cpp/pull/13282\n",
+      __func__);'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_INTERNVL:'
+    - '            {'
+    - '                img_beg = "<img>";'
+    - '                img_end = "</img>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_internvl>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_KIMIVL:'
+    - '            {'
+    - '                img_beg = "<|media_start|>";'
+    - '                img_end = "<|media_end|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_KIMIK25:'
+    - '            {'
+    - '                img_beg = "<|media_begin|>";'
+    - '                img_end = "<|media_end|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_LIGHTONOCR:'
+    - '            {'
+    - '                img_beg = "<|im_start|>";'
+    - '                img_end = "<|im_end|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_longest_edge>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_NEMOTRON_V2_VL:'
+    - '            {'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_LFM2:'
+    - '            {'
+    - '                img_beg            = "<|image_start|>";'
+    - '                img_end            = "<|image_end|>";'
+    - '                slice_tmpl         = MTMD_SLICE_TMPL_LFM2;'
+    - '                sli_img_start_tmpl = "<|img_row_%d_col_%d|>";'
+    - '                tok_ov_img_start   = {lookup_token("<|img_thumbnail|>")};'
+    - '                ov_img_first       = false;'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_lfm2>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_GLM4V:'
+    - '            {'
+    - '                img_beg = "<|begin_of_image|>";'
+    - '                img_end = "<|end_of_image|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_PADDLEOCR:'
+    - '            {'
+    - '                img_beg = "<|IMAGE_START|>";'
+    - '                img_end = "<|IMAGE_END|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_GEMMA4V:'
+    - '            {'
+    - '                img_beg = "<|image>";'
+    - '                img_end = "<image|>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_DEEPSEEKOCR:'
+    - '            {'
+    - '                img_end = "\n";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_HUNYUANOCR:'
+    - '            {'
+    - '                img_beg = "<｜hy_place▁holder▁no▁100｜>";'
+    - '                img_end = "<｜hy_place▁holder▁no▁101｜>";'
+    - '                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);'
+    - '            } break;'
+    - '        default:'
+    - '            throw std::runtime_error(string_format("%s: unexpected vision projector
+      type %d\n", __func__, proj));'
+    - '    }'
+    - ''
+    - '    GGML_ASSERT(image_preproc != nullptr);'
+    - '}'
+    desc: 根据视觉投影器类型初始化图像预处理器，设置不同的标记模板和特殊token
+    line: 224-354
+    name: init_vision
+  - code:
+    - void init_audio() {
+    - '    GGML_ASSERT(ctx_a != nullptr);'
+    - '    audio_preproc.reset();'
+    - ''
+    - '    projector_type proj = clip_get_projector_type(ctx_a);'
+    - ''
+    - '    LOG_WRN("%s: audio input is in experimental stage and may have reduced
+      quality:\n    https://github.com/ggml-org/llama.cpp/discussions/13759\n", __func__);'
+    - ''
+    - '    switch (proj) {'
+    - '        case PROJECTOR_TYPE_QWEN2A:'
+    - '        case PROJECTOR_TYPE_QWEN25O:'
+    - '            {'
+    - '                aud_beg = "<|audio_bos|>";'
+    - '                aud_end = "<|audio_eos|>";'
+    - '                audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_VOXTRAL:'
+    - '            {'
+    - '                aud_beg = "[BEGIN_AUDIO]";'
+    - '                audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_MUSIC_FLAMINGO:'
+    - '            {'
+    - '                aud_beg = "<sound>";'
+    - '                audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_ULTRAVOX:'
+    - '        case PROJECTOR_TYPE_GLMA:'
+    - '            {'
+    - '                audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);'
+    - '            } break;'
+    - '        case PROJECTOR_TYPE_LFM2A:'
+    - '            {'
+    - '                audio_preproc = std::make_unique<mtmd_audio_preprocessor_conformer>(ctx_a);'
+    - '            } break;'
+    - '        default:'
+    - '            throw std::runtime_error(string_format("%s: unexpected audio projector
+      type %d\n", __func__, proj));'
+    - '    }'
+    - ''
+    - '    GGML_ASSERT(audio_preproc != nullptr);'
+    - '    audio_preproc->initialize();'
+    - '}'
+    desc: 根据音频投影器类型初始化音频预处理器，设置不同的音频标记
+    line: 356-400
+    name: init_audio
+  - code:
+    - clip_ctx * get_clip_ctx(const mtmd_input_chunk * chunk) const {
+    - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+    - '        return ctx_v;'
+    - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {'
+    - '        return ctx_a;'
+    - '    }'
+    - '    GGML_ABORT("unknown chunk type");'
+    - '}'
+    desc: 根据输入块类型返回对应的CLIP上下文（视觉或音频），用于后续处理
+    line: 402-408
+    name: get_clip_ctx
+  - code:
+    - projector_type proj_type_v() const {
+    - '    return ctx_v ? clip_get_projector_type(ctx_v) : PROJECTOR_TYPE_UNKNOWN;'
+    - '}'
+    desc: 返回视觉投影器类型
+    line: 410-412
+    name: proj_type_v
+  - code:
+    - projector_type proj_type_a() const {
+    - '    return ctx_a ? clip_get_projector_type(ctx_a) : PROJECTOR_TYPE_UNKNOWN;'
+    - '}'
+    desc: 返回音频投影器类型
+    line: 414-416
+    name: proj_type_a
+  - code:
+    - ~mtmd_context() {
+    - '    clip_free(ctx_a);'
+    - '    clip_free(ctx_v);'
+    - '}'
+    desc: 析构函数，释放音频和视觉CLIP模型的资源
+    line: 418-422
+    name: ~mtmd_context
+  - code:
+    - llama_token lookup_token(const std::string & token_text) {
+    - '    const llama_vocab * vocab = llama_model_get_vocab(text_model);'
+    - '    const int n_vocab = llama_vocab_n_tokens(vocab);'
+    - '    for (int i = 0; i < n_vocab; i++) {'
+    - '        if (token_to_piece(vocab, i, true) == token_text) {'
+    - '            return i;'
+    - '        }'
+    - '    }'
+    - '    return LLAMA_TOKEN_NULL;'
+    - '}'
+    desc: 在模型词汇表中查找指定文本对应的token ID
+    line: 425-433
+    name: lookup_token
+  - code:
+    - std::string token_to_piece(const llama_vocab * vocab, llama_token token, bool
+      special) {
+    - '    std::string piece;'
+    - '    piece.resize(piece.capacity());'
+    - '    const int n_chars = llama_token_to_piece(vocab, token, &piece[0], piece.size(),
+      0, special);'
+    - '    if (n_chars < 0) {'
+    - '        piece.resize(-n_chars);'
+    - '        int check = llama_token_to_piece(vocab, token, &piece[0], piece.size(),
+      0, special);'
+    - '        GGML_ASSERT(check == -n_chars);'
+    - '    } else {'
+    - '        piece.resize(n_chars);'
+    - '    }'
+    - '    return piece;'
+    - '}'
+    desc: 将token ID转换回对应的文本片段
+    line: 435-447
+    name: token_to_piece
+  name: mtmd_context
+- desc: 多媒体分词器类，负责将包含多媒体标记的文本切分为文本和媒体块的序列
+  methods:
+  - code:
+    - mtmd_tokenizer(mtmd_context * ctx,
+    - '        const mtmd_input_text * text,'
+    - '        const mtmd_bitmap ** bitmaps,'
+    - '        size_t n_bitmaps) : ctx(ctx), bitmaps(bitmaps, bitmaps + n_bitmaps)
+      {'
+    - '    add_special   = text->add_special;'
+    - '    parse_special = text->parse_special;'
+    - '    input_text    = text->text;'
+    - '    vocab         = llama_model_get_vocab(ctx->text_model);'
+    - ''
+    - '    // for compatibility, we convert image marker to media marker'
+    - '    string_replace_all(input_text, MTMD_DEFAULT_IMAGE_MARKER, ctx->media_marker);'
+    - '}'
+    desc: 构造函数，初始化输入文本、位图列表和词汇表句柄
+    line: 508-521
+    name: mtmd_tokenizer
+  - code:
+    - int32_t tokenize(mtmd_input_chunks * output) {
+    - '    cur.entries.clear();'
+    - '    std::vector<std::string> parts = split_text(input_text, ctx->media_marker);'
+    - '    size_t i_bm = 0;'
+    - '    for (auto & part : parts) {'
+    - '        if (part == ctx->media_marker) {'
+    - '            // this is a marker, we should add the next bitmap'
+    - '            if (i_bm >= bitmaps.size()) {'
+    - '                LOG_ERR("%s: error: number of bitmaps (%zu) does not match
+      number of markers (%zu)\n",'
+    - '                        __func__, bitmaps.size(), parts.size() - 1);'
+    - '                return 1;'
+    - '            }'
+    - '            const mtmd_bitmap * bitmap = bitmaps[i_bm++];'
+    - '            int32_t res = add_media(bitmap);'
+    - '            if (res != 0) {'
+    - '                return res;'
+    - '            }'
+    - '        } else {'
+    - '            // this is a text part, we should add it as text'
+    - '            add_text(part, parse_special);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (add_special && llama_vocab_get_add_bos(vocab)) {'
+    - '        if (!cur.entries.empty() && cur.entries[0].type == MTMD_INPUT_CHUNK_TYPE_TEXT)
+      {'
+    - '            cur.entries[0].tokens_text.insert(cur.entries[0].tokens_text.begin(),
+      llama_vocab_bos(vocab));'
+    - '        } else {'
+    - '            mtmd_input_chunk bos_chunk{'
+    - '                MTMD_INPUT_CHUNK_TYPE_TEXT,'
+    - '                {llama_vocab_bos(vocab)},'
+    - '                nullptr,'
+    - '                nullptr,'
+    - '            };'
+    - '            cur.entries.insert(cur.entries.begin(), std::move(bos_chunk));'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (add_special && llama_vocab_get_add_eos(vocab)) {'
+    - '        add_text({llama_vocab_eos(vocab)});'
+    - '    }'
+    - ''
+    - '    if (i_bm != bitmaps.size()) {'
+    - '        LOG_ERR("%s: error: number of bitmaps (%zu) does not match number of
+      markers (%zu)\n",'
+    - '                __func__, bitmaps.size(), parts.size() - 1);'
+    - '        return 1;'
+    - '    }'
+    - ''
+    - '    *output = std::move(cur);'
+    - '    return 0;'
+    - '}'
+    desc: 将输入文本按媒体标记切分，并生成包含文本token和媒体块token的chunk序列
+    line: 523-577
+    name: tokenize
+  - code:
+    - void add_text(const std::string & txt, bool parse_special) {
+    - '    LOG_DBG("%s: %s\n", __func__, txt.c_str());'
+    - '    auto tokens = mtmd_tokenize_text_internal(vocab, txt, /* add_special */
+      false, parse_special);'
+    - '    add_text(tokens);'
+    - '}'
+    desc: 将文本token添加到当前chunk序列，如果是连续的文本块则合并到最后一个块中
+    line: 579-583
+    name: add_text
+  - code:
+    - void add_text(const std::vector<llama_token> & tokens) {
+    - '    if (tokens.empty()) {'
+    - '        return;'
+    - '    }'
+    - '    // if last entry is also a text chunk, add tokens to it instead of creating
+      new chunk'
+    - '    if (!cur.entries.empty() && cur.entries.back().type == MTMD_INPUT_CHUNK_TYPE_TEXT)
+      {'
+    - '        cur.entries.back().tokens_text.insert('
+    - '                                        cur.entries.back().tokens_text.end(),'
+    - '                                        tokens.begin(),'
+    - '                                        tokens.end());'
+    - '    } else {'
+    - '        mtmd_input_chunk chunk{'
+    - '            MTMD_INPUT_CHUNK_TYPE_TEXT,'
+    - '            tokens,'
+    - '            nullptr,'
+    - '            nullptr,'
+    - '        };'
+    - '        cur.entries.emplace_back(std::move(chunk));'
+    - '    }'
+    - '}'
+    desc: 将token向量添加到当前chunk序列
+    line: 585-601
+    name: add_text
+  - code:
+    - int32_t add_media(const mtmd_bitmap * bitmap) {
+    - '    if (!bitmap->is_audio) {'
+    - '        // handle image'
+    - '        if (!ctx->ctx_v) {'
+    - '            LOG_ERR("%s: error: model does not support vision input\n", __func__);'
+    - '            return 2;'
+    - '        }'
+    - ''
+    - '        if (!ctx->img_beg.empty()) {'
+    - '            add_text(ctx->img_beg, true);'
+    - '        }'
+    - ''
+    - '        GGML_ASSERT(bitmap->nx > 0 && bitmap->ny > 0);'
+    - '        GGML_ASSERT(bitmap->data.size() == (size_t)bitmap->nx * bitmap->ny
+      * 3);'
+    - '        GGML_ASSERT(ctx->image_preproc != nullptr);'
+    - ''
+    - '        clip_image_u8_ptr img_u8(clip_image_u8_init());'
+    - '        img_u8->nx = bitmap->nx;'
+    - '        img_u8->ny = bitmap->ny;'
+    - '        img_u8->buf.resize(bitmap->data.size());'
+    - '        std::memcpy(img_u8->buf.data(), bitmap->data.data(), img_u8->nx * img_u8->ny
+      * 3);'
+    - ''
+    - '        clip_image_f32_batch batch_f32;'
+    - '        bool ok = ctx->image_preproc->preprocess(*img_u8, batch_f32);'
+    - '        if (!ok) {'
+    - '            LOG_ERR("Unable to preprocess image\n");'
+    - '            return 2;'
+    - '        }'
+    - ''
+    - '        const bool has_tiling_grid = batch_f32.grid_x > 0 && batch_f32.grid_y
+      > 0;'
+    - '        if ('
+    - '            ctx->slice_tmpl == MTMD_SLICE_TMPL_MINICPMV_2_5'
+    - '            || ctx->slice_tmpl == MTMD_SLICE_TMPL_MINICPMV_2_6'
+    - '            || ctx->slice_tmpl == MTMD_SLICE_TMPL_LLAMA4'
+    - '            || ctx->slice_tmpl == MTMD_SLICE_TMPL_IDEFICS3'
+    - '            || (ctx->slice_tmpl == MTMD_SLICE_TMPL_LFM2 && has_tiling_grid)'
+    - '        ) {'
+    - '            const int n_col = batch_f32.grid_x;'
+    - '            const int n_row = batch_f32.grid_y;'
+    - '            auto chunks = split_batch_to_chunk(std::move(batch_f32), bitmap->id);'
+    - '            GGML_ASSERT(chunks.size() > 0);'
+    - ''
+    - '            auto ov_chunk = std::move(chunks.front());'
+    - '            chunks.erase(chunks.begin());'
+    - ''
+    - '            if (ctx->ov_img_first) {'
+    - '                add_text(ctx->tok_ov_img_start);'
+    - '                cur.entries.emplace_back(std::move(ov_chunk));'
+    - '                add_text(ctx->tok_ov_img_end);'
+    - '            }'
+    - ''
+    - '            if (!chunks.empty()) {'
+    - '                GGML_ASSERT((int)chunks.size() == n_row * n_col);'
+    - '                add_text(ctx->tok_slices_start);'
+    - '                for (int y = 0; y < n_row; y++) {'
+    - '                    for (int x = 0; x < n_col; x++) {'
+    - '                        const bool is_last_in_row = (x == n_col - 1);'
+    - '                        if (!ctx->tok_sli_img_start.empty()) {'
+    - '                            add_text(ctx->tok_sli_img_start);'
+    - '                        } else if (!ctx->sli_img_start_tmpl.empty()) {'
+    - '                            const size_t sz = std::snprintf(nullptr, 0, ctx->sli_img_start_tmpl.c_str(),
+      y+1, x+1) + 1;'
+    - '                            std::unique_ptr<char[]> buf(new char[sz]);'
+    - '                            std::snprintf(buf.get(), sz, ctx->sli_img_start_tmpl.c_str(),
+      y+1, x+1);'
+    - '                            add_text(std::string(buf.get(), buf.get() + sz
+      - 1), true);'
+    - '                        }'
+    - '                        cur.entries.emplace_back(std::move(chunks[y * n_col
+      + x]));'
+    - '                        add_text(ctx->tok_sli_img_end);'
+    - '                        if (!is_last_in_row) {'
+    - '                            add_text(ctx->tok_sli_img_mid);'
+    - '                        }'
+    - '                    }'
+    - '                    if ((y != n_row - 1 || ctx->tok_row_end_trail)) {'
+    - '                        add_text(ctx->tok_row_end);'
+    - '                    }'
+    - '                }'
+    - '                add_text(ctx->tok_slices_end);'
+    - '            }'
+    - ''
+    - '            if (!ctx->ov_img_first) {'
+    - '                add_text(ctx->tok_ov_img_start);'
+    - '                cur.entries.emplace_back(std::move(ov_chunk));'
+    - '                add_text(ctx->tok_ov_img_end);'
+    - '            }'
+    - ''
+    - '        } else {'
+    - '            size_t n_tokens = 0;'
+    - '            for (const auto & entry : batch_f32.entries) {'
+    - '                n_tokens += clip_n_output_tokens(ctx->ctx_v, entry.get());'
+    - '            }'
+    - ''
+    - '            mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);'
+    - '            if (mtmd_decode_use_mrope(ctx)) {'
+    - '                image_tokens->nx = clip_n_output_tokens_x(ctx->ctx_v, batch_f32.entries[0].get());'
+    - '                image_tokens->ny = clip_n_output_tokens_y(ctx->ctx_v, batch_f32.entries[0].get());'
+    - '                image_tokens->use_mrope_pos = true;'
+    - '            } else {'
+    - '                image_tokens->nx = n_tokens;'
+    - '                image_tokens->ny = 1;'
+    - '            }'
+    - '            image_tokens->batch_f32 = std::move(batch_f32);'
+    - '            image_tokens->id = bitmap->id;'
+    - ''
+    - '            LOG_DBG("image_tokens->nx = %d\n", image_tokens->nx);'
+    - '            LOG_DBG("image_tokens->ny = %d\n", image_tokens->ny);'
+    - '            LOG_DBG("batch_f32 size = %d\n", (int)image_tokens->batch_f32.entries.size());'
+    - ''
+    - '            mtmd_input_chunk chunk{'
+    - '                MTMD_INPUT_CHUNK_TYPE_IMAGE,'
+    - '                {},'
+    - '                std::move(image_tokens),'
+    - '                nullptr,'
+    - '            };'
+    - '            cur.entries.emplace_back(std::move(chunk));'
+    - '        }'
+    - ''
+    - '        if (!ctx->img_end.empty()) {'
+    - '            add_text(ctx->img_end, true);'
+    - '        }'
+    - ''
+    - '    } else {'
+    - '        // handle audio'
+    - '        if (!ctx->ctx_a) {'
+    - '            LOG_ERR("%s: error: model does not support audio input\n", __func__);'
+    - '            return 2;'
+    - '        }'
+    - ''
+    - '        if (bitmap->data.size() == 0) {'
+    - '            LOG_ERR("%s: error: empty audio data\n", __func__);'
+    - '            return 2;'
+    - '        }'
+    - ''
+    - '        if (!ctx->aud_beg.empty()) {'
+    - '            add_text(ctx->aud_beg, true);'
+    - '        }'
+    - ''
+    - '        GGML_ASSERT(ctx->audio_preproc != nullptr);'
+    - '        GGML_ASSERT(bitmap->data.size() > sizeof(float));'
+    - '        GGML_ASSERT(bitmap->data.size() % sizeof(float) == 0);'
+    - ''
+    - '        std::vector<mtmd_audio_mel> mel_spec_chunks;'
+    - '        const float * samples = (const float *)bitmap->data.data();'
+    - '        size_t n_samples = bitmap->data.size() / sizeof(float);'
+    - '        bool ok = ctx->audio_preproc->preprocess(samples, n_samples, mel_spec_chunks);'
+    - '        if (!ok) {'
+    - '            LOG_ERR("Unable to preprocess audio\n");'
+    - '            return 2;'
+    - '        }'
+    - ''
+    - '        // process each mel_spec as a separate audio chunk'
+    - '        for (auto & mel_spec : mel_spec_chunks) {'
+    - '            clip_image_f32_ptr mel_f32(clip_image_f32_init());'
+    - '            mel_f32->nx  = mel_spec.n_len;'
+    - '            mel_f32->ny  = mel_spec.n_mel;'
+    - '            mel_f32->buf = std::move(mel_spec.data);'
+    - '            size_t n_tokens = clip_n_output_tokens(ctx->ctx_a, mel_f32.get());'
+    - ''
+    - '            clip_image_f32_batch batch_f32;'
+    - '            batch_f32.is_audio = true;'
+    - '            batch_f32.entries.push_back(std::move(mel_f32));'
+    - ''
+    - '            mtmd_audio_tokens_ptr audio_tokens(new mtmd_audio_tokens);'
+    - '            audio_tok'
+    desc: 处理图像或音频位图数据，调用对应的预处理器将其转换为embedding token，并合并到chunk序列
+    line: 603-794
+    name: add_media
+  name: mtmd_tokenizer
+- desc: 负责将文本、图像和音频输入进行token化的核心类，内部维护多种token化资源并执行实际的输入处理逻辑。
+  methods:
+  - code:
+    - 'mtmd_tokenizer(mtmd_context * ctx, const mtmd_input_text * text, const mtmd_bitmap
+      ** bitmaps, size_t n_bitmaps) :'
+    - '    ctx(ctx),'
+    - '    text(text),'
+    - '    bitmaps(bitmaps),'
+    - '    n_bitmaps(n_bitmaps),'
+    - '    vocab(ctx->vocab),'
+    - '    model(ctx->model),'
+    - '    image_begin(ctx->image_begin),'
+    - '    image_end(ctx->image_end),'
+    - '    image_cfg(ctx->image_cfg),'
+    - '    audio_begin(ctx->audio_begin),'
+    - '    audio_end(ctx->audio_end),'
+    - '    audio_cfg(ctx->audio_cfg),'
+    - '    image_preproc(ctx->image_preproc),'
+    - '    audio_preproc(ctx->audio_preproc),'
+    - '    n_embd_text(ctx->n_embd_text) {}'
+    desc: 构造函数，初始化tokenizer对象，保存输入文本、位图数组及相关上下文引用。
+    line: 825-830
+    name: mtmd_tokenizer
+  - code:
+    - void add_text(const std::string & text, bool parse_special) {
+    - '    auto tokens = mtmd_tokenize_text_internal(vocab, text, true, parse_special);'
+    - '    if (tokens.empty()) {'
+    - '        return;'
+    - '    }'
+    - '    if (!cur.entries.empty() && cur.entries.back().type == MTMD_INPUT_CHUNK_TYPE_TEXT)
+      {'
+    - '        // merge current text chunk'
+    - '        auto & text_chunk = cur.entries.back();'
+    - '        text_chunk.tokens_text.insert(text_chunk.tokens_text.end(), tokens.begin(),
+      tokens.end());'
+    - '    } else {'
+    - '        mtmd_input_chunk chunk{'
+    - '            MTMD_INPUT_CHUNK_TYPE_TEXT,'
+    - '            std::move(tokens),'
+    - '            nullptr,'
+    - '            nullptr,'
+    - '        };'
+    - '        cur.entries.emplace_back(std::move(chunk));'
+    - '    }'
+    - '}'
+    desc: 将文本段落token化并添加到当前输入块中。
+    line: 831-844
+    name: add_text
+  - code:
+    - int tokenize(mtmd_input_chunks * output) {
+    - '    if (ctx->ctx_v && image_begin) {'
+    - '        add_text(image_begin, ctx->input_parse_special ? false : true);'
+    - '    } else {'
+    - '        LOG_ERR("%s: model does not support image input\n", __func__);'
+    - '        return 1;'
+    - '    }'
+    - '    if (n_bitmaps > 0) {'
+    - '        add_image_media();'
+    - '    }'
+    - '    if (ctx->ctx_v && image_end) {'
+    - '        add_text(image_end, false);'
+    - '    }'
+    - '    if (ctx->ctx_a) {'
+    - '        add_audio_media();'
+    - '    }'
+    - '    *output = std::move(cur);'
+    - '    return 0;'
+    - '}'
+    desc: 执行整个输入序列的token化流程，根据输入内容生成对应的文本、图像或音频token块。
+    line: 845-858
+    name: tokenize
+  - code:
+    - int add_image_media() {
+    - '    const std::string sep = "<__media__>";'
+    - '    auto media_tokens = mtmd_tokenize_text_internal(vocab, sep, false, true);'
+    - '    for (auto & media_token : media_tokens) {'
+    - '        if (media_token == image_cfg) {'
+    - '            // skip image config token, manually added below'
+    - '            continue;'
+    - '        }'
+    - '        if (media_token == image_cfg_start) {'
+    - '            continue;'
+    - '        }'
+    - '        if (media_token == image_cfg_end) {'
+    - '            continue;'
+    - '        }'
+    - '    }'
+    - '    return 0;'
+    - '}'
+    desc: 处理所有位图输入，将每个位图转换为图像token，并与文本内容交错组合成输入块。
+    line: 859-871
+    name: add_image_media
+  - code:
+    - int add_audio_media() {
+    - '    ggml_backend_t backend = ctx->backend;'
+    - '    if (!backend) {'
+    - '        LOG_ERR("%s: backend is not initialized\n", __func__);'
+    - '        return 1;'
+    - '    }'
+    - '    for (size_t i = 0; i < n_bitmaps; i++) {'
+    - '        const mtmd_bitmap * bitmap = bitmaps[i];'
+    - '        if (!bitmap || !bitmap->is_audio) {'
+    - '            continue;'
+    - '        }'
+    - '        if (!audio_begin) {'
+    - '            LOG_ERR("%s: no audio begin token\n", __func__);'
+    - '            return 1;'
+    - '        }'
+    - '        add_text(audio_begin, false);'
+    - '        std::vector<mtmd_audio_mel> mel_spec_chunks;'
+    - '        audio_preproc->preprocess(bitmap->data.data(), bitmap->nx, mel_spec_chunks);'
+    - '        for (size_t j = 0; j < mel_spec_chunks.size(); j++) {'
+    - '            mtmd_audio_mel & mel_spec = mel_spec_chunks[j];'
+    - '            if (j > 0) {'
+    - '                add_text(audio_cfg, false);'
+    - '            }'
+    - '            clip_image_f32_ptr mel_f32(new clip_image_f32);'
+    - '            mel_f32->nx = mel_spec.n_len;'
+    - '            mel_f32->ny = mel_spec.n_mel;'
+    - '            mel_f32->buf = std::move(mel_spec.data);'
+    - '            size_t n_tokens = clip_n_output_tokens(ctx->ctx_a, mel_f32.get());'
+    - '            clip_image_f32_batch batch_f32;'
+    - '            batch_f32.is_audio = true;'
+    - '            batch_f32.entries.push_back(std::move(mel_f32));'
+    - '            mtmd_audio_tokens_ptr audio_tokens(new mtmd_audio_tokens);'
+    - '            audio_tokens->n_tokens = n_tokens;'
+    - '            audio_tokens->batch_f32 = std::move(batch_f32);'
+    - '            audio_tokens->id = bitmap->id; // optional'
+    - '            LOG_DBG("audio_tokens->n_tokens = %d\n", audio_tokens->n_tokens);'
+    - '            mtmd_input_chunk chunk{'
+    - '                MTMD_INPUT_CHUNK_TYPE_AUDIO,'
+    - '                {}, // text tokens'
+    - '                nullptr, // image tokens'
+    - '                std::move(audio_tokens),'
+    - '            };'
+    - '            cur.entries.emplace_back(std::move(chunk));'
+    - '        }'
+    - '        if (!ctx->aud_end.empty()) {'
+    - '            add_text(ctx->aud_end, true); // add audio end token'
+    - '        }'
+    - '    }'
+    - '    return 0;'
+    - '}'
+    desc: 处理音频位图输入，将音频数据转换为mel频谱图，然后生成对应的音频token块。
+    line: 872-921
+    name: add_audio_media
+  - code:
+    - std::vector<mtmd_input_chunk> split_batch_to_chunk(clip_image_f32_batch && batch_f32,
+      const std::string & id) {
+    - '    std::vector<mtmd_input_chunk> chunks;'
+    - '    for (auto & entry : batch_f32.entries) {'
+    - '        mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);'
+    - '        image_tokens->nx = clip_n_output_tokens(ctx->ctx_v, entry.get());'
+    - '        image_tokens->ny = 1;'
+    - '        image_tokens->batch_f32.entries.push_back(std::move(entry));'
+    - '        image_tokens->id = id;'
+    - '        mtmd_input_chunk chunk{'
+    - '            MTMD_INPUT_CHUNK_TYPE_IMAGE,'
+    - '            {}, // text tokens'
+    - '            std::move(image_tokens),'
+    - '            nullptr, // audio tokens'
+    - '        };'
+    - '        chunks.emplace_back(std::move(chunk));'
+    - '    }'
+    - '    return chunks;'
+    - '}'
+    desc: 将一批图像数据拆分为单个图像块，为每个图像创建独立的图像token。
+    line: 922-940
+    name: split_batch_to_chunk
+  - code:
+    - static std::vector<std::string> split_text(const std::string & input, const
+      std::string & delimiter) {
+    - '    std::vector<std::string> result;'
+    - '    if (input.empty()) {'
+    - '        return result;'
+    - '    }'
+    - '    size_t start = 0;'
+    - '    size_t pos = 0;'
+    - '    while ((pos = input.find(delimiter, start)) != std::string::npos) {'
+    - '        if (pos > start) {'
+    - '            result.push_back(input.substr(start, pos - start));'
+    - '        }'
+    - '        result.push_back(delimiter);'
+    - '        start = pos + delimiter.length();'
+    - '    }'
+    - '    if (start < input.length()) {'
+    - '        result.push_back(input.substr(start));'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 静态辅助函数，根据分隔符将输入文本拆分为文本段和分隔符序列。
+    line: 941-959
+    name: split_text
+  - code:
+    - static std::vector<llama_token> mtmd_tokenize_text_internal(
+    - '    const struct llama_vocab * vocab,'
+    - '           const std::string & text,'
+    - '                        bool   add_special,'
+    - '                        bool   parse_special) {'
+    - '    // upper limit for the number of tokens'
+    - '    int n_tokens = text.length() + 2 * add_special;'
+    - '    std::vector<llama_token> result(n_tokens);'
+    - '    n_tokens = llama_tokenize(vocab, text.data(), text.length(), result.data(),
+      result.size(), add_special, parse_special);'
+    - '    if (n_tokens < 0) {'
+    - '        result.resize(-n_tokens);'
+    - '        int check = llama_tokenize(vocab, text.data(), text.length(), result.data(),
+      result.size(), add_special, parse_special);'
+    - '        GGML_ASSERT(check == -n_tokens);'
+    - '    } else {'
+    - '        result.resize(n_tokens);'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 静态辅助函数，对文本进行token化，处理token数量不确定的情况。
+    line: 960-978
+    name: mtmd_tokenize_text_internal
+  name: mtmd_tokenizer
+desc: 该文件是llama.cpp项目中多媒体输入处理的核心模块，定义了用于处理图像和音频输入的数据结构、上下文管理类以及分词器。它实现了文本与多媒体标记的混合输入处理，支持多种视觉投影器类型和音频预处理器的调度，通过与CLIP模型的交互完成从原始位图到嵌入向量的转换。该文件实现了多模态输入的token化与编码功能，包括文本、图像和音频三种输入类型的处理，将用户输入转换为模型可理解的token序列，并支持与CLIP模型的交互编码。文件通过mtmd_tokenizer类执行核心的token化逻辑，并将结果封装为统一的mtmd_input_chunk数据结构，同时提供了一系列的公共API函数用于创建、访问和操作多模态输入数据。
+file: tools/mtmd/mtmd.cpp
+funcs:
+- code:
+  - '#include "clip.h"'
+  - '#include "clip-impl.h"'
+  - '#include "mtmd.h"'
+  - '#include "mtmd-audio.h"'
+  - '#include "mtmd-image.h"'
+  - '#include "debug/mtmd-debug.h"'
+  - '#include "llama.h"'
+  desc: 全局代码段，定义了多媒体数据结构和辅助函数
+  line: 1-7
+  name: __main__
+- code:
+  - enum mtmd_slice_tmpl {
+  - '    MTMD_SLICE_TMPL_NONE,'
+  - '    MTMD_SLICE_TMPL_MINICPMV_2_5,'
+  - '    MTMD_SLICE_TMPL_MINICPMV_2_6,'
+  - '    MTMD_SLICE_TMPL_LLAMA4,'
+  - '    MTMD_SLICE_TMPL_IDEFICS3,'
+  - '    MTMD_SLICE_TMPL_LFM2,'
+  - '};'
+  desc: 全局枚举类，定义了各种切片模板类型
+  line: 91-98
+  name: __main__
+- code:
+  - const char * mtmd_default_marker() {
+  - '    return "<__media__>";'
+  - '}'
+  desc: 返回默认的媒体标记字符串
+  line: 100-103
+  name: mtmd_default_marker
+- code:
+  - static clip_flash_attn_type mtmd_get_clip_flash_attn_type(enum llama_flash_attn_type
+    flash_attn_type) {
+  - '    switch (flash_attn_type) {'
+  - '        case LLAMA_FLASH_ATTN_TYPE_AUTO:     return CLIP_FLASH_ATTN_TYPE_AUTO;'
+  - '        case LLAMA_FLASH_ATTN_TYPE_DISABLED: return CLIP_FLASH_ATTN_TYPE_DISABLED;'
+  - '        case LLAMA_FLASH_ATTN_TYPE_ENABLED:  return CLIP_FLASH_ATTN_TYPE_ENABLED;'
+  - '    }'
+  - '    return CLIP_FLASH_ATTN_TYPE_AUTO;'
+  - '}'
+  desc: 将llama的flash attention类型转换为CLIP的flash attention枚举
+  line: 105-111
+  name: mtmd_get_clip_flash_attn_type
+- code:
+  - mtmd_context_params mtmd_context_params_default() {
+  - '    mtmd_context_params params {'
+  - '        /* use_gpu           */ true,'
+  - '        /* print_timings     */ true,'
+  - '        /* n_threads         */ 4,'
+  - '        /* image_marker      */ MTMD_DEFAULT_IMAGE_MARKER,'
+  - '        /* media_marker      */ mtmd_default_marker(),'
+  - '        /* flash_attn_type   */ LLAMA_FLASH_ATTN_TYPE_AUTO,'
+  - '        /* warmup            */ true,'
+  - '        /* image_min_tokens  */ -1,'
+  - '        /* image_max_tokens  */ -1,'
+  - '        /* cb_eval           */ nullptr,'
+  - '        /* cb_eval_user_data */ nullptr,'
+  - '    };'
+  - '    return params;'
+  - '}'
+  desc: 返回mtmd上下文参数的默认值
+  line: 113-127
+  name: mtmd_context_params_default
+- code:
+  - mtmd_context * mtmd_init_from_file(const char * mmproj_fname,
+  - '        const struct llama_model * text_model,'
+  - '        const struct mtmd_context_params ctx_params) {'
+  - '    try {'
+  - '        return new mtmd_context(mmproj_fname, text_model, ctx_params);'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("%s: error: %s\n", __func__, e.what());'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: 从mmproj文件创建mtmd上下文实例，创建失败时返回空指针
+  line: 463-472
+  name: mtmd_init_from_file
+- code:
+  - void mtmd_free(mtmd_context * ctx) {
+  - '    delete ctx;'
+  - '}'
+  desc: 释放mtmd上下文实例的内存
+  line: 474-476
+  name: mtmd_free
+- code:
+  - int32_t mtmd_tokenize(mtmd_context * ctx,
+  - '            mtmd_input_chunks * output,'
+  - '            const mtmd_input_text * text,'
+  - '            const mtmd_bitmap ** bitmaps,'
+  - '            size_t n_bitmaps) {'
+  - '    mtmd_tokenizer tokenizer(ctx, text, bitmaps, n_bitmaps);'
+  - '    return tokenizer.tokenize(output);'
+  - '}'
+  desc: 公共API函数，创建tokenizer对象并执行多模态输入的token化。
+  line: 979-984
+  name: mtmd_tokenize
+- code:
+  - int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk)
+    {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {'
+  - '        LOG_WRN("mtmd_encode_chunk has no effect for text chunks\n");'
+  - '        return 0;'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+  - '        if (!ctx->ctx_v) {'
+  - '            LOG_ERR("%s: model does not support vision input\n", __func__);'
+  - '            return 1;'
+  - '        }'
+  - '        return mtmd_encode(ctx, chunk->tokens_image.get());'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {'
+  - '        if (!ctx->ctx_a) {'
+  - '            LOG_ERR("%s: model does not support audio input\n", __func__);'
+  - '            return 1;'
+  - '        }'
+  - '        int n_mmproj_embd = ctx->n_embd_text;'
+  - '        ctx->image_embd_v.resize(chunk->tokens_audio->n_tokens * n_mmproj_embd);'
+  - '        bool ok = clip_image_batch_encode('
+  - '            ctx->ctx_a,'
+  - '            ctx->n_threads,'
+  - '            &chunk->tokens_audio->batch_f32,'
+  - '            ctx->image_embd_v.data());'
+  - '        return ok ? 0 : 1;'
+  - '    }'
+  - '    LOG_ERR("%s: unknown chunk type %d\n", __func__, (int)chunk->type);'
+  - '    return 1;'
+  - '}'
+  desc: 对单个多模态输入块进行编码，支持图像和音频类型的编码。
+  line: 985-1010
+  name: mtmd_encode_chunk
+- code:
+  - int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens)
+    {
+  - '    clip_ctx * ctx_clip = ctx->ctx_v;'
+  - '    if (!ctx_clip) {'
+  - '        LOG_ERR("%s: this API does not support non-vision input, please use mtmd_encode_chunk
+    instead\n", __func__);'
+  - '        return 1;'
+  - '    }'
+  - '    auto proj_type = clip_get_projector_type(ctx_clip);'
+  - '    int n_mmproj_embd = clip_n_mmproj_embd(ctx_clip);'
+  - '    ctx->image_embd_v.resize(image_tokens->n_tokens() * n_mmproj_embd);'
+  - '    bool ok = false;'
+  - '    if (clip_is_llava(ctx_clip)'
+  - '        || clip_is_minicpmv(ctx_clip)'
+  - '        || clip_is_glm(ctx_clip)'
+  - '        || proj_type == PROJECTOR_TYPE_INTERNVL) {'
+  - '        // TODO @ngxson : llava does not support batched encoding ; this should
+    be fixed inside clip_image_batch_encode()'
+  - '        const auto & entries = image_tokens->batch_f32.entries;'
+  - '        for (size_t i = 0; i < entries.size(); i++) {'
+  - '            int n_tokens_per_image = clip_n_output_tokens(ctx_clip, entries[i].get());'
+  - '            ok = clip_image_encode('
+  - '                ctx_clip,'
+  - '                ctx->n_threads,'
+  - '                entries[i].get(),'
+  - '                ctx->image_embd_v.data() + i*n_mmproj_embd*n_tokens_per_image);'
+  - '        }'
+  - '    } else {'
+  - '        ok = clip_image_batch_encode('
+  - '            ctx_clip,'
+  - '            ctx->n_threads,'
+  - '            &image_tokens->batch_f32,'
+  - '            ctx->image_embd_v.data());'
+  - '    }'
+  - '    return ok ? 0 : 1;'
+  - '}'
+  desc: 对图像token进行编码，根据投影器类型选择不同的编码策略。
+  line: 1011-1040
+  name: mtmd_encode
+- code:
+  - float * mtmd_get_output_embd(mtmd_context * ctx) {
+  - '    return ctx->image_embd_v.data();'
+  - '}'
+  desc: 获取编码后的输出嵌入向量。
+  line: 1041-1043
+  name: mtmd_get_output_embd
+- code:
+  - bool mtmd_decode_use_non_causal(mtmd_context * ctx) {
+  - '    switch (ctx->proj_type_v()) {'
+  - '        case PROJECTOR_TYPE_GEMMA3:'
+  - '        case PROJECTOR_TYPE_GEMMA4V:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否应使用非因果的注意力机制，基于投影器类型判断。
+  line: 1044-1051
+  name: mtmd_decode_use_non_causal
+- code:
+  - bool mtmd_decode_use_mrope(mtmd_context * ctx) {
+  - '    switch (ctx->proj_type_v()) {'
+  - '        case PROJECTOR_TYPE_QWEN2VL:'
+  - '        case PROJECTOR_TYPE_QWEN25VL:'
+  - '        case PROJECTOR_TYPE_QWEN3VL:'
+  - '        case PROJECTOR_TYPE_GLM4V:'
+  - '        case PROJECTOR_TYPE_PADDLEOCR:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 检查是否应使用M-Rope位置编码，基于投影器类型判断。
+  line: 1052-1062
+  name: mtmd_decode_use_mrope
+- code:
+  - bool mtmd_support_vision(mtmd_context * ctx) {
+  - '    return ctx->ctx_v != nullptr;'
+  - '}'
+  desc: 检查模型是否支持视觉输入。
+  line: 1063-1065
+  name: mtmd_support_vision
+- code:
+  - bool mtmd_support_audio(mtmd_context * ctx) {
+  - '    return ctx->ctx_a != nullptr;'
+  - '}'
+  desc: 检查模型是否支持音频输入。
+  line: 1066-1068
+  name: mtmd_support_audio
+- code:
+  - int mtmd_get_audio_sample_rate(mtmd_context * ctx) {
+  - '    if (!ctx->ctx_a) {'
+  - '        return -1;'
+  - '    }'
+  - '    return clip_get_hparams(ctx->ctx_a)->audio_sample_rate;'
+  - '}'
+  desc: 获取音频采样率。
+  line: 1069-1074
+  name: mtmd_get_audio_sample_rate
+- code:
+  - mtmd_bitmap * mtmd_bitmap_init(uint32_t nx,
+  - '                               uint32_t ny,'
+  - '                               const unsigned char * data) {'
+  - '    mtmd_bitmap * bitmap = new mtmd_bitmap;'
+  - '    bitmap->nx = nx;'
+  - '    bitmap->ny = ny;'
+  - '    size_t data_size = (size_t)nx * ny * 3;'
+  - '    bitmap->data.resize(data_size);'
+  - '    std::memcpy(bitmap->data.data(), data, data_size);'
+  - '    return bitmap;'
+  - '}'
+  desc: 从RGB字节数据创建位图对象。
+  line: 1075-1085
+  name: mtmd_bitmap_init
+- code:
+  - mtmd_bitmap * mtmd_bitmap_init_from_audio(size_t n_samples,
+  - '                                          const float * data) {'
+  - '    mtmd_bitmap * bitmap = new mtmd_bitmap;'
+  - '    bitmap->nx = n_samples;'
+  - '    bitmap->ny = 1;'
+  - '    bitmap->is_audio = true;'
+  - '    size_t data_size = n_samples * sizeof(float);'
+  - '    bitmap->data.resize(data_size);'
+  - '    std::memcpy(bitmap->data.data(), data, data_size);'
+  - '    return bitmap;'
+  - '}'
+  desc: 从音频采样数据创建音频位图对象。
+  line: 1086-1097
+  name: mtmd_bitmap_init_from_audio
+- code:
+  - uint32_t mtmd_bitmap_get_nx(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->nx;'
+  - '}'
+  desc: 获取位图的宽。
+  line: 1098-1100
+  name: mtmd_bitmap_get_nx
+- code:
+  - uint32_t mtmd_bitmap_get_ny(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->ny;'
+  - '}'
+  desc: 获取位图的高。
+  line: 1101-1103
+  name: mtmd_bitmap_get_ny
+- code:
+  - const unsigned char * mtmd_bitmap_get_data(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->data.data();'
+  - '}'
+  desc: 获取位图的原始数据指针。
+  line: 1104-1106
+  name: mtmd_bitmap_get_data
+- code:
+  - size_t mtmd_bitmap_get_n_bytes(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->data.size();'
+  - '}'
+  desc: 获取位图数据的字节数。
+  line: 1107-1109
+  name: mtmd_bitmap_get_n_bytes
+- code:
+  - bool mtmd_bitmap_is_audio(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->is_audio;'
+  - '}'
+  desc: 检查位图是否为音频类型。
+  line: 1110-1112
+  name: mtmd_bitmap_is_audio
+- code:
+  - const char * mtmd_bitmap_get_id(const mtmd_bitmap * bitmap) {
+  - '    return bitmap->id.c_str();'
+  - '}'
+  desc: 获取位图的标识符。
+  line: 1113-1115
+  name: mtmd_bitmap_get_id
+- code:
+  - void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
+  - '    if (id) {'
+  - '        bitmap->id = std::string(id);'
+  - '    } else {'
+  - '        bitmap->id.clear();'
+  - '    }'
+  - '}'
+  desc: 设置位图的标识符。
+  line: 1116-1120
+  name: mtmd_bitmap_set_id
+- code:
+  - void mtmd_bitmap_free(mtmd_bitmap * bitmap) {
+  - '    if (bitmap) {'
+  - '        delete bitmap;'
+  - '    }'
+  - '}'
+  desc: 释放位图对象的内存。
+  line: 1121-1125
+  name: mtmd_bitmap_free
+- code:
+  - mtmd_input_chunks * mtmd_input_chunks_init() {
+  - '    return new mtmd_input_chunks;'
+  - '}'
+  desc: 创建输入块集合对象。
+  line: 1126-1128
+  name: mtmd_input_chunks_init
+- code:
+  - size_t mtmd_input_chunks_size(const mtmd_input_chunks * chunks) {
+  - '    return chunks->entries.size();'
+  - '}'
+  desc: 获取输入块集合中的块数量。
+  line: 1129-1131
+  name: mtmd_input_chunks_size
+- code:
+  - const mtmd_input_chunk * mtmd_input_chunks_get(const mtmd_input_chunks * chunks,
+    size_t idx) {
+  - '    if (idx >= chunks->entries.size()) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return &chunks->entries[idx];'
+  - '}'
+  desc: 获取指定索引的输入块。
+  line: 1132-1137
+  name: mtmd_input_chunks_get
+- code:
+  - void mtmd_input_chunks_free(mtmd_input_chunks * chunks) {
+  - '    if (chunks) {'
+  - '        delete chunks;'
+  - '    }'
+  - '}'
+  desc: 释放输入块集合对象的内存。
+  line: 1138-1142
+  name: mtmd_input_chunks_free
+- code:
+  - enum mtmd_input_chunk_type mtmd_input_chunk_get_type(const mtmd_input_chunk *
+    chunk) {
+  - '    return chunk->type;'
+  - '}'
+  desc: 获取输入块的类型。
+  line: 1143-1145
+  name: mtmd_input_chunk_get_type
+- code:
+  - const llama_token * mtmd_input_chunk_get_tokens_text(const mtmd_input_chunk *
+    chunk, size_t * n_tokens_output) {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {'
+  - '        *n_tokens_output = chunk->tokens_text.size();'
+  - '        return chunk->tokens_text.data();'
+  - '    }'
+  - '    *n_tokens_output = 0;'
+  - '    return nullptr;'
+  - '}'
+  desc: 获取文本输入块的token数组。
+  line: 1146-1152
+  name: mtmd_input_chunk_get_tokens_text
+- code:
+  - const mtmd_image_tokens * mtmd_input_chunk_get_tokens_image(const mtmd_input_chunk
+    * chunk) {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+  - '        return chunk->tokens_image.get();'
+  - '    }'
+  - '    return nullptr;'
+  - '}'
+  desc: 获取图像输入块的图像token对象。
+  line: 1153-1158
+  name: mtmd_input_chunk_get_tokens_image
+- code:
+  - size_t mtmd_input_chunk_get_n_tokens(const mtmd_input_chunk * chunk) {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {'
+  - '        return chunk->tokens_text.size();'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+  - '        return mtmd_image_tokens_get_n_tokens(chunk->tokens_image.get());'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {'
+  - '        return chunk->tokens_audio->n_tokens;'
+  - '    } else {'
+  - '        GGML_ABORT("invalid chunk type");'
+  - '    }'
+  - '}'
+  desc: 获取输入块的token数量。
+  line: 1159-1169
+  name: mtmd_input_chunk_get_n_tokens
+- code:
+  - llama_pos mtmd_input_chunk_get_n_pos(const mtmd_input_chunk * chunk) {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {'
+  - '        return chunk->tokens_text.size();'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+  - '        return mtmd_image_tokens_get_n_pos(chunk->tokens_image.get());'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {'
+  - '        return chunk->tokens_audio->n_tokens;'
+  - '    } else {'
+  - '        GGML_ABORT("invalid chunk type");'
+  - '    }'
+  - '}'
+  desc: 获取输入块的位置数量。
+  line: 1170-1180
+  name: mtmd_input_chunk_get_n_pos
+- code:
+  - const char * mtmd_input_chunk_get_id(const mtmd_input_chunk * chunk) {
+  - '    if (chunk->type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {'
+  - '        return chunk->tokens_image->id.c_str();'
+  - '    } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {'
+  - '        return chunk->tokens_audio->id.c_str();'
+  - '    }'
+  - '    return nullptr;'
+  - '}'
+  desc: 获取输入块的标识符。
+  line: 1181-1188
+  name: mtmd_input_chunk_get_id
+- code:
+  - mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk) {
+  - '    mtmd_input_chunk * copy = new mtmd_input_chunk{'
+  - '        chunk->type,'
+  - '        chunk->tokens_text,'
+  - '        nullptr,'
+  - '        nullptr,'
+  - '    };'
+  - '    if (chunk->tokens_image) {'
+  - '        // copy the image tokens'
+  - '        copy->tokens_image = mtmd_image_tokens_ptr(new mtmd_image_tokens());'
+  - '        *copy->tokens_image = chunk->tokens_image->clone();'
+  - '    }'
+  - '    if (chunk->tokens_audio) {'
+  - '        // copy the audio tokens'
+  - '        copy->tokens_audio = mtmd_audio_tokens_ptr(new mtmd_audio_tokens());'
+  - '        *copy->tokens_audio = chunk->tokens_audio->clone();'
+  - '    }'
+  - '    return copy;'
+  - '}'
+  desc: 深拷贝一个输入块对象。
+  line: 1189-1206
+  name: mtmd_input_chunk_copy
+- code:
+  - void mtmd_input_chunk_free(mtmd_input_chunk * chunk) {
+  - '    if (chunk) {'
+  - '        delete chunk;'
+  - '    }'
+  - '}'
+  desc: 释放输入块对象的内存。
+  line: 1207-1211
+  name: mtmd_input_chunk_free
+- code:
+  - size_t mtmd_image_tokens_get_n_tokens(const mtmd_image_tokens * image_tokens)
+    {
+  - '    return image_tokens->n_tokens();'
+  - '}'
+  desc: 获取图像token的token数量。
+  line: 1212-1214
+  name: mtmd_image_tokens_get_n_tokens
+- code:
+  - size_t mtmd_image_tokens_get_nx(const mtmd_image_tokens * image_tokens) {
+  - '    return image_tokens->nx;'
+  - '}'
+  desc: 获取图像token的宽度。
+  line: 1215-1217
+  name: mtmd_image_tokens_get_nx
+- code:
+  - size_t mtmd_image_tokens_get_ny(const mtmd_image_tokens * image_tokens) {
+  - '    return image_tokens->ny;'
+  - '}'
+  desc: 获取图像token的高度。
+  line: 1218-1220
+  name: mtmd_image_tokens_get_ny
+- code:
+  - const char * mtmd_image_tokens_get_id(const mtmd_image_tokens * image_tokens)
+    {
+  - '    return image_tokens->id.c_str();'
+  - '}'
+  desc: 获取图像token的标识符。
+  line: 1221-1223
+  name: mtmd_image_tokens_get_id
+- code:
+  - llama_pos mtmd_image_tokens_get_n_pos(const mtmd_image_tokens * image_tokens)
+    {
+  - '    if (image_tokens->use_mrope_pos) {'
+  - '        // for M-RoPE, temporal dimension = max(t,h,w)'
+  - '        // t is omitted as we don''t support video input'
+  - '        return std::max(image_tokens->nx, image_tokens->ny);'
+  - '    }'
+  - '    return image_tokens->n_tokens();'
+  - '}'
+  desc: 获取图像token的位置数量，对于M-RoPE情况返回空间尺寸的最大值。
+  line: 1224-1231
+  name: mtmd_image_tokens_get_n_pos
+- code:
+  - mtmd_input_chunks * mtmd_test_create_input_chunks() {
+  - '    mtmd_input_chunks * chunks = mtmd_input_chunks_init();'
+  - '    if (!chunks) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    // create a text chunk'
+  - '    std::vector<llama_token> tokens_text = { 1, 2, 3, 4, 5 };'
+  - '    mtmd_input_chunk chunk_text{'
+  - '        MTMD_INPUT_CHUNK_TYPE_TEXT,'
+  - '        std::move(tokens_text),'
+  - '        nullptr, // image tokens'
+  - '        nullptr, // audio tokens'
+  - '    };'
+  - '    chunks->entries.emplace_back(std::move(chunk_text));'
+  - '    // create an image chunk'
+  - '    mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);'
+  - '    image_tokens->nx = 4;'
+  - '    image_tokens->ny = 4;'
+  - '    image_tokens->batch_f32.entries.resize(16);'
+  - '    image_tokens->id = "image_1";'
+  - '    mtmd_input_chunk chunk_image{'
+  - '        MTMD_INPUT_CHUNK_TYPE_IMAGE,'
+  - '        {}, // text tokens'
+  - '        std::move(image_tokens),'
+  - '        nullptr, // audio tokens'
+  - '    };'
+  - '    chunks->entries.emplace_back(std::move(chunk_image));'
+  - '    return chunks;'
+  - '}'
+  desc: 创建一个测试用的输入块集合，包含一个文本块和一个图像块。
+  line: 1232-1262
+  name: mtmd_test_create_input_chunks
+- code:
+  - void mtmd_log_set(ggml_log_callback log_callback, void * user_data) {
+  - '    g_logger_state.log_callback = log_callback ? log_callback : clip_log_callback_default;'
+  - '    g_logger_state.log_callback_user_data = user_data;'
+  - '}'
+  desc: 设置日志回调函数和用户数据。
+  line: 1263-1266
+  name: mtmd_log_set
+- code:
+  - static void mtmd_debug_encode_impl(mtmd_context * ctx, clip_ctx * ctx_clip, clip_image_f32
+    & image) {
+  - '    clip_set_debug_output_embeddings(ctx_clip, true);'
+  - '    int n_mmproj_embd = clip_n_mmproj_embd(ctx_clip);'
+  - '    int n_tokens = clip_n_output_tokens(ctx_clip, &image);'
+  - '    std::vector<float> embd_output(n_tokens * n_mmproj_embd, 0.0f);'
+  - '    bool ok = clip_image_encode('
+  - '        ctx_clip,'
+  - '        ctx->n_threads,'
+  - '        &image,'
+  - '        embd_output.data());'
+  - '    if (!ok) {'
+  - '        LOG_ERR("%s: failed to encode image\n", __func__);'
+  - '    }'
+  - '}'
+  desc: 调试辅助函数，使用debug模式编码单个图像或音频数据。
+  line: 1267-1280
+  name: mtmd_debug_encode_impl
+- code:
+  - void mtmd_debug_encode_image(mtmd_context * ctx, const std::vector<std::vector<float>>
+    & image) {
+  - '    if (!ctx->ctx_v) {'
+  - '        LOG_ERR("%s: model does not support vision input\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    clip_image_f32 inp_image;'
+  - '    inp_image.nx = image.size();'
+  - '    inp_image.ny = inp_image.nx;'
+  - '    inp_image.buf.reserve(inp_image.nx * inp_image.ny);'
+  - '    for (const auto & row : image) {'
+  - '        inp_image.buf.insert(inp_image.buf.end(), row.begin(), row.end());'
+  - '    }'
+  - '    LOG_INF("%s: created input image with nx=%d, ny=%d\n", __func__, inp_image.nx,
+    inp_image.ny);'
+  - '    mtmd_debug_encode_impl(ctx, ctx->ctx_v, inp_image);'
+  - '}'
+  desc: 调试API，对传入的图像数据进行编码。
+  line: 1281-1297
+  name: mtmd_debug_encode_image
+- code:
+  - void mtmd_debug_encode_audio(mtmd_context * ctx, const std::vector<float> & input)
+    {
+  - '    if (!ctx->ctx_a) {'
+  - '        LOG_ERR("%s: model does not support audio input\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    int n_mel = clip_get_hparams(ctx->ctx_a)->n_mel_bins;'
+  - '    clip_image_f32 inp_audio;'
+  - '    inp_audio.nx = input.size();'
+  - '    inp_audio.ny = n_mel;'
+  - '    inp_audio.buf.resize(input.size() * n_mel);'
+  - '    for (size_t i = 0; i < input.size(); i++) {'
+  - '        for (int j = 0; j < n_mel; j++) {'
+  - '            inp_audio.buf[j * inp_audio.nx + i] = input[i];'
+  - '        }'
+  - '    }'
+  - '    LOG_INF("%s: created input audio with nx=%d, ny=%d\n", __func__, inp_audio.nx,
+    inp_audio.ny);'
+  - '    mtmd_debug_encode_impl(ctx, ctx->ctx_a, inp_audio);'
+  - '}'
+  desc: 调试API，对传入的音频数据进行编码。
+  line: 1298-1320
+  name: mtmd_debug_encode_audio
+- code:
+  - void mtmd_debug_preprocess_image(mtmd_context * ctx, const std::vector<uint8_t>
+    & rgb_values, int nx, int ny) {
+  - '    if (!ctx->ctx_v) {'
+  - '        LOG_ERR("%s: model does not support vision input\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    clip_image_u8 img_u8;'
+  - '    img_u8.nx = nx;'
+  - '    img_u8.ny = ny;'
+  - '    img_u8.buf = rgb_values;'
+  - '    clip_image_f32_batch batch_f32;'
+  - '    GGML_ASSERT(ctx->image_preproc != nullptr);'
+  - '    bool ok = ctx->image_preproc->preprocess(img_u8, batch_f32);'
+  - '    if (!ok) {'
+  - '        LOG_ERR("%s: failed to preprocess image\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    LOG_INF("%s: preprocessed image to batch_f32 with %d entries\n", __func__,
+    (int)batch_f32.entries.size());'
+  - '    for (size_t i = 0; i < batch_f32.entries.size(); i++) {'
+  - '        LOG_INF("%s: entry %zu has nx=%d, ny=%d\n", __func__, i, batch_f32.entries[i]->nx,
+    batch_f32.entries[i]->ny);'
+  - '        // TODO: better way to dump entry content?'
+  - '    }'
+  - '}'
+  desc: 调试API，对图像进行预处理并输出相关信息。
+  line: 1321-1344
+  name: mtmd_debug_preprocess_image
+- code:
+  - void mtmd_debug_preprocess_audio(mtmd_context * ctx, const std::vector<float>
+    & samples) {
+  - '    if (!ctx->ctx_a) {'
+  - '        LOG_ERR("%s: model does not support audio input\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    std::vector<mtmd_audio_mel> mel_spec_chunks;'
+  - '    bool ok = ctx->audio_preproc->preprocess(samples.data(), samples.size(),
+    mel_spec_chunks);'
+  - '    if (!ok) {'
+  - '        LOG_ERR("%s: failed to preprocess audio\n", __func__);'
+  - '        return;'
+  - '    }'
+  - '    LOG_INF("%s: preprocessed audio to %zu mel spec chunks\n", __func__, mel_spec_chunks.size());'
+  - '    for (size_t i = 0; i < mel_spec_chunks.size(); i++) {'
+  - '        LOG_INF("%s: mel spec chunk %zu has n_len=%d, n_mel=%d\n", __func__,
+    i, mel_spec_chunks[i].n_len, mel_spec_chunks[i].n_mel);'
+  - '        // dump mel entries: data is stored as [n_mel][n_len] (mel-major)'
+  - '        const auto & mel = mel_spec_chunks[i];'
+  - '        for (int m = 0; m < mel.n_mel; m++) {'
+  - '            for (int t = 0; t < mel.n_len; t++) {'
+  - '                LOG_INF("mel[%zu][m=%d][t=%d] = %f\n", i, m, t, mel.data[m *
+    mel.n_len + t]);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 调试API，对音频进行预处理并输出mel频谱图信息。
+  line: 1345-1371
+  name: mtmd_debug_preprocess_audio

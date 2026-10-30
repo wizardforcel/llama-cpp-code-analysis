@@ -1,0 +1,534 @@
+classes:
+- desc: 表示一个物理内存区间，包含 buffer 标识（pb）、起始和结束地址（p0/p1）以及类型（源/目的）。
+  methods: []
+  name: ggml_mem_range
+- desc: 内存区间容器，内部持有 ggml_mem_range 的动态数组，并提供调试级别标志。
+  methods: []
+  name: ggml_mem_ranges
+- desc: 用于图优化，封装一个计算图节点（tensor），并收集被融合到当前节点的后续节点（fused），提供对操作类型、最终输出节点的便捷访问。
+  methods:
+  - code:
+    - ggml_op op() const {
+    - '    return node->op;'
+    - '}'
+    desc: 返回该节点的基础操作类型。
+    line: 250-252
+    name: op
+  - code:
+    - const ggml_tensor * dst() const {
+    - '    return fused.empty() ? node : fused.back();'
+    - '}'
+    desc: 返回最终输出张量：若无融合节点则返回自身节点，否则返回最后一个融合节点。
+    line: 254-256
+    name: dst
+  - code:
+    - bool is_empty() const {
+    - '    return ggml_op_is_empty(node->op);'
+    - '}'
+    desc: 判断节点操作是否为无实际计算（空操作）。
+    line: 258-260
+    name: is_empty
+  - code:
+    - void add_fused(ggml_tensor * t) {
+    - '    fused.push_back(t);'
+    - '}'
+    desc: 将一个张量加入融合列表。
+    line: 262-264
+    name: add_fused
+  name: node_info
+desc: 该文件实现了 ggml 计算图的内存范围跟踪与并发优化功能。它定义了表示物理内存区间（buffer、起始/结束地址、源/目的类型）的结构体 ggml_mem_range，以及管理这些区间的容器
+  ggml_mem_ranges，并提供了对内存区间进行增删、查询和冲突检测的 API。在此基础上，该文件包含核心函数 ggml_graph_optimize，它通过融合兼容的操作节点，并利用内存范围冲突检测对节点进行重排序，从而提升图在
+  Metal 后端上执行的并发性和缓存友好性。
+file: ggml/src/ggml-metal/ggml-metal-common.cpp
+funcs:
+- code:
+  - ggml_mem_ranges_t ggml_mem_ranges_init(int debug) {
+  - '    auto * res = new ggml_mem_ranges;'
+  - ''
+  - '    res->ranges.reserve(256);'
+  - '    res->debug = debug;'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 创建并初始化 ggml_mem_ranges 对象，预留空间并设置调试级别。
+  line: 26-33
+  name: ggml_mem_ranges_init
+- code:
+  - void ggml_mem_ranges_free(ggml_mem_ranges_t mrs) {
+  - '    delete mrs;'
+  - '}'
+  desc: 释放由 ggml_mem_ranges_init 分配的内存范围对象。
+  line: 35-37
+  name: ggml_mem_ranges_free
+- code:
+  - void ggml_mem_ranges_reset(ggml_mem_ranges_t mrs) {
+  - '    mrs->ranges.clear();'
+  - '}'
+  desc: 清空内存范围容器中的所有区间。
+  line: 39-41
+  name: ggml_mem_ranges_reset
+- code:
+  - static bool ggml_mem_ranges_add(ggml_mem_ranges_t mrs, ggml_mem_range mr) {
+  - '    mrs->ranges.push_back(mr);'
+  - ''
+  - '    return true;'
+  - '}'
+  desc: 将单个内存范围添加到容器中（内部使用）。
+  line: 48-53
+  name: ggml_mem_ranges_add(ggml_mem_ranges_t, ggml_mem_range)
+- code:
+  - static ggml_mem_range ggml_mem_range_from_tensor(const ggml_tensor * tensor, ggml_mem_range_type
+    pt) {
+  - '    // always use the base tensor'
+  - '    tensor = tensor->view_src ? tensor->view_src : tensor;'
+  - ''
+  - '    GGML_ASSERT(!tensor->view_src);'
+  - ''
+  - '    ggml_mem_range mr;'
+  - ''
+  - '    if (tensor->buffer) {'
+  - '        // when the tensor is allocated, use the actual memory address range
+    in the buffer'
+  - '        //'
+  - '        // take the actual allocated size with ggml_backend_buft_get_alloc_size()'
+  - '        // this can be larger than the tensor size if the buffer type allocates
+    extra memory'
+  - '        // ref: https://github.com/ggml-org/llama.cpp/pull/15966'
+  - '        mr = {'
+  - '            /*.pb =*/ (uint64_t) tensor->buffer,'
+  - '            /*.p0 =*/ (uint64_t) tensor->data,'
+  - '            /*.p1 =*/ (uint64_t) tensor->data + ggml_backend_buft_get_alloc_size(tensor->buffer->buft,
+    tensor),'
+  - '            /*.pt =*/ pt,'
+  - '        };'
+  - '    } else {'
+  - '        // otherwise, the pointer address is used as an unique id of the memory
+    ranges'
+  - '        //   that the tensor will be using when it is allocated'
+  - '        mr = {'
+  - '            /*.pb =*/ (uint64_t) tensor,'
+  - '            /*.p0 =*/ 0,    //'
+  - '            /*.p1 =*/ 1024, // [0, 1024) is a dummy range, not used'
+  - '            /*.pt =*/ pt,'
+  - '        };'
+  - '    };'
+  - ''
+  - '    return mr;'
+  - '}'
+  desc: 从张量构造内存范围；若张量已分配则使用实际分配大小，否则使用虚拟范围并以上下文张量指针作为唯一 ID。
+  line: 55-82
+  name: ggml_mem_range_from_tensor
+- code:
+  - static ggml_mem_range ggml_mem_range_from_tensor_src(const ggml_tensor * tensor)
+    {
+  - '    return ggml_mem_range_from_tensor(tensor, MEM_RANGE_TYPE_SRC);'
+  - '}'
+  desc: 构造张量的源内存范围（类型为源）。
+  line: 84-86
+  name: ggml_mem_range_from_tensor_src
+- code:
+  - static ggml_mem_range ggml_mem_range_from_tensor_dst(const ggml_tensor * tensor)
+    {
+  - '    return ggml_mem_range_from_tensor(tensor, MEM_RANGE_TYPE_DST);'
+  - '}'
+  desc: 构造张量的目的内存范围（类型为目的）。
+  line: 88-90
+  name: ggml_mem_range_from_tensor_dst
+- code:
+  - static bool ggml_mem_ranges_add_src(ggml_mem_ranges_t mrs, const ggml_tensor *
+    tensor) {
+  - '    GGML_ASSERT(tensor);'
+  - ''
+  - '    ggml_mem_range mr = ggml_mem_range_from_tensor_src(tensor);'
+  - ''
+  - '    if (mrs->debug > 2) {'
+  - '        GGML_LOG_DEBUG("%s: add src range buf=%lld, [%lld, %lld)\n", __func__,
+    mr.pb, mr.p0, mr.p1);'
+  - '    }'
+  - ''
+  - '    return ggml_mem_ranges_add(mrs, mr);'
+  - '}'
+  desc: 将张量的源内存范围加入容器（带调试日志）。
+  line: 97-107
+  name: ggml_mem_ranges_add_src
+- code:
+  - static bool ggml_mem_ranges_add_dst(ggml_mem_ranges_t mrs, const ggml_tensor *
+    tensor) {
+  - '    GGML_ASSERT(tensor);'
+  - ''
+  - '    ggml_mem_range mr = ggml_mem_range_from_tensor_dst(tensor);'
+  - ''
+  - '    if (mrs->debug > 2) {'
+  - '        GGML_LOG_DEBUG("%s: add dst range buf=%lld, [%lld, %lld)\n", __func__,
+    mr.pb, mr.p0, mr.p1);'
+  - '    }'
+  - ''
+  - '    return ggml_mem_ranges_add(mrs, mr);'
+  - '}'
+  desc: 将张量的目的内存范围加入容器（带调试日志）。
+  line: 109-119
+  name: ggml_mem_ranges_add_dst
+- code:
+  - bool ggml_mem_ranges_add(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        if (tensor->src[i]) {'
+  - '            ggml_mem_ranges_add_src(mrs, tensor->src[i]);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return ggml_mem_ranges_add_dst(mrs, tensor);'
+  - '}'
+  desc: 将张量的所有源张量范围及其自身范围（作为目的）加入容器。
+  line: 121-132
+  name: ggml_mem_ranges_add(ggml_mem_ranges_t, const ggml_tensor *)
+- code:
+  - static bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, ggml_mem_range mr) {
+  - '    for (size_t i = 0; i < mrs->ranges.size(); i++) {'
+  - '        const auto & cmp = mrs->ranges[i];'
+  - ''
+  - '        // two memory ranges cannot intersect if they are in different buffers'
+  - '        if (mr.pb != cmp.pb) {'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        // intersecting source ranges are allowed'
+  - '        if (mr.pt == MEM_RANGE_TYPE_SRC && cmp.pt == MEM_RANGE_TYPE_SRC) {'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        if (mr.p0 < cmp.p1 && mr.p1 >= cmp.p0) {'
+  - '            if (mrs->debug > 2) {'
+  - '                GGML_LOG_DEBUG("%s: the %s range buf=%lld, [%lld, %lld) overlaps
+    with a previous %s range buf=%lld, [%lld, %lld)\n",'
+  - '                        __func__,'
+  - '                        mr.pt == MEM_RANGE_TYPE_SRC ? "src" : "dst",'
+  - '                        mr.pb, mr.p0, mr.p1,'
+  - '                        cmp.pt == MEM_RANGE_TYPE_SRC ? "src" : "dst",'
+  - '                        cmp.pb, cmp.p0, cmp.p1);'
+  - '            }'
+  - ''
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return true;'
+  - '}'
+  desc: 检查单个内存范围是否与容器中已有范围冲突（不同 buffer 允许，两个源范围允许相交）。
+  line: 134-166
+  name: ggml_mem_ranges_check
+- code:
+  - static bool ggml_mem_ranges_check_src(ggml_mem_ranges_t mrs, const ggml_tensor
+    * tensor) {
+  - '    GGML_ASSERT(tensor);'
+  - ''
+  - '    ggml_mem_range mr = ggml_mem_range_from_tensor_src(tensor);'
+  - ''
+  - '    const bool res = ggml_mem_ranges_check(mrs, mr);'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 检查张量的源范围是否与已有范围冲突。
+  line: 168-176
+  name: ggml_mem_ranges_check_src
+- code:
+  - static bool ggml_mem_ranges_check_dst(ggml_mem_ranges_t mrs, const ggml_tensor
+    * tensor) {
+  - '    GGML_ASSERT(tensor);'
+  - ''
+  - '    ggml_mem_range mr = ggml_mem_range_from_tensor_dst(tensor);'
+  - ''
+  - '    const bool res = ggml_mem_ranges_check(mrs, mr);'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 检查张量的目的范围是否与已有范围冲突。
+  line: 178-186
+  name: ggml_mem_ranges_check_dst
+- code:
+  - bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, const ggml_tensor * tensor)
+    {
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        if (tensor->src[i]) {'
+  - '            if (!ggml_mem_ranges_check_src(mrs, tensor->src[i])) {'
+  - '                return false;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return ggml_mem_ranges_check_dst(mrs, tensor);'
+  - '}'
+  desc: 检查张量的所有源范围及其自身范围（目的）是否与容器中已有范围冲突。
+  line: 188-199
+  name: ggml_mem_ranges_check(ggml_mem_ranges_t, const ggml_tensor *)
+- code:
+  - static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node_info>
+    & nodes) {
+  - '    // helper to add node src and dst ranges'
+  - '    const auto & h_add = [](ggml_mem_ranges_t mrs, const node_info & node) {'
+  - '        for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '            if (node.node->src[i]) {'
+  - '                if (!ggml_mem_ranges_add_src(mrs, node.node->src[i])) {'
+  - '                    return false;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - ''
+  - '        // keep track of the sources of the fused nodes as well'
+  - '        for (const auto * fused : node.fused) {'
+  - '            for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '                if (fused->src[i]) {'
+  - '                    if (!ggml_mem_ranges_add_src(mrs, fused->src[i])) {'
+  - '                        return false;'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '        }'
+  - ''
+  - '        return ggml_mem_ranges_add_dst(mrs, node.dst());'
+  - '    };'
+  - ''
+  - '    // helper to check if a node can run concurrently with the existing set of
+    nodes'
+  - '    const auto & h_check = [](ggml_mem_ranges_t mrs, const node_info & node)
+    {'
+  - '        for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '            if (node.node->src[i]) {'
+  - '                if (!ggml_mem_ranges_check_src(mrs, node.node->src[i])) {'
+  - '                    return false;'
+  - '                }'
+  - '            }'
+  - '        }'
+  - ''
+  - '        for (const auto * fused : node.fused) {'
+  - '            for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '                if (fused->src[i]) {'
+  - '                    if (!ggml_mem_ranges_check_src(mrs, fused->src[i])) {'
+  - '                        return false;'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '        }'
+  - ''
+  - '        return ggml_mem_ranges_check_dst(mrs, node.dst());'
+  - '    };'
+  - ''
+  - '    // perform reorders only across these types of ops'
+  - '    // can be expanded when needed'
+  - '    const auto & h_safe = [](ggml_op op) {'
+  - '        switch (op) {'
+  - '            case GGML_OP_MUL_MAT:'
+  - '            case GGML_OP_MUL_MAT_ID:'
+  - '            case GGML_OP_ROPE:'
+  - '            case GGML_OP_NORM:'
+  - '            case GGML_OP_RMS_NORM:'
+  - '            case GGML_OP_GROUP_NORM:'
+  - '            case GGML_OP_L2_NORM:'
+  - '            case GGML_OP_SUM_ROWS:'
+  - '            case GGML_OP_SSM_CONV:'
+  - '            case GGML_OP_SSM_SCAN:'
+  - '            case GGML_OP_CLAMP:'
+  - '            case GGML_OP_TRI:'
+  - '            case GGML_OP_DIAG:'
+  - '            case GGML_OP_MUL:'
+  - '            case GGML_OP_ADD:'
+  - '            case GGML_OP_SUB:'
+  - '            case GGML_OP_DIV:'
+  - '            case GGML_OP_GLU:'
+  - '            case GGML_OP_SCALE:'
+  - '            case GGML_OP_UNARY:'
+  - '            case GGML_OP_GET_ROWS:'
+  - '            case GGML_OP_SET_ROWS:'
+  - '            case GGML_OP_SET:'
+  - '            case GGML_OP_CPY:'
+  - '            case GGML_OP_CONT:'
+  - '            case GGML_OP_REPEAT:'
+  - '                return true;'
+  - '            default:'
+  - '                return ggml_op_is_empty(op);'
+  - '        }'
+  - '    };'
+  - ''
+  - '    const int n = nodes.size();'
+  - ''
+  - '    std::vector<int> res;'
+  - '    res.reserve(n);'
+  - ''
+  - '    std::vector<bool> used(n, false);'
+  - ''
+  - '    // the memory ranges for the set of currently concurrent nodes'
+  - '    ggml_mem_ranges_t mrs0 = ggml_mem_ranges_init(0);'
+  - ''
+  - '    // the memory ranges for the set of nodes that haven''t been processed yet,
+    when looking forward for a node to reorder'
+  - '    ggml_mem_ranges_t mrs1 = ggml_mem_ranges_init(0);'
+  - ''
+  - '    for (int i0 = 0; i0 < n; i0++) {'
+  - '        if (used[i0]) {'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        const auto & node0 = nodes[i0];'
+  - ''
+  - '        // the node is not concurrent with the existing concurrent set, so we
+    have to "put a barrier" (i.e reset mrs0)'
+  - '        // but before we do that, look forward for some other nodes that can
+    be added to the concurrent set mrs0'
+  - '        //'
+  - '        // note: we can always add empty nodes to the concurrent set as they
+    don''t read nor write anything'
+  - '        if (!node0.is_empty() && !h_check(mrs0, node0)) {'
+  - '            // this will hold the set of memory ranges from the nodes that haven''t
+    been processed yet'
+  - '            // if a node is not concurrent with this set, we cannot reorder it'
+  - '            ggml_mem_ranges_reset(mrs1);'
+  - ''
+  - '            // initialize it with the current node'
+  - '            h_add(mrs1, node0);'
+  - ''
+  - '            // that many nodes forward to search for a concurrent node'
+  - '            constexpr int N_FORWARD = 64;'
+  - ''
+  - '            for (int i1 = i0 + 1; i1 < i0 + N_FORWARD && i1 < n; i1++) {'
+  - '                if (used[i1]) {'
+  - '                    continue;'
+  - '                }'
+  - ''
+  - '                const auto & node1 = nodes[i1];'
+  - ''
+  - '                // disallow reordering of certain ops'
+  - '                if (!h_safe(node1.op())) {'
+  - '                    break;'
+  - '                }'
+  - ''
+  - '                const bool is_empty = node1.is_empty();'
+  - ''
+  - '                // to reorder a node and add it to the concurrent set, it has
+    to be:'
+  - '                //   + empty or concurrent with all nodes in the existing concurrent
+    set (mrs0)'
+  - '                //   + concurrent with all nodes prior to it that haven''t been
+    processed yet (mrs1)'
+  - '                if ((is_empty || h_check(mrs0, node1)) && h_check(mrs1, node1))
+    {'
+  - '                    // add the node to the existing concurrent set (i.e. reorder
+    it for early execution)'
+  - '                    h_add(mrs0, node1);'
+  - '                    res.push_back(i1);'
+  - ''
+  - '                    // mark as used, so we skip re-processing it later'
+  - '                    used[i1] = true;'
+  - '                } else {'
+  - '                    // expand the set of nodes that haven''t been processed yet'
+  - '                    h_add(mrs1, node1);'
+  - '                }'
+  - '            }'
+  - ''
+  - '            // finalize the concurrent set and begin a new one'
+  - '            ggml_mem_ranges_reset(mrs0);'
+  - '        }'
+  - ''
+  - '        // expand the concurrent set with the current node'
+  - '        {'
+  - '            h_add(mrs0, node0);'
+  - '            res.push_back(i0);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    ggml_mem_ranges_free(mrs0);'
+  - '    ggml_mem_ranges_free(mrs1);'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 基于内存冲突检测，对融合后的节点列表进行重新排序，以最大化可同时执行的节点集合（并发集），提升执行效率。
+  line: 267-426
+  name: ggml_metal_graph_optimize_reorder
+- code:
+  - void ggml_graph_optimize(ggml_cgraph * gf) {
+  - '    constexpr int MAX_FUSE = 16;'
+  - ''
+  - '    const int n = gf->n_nodes;'
+  - ''
+  - '    enum ggml_op ops[MAX_FUSE];'
+  - ''
+  - '    std::vector<node_info> nodes;'
+  - '    nodes.reserve(gf->n_nodes);'
+  - ''
+  - '    // fuse nodes:'
+  - '    // we don''t want to make reorders that break fusing, so we first pack all
+    fusable tensors'
+  - '    //   and perform the reorder over the fused nodes. after the reorder is done,
+    we unfuse'
+  - '    for (int i = 0; i < n; i++) {'
+  - '        node_info node = {'
+  - '            /*.node =*/ gf->nodes[i],'
+  - '            /*.fused =*/ {},'
+  - '        };'
+  - ''
+  - '        // fuse only ops that start with these operations'
+  - '        // can be expanded when needed'
+  - '        if (node.op() == GGML_OP_ADD ||'
+  - '            node.op() == GGML_OP_NORM ||'
+  - '            node.op() == GGML_OP_RMS_NORM) {'
+  - '            ops[0] = node.op();'
+  - ''
+  - '            int f = i + 1;'
+  - '            while (f < n && f < i + MAX_FUSE) {'
+  - '                // conservatively allow fusing only these ops'
+  - '                // can be expanded when needed'
+  - '                if (gf->nodes[f]->op != GGML_OP_ADD &&'
+  - '                    gf->nodes[f]->op != GGML_OP_MUL &&'
+  - '                    gf->nodes[f]->op != GGML_OP_NORM &&'
+  - '                    gf->nodes[f]->op != GGML_OP_RMS_NORM) {'
+  - '                    break;'
+  - '                }'
+  - '                ops[f - i] = gf->nodes[f]->op;'
+  - '                f++;'
+  - '            }'
+  - ''
+  - '            f -= i;'
+  - '            for (; f > 1; f--) {'
+  - '                if (ggml_can_fuse(gf, i, ops, f)) {'
+  - '                    break;'
+  - '                }'
+  - '            }'
+  - ''
+  - '            // add the fused tensors into the node info so we can unfuse them
+    later'
+  - '            for (int k = 1; k < f; k++) {'
+  - '                ++i;'
+  - ''
+  - '                // the .dst() becomes the last fused tensor'
+  - '                node.add_fused(gf->nodes[i]);'
+  - '            }'
+  - '        }'
+  - ''
+  - '        nodes.push_back(std::move(node));'
+  - '    }'
+  - ''
+  - '#if 1'
+  - '    // reorder to improve concurrency'
+  - '    const auto order = ggml_metal_graph_optimize_reorder(nodes);'
+  - '#else'
+  - '    std::vector<int> order(nodes.size());'
+  - '    for (size_t i = 0; i < nodes.size(); i++) {'
+  - '        order[i] = i;'
+  - '    }'
+  - '#endif'
+  - ''
+  - '    // unfuse'
+  - '    {'
+  - '        int j = 0;'
+  - '        for (const auto i : order) {'
+  - '            const auto & node = nodes[i];'
+  - ''
+  - '            gf->nodes[j++] = node.node;'
+  - ''
+  - '            for (auto * fused : node.fused) {'
+  - '                gf->nodes[j++] = fused;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 图优化主入口：遍历图节点，将可融合的 ADD/NORM/RMS_NORM 等操作打包为 node_info（带 fused 列表），调用重排函数生成新顺序，最后解包融合节点并更新图节点数组。
+  line: 428-511
+  name: ggml_graph_optimize

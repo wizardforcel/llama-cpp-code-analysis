@@ -1,0 +1,106 @@
+classes:
+- desc: 该包装类封装了 oneDNN（DNNL）库的 matmul 功能，提供静态方法以实现 SYCL 环境下的通用矩阵乘法和单行矩阵乘法，是 GGML SYCL
+    后端调用 oneDNN 进行张量乘法的核心入口。
+  methods:
+  - code:
+    - template<typename T>
+    - static constexpr dt to_dt() {
+    - '    if constexpr (std::is_same_v<T, float>) return dt::f32;'
+    - '    else if constexpr (std::is_same_v<T, sycl::half>) return dt::f16;'
+    - '    else static_assert(0);'
+    - '}'
+    desc: 模板元编程辅助方法，将模板类型 T 编译期映射为 oneDNN 的数据类型枚举（dt），支持 float 映射为 f32 和 sycl::half
+      映射为 f16，其他类型触发静态断言失败。
+    line: 20-26
+    name: to_dt
+  - code:
+    - static void gemm(ggml_backend_sycl_context & ctx, int m, int n, int k,
+    - '    const void * a, dt at, dnnl_dim_t stra0, dnnl_dim_t stra1, dnnl_dim_t stra2,'
+    - '    const void * b, dt bt, dnnl_dim_t strb0, dnnl_dim_t strb1, dnnl_dim_t strb2,'
+    - '    void * c, dt ct, const queue_ptr & q, dnnl_dim_t batches_a, dnnl_dim_t
+      batches_b) {'
+    - ''
+    - '    auto stream = ctx.stream_dnnl(q);'
+    - '    auto eng = ctx.engine_dnnl(q);'
+    - ''
+    - '    dnnl::memory::dims a_dims = {batches_a, m, k };'
+    - '    dnnl::memory::dims a_strides = {stra2, stra1, stra0};'
+    - '    const auto a_in_md = dnnl::memory::desc(a_dims, at, a_strides);'
+    - ''
+    - '    dnnl::memory::dims b_dims = {batches_b, k, n };'
+    - '    dnnl::memory::dims b_strides = {strb2, strb0, strb1};'
+    - '    const auto b_in_md = dnnl::memory::desc(b_dims, bt, b_strides);'
+    - ''
+    - '    dnnl::memory::dims c_dims = { std::max(batches_a, batches_b), m, n};'
+    - '    dnnl::memory::dims c_strides = {m*n, 1,  m };'
+    - '    const auto c_md    = dnnl::memory::desc(c_dims, ct, c_strides);'
+    - '    dnnl::primitive_attr primitive_attr;'
+    - '    primitive_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);'
+    - ''
+    - '#ifdef GGML_SYCL_F16'
+    - '    primitive_attr.set_fpmath_mode(dnnl::fpmath_mode::f16);'
+    - '#endif'
+    - ''
+    - '    auto a_mem = dnnl::memory(a_in_md, eng, const_cast<void*>(a));'
+    - '    auto b_mem = dnnl::memory(b_in_md, eng, const_cast<void*>(b));'
+    - '    auto matmul_pd = dnnl::matmul::primitive_desc(eng, a_in_md, b_in_md, c_md,
+      primitive_attr);'
+    - '    auto c_mem = dnnl::memory(matmul_pd.dst_desc(), eng, c);'
+    - ''
+    - '    auto scratchpad_md = matmul_pd.scratchpad_desc();'
+    - '    auto scratchpad_mem = ctx.get_scratchpad_mem(scratchpad_md, eng, q);'
+    - ''
+    - '    auto matmul_prim = dnnl::matmul(matmul_pd);'
+    - ''
+    - '    std::unordered_map<int, dnnl::memory> matmul_args;'
+    - '    matmul_args.insert({ DNNL_ARG_SRC, a_mem });'
+    - '    matmul_args.insert({ DNNL_ARG_WEIGHTS, b_mem });'
+    - ''
+    - '    matmul_args.insert({ DNNL_ARG_DST, c_mem });'
+    - '    matmul_args.insert({ DNNL_ARG_SCRATCHPAD, scratchpad_mem });'
+    - ''
+    - '    matmul_prim.execute(stream, matmul_args);'
+    - '}'
+    desc: 核心的通用矩阵乘法静态方法，接受上下文、矩阵维度（m,n,k）、输入输出指针、oneDNN 数据类型、各维度的 stride 参数、SYCL 队列以及批量数，通过构造
+      oneDNN 内存描述符和 matmul 原语描述符，设置用户定义的 scratchpad 模式（可选 F16 浮点模式），创建 memory 对象并执行
+      matmul 原语，实现批量 GEMM 操作。
+    line: 29-74
+    name: gemm
+  - code:
+    - static void row_gemm(ggml_backend_sycl_context & ctx, int m, int n, int k,
+    - '    const void * a, dt at, const void * b, dt bt, void * c, dt ct, const queue_ptr
+      & q) {'
+    - ''
+    - '    gemm(ctx, m, n, k, a, at, 1, k, k * m, b, bt, 1, k, n * k, c, ct, q, 1,
+      1);'
+    - '}'
+    desc: 便捷方法，用于计算单个批次（batch size 为 1）的矩阵乘法，其中矩阵 A 的 stride 设为 (1, k, k*m)，矩阵 B 的
+      stride 设为 (1, k, n*k)，并调用 gemm 方法完成计算。
+    line: 76-80
+    name: row_gemm
+  name: DnnlGemmWrapper
+desc: 该文件是 ggml 项目中 SYCL 后端的一级头文件 gemm.hpp，在启用 oneDNN（DNNL）支持时，通过封装 oneDNN 的 matmul
+  原语，为 SYCL 上下文提供高性能的通用矩阵乘法（GEMM）功能，支持批量矩阵乘法和切片（row gemm）操作，并利用 oneDNN 的底层优化和 SYCL
+  运行时管理内存与执行流。
+file: ggml/src/ggml-sycl/gemm.hpp
+funcs:
+- code:
+  - '#ifndef GGML_SYCL_GEMM_HPP'
+  - '#define GGML_SYCL_GEMM_HPP'
+  - ''
+  - '#include "ggml-sycl.h"'
+  - ''
+  - '#if GGML_SYCL_DNNL'
+  - ''
+  - '#include "dnnl.hpp"'
+  - '#include "dnnl_sycl.hpp"'
+  - ''
+  - '... class definition ...'
+  - ''
+  - '#endif'
+  - ''
+  - '#endif // GGML_SYCL_GEMM_HPP'
+  desc: 文件顶部的预处理指令和条件编译逻辑，定义了头文件保护宏 GGML_SYCL_GEMM_HPP，并检查 GGML_SYCL_DNNL 是否启用，仅在启用时包含
+    oneDNN 头文件并定义 DnnlGemmWrapper 类，同时包含版权注释信息。
+  line: 1-83
+  name: __main__

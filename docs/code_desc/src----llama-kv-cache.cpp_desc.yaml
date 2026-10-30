@@ -1,0 +1,1971 @@
+classes:
+- desc: KV 缓存管理类，负责模型的键值缓存分配、初始化、槽位管理（如查找、复用）、序列操作（添加、删除、复制、移位）以及内存管理。它支持多数据流（stream）和多种后端，并集成
+    K-shift（用于处理序列移位）和 Hadamard 旋转（用于优化量化缓存）。
+  methods:
+  - code:
+    - llama_kv_cache::llama_kv_cache(
+    - '        const llama_model & model,'
+    - '                ggml_type   type_k,'
+    - '                ggml_type   type_v,'
+    - '                     bool   v_trans,'
+    - '                     bool   offload,'
+    - '                     bool   unified,'
+    - '                 uint32_t   kv_size,'
+    - '                 uint32_t   n_seq_max,'
+    - '                 uint32_t   n_pad,'
+    - '                 uint32_t   n_swa,'
+    - '           llama_swa_type   swa_type,'
+    - '    const layer_filter_cb & filter,'
+    - '    const  layer_reuse_cb & reuse) :'
+    - '    model(model), hparams(model.hparams), v_trans(v_trans),'
+    - '    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad),
+      n_swa(n_swa), swa_type(swa_type) {'
+    - '    GGML_ASSERT(kv_size % n_pad == 0);'
+    - '    const uint32_t n_layer_kv = hparams.n_layer_kv();'
+    - '    struct ggml_backend_buft_comparator { ... };'
+    - '    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator>
+      ctx_map;'
+    - '    auto ctx_for_buft = ...'
+    - '    GGML_ASSERT(n_stream == 1 || n_stream == n_seq_max);'
+    - '    v_heads.resize(n_stream);'
+    - '    v_cells.resize(n_stream);'
+    - '    seq_to_stream.resize(LLAMA_MAX_SEQ, 0);'
+    - '    if (n_stream > 1) { ... }'
+    - '    const bool is_mla = hparams.is_mla();'
+    - '    for (uint32_t il = 0; il < hparams.n_layer; il++) {'
+    - '        if (!hparams.has_kv(il)) { continue; }'
+    - '        if (filter && !filter(il)) { continue; }'
+    - '        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);'
+    - '        const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) :
+      hparams.n_embd_v_gqa_max();'
+    - '        ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();'
+    - '        if (offload) { ... buft = ggml_backend_dev_buffer_type(dev); }'
+    - '        ggml_context * ctx = ctx_for_buft(buft);'
+    - '        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa,
+      kv_size, n_stream) : nullptr;'
+    - '        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa,
+      kv_size, n_stream) : nullptr;'
+    - '        std::vector<ggml_tensor *> k_stream;'
+    - '        std::vector<ggml_tensor *> v_stream;'
+    - '        for (uint32_t s = 0; s < n_stream; ++s) { ... }'
+    - '        map_layer_ids[il] = layers.size();'
+    - '        layers.push_back({ il, k, v, k_stream, v_stream, });'
+    - '    }'
+    - '    if (reuse) { ... }'
+    - '    for (auto & [buft, ctx] : ctx_map) {'
+    - '        ggml_backend_buffer_t buf;'
+    - '        if (model.hparams.no_alloc) { ... } else { buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(),
+      buft); }'
+    - '        ggml_backend_buffer_clear(buf, 0);'
+    - '        ctxs_bufs.emplace_back(std::move(ctx), buf);'
+    - '    }'
+    - '    const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");'
+    - '    attn_rot_k = !attn_rot_disable && ggml_is_quantized(type_k) && ...;'
+    - '    attn_rot_v = ...;'
+    - '    if (attn_rot_k || attn_rot_v) {'
+    - '        for (int64_t n = 64; n <= std::max(hparams.n_embd_head_k(), hparams.n_embd_head_v());
+      n *= 2) {'
+    - '            attn_rot_hadamard[n] = std::vector<float>(n*n);'
+    - '            ggml_tensor * tmp = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32,
+      n, n);'
+    - '            tmp->data = attn_rot_hadamard[n].data();'
+    - '            ggml_gen_hadamard(tmp);'
+    - '        }'
+    - '    }'
+    - '    const char * LLAMA_KV_CACHE_DEBUG = getenv("LLAMA_KV_CACHE_DEBUG");'
+    - '    debug = LLAMA_KV_CACHE_DEBUG ? atoi(LLAMA_KV_CACHE_DEBUG) : 0;'
+    - '}'
+    desc: 构造函数，初始化 KV 缓存。它根据模型超参数、层过滤器和重用器，为每一层分配 K 和 V 张量，并创建相应的上下文和缓冲区。它还会处理张量分配、内存统计、禁用注意力旋转的选项（通过环境变量
+      LLAMA_ATTN_ROT_DISABLE）以及预计算 Hadamard 矩阵（如果需要）。
+    line: 51-199
+    name: llama_kv_cache
+  - code:
+    - void llama_kv_cache::clear(bool data) {
+    - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+    - '        v_cells[s].reset();'
+    - '        v_heads[s] = 0;'
+    - '    }'
+    - '    if (data) {'
+    - '        for (auto & [_, buf] : ctxs_bufs) {'
+    - '            ggml_backend_buffer_clear(buf.get(), 0);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 清空 KV 缓存。该方法会重置所有数据流中的单元格和头部位置，并可选择性地将底层缓冲区数据清零，以防止遗留的 NaN 值。
+    line: 201-213
+    name: clear
+  - code:
+    - bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1)
+      {
+    - '    GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));'
+    - '    if (p0 < 0) { p0 = 0; }'
+    - '    if (p1 < 0) { p1 = std::numeric_limits<llama_pos>::max(); }'
+    - '    if (seq_id >= 0) {'
+    - '        auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '        auto & head  = v_heads[seq_to_stream[seq_id]];'
+    - '        uint32_t new_head = cells.size();'
+    - '        for (uint32_t i = 0; i < cells.size(); ++i) {'
+    - '            if (!cells.pos_in(i, p0, p1)) { continue; }'
+    - '            if (cells.seq_has(i, seq_id) && cells.seq_rm(i, seq_id)) {'
+    - '                if (new_head == cells.size()) { new_head = i; }'
+    - '            }'
+    - '        }'
+    - '        if (new_head != cells.size() && new_head < head) { head = new_head;
+      }'
+    - '    } else {'
+    - '        for (uint32_t s = 0; s < n_stream; ++s) { ... }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 删除指定序列（或所有序列）在指定位置范围内的单元格。它会遍历单元格，移除匹配的序列 ID，并更新头部指针以指向第一个空闲位置。
+    line: 215-252
+    name: seq_rm
+  - code:
+    - void llama_kv_cache::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst,
+      llama_pos p0, llama_pos p1) {
+    - '    GGML_ASSERT(seq_id_src >= 0 && (size_t) seq_id_src < seq_to_stream.size());'
+    - '    GGML_ASSERT(seq_id_dst >= 0 && (size_t) seq_id_dst < seq_to_stream.size());'
+    - '    const auto s0 = seq_to_stream[seq_id_src];'
+    - '    const auto s1 = seq_to_stream[seq_id_dst];'
+    - '    if (s0 == s1) {'
+    - '        auto & cells = v_cells[s0];'
+    - '        if (seq_id_src == seq_id_dst) { return; }'
+    - '        if (p0 < 0) { p0 = 0; }'
+    - '        if (p1 < 0) { p1 = std::numeric_limits<llama_pos>::max(); }'
+    - '        for (uint32_t i = 0; i < cells.size(); ++i) {'
+    - '            if (!cells.pos_in(i, p0, p1)) { continue; }'
+    - '            if (cells.seq_has(i, seq_id_src)) { cells.seq_add(i, seq_id_dst);
+      }'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    bool is_full = true;'
+    - '    if (p0 > 0 && p0 + 1 < (int) get_size()) { is_full = false; }'
+    - '    if (p1 > 0 && p1 + 1 < (int) get_size()) { is_full = false; }'
+    - '    GGML_ASSERT(is_full && "seq_cp() is only supported for full KV buffers");'
+    - '    sc_info.ssrc.push_back(s0);'
+    - '    sc_info.sdst.push_back(s1);'
+    - '    v_cells[s1].reset();'
+    - '    for (uint32_t i = 0; i < v_cells[s0].size(); ++i) {'
+    - '        if (v_cells[s0].seq_has(i, seq_id_src)) {'
+    - '            llama_pos pos   = v_cells[s0].pos_get(i);'
+    - '            llama_pos shift = v_cells[s0].get_shift(i);'
+    - '            llama_kv_cell_ext ext = v_cells[s0].ext_get(i);'
+    - '            if (shift != 0) { pos -= shift; assert(pos >= 0); }'
+    - '            v_cells[s1].pos_set(i, pos);'
+    - '            v_cells[s1].seq_add(i, seq_id_dst);'
+    - '            if (shift != 0) { v_cells[s1].pos_add(i, shift); }'
+    - '            v_cells[s1].ext_set(i, ext);'
+    - '        }'
+    - '    }'
+    - '    v_heads[s1] = v_heads[s0];'
+    - '}'
+    desc: 将源序列的 KV 缓存数据复制到目标序列。如果两个序列在同一数据流中，只需更新元数据；如果跨数据流，则记录复制操作（在 update 时执行），并复制单元格元数据。
+    line: 254-314
+    name: seq_cp
+  - code:
+    - void llama_kv_cache::seq_keep(llama_seq_id seq_id) {
+    - '    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());'
+    - '    auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '    auto & head  = v_heads[seq_to_stream[seq_id]];'
+    - '    uint32_t new_head = cells.size();'
+    - '    for (uint32_t i = 0; i < cells.size(); ++i) {'
+    - '        if (cells.seq_keep(i, seq_id)) {'
+    - '            if (new_head == cells.size()) { new_head = i; }'
+    - '        }'
+    - '    }'
+    - '    if (new_head != cells.size() && new_head < head) { head = new_head; }'
+    - '}'
+    desc: 保留指定序列的所有单元格，并移除该单元格中其他不属于该序列的序列。同时更新头部指针以指向第一个空闲位置。
+    line: 316-331
+    name: seq_keep
+  - code:
+    - void llama_kv_cache::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1,
+      llama_pos shift) {
+    - '    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());'
+    - '    GGML_ASSERT(hparams.n_pos_per_embd() == 1 && "seq_add() is only supported
+      for n_pos_per_embd() == 1");'
+    - '    auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '    auto & head  = v_heads[seq_to_stream[seq_id]];'
+    - '    if (shift == 0) { return; }'
+    - '    uint32_t new_head = cells.size();'
+    - '    if (p0 < 0) { p0 = 0; }'
+    - '    if (p1 < 0) { p1 = std::numeric_limits<llama_pos>::max(); }'
+    - '    if (p0 == p1) { return; }'
+    - '    for (uint32_t i = 0; i < cells.size(); ++i) {'
+    - '        if (!cells.pos_in(i, p0, p1)) { continue; }'
+    - '        if (cells.seq_has(i, seq_id)) {'
+    - '            if (cells.pos_add(i, shift)) {'
+    - '                if (new_head == cells.size()) { new_head = i; }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    head = new_head != cells.size() ? new_head : 0;'
+    - '}'
+    desc: 将指定序列在位置范围内的所有单元格的绝对位置增加一个偏移量（shift）。如果之后位置超出范围，单元格将被清空。
+    line: 333-361
+    name: seq_add
+  - code:
+    - void llama_kv_cache::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1,
+      int d) {
+    - '    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());'
+    - '    GGML_ASSERT(hparams.n_pos_per_embd() == 1 && "seq_div() is only supported
+      for n_pos_per_embd() == 1");'
+    - '    auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '    if (d == 1) { return; }'
+    - '    if (p0 < 0) { p0 = 0; }'
+    - '    if (p1 < 0) { p1 = std::numeric_limits<llama_pos>::max(); }'
+    - '    if (p0 == p1) { return; }'
+    - '    for (uint32_t i = 0; i < cells.size(); ++i) {'
+    - '        if (!cells.pos_in(i, p0, p1)) { continue; }'
+    - '        if (cells.seq_has(i, seq_id)) { cells.pos_div(i, d); }'
+    - '    }'
+    - '}'
+    desc: 将指定序列在位置范围内的所有单元格的绝对位置除以一个整数（d）。该方法用于处理位置压缩等场景。
+    line: 363-385
+    name: seq_div
+  - code:
+    - llama_pos llama_kv_cache::seq_pos_min(llama_seq_id seq_id) const {
+    - '    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());'
+    - '    const auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '    return cells.seq_pos_min(seq_id);'
+    - '}'
+    desc: 返回指定序列在缓存中的所有位置中的最小值。
+    line: 387-392
+    name: seq_pos_min
+  - code:
+    - llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
+    - '    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());'
+    - '    const auto & cells = v_cells[seq_to_stream[seq_id]];'
+    - '    return cells.seq_pos_max(seq_id);'
+    - '}'
+    desc: 返回指定序列在缓存中的所有位置中的最大值。
+    line: 394-399
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache::memory_breakdown()
+      const {
+    - '    std::map<ggml_backend_buffer_type_t, size_t> ret;'
+    - '    for (const auto & [ctx, buf] : ctxs_bufs) {'
+    - '        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(buf.get());'
+    - '        if (hparams.no_alloc) {'
+    - '            GGML_ASSERT(ggml_backend_buffer_get_base(buf.get()) == nullptr);'
+    - '            ret[buft] += ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(),
+      buft);'
+    - '        } else {'
+    - '            ret[buft] += ggml_backend_buffer_get_size(buf.get());'
+    - '        }'
+    - '    }'
+    - '    return ret;'
+    - '}'
+    desc: 计算 KV 缓存在不同后端缓冲区类型上的内存占用情况，返回一个映射。
+    line: 401-413
+    name: memory_breakdown
+  - code:
+    - llama_memory_context_ptr llama_kv_cache::init_batch(
+    - '            llama_batch_allocr & balloc,'
+    - '            uint32_t n_ubatch,'
+    - '            bool embd_all) {'
+    - '    GGML_UNUSED(embd_all);'
+    - '    do {'
+    - '        balloc.split_reset();'
+    - '        std::vector<llama_ubatch> ubatches;'
+    - '        while (true) {'
+    - '            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch,
+      true);'
+    - '            if (ubatch.n_tokens == 0) { break; }'
+    - '            ubatches.push_back(std::move(ubatch));'
+    - '        }'
+    - '        if (balloc.get_n_used() < balloc.get_n_tokens()) { break; }'
+    - '        auto sinfos = prepare(ubatches);'
+    - '        if (sinfos.empty()) { break; }'
+    - '        return std::make_unique<llama_kv_cache_context>(this, std::move(sinfos),
+      std::move(ubatches));'
+    - '    } while (false);'
+    - '    return std::make_unique<llama_kv_cache_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);'
+    - '}'
+    desc: 初始化一个批次处理所需的 KV 缓存上下文。它会尝试将一批输入分割成多个子批次（ubatches），并为每个子批次找到合适的缓存槽位。如果分割失败，则返回一个表示内存准备失败的状态。
+    line: 415-436
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr llama_kv_cache::init_full() {
+    - '    return std::make_unique<llama_kv_cache_context>(this);'
+    - '}'
+    desc: 初始化一个完整的 KV 缓存上下文，用于包含所有历史数据的推理场景。
+    line: 438-440
+    name: init_full
+  - code:
+    - llama_memory_context_ptr llama_kv_cache::init_update(llama_context * lctx, bool
+      optimize) {
+    - '    GGML_UNUSED(optimize);'
+    - '    bool do_shift = get_has_shift();'
+    - '    return std::make_unique<llama_kv_cache_context>(this, lctx, do_shift, std::move(sc_info));'
+    - '}'
+    desc: 初始化一个用于增量更新的 KV 缓存上下文。它会检查是否存在移位操作，并传递流复制信息。
+    line: 442-447
+    name: init_update
+  - code:
+    - llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_ubatch>
+      & ubatches) {
+    - '    llama_kv_cache::slot_info_vec_t res;'
+    - '    struct state_t {'
+    - '        slot_info sinfo;'
+    - '        std::vector<uint32_t> v_heads_old;'
+    - '        std::vector<llama_kv_cells> v_cells;'
+    - '    };'
+    - '    std::vector<state_t> states;'
+    - '    bool success = true;'
+    - '    for (const auto & ubatch : ubatches) {'
+    - '        const auto sinfo_new = find_slot(ubatch, false);'
+    - '        if (sinfo_new.empty()) { success = false; break; }'
+    - '        res.push_back(sinfo_new);'
+    - '        {'
+    - '            state_t state = { sinfo_new, v_heads, {} };'
+    - '            for (uint32_t s = 0; s < sinfo_new.n_stream(); ++s) {'
+    - '                auto & cells = v_cells[sinfo_new.strm[s]];'
+    - '                state.v_cells.push_back(cells.cp(sinfo_new.idxs[s]));'
+    - '            }'
+    - '            states.push_back(std::move(state));'
+    - '        }'
+    - '        apply_ubatch(sinfo_new, ubatch);'
+    - '    }'
+    - '    GGML_ASSERT(!states.empty() || !success);'
+    - '    for (auto it = states.rbegin(); it != states.rend(); ++it) {'
+    - '        const auto & sinfo = it->sinfo;'
+    - '        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+    - '            auto & cells = v_cells[sinfo.strm[s]];'
+    - '            auto & head  = v_heads[sinfo.strm[s]];'
+    - '            cells.set(sinfo.idxs[s], it->v_cells[s]);'
+    - '            head = it->v_heads_old[s];'
+    - '        }'
+    - '    }'
+    - '    if (!success) { return {}; }'
+    - '    return res;'
+    - '}'
+    desc: 为一批子批次准备缓存槽位。它会为每个子批次调用 find_slot 寻找槽位，但不实际写入数据，而是保存旧状态。如果所有子批次都成功找到槽位，则恢复旧状态并返回槽位信息；否则返回空。
+    line: 449-491
+    name: prepare
+  - code:
+    - bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_copy_info
+      & sc_info) {
+    - '    bool updated = false;'
+    - '    auto * sched = lctx->get_sched();'
+    - '    if (!sc_info.empty()) {'
+    - '        assert(n_stream > 1 && "stream copy should never happen with a single
+      stream");'
+    - '        llama_synchronize(lctx);'
+    - '        const size_t n_copy = sc_info.ssrc.size();'
+    - '        for (size_t i = 0; i < n_copy; ++i) {'
+    - '            const auto ssrc = sc_info.ssrc[i];'
+    - '            const auto sdst = sc_info.sdst[i];'
+    - '            assert(ssrc != sdst);'
+    - '            for (uint32_t il = 0; il < layers.size(); ++il) {'
+    - '                const auto & layer = layers[il];'
+    - '                ggml_backend_tensor_copy(layer.k_stream[ssrc], layer.k_stream[sdst]);'
+    - '                if (layer.v_stream[ssrc]) {'
+    - '                    ggml_backend_tensor_copy(layer.v_stream[ssrc], layer.v_stream[sdst]);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (do_shift) {'
+    - '        if (!get_can_shift()) { GGML_ABORT("The current KV cache / model configuration
+      does not support K-shift"); }'
+    - '        LLAMA_LOG_DEBUG("%s: applying K-shift\n", __func__);'
+    - '        if (hparams.rope_type != LLAMA_ROPE_TYPE_NONE) {'
+    - '            ggml_backend_sched_reset(sched);'
+    - '            auto * res = lctx->get_gf_res_reserve();'
+    - '            res->reset();'
+    - '            auto * gf = build_graph_shift(res, lctx);'
+    - '            if (!ggml_backend_sched_alloc_graph(sched, gf)) {'
+    - '                LLAMA_LOG_ERROR("%s: failed to allocate compute graph for K-shift\n",
+      __func__);'
+    - '                return updated;'
+    - '            }'
+    - '            res->set_inputs(nullptr);'
+    - '            if (lctx->graph_compute(gf, false) != GGML_STATUS_SUCCESS) {'
+    - '                LLAMA_LOG_ERROR("%s: failed to compute K-shift\n", __func__);'
+    - '                return updated;'
+    - '            }'
+    - '            updated = true;'
+    - '        }'
+    - '        for (uint32_t s = 0; s < n_stream; ++s) {'
+    - '            auto & cells = v_cells[s];'
+    - '            cells.reset_shift();'
+    - '        }'
+    - '    }'
+    - '    return updated;'
+    - '}'
+    desc: 执行缓存更新。它首先执行流复制操作（如果存在），然后根据 do_shift 标志执行 K-shift 操作。K-shift 通过构建并计算一个移位计算图来旋转
+      RoPE 频率，最后重置单元格的移位标志。
+    line: 493-549
+    name: update
+  - code:
+    - llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+      bool cont) const {
+    - '    // 调试输出部分（已省略）'
+    - '    uint32_t n_tokens = ubatch.n_tokens;'
+    - '    uint32_t n_seqs   = 1;'
+    - '    if (n_stream > 1) {'
+    - '        GGML_ASSERT(n_tokens % ubatch.n_seqs_unq == 0);'
+    - '        n_seqs   = ubatch.n_seqs_unq;'
+    - '        n_tokens = n_tokens / n_seqs;'
+    - '    }'
+    - '    slot_info res = {'
+    - '        /*.s0   =*/ LLAMA_MAX_SEQ,'
+    - '        /*.s1   =*/ 0,'
+    - '        /*.strm =*/ { },'
+    - '        /*.idxs =*/ { },'
+    - '    };'
+    - '    res.resize(n_seqs);'
+    - '    for (uint32_t s = 0; s < n_seqs; ++s) {'
+    - '        // ... 查找逻辑'
+    - '    }'
+    - '    assert(res.s1 >= res.s0);'
+    - '    return res;'
+    - '}'
+    desc: 在缓存中为给定批次查找合适的槽位。它从当前头部位置开始搜索，找到足够数量的空闲或可重用单元格（考虑 SWA 掩码）。支持连续和非连续槽位分配，并在失败时返回空结果。
+    line: 551-691
+    name: find_slot
+  - code:
+    - void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch
+      & ubatch) {
+    - '    llama_seq_id seq_pos_max_rm[LLAMA_MAX_SEQ];'
+    - '    for (uint32_t s = 0; s < LLAMA_MAX_SEQ; ++s) { seq_pos_max_rm[s] = -1;
+      }'
+    - '    assert(ubatch.n_tokens == sinfo.n_stream()*sinfo.size());'
+    - '    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+    - '        for (uint32_t ii = 0; ii < sinfo.size(); ++ii) {'
+    - '            const uint32_t i = s*sinfo.size() + ii;'
+    - '            auto & cells = v_cells[sinfo.strm[s]];'
+    - '            const auto idx = sinfo.idxs[s][ii];'
+    - '            if (!cells.is_empty(idx)) {'
+    - '                assert(cells.seq_count(idx) == 1);'
+    - '                const llama_seq_id seq_id = cells.seq_get(idx);'
+    - '                const llama_pos    pos    = cells.pos_get(idx);'
+    - '                seq_pos_max_rm[seq_id] = std::max(seq_pos_max_rm[seq_id], pos);'
+    - '                cells.rm(idx);'
+    - '            }'
+    - '            cells.pos_set(idx, ubatch.pos[i]);'
+    - '            if (ubatch.is_pos_2d()) {'
+    - '                llama_kv_cell_ext ext {'
+    - '                    /*.x =*/ ubatch.pos[i + ubatch.n_tokens*2],'
+    - '                    /*.y =*/ ubatch.pos[i + ubatch.n_tokens],'
+    - '                };'
+    - '                cells.ext_set(idx, ext);'
+    - '            }'
+    - '            for (int32_t s = 0; s < ubatch.n_seq_id[i]; s++) {'
+    - '                cells.seq_add(idx, ubatch.seq_id[i][s]);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    for (uint32_t s = 0; s < LLAMA_MAX_SEQ; ++s) {'
+    - '        if (seq_pos_max_rm[s] == -1) { continue; }'
+    - '        GGML_ASSERT(s < seq_to_stream.size());'
+    - '        auto & cells = v_cells[seq_to_stream[s]];'
+    - '        if (cells.seq_pos_min(s) <= seq_pos_max_rm[s]) {'
+    - '            seq_rm(s, cells.seq_pos_min(s), seq_pos_max_rm[s] + 1);'
+    - '        }'
+    - '    }'
+    - '    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+    - '        auto & head = v_heads[sinfo.strm[s]];'
+    - '        head = sinfo.idxs[s].back() + 1;'
+    - '    }'
+    - '}'
+    desc: 将给定的子批次实际应用到缓存中。它会更新单元格的位置、序列 ID 和可选的位置扩展（2D 位置），并清除因覆盖而失效的旧位置（通过调用 seq_rm）。最后，它会更新头部指针。
+    line: 693-740
+    name: apply_ubatch
+  - code:
+    - bool llama_kv_cache::get_can_shift() const {
+    - '    if (model.arch == LLM_ARCH_STEP35) {'
+    - '        return false;'
+    - '    }'
+    - '    if (hparams.n_pos_per_embd() > 1) {'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 检查当前模型配置是否支持 K-shift 操作。对于 Step 架构或使用多位置嵌入的模型，返回 false。
+    line: 742-749
+    name: get_can_shift
+  - code:
+    - uint32_t llama_kv_cache::get_size() const {
+    - '    const auto & cells = v_cells[seq_to_stream[0]];'
+    - '    return cells.size();'
+    - '}'
+    desc: 返回 KV 缓存的大小（即单元格的数量）。
+    line: 751-755
+    name: get_size
+  - code:
+    - uint32_t llama_kv_cache::get_n_stream() const {
+    - '    return n_stream;'
+    - '}'
+    desc: 返回 KV 缓存的数据流数量。
+    line: 757-760
+    name: get_n_stream
+  - code:
+    - bool llama_kv_cache::get_has_shift() const {
+    - '    bool result = false;'
+    - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+    - '        result |= v_cells[s].get_has_shift();'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 检查缓存中是否存在任何未执行的移位操作。
+    line: 762-769
+    name: get_has_shift
+  - code:
+    - ggml_type llama_kv_cache::type_k() const {
+    - '    return layers[0].k->type;'
+    - '}'
+    desc: 返回 K 张量的数据类型。
+    line: 771-773
+    name: type_k
+  - code:
+    - ggml_type llama_kv_cache::type_v() const {
+    - '    return layers[0].v->type;'
+    - '}'
+    desc: 返回 V 张量的数据类型。
+    line: 775-777
+    name: type_v
+  - code:
+    - uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
+    - '    uint32_t result = 0;'
+    - '    // pad the n_kv value so that the graph remains constant across batches
+      and can be reused'
+    - '    // note: this also helps'
+    - '}'
+    desc: 计算给定槽位信息所需的 KV 张量大小（n_kv），并进行填充以确保计算图在批次间保持不变。
+    line: 779-785
+    name: get_n_kv
+  name: llama_kv_cache
+- desc: 一个用于构建KV缓存移位计算图的输入类，负责管理K移位和张量旋转的输入。
+  methods:
+  - code:
+    - 'llm_graph_input_k_shift(const llama_kv_cache * kv_self) : kv_self(kv_self)
+      {}'
+    desc: 构造函数，初始化KV缓存指针。
+    line: 1266-1266
+    name: llm_graph_input_k_shift
+  - code:
+    - void llm_graph_input_k_shift::set_input(const llama_ubatch * ubatch) {
+    - '    GGML_UNUSED(ubatch);'
+    - ''
+    - '    if (k_shift) {'
+    - '        kv_self->set_input_k_shift(k_shift);'
+    - '    }'
+    - ''
+    - '    if (k_rot) {'
+    - '        kv_self->set_input_k_rot(k_rot);'
+    - '    }'
+    - '}'
+    desc: 根据KV缓存的状态设置输入张量（K移位和K旋转）。
+    line: 1278-1290
+    name: set_input
+  name: llm_graph_input_k_shift
+- desc: Manages the key-value cache for transformer layers, supporting multiple streams
+    for diverse sequences, with methods to read/write cache state and handle cache
+    updates.
+  methods:
+  - code:
+    - bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t
+      cell_count, const slot_info & sinfo) {
+    - '    auto & cells = v_cells[strm];'
+    - '    uint32_t v_trans;'
+    - '    uint32_t n_layer;'
+    - '    io.read_to(&v_trans, sizeof(v_trans));'
+    - '    io.read_to(&n_layer, sizeof(n_layer));'
+    - '    if (n_layer != layers.size()) {'
+    - '        LLAMA_LOG_ERROR("%s: mismatched layer count (%u instead of %u)\n",
+      __func__, n_layer, (uint32_t) layers.size());'
+    - '        return false;'
+    - '    }'
+    - '    if (cell_count > cells.size()) {'
+    - '        LLAMA_LOG_ERROR("%s: not enough cells in kv cache to restore state
+      (%u > %u)\n", __func__, cell_count, cells.size());'
+    - '        return false;'
+    - '    }'
+    - '    if (this->v_trans != (bool) v_trans) {'
+    - '        LLAMA_LOG_ERROR("%s: incompatible V transposition\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    for (const auto & layer : layers) {'
+    - '        const uint32_t il = layer.il;'
+    - '        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);'
+    - '        auto * k = layer.k_stream[strm];'
+    - '        int32_t k_type_i_ref;'
+    - '        io.read_to(&k_type_i_ref, sizeof(k_type_i_ref));'
+    - '        const int32_t k_type_i = (int32_t) k->type;'
+    - '        if (k_type_i != k_type_i_ref) {'
+    - '            LLAMA_LOG_ERROR("%s: mismatched key type (%d != %d, layer %d)\n",
+      __func__, k_type_i, k_type_i_ref, il);'
+    - '            return false;'
+    - '        }'
+    - '        uint64_t k_size_row_ref;'
+    - '        io.read_to(&k_size_row_ref, sizeof(k_size_row_ref));'
+    - '        const size_t k_size_row = ggml_row_size(k->type, n_embd_k_gqa);'
+    - '        if (k_size_row != k_size_row_ref) {'
+    - '            LLAMA_LOG_ERROR("%s: mismatched key row size (%zu != %zu, layer
+      %d)\n", __func__, k_size_row, (size_t) k_size_row_ref, il);'
+    - '            return false;'
+    - '        }'
+    - '        if (cell_count) {'
+    - '            if (sinfo.is_contiguous()) {'
+    - '                ggml_backend_tensor_set(k, io.read(cell_count * k_size_row),
+      sinfo.head() * k_size_row, cell_count * k_size_row);'
+    - '            } else {'
+    - '                const void * src = io.read(cell_count * k_size_row);'
+    - '                for (uint32_t i = 0; i < cell_count; ++i) {'
+    - '                    const size_t dst_offset = sinfo.idxs[0][i] * k_size_row;'
+    - '                    ggml_backend_tensor_set(k, (const char*)src + i * k_size_row,
+      dst_offset, k_size_row);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (!this->v_trans) {'
+    - '        for (const auto & layer : layers) {'
+    - '            const uint32_t il = layer.il;'
+    - '            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);'
+    - '            auto * v = layer.v_stream[strm];'
+    - '            if (!v) continue;'
+    - '            int32_t v_type_i_ref;'
+    - '            io.read_to(&v_type_i_ref, sizeof(v_type_i_ref));'
+    - '            const int32_t v_type_i = (int32_t) v->type;'
+    - '            if (v_type_i != v_type_i_ref) {'
+    - '                LLAMA_LOG_ERROR("%s: mismatched value type (%d != %d, layer
+      %d)\n", __func__, v_type_i, v_type_i_ref, il);'
+    - '                return false;'
+    - '            }'
+    - '            uint64_t v_size_row_ref;'
+    - '            io.read_to(&v_size_row_ref, sizeof(v_size_row_ref));'
+    - '            const size_t v_size_row = ggml_row_size(v->type, n_embd_v_gqa);'
+    - '            if (v_size_row != v_size_row_ref) {'
+    - '                LLAMA_LOG_ERROR("%s: mismatched value row size (%zu != %zu,
+      layer %d)\n", __func__, v_size_row, (size_t) v_size_row_ref, il);'
+    - '                return false;'
+    - '            }'
+    - '            if (cell_count) {'
+    - '                if (sinfo.is_contiguous()) {'
+    - '                    ggml_backend_tensor_set(v, io.read(cell_count * v_size_row),
+      sinfo.head() * v_size_row, cell_count * v_size_row);'
+    - '                } else {'
+    - '                    const void * src = io.read(cell_count * v_size_row);'
+    - '                    for (uint32_t i = 0; i < cell_count; ++i) {'
+    - '                        const size_t dst_offset = sinfo.idxs[0][i] * v_size_row;'
+    - '                        ggml_backend_tensor_set(v, (const char*)src + i * v_size_row,
+      dst_offset, v_size_row);'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    } else {'
+    - '        for (const auto & layer : layers) {'
+    - '            const uint32_t il = layer.il;'
+    - '            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);'
+    - '            auto * v = layer.v_stream[strm];'
+    - '            if (!v) continue;'
+    - '            int32_t v_type_i_ref;'
+    - '            io.read_to(&v_type_i_ref, sizeof(v_type_i_ref));'
+    - '            const int32_t v_type_i = (int32_t) v->type;'
+    - '            if (v_type_i != v_type_i_ref) {'
+    - '                LLAMA_LOG_ERROR("%s: mismatched value type (%d != %d, layer
+      %d)\n", __func__, v_type_i, v_type_i_ref, il);'
+    - '                return false;'
+    - '            }'
+    - '            uint32_t v_size_el_ref;'
+    - '            io.read_to(&v_size_el_ref, sizeof(v_size_el_ref));'
+    - '            const size_t v_size_el = ggml_type_size(v->type);'
+    - '            if (v_size_el != v_size_el_ref) {'
+    - '                LLAMA_LOG_ERROR("%s: mismatched value element size (%zu !=
+      %zu, layer %d)\n", __func__, v_size_el, (size_t) v_size_el_ref, il);'
+    - '                return false;'
+    - '            }'
+    - '            uint32_t n_embd_v_gqa_ref;'
+    - '            io.read_to(&n_embd_v_gqa_ref, sizeof(n_embd_v_gqa_ref));'
+    - '            if (n_embd_v_gqa != n_embd_v_gqa_ref) {'
+    - '                LLAMA_LOG_ERROR("%s: mismatched GQA embedding size (%u != %u,
+      layer %d)\n", __func__, n_embd_v_gqa, n_embd_v_gqa_ref, il);'
+    - '                return false;'
+    - '            }'
+    - '            if (cell_count) {'
+    - '                if (sinfo.is_contiguous()) {'
+    - '                    const uint32_t h = sinfo.head();'
+    - '                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {'
+    - '                        const size_t dst_offset = (h + j * cells.size()) *
+      v_size_el;'
+    - '                        ggml_backend_tensor_set(v, io.read(cell_count * v_size_el),
+      dst_offset, cell_count * v_size_el);'
+    - '                    }'
+    - '                } else {'
+    - '                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {'
+    - '                        const void * src = io.read(cell_count * v_size_el);'
+    - '                        for (uint32_t i = 0; i < cell_count; ++i) {'
+    - '                            const size_t dst_offset = (sinfo.idxs[0][i] + j
+      * cells.size()) * v_size_el;'
+    - '                            ggml_backend_tensor_set(v, (const char*)src + i
+      * v_size_el, dst_offset, v_size_el);'
+    - '                        }'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: Reads and restores the KV cache state from an I/O stream, validating layer
+      count, cell count, V transposition flag, and tensor metadata, then populating
+      key and value tensors with optional fast-path contiguous or slow-path scatter
+      writes.
+    line: 2161-2333
+    name: state_read_data
+  name: llama_kv_cache
+- desc: Provides a context interface for the KV cache, managing state across multiple
+    ubatches and abstracting cache operations like tensor access, copying, and input
+    mask building.
+  methods:
+  - code:
+    - 'llama_kv_cache_context::llama_kv_cache_context(llama_memory_status status)
+      : status(status) {}'
+    desc: Constructor that initializes the context with a memory status.
+    line: '2338'
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context::llama_kv_cache_context(
+    - '        llama_kv_cache * kv) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv)
+      {'
+    - '    n_kv = kv->get_size();'
+    - '    const uint32_t n_stream = kv->get_n_stream();'
+    - '    sinfos.resize(1);'
+    - '    sinfos[0].s0 = 0;'
+    - '    sinfos[0].s1 = n_stream - 1;'
+    - '    sinfos[0].idxs.resize(n_stream);'
+    - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+    - '        sinfos[0].strm.push_back(s);'
+    - '        sinfos[0].idxs[s].resize(1, 0);'
+    - '    }'
+    - '}'
+    desc: Constructor that initializes the context from an existing KV cache, creating
+      dummy slot info for graph building.
+    line: 2339-2352
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context::llama_kv_cache_context(
+    - '        llama_kv_cache * kv,'
+    - '        llama_context * lctx,'
+    - '        bool do_shift,'
+    - '        stream_copy_info sc_info) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv),
+      lctx(lctx), do_shift(do_shift), sc_info(std::move(sc_info)) {'
+    - '    if (!do_shift && this->sc_info.empty()) {'
+    - '        status = LLAMA_MEMORY_STATUS_NO_UPDATE;'
+    - '    }'
+    - '}'
+    desc: Constructor that initializes the context with a KV cache, context pointer,
+      shift flag, and stream copy info for cache updates.
+    line: 2354-2363
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context::llama_kv_cache_context(
+    - '        llama_kv_cache * kv,'
+    - '        llama_kv_cache::slot_info_vec_t sinfos,'
+    - '        std::vector<llama_ubatch> ubatches) : status(LLAMA_MEMORY_STATUS_SUCCESS),
+      kv(kv), sinfos(std::move(sinfos)), ubatches(std::move(ubatches)) {'
+    - '}'
+    desc: Constructor that initializes the context with a KV cache, slot info vector,
+      and ubatch vector for cache updates during inference.
+    line: 2365-2369
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context::~llama_kv_cache_context() = default;
+    desc: Default destructor for the KV cache context class.
+    line: '2371'
+    name: ~llama_kv_cache_context
+  - code:
+    - bool llama_kv_cache_context::next() {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - '    if (++i_cur >= ubatches.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: Advances the current ubatch index; returns false when reaching the end.
+    line: 2373-2380
+    name: next
+  - code:
+    - bool llama_kv_cache_context::apply() {
+    - '    assert(!llama_memory_status_is_fail(status));'
+    - '    if (ubatches.empty()) {'
+    - '        kv->update(lctx, do_shift, sc_info);'
+    - '        return true;'
+    - '    }'
+    - '    kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);'
+    - '    n_kv = kv->get_n_kv(sinfos[i_cur]);'
+    - '    return true;'
+    - '}'
+    desc: Applies the current ubatch to the KV cache; if no ubatches, performs a cache
+      update with the stored parameters.
+    line: 2382-2393
+    name: apply
+  - code:
+    - llama_memory_status llama_kv_cache_context::get_status() const {
+    - '    return status;'
+    - '}'
+    desc: Returns the current memory status of the context.
+    line: 2395-2398
+    name: get_status
+  - code:
+    - const llama_ubatch & llama_kv_cache_context::get_ubatch() const {
+    - '    assert(status == LLAMA_MEMORY_STATUS_SUCCESS);'
+    - '    return ubatches[i_cur];'
+    - '}'
+    desc: Returns the current ubatch reference, asserting the status is successful.
+    line: 2400-2404
+    name: get_ubatch
+  - code:
+    - uint32_t llama_kv_cache_context::get_n_kv() const {
+    - '    return n_kv;'
+    - '}'
+    desc: Returns the total number of KV entries in the current context.
+    line: 2406-2409
+    name: get_n_kv
+  - code:
+    - ggml_type llama_kv_cache_context::type_k() const {
+    - '    return kv->type_k();'
+    - '}'
+    desc: Returns the tensor type of the key cache.
+    line: 2411-2414
+    name: type_k
+  - code:
+    - ggml_type llama_kv_cache_context::type_v() const {
+    - '    return kv->type_v();'
+    - '}'
+    desc: Returns the tensor type of the value cache.
+    line: 2416-2419
+    name: type_v
+  - code:
+    - ggml_tensor * llama_kv_cache_context::get_k(ggml_context * ctx, int32_t il)
+      const {
+    - '    return kv->get_k(ctx, il, n_kv, sinfos[i_cur]);'
+    - '}'
+    desc: Retrieves the key tensor for a given layer and context, using the current
+      slot info.
+    line: 2421-2424
+    name: get_k
+  - code:
+    - ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il)
+      const {
+    - '    return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);'
+    - '}'
+    desc: Retrieves the value tensor for a given layer and context, using the current
+      slot info.
+    line: 2426-2429
+    name: get_v
+  - code:
+    - ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor
+      * k_cur, ggml_tensor * k_idxs, int32_t il) const {
+    - '    return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);'
+    - '}'
+    desc: Copies the current key tensor into the KV cache for a given layer, using
+      the slot info.
+    line: 2431-2434
+    name: cpy_k
+  - code:
+    - ggml_tensor * llama_kv_cache_context::cpy_v(ggml_context * ctx, ggml_tensor
+      * v_cur, ggml_tensor * v_idxs, int32_t il) const {
+    - '    return kv->cpy_v(ctx, v_cur, v_idxs, il, sinfos[i_cur]);'
+    - '}'
+    desc: Copies the current value tensor into the KV cache for a given layer, using
+      the slot info.
+    line: 2436-2439
+    name: cpy_v
+  - code:
+    - ggml_tensor * llama_kv_cache_context::build_input_k_idxs(ggml_context * ctx,
+      const llama_ubatch & ubatch) const {
+    - '    return kv->build_input_k_idxs(ctx, ubatch);'
+    - '}'
+    desc: Builds the input key indices tensor for the given ubatch.
+    line: 2441-2444
+    name: build_input_k_idxs
+  - code:
+    - ggml_tensor * llama_kv_cache_context::build_input_v_idxs(ggml_context * ctx,
+      const llama_ubatch & ubatch) const {
+    - '    return kv->build_input_v_idxs(ctx, ubatch);'
+    - '}'
+    desc: Builds the input value indices tensor for the given ubatch.
+    line: 2446-2449
+    name: build_input_v_idxs
+  - code:
+    - ggml_tensor * llama_kv_cache_context::build_input_k_rot(ggml_context * ctx)
+      const {
+    - '    return kv->build_input_k_rot(ctx);'
+    - '}'
+    desc: Builds the input key rotation tensor.
+    line: 2451-2454
+    name: build_input_k_rot
+  - code:
+    - ggml_tensor * llama_kv_cache_context::build_input_v_rot(ggml_context * ctx)
+      const {
+    - '    return kv->build_input_v_rot(ctx);'
+    - '}'
+    desc: Builds the input value rotation tensor.
+    line: 2456-2459
+    name: build_input_v_rot
+  - code:
+    - void llama_kv_cache_context::set_input_k_shift(ggml_tensor * dst) const {
+    - '    kv->set_input_k_shift(dst);'
+    - '}'
+    desc: Sets the key shift input tensor.
+    line: 2461-2464
+    name: set_input_k_shift
+  - code:
+    - void llama_kv_cache_context::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch
+      * ubatch) const {
+    - '    kv->set_input_k_idxs(dst, ubatch, sinfos[i_cur]);'
+    - '}'
+    desc: Sets the input key indices tensor, optionally using a provided ubatch.
+    line: 2466-2469
+    name: set_input_k_idxs
+  - code:
+    - void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch
+      * ubatch) const {
+    - '    kv->set_input_v_idxs(dst, ubatch, sinfos[i_cur]);'
+    - '}'
+    desc: Sets the input value indices tensor, optionally using a provided ubatch.
+    line: 2471-2474
+    name: set_input_v_idxs
+  - code:
+    - void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch
+      * ubatch, bool causal_attn) const {
+    - '    kv->set_input_kq_mask(dst, ubatch, causal_attn);'
+    - '}'
+    desc: Sets the key-query mask tensor for attention, with causal flag.
+    line: 2476-2479
+    name: set_input_kq_mask
+  - code:
+    - void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch
+      * ubatch) const {
+    - '    kv->set_input_pos_bucket(dst, ubatch);'
+    - '}'
+    desc: Sets the position bucket tensor from the ubatch.
+    line: 2481-2484
+    name: set_input_pos_bucket
+  - code:
+    - void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {
+    - '    kv->set_input_k_rot(dst);'
+    - '}'
+    desc: Sets the key rotation input tensor.
+    line: 2486-2489
+    name: set_input_k_rot
+  - code:
+    - void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
+    - '    kv->set_input_v_rot(dst);'
+    - '}'
+    desc: Sets the value rotation input tensor.
+    line: 2491-2494
+    name: set_input_v_rot
+  name: llama_kv_cache_context
+desc: 该文件是 llama.cpp 中 KV 缓存（Key-Value Cache）核心实现的源文件。它定义了 llama_kv_cache 类，负责管理 Transformer
+  模型推理过程中的键值缓存，包括缓存的分配、初始化、查找空闲槽位、更新（如 K-shift 旋转）、序列管理和内存管理。同时，该文件还包含两个静态辅助函数，用于生成
+  Hadamard 旋转矩阵以优化量化缓存的注意力计算，以及执行矩阵乘法辅助操作。该文件实现了llama.cpp中KV缓存的核心管理功能，定义了llama_kv_cache类，负责KV缓存的创建、分配、读取、写入、状态序列化，以及注意力掩码和旋转位置编码等辅助计算的构建与填充。The
+  file implements the llama.cpp KV (Key-Value) cache system, including the cache state
+  management, data input/output for save/restore operations, and a context wrapper
+  class that provides a unified interface for building and updating the cache during
+  attention computation.
+file: src/llama-kv-cache.cpp
+funcs:
+- code:
+  - static bool ggml_is_power_of_2(int n) {
+  - '    return (n & (n - 1)) == 0;'
+  - '}'
+  desc: 判断一个整数是否为 2 的幂。
+  line: 17-19
+  name: ggml_is_power_of_2
+- code:
+  - static void ggml_gen_hadamard(ggml_tensor * tensor) {
+  - '    assert(tensor->type == GGML_TYPE_F32);'
+  - '    const int n = tensor->ne[0];'
+  - '    assert(ggml_is_power_of_2(n));'
+  - '    assert(tensor->ne[1] == n);'
+  - '    assert(tensor->ne[2] == 1);'
+  - '    assert(tensor->ne[3] == 1);'
+  - '    float * data = (float *) tensor->data;'
+  - '    data[0*n + 0] = 1.0 / sqrtf(n);'
+  - '    for (int s = 1; s < n; s *= 2) {'
+  - '        for (int i = 0; i < s; i++) {'
+  - '            for (int j = 0; j < s; j++) {'
+  - '                const float val = data[i*n + j];'
+  - '                data[(i + s)*n + (j    )] =  val;'
+  - '                data[(i    )*n + (j + s)] =  val;'
+  - '                data[(i + s)*n + (j + s)] = -val;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 生成一个正交的 Walsh-Hadamard 旋转矩阵并填充到给定的张量中。该矩阵的大小必须为 2 的幂，且用于优化量化缓存的注意力计算。
+  line: 22-48
+  name: ggml_gen_hadamard
+- code:
+  - static ggml_tensor * ggml_mul_mat_aux(
+  - '        ggml_context * ctx,'
+  - '        ggml_tensor * cur,'
+  - '        ggml_tensor * rot) {'
+  - '    const auto n = rot->ne[0];'
+  - '    ggml_tensor * res;'
+  - '    res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);'
+  - '    res = ggml_mul_mat   (ctx, rot, res);'
+  - '    res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);'
+  - '    return res;'
+  - '}'
+  desc: 执行矩阵乘法辅助操作。它将输入张量重塑为二维形状，与旋转矩阵相乘，然后再重塑回原始维度。
+  line: 50-59
+  name: ggml_mul_mat_aux
+- code:
+  - t = false;
+  - ''
+  - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+  - '        result |= v_cells[s].get_has_shift();'
+  - '    }'
+  - ''
+  - '    return result;'
+  desc: 检查KV缓存中是否有任何单元格被标记为需要移位。
+  line: 1120-1128
+  name: llama_kv_cache::get_has_shift
+- code:
+  - ggml_type llama_kv_cache::type_k() const {
+  - '    return layers[0].k->type;'
+  - '}'
+  desc: 返回KV缓存中K张量的数据类型。
+  line: 1130-1132
+  name: llama_kv_cache::type_k
+- code:
+  - ggml_type llama_kv_cache::type_v() const {
+  - '    return layers[0].v->type;'
+  - '}'
+  desc: 返回KV缓存中V张量的数据类型。
+  line: 1134-1136
+  name: llama_kv_cache::type_v
+- code:
+  - uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
+  - '    uint32_t result = 0;'
+  - ''
+  - '    // pad the n_kv value so that the graph remains constant across batches and
+    can be reused'
+  - '    // note: this also helps some backends with performance (f.ex https://github.com/ggml-org/llama.cpp/pull/16812#issuecomment-3455112220)'
+  - '    const uint32_t n_pad_cur = std::max(n_pad, 256u);'
+  - ''
+  - '    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+  - '        const auto & cells = v_cells[sinfo.strm[s]];'
+  - ''
+  - '        result = std::max(std::min(cells.size(), std::max(n_pad_cur, GGML_PAD(cells.used_max_p1(),
+    n_pad_cur))), result);'
+  - '    }'
+  - ''
+  - '    return result;'
+  - '}'
+  desc: 计算并返回用于图构建的KV缓存大小，确保图在不同批次中保持恒定。
+  line: 1138-1152
+  name: llama_kv_cache::get_n_kv
+- code:
+  - ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_kv,
+    const slot_info & sinfo) const {
+  - '    const int32_t ikv = map_layer_ids.at(il);'
+  - ''
+  - '    auto * k = layers[ikv].k;'
+  - ''
+  - '    const uint64_t kv_size      = get_size();'
+  - '    const uint64_t n_embd_k_gqa = k->ne[0];'
+  - ''
+  - '    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));'
+  - ''
+  - '    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;'
+  - ''
+  - '    return ggml_view_4d(ctx, k,'
+  - '            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,'
+  - '            ggml_row_size(k->type, hparams.n_embd_head_k(il)),'
+  - '            ggml_row_size(k->type, n_embd_k_gqa),'
+  - '            ggml_row_size(k->type, n_embd_k_gqa*kv_size),'
+  - '            ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);'
+  - '}'
+  desc: 返回特定层的K张量的视图，考虑流和槽信息。
+  line: 1154-1171
+  name: llama_kv_cache::get_k
+- code:
+  - ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv,
+    const slot_info & sinfo) const {
+  - '    const int32_t ikv = map_layer_ids.at(il);'
+  - ''
+  - '    auto * v = layers[ikv].v;'
+  - ''
+  - '    const uint64_t kv_size      = get_size();'
+  - '    const uint64_t n_embd_v_gqa = v->ne[0];'
+  - ''
+  - '    // [TAG_V_CACHE_VARIABLE]'
+  - '    assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));'
+  - ''
+  - '    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;'
+  - ''
+  - '    if (!v_trans) {'
+  - '        // note: v->nb[1] <= v->nb[2]'
+  - '        return ggml_view_4d(ctx, v,'
+  - '                hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,'
+  - '                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          //
+    v->nb[1]'
+  - '                ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]'
+  - '                ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]'
+  - '                ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);'
+  - '    }'
+  - ''
+  - '    // note: v->nb[1] > v->nb[2]'
+  - '    return ggml_view_4d(ctx, v,'
+  - '            n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,'
+  - '            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]'
+  - '            ggml_row_size(v->type, kv_size),                        // v->nb[2]'
+  - '            ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]'
+  - '            ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);'
+  - '}'
+  desc: 返回特定层的V张量的视图，处理转置和非转置两种情况。
+  line: 1173-1197
+  name: llama_kv_cache::get_v
+- code:
+  - ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor
+    * k_idxs, int32_t il, const slot_info & sinfo) const {
+  - '    GGML_UNUSED(sinfo);'
+  - ''
+  - '    const int32_t ikv = map_layer_ids.at(il);'
+  - ''
+  - '    ggml_tensor * k = layers[ikv].k;'
+  - ''
+  - '    const int64_t n_embd_head = k_cur->ne[0];'
+  - '    const int64_t n_head      = k_cur->ne[1];'
+  - '    const int64_t n_tokens    = k_cur->ne[2];'
+  - ''
+  - '    const int64_t n_embd_gqa = n_embd_head*n_head;'
+  - ''
+  - '    // we can merge dims 0 and 1'
+  - '    // TODO: add ggml helper function for this?'
+  - '    GGML_ASSERT(ggml_row_size(k_cur->type, n_embd_head) == k_cur->nb[1]);'
+  - ''
+  - '    k_cur = ggml_view_2d(ctx, k_cur, n_embd_gqa, n_tokens, k_cur->nb[2], 0);'
+  - ''
+  - '    const int64_t n_stream = k->ne[2];'
+  - ''
+  - '    if (n_stream > 1) {'
+  - '        const int64_t kv_size = get_size();'
+  - ''
+  - '        assert(n_embd_gqa == k->ne[0]);'
+  - '        assert(kv_size    == k->ne[1]);'
+  - ''
+  - '        // merge the buffer across all streams because the idxs are global'
+  - '        k = ggml_reshape_2d(ctx, k, n_embd_gqa, kv_size*n_stream);'
+  - '    }'
+  - ''
+  - '    // store the current K values into the cache'
+  - '    return ggml_set_rows(ctx, k, k_cur, k_idxs);'
+  - '}'
+  desc: 将当前的K值复制到缓存中。
+  line: 1199-1230
+  name: llama_kv_cache::cpy_k
+- code:
+  - ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor
+    * v_idxs, int32_t il, const slot_info & sinfo) const {
+  - '    GGML_UNUSED(sinfo);'
+  - ''
+  - '    const int32_t ikv = map_layer_ids.at(il);'
+  - ''
+  - '    auto * v = layers[ikv].v;'
+  - ''
+  - '    const int64_t n_embd_head = v_cur->ne[0];'
+  - '    const int64_t n_head      = v_cur->ne[1];'
+  - '    const int64_t n_tokens    = v_cur->ne[2];'
+  - ''
+  - '    const int64_t n_embd_gqa = n_embd_head*n_head;'
+  - ''
+  - '    // we can merge dims 0 and 1'
+  - '    GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);'
+  - ''
+  - '    const int64_t n_stream = v->ne[2];'
+  - ''
+  - '    // take this branch when FA is enabled (the V cache is not transposed)'
+  - '    if (!v_trans) {'
+  - '        v_cur = ggml_view_2d(ctx, v_cur, n_embd_gqa, n_tokens, v_cur->nb[2],
+    0);'
+  - ''
+  - '        if (n_stream > 1) {'
+  - '            const int64_t kv_size = get_size();'
+  - ''
+  - '            assert(n_embd_gqa == v->ne[0]);'
+  - '            assert(kv_size    == v->ne[1]);'
+  - ''
+  - '            // merge the buffer across all streams because the idxs are global'
+  - '            v = ggml_reshape_2d(ctx, v, n_embd_gqa, kv_size*n_stream);'
+  - '        }'
+  - ''
+  - '        return ggml_set_rows(ctx, v, v_cur, v_idxs);'
+  - '    }'
+  - ''
+  - '    if (ggml_row_size(v_cur->type, n_embd_gqa) == v_cur->nb[2]) {'
+  - '        // we can merge dims 0, 1 and 2'
+  - '        v_cur = ggml_reshape_2d(ctx, v_cur, n_embd_gqa, n_tokens);'
+  - '    } else {'
+  - '        // otherwise -> make a copy to get contiguous data'
+  - '        v_cur = ggml_cont_2d   (ctx, v_cur, n_embd_gqa, n_tokens);'
+  - '    }'
+  - ''
+  - '    // [TAG_V_CACHE_VARIABLE]'
+  - '    if (n_embd_gqa < v->ne[0]) {'
+  - '        v_cur = ggml_pad(ctx, v_cur, v->ne[0] - n_embd_gqa, 0, 0, 0);'
+  - '    }'
+  - ''
+  - '    // in this branch the v_idxs are constructed in such a way that each row
+    is a single head element'
+  - '    ggml_tensor * v_view = ggml_reshape_2d(ctx, v, 1, ggml_nelements(v));'
+  - ''
+  - '    v_cur = ggml_reshape_2d(ctx, v_cur, 1, ggml_nelements(v_cur));'
+  - ''
+  - '    return ggml_set_rows(ctx, v_view, v_cur, v_idxs);'
+  - '}'
+  desc: 将当前的V值复制到缓存中，处理转置和非转置两种情况。
+  line: 1232-1282
+  name: llama_kv_cache::cpy_v
+- code:
+  - ggml_tensor * llama_kv_cache::build_input_k_idxs(ggml_context * ctx, const llama_ubatch
+    & ubatch) const {
+  - '    const uint32_t n_tokens = ubatch.n_tokens;'
+  - ''
+  - '    ggml_tensor * k_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n_tokens);'
+  - ''
+  - '    ggml_set_input(k_idxs);'
+  - ''
+  - '    return k_idxs;'
+  - '}'
+  desc: 构建K索引的输入张量。
+  line: 1284-1292
+  name: llama_kv_cache::build_input_k_idxs
+- code:
+  - ggml_tensor * llama_kv_cache::build_input_v_idxs(ggml_context * ctx, const llama_ubatch
+    & ubatch) const {
+  - '    const uint32_t n_tokens = ubatch.n_tokens;'
+  - ''
+  - '    ggml_tensor * v_idxs;'
+  - ''
+  - '    if (!v_trans) {'
+  - '        v_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n_tokens);'
+  - '    } else {'
+  - '        v_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n_tokens*hparams.n_embd_v_gqa_max());'
+  - '    }'
+  - ''
+  - '    ggml_set_input(v_idxs);'
+  - ''
+  - '    return v_idxs;'
+  - '}'
+  desc: 构建V索引的输入张量，根据是否转置调整大小。
+  line: 1294-1308
+  name: llama_kv_cache::build_input_v_idxs
+- code:
+  - ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
+  - '    ggml_tensor * res = nullptr;'
+  - ''
+  - '    if (attn_rot_k) {'
+  - '        int nrot = 64;'
+  - ''
+  - '        // TODO: investigate if using the smallest rotation matrix is beneficial
+    also for K (similar as for V)'
+  - '        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088'
+  - '        do {'
+  - '            nrot *= 2;'
+  - '        } while (hparams.n_embd_head_k() % nrot == 0);'
+  - '        nrot /= 2;'
+  - ''
+  - '        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);'
+  - '        ggml_set_input(res);'
+  - '        ggml_set_name(res, "attn_inp_k_rot");'
+  - '    }'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 构建K旋转的哈达玛矩阵输入张量。
+  line: 1310-1329
+  name: llama_kv_cache::build_input_k_rot
+- code:
+  - ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
+  - '    ggml_tensor * res = nullptr;'
+  - ''
+  - '    if (attn_rot_v) {'
+  - '        int nrot = 64;'
+  - '        // using smaller rotation matrices for V seems beneficial'
+  - '        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570'
+  - '        //do {'
+  - '        //    nrot *= 2;'
+  - '        //} while (hparams.n_embd_head_v() % nrot == 0);'
+  - '        //nrot /= 2;'
+  - ''
+  - '        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);'
+  - '        ggml_set_input(res);'
+  - '        ggml_set_name(res, "attn_inp_v_rot");'
+  - '    }'
+  - ''
+  - '    return res;'
+  - '}'
+  desc: 构建V旋转的哈达玛矩阵输入张量。
+  line: 1331-1349
+  name: llama_kv_cache::build_input_v_rot
+- code:
+  - void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch *
+    ubatch, const slot_info & sinfo) const {
+  - '    const uint32_t n_tokens = ubatch->n_tokens;'
+  - '    GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());'
+  - ''
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - '    int64_t * data = (int64_t *) dst->data;'
+  - ''
+  - '    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+  - '        const int64_t offs = sinfo.strm[s]*get_size();'
+  - ''
+  - '        for (uint32_t i = 0; i < sinfo.size(); ++i) {'
+  - '            data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 设置K索引输入张量的值。
+  line: 1351-1366
+  name: llama_kv_cache::set_input_k_idxs
+- code:
+  - void llama_kv_cache::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch *
+    ubatch, const slot_info & sinfo) const {
+  - '    const uint32_t n_tokens = ubatch->n_tokens;'
+  - '    GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());'
+  - ''
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - '    int64_t * data = (int64_t *) dst->data;'
+  - ''
+  - '    if (!v_trans) {'
+  - '        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+  - '            const int64_t offs = sinfo.strm[s]*get_size();'
+  - ''
+  - '            for (uint32_t i = 0; i < sinfo.size(); ++i) {'
+  - '                data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];'
+  - '            }'
+  - '        }'
+  - '    } else {'
+  - '        // note: the V cache is transposed when not using flash attention'
+  - '        const int64_t kv_size = get_size();'
+  - ''
+  - '        const int64_t n_embd_v_gqa = hparams.n_embd_v_gqa_max();'
+  - ''
+  - '        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {'
+  - '            const int64_t offs = sinfo.strm[s]*kv_size*n_embd_v_gqa;'
+  - ''
+  - '            for (uint32_t i = 0; i < sinfo.size(); ++i) {'
+  - '                for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {'
+  - '                    data[s*sinfo.size()*n_embd_v_gqa + i*n_embd_v_gqa + j] =
+    offs + j*kv_size + sinfo.idxs[s][i];'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 设置V索引输入张量的值，根据是否转置处理不同的索引计算方式。
+  line: 1368-1395
+  name: llama_kv_cache::set_input_v_idxs
+- code:
+  - void llama_kv_cache::set_input_k_shift(ggml_tensor * dst) const {
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - ''
+  - '    int32_t * data = (int32_t *) dst->data;'
+  - ''
+  - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+  - '        const auto & cells = v_cells[s];'
+  - ''
+  - '        for (uint32_t i = 0; i < cells.size(); ++i) {'
+  - '            data[s*cells.size() + i] = cells.is_empty(i) ? 0 : cells.get_shift(i);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 设置K移位输入张量的值。
+  line: 1397-1408
+  name: llama_kv_cache::set_input_k_shift
+- code:
+  - void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch *
+    ubatch, bool causal_attn) const {
+  - '    const uint32_t n_tokens = ubatch->n_tokens;'
+  - ''
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - '    float * data = (float *) dst->data;'
+  - ''
+  - '    const int64_t n_kv     = dst->ne[0];'
+  - '    const int64_t n_stream = dst->ne[3]; // num streams in the current ubatch'
+  - ''
+  - '    GGML_ASSERT(n_tokens%n_stream == 0);'
+  - ''
+  - '    // n_tps == n_tokens_per_stream'
+  - '    const int64_t n_tps = n_tokens/n_stream;'
+  - ''
+  - '    //const int64_t t_start = ggml_time_us();'
+  - ''
+  - '    const args_set_input_kq_mask args = {'
+  - '        /*.hparams          =*/ hparams,'
+  - '        /*.ubatch           =*/ ubatch,'
+  - '        /*.v_cells          =*/ v_cells,'
+  - '        /*.seq_to_stream    =*/ seq_to_stream,'
+  - '        /*.n_swa            =*/ n_swa,'
+  - '        /*.swa_type         =*/ swa_type,'
+  - '        /*.n_kv             =*/ n_kv,'
+  - '        /*.n_stream         =*/ n_stream,'
+  - '        /*.n_tps            =*/ n_tps,'
+  - '    };'
+  - ''
+  - '    if (causal_attn) {'
+  - '        set_input_kq_mask_impl<true> (args, data);'
+  - '    } else {'
+  - '        set_input_kq_mask_impl<false>(args, data);'
+  - '    }'
+  - ''
+  - '    //const int64_t t_end = ggml_time_us();'
+  - ''
+  - '    //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);'
+  - '}'
+  desc: 构建并设置注意力掩码输入张量，支持因果、滑动窗口、2D位置和Alibi等特性。
+  line: 1559-1591
+  name: llama_kv_cache::set_input_kq_mask
+- code:
+  - void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch
+    * ubatch) const {
+  - '    const int64_t n_tokens = ubatch->n_tokens;'
+  - ''
+  - '    GGML_ASSERT(n_stream == 1 && "TODO: support multiple streams");'
+  - '    const auto & cells = v_cells[0];'
+  - ''
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - '    GGML_ASSERT(!ubatch->equal_seqs()); // TODO: use ubatch->n_seqs instead of
+    failing'
+  - ''
+  - '    int32_t * data = (int32_t *) dst->data;'
+  - ''
+  - '    const int32_t n_kv = dst->ne[0];'
+  - ''
+  - '    for (int h = 0; h < 1; ++h) {'
+  - '        for (int i = 0; i < n_tokens; ++i) {'
+  - '            for (int j = 0; j < n_kv; ++j) {'
+  - '                // the position when the cells is empty is irrelevant - it will
+    be masked out later in the attention'
+  - '                const llama_pos p0 = cells.is_empty(j) ? -1 : cells.pos_get(j);'
+  - ''
+  - '                data[h*(n_kv*n_tokens) + i*n_kv + j] = llama_relative_position_bucket(p0,
+    ubatch->pos[i], hparams.n_rel_attn_bkts, false);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 设置位置桶输入张量的值，用于相对位置编码。
+  line: 1593-1614
+  name: llama_kv_cache::set_input_pos_bucket
+- code:
+  - void llama_kv_cache::set_input_k_rot(ggml_tensor * dst) const {
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - ''
+  - '    const auto n_rot = dst->ne[0];'
+  - '    GGML_ASSERT(attn_rot_hadamard.count(dst->ne[0]));'
+  - ''
+  - '    memcpy(dst->data, attn_rot_hadamard.at(n_rot).data(), ggml_nbytes(dst));'
+  - '}'
+  desc: 设置K旋转输入张量的值。
+  line: 1616-1623
+  name: llama_kv_cache::set_input_k_rot
+- code:
+  - void llama_kv_cache::set_input_v_rot(ggml_tensor * dst) const {
+  - '    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));'
+  - ''
+  - '    const auto n_rot = dst->ne[0];'
+  - '    GGML_ASSERT(attn_rot_hadamard.count(dst->ne[0]));'
+  - ''
+  - '    memcpy(dst->data, attn_rot_hadamard.at(n_rot).data(), ggml_nbytes(dst));'
+  - '}'
+  desc: 设置V旋转输入张量的值。
+  line: 1625-1632
+  name: llama_kv_cache::set_input_v_rot
+- code:
+  - size_t llama_kv_cache::total_size() const {
+  - '    size_t size = 0;'
+  - ''
+  - '    for (const auto & [_, buf] : ctxs_bufs) {'
+  - '        size += ggml_backend_buffer_get_size(buf.get());'
+  - '    }'
+  - ''
+  - '    return size;'
+  - '}'
+  desc: 返回KV缓存的总大小（包括所有缓冲区）。
+  line: 1634-1642
+  name: llama_kv_cache::total_size
+- code:
+  - size_t llama_kv_cache::size_k_bytes() const {
+  - '    size_t size_k_bytes = 0;'
+  - ''
+  - '    for (const auto & layer : layers) {'
+  - '        size_k_bytes += ggml_nbytes(layer.k);'
+  - '    }'
+  - ''
+  - '    return size_k_bytes;'
+  - '}'
+  desc: 返回KV缓存中所有K张量的字节大小。
+  line: 1644-1652
+  name: llama_kv_cache::size_k_bytes
+- code:
+  - size_t llama_kv_cache::size_v_bytes() const {
+  - '    size_t size_v_bytes = 0;'
+  - ''
+  - '    for (const auto & layer : layers) {'
+  - '        size_v_bytes += layer.v ? ggml_nbytes(layer.v) : 0;'
+  - '    }'
+  - ''
+  - '    return size_v_bytes;'
+  - '}'
+  desc: 返回KV缓存中所有V张量的字节大小。
+  line: 1654-1662
+  name: llama_kv_cache::size_v_bytes
+- code:
+  - ggml_tensor * llama_kv_cache::build_rope_shift(
+  - '        const llama_cparams & cparams,'
+  - '               ggml_context * ctx,'
+  - '                ggml_tensor * cur,'
+  - '                ggml_tensor * shift,'
+  - '                ggml_tensor * rot,'
+  - '                ggml_tensor * factors,'
+  - '                      float   freq_base,'
+  - '                      float   freq_scale,'
+  - '                   uint32_t   il) const {'
+  - '    const auto & n_ctx_orig = cparams.n_ctx_orig_yarn;'
+  - ''
+  - '    const auto & yarn_ext_factor  = cparams.yarn_ext_factor;'
+  - '    const auto & yarn_beta_fast   = cparams.yarn_beta_fast;'
+  - '    const auto & yarn_beta_slow   = cparams.yarn_beta_slow;'
+  - '    const auto & yarn_attn_factor = cparams.yarn_attn_factor;'
+  - ''
+  - '    const auto & n_rot     = hparams.n_rot(il);'
+  - '    const auto & rope_type = hparams.rope_type == LLAMA_ROPE_TYPE_MROPE || hparams.rope_type
+    == LLAMA_ROPE_TYPE_IMROPE'
+  - '                                // @ngxson : this is a workaround'
+  - '                                // for M-RoPE, we want to rotate the whole vector
+    when doing KV shift'
+  - '                                // a normal RoPE should work, we just need to
+    use the correct ordering'
+  - '                                // ref: https://github.com/ggml-org/llama.cpp/pull/13870'
+  - '                                ? LLAMA_ROPE_TYPE_NEOX'
+  - '                                : hparams.rope_type;'
+  - '    ggml_tensor * tmp;'
+  - ''
+  - '    if (ggml_is_quantized(cur->type)) {'
+  - '        // dequantize to f32 -> RoPE -> quantize back'
+  - '        tmp = ggml_cast(ctx, cur, GGML_TYPE_F32);'
+  - ''
+  - '        // rotate back'
+  - '        tmp = ggml_mul_mat_aux(ctx, tmp, rot);'
+  - ''
+  - '        tmp = ggml_rope_ext(ctx, tmp,'
+  - '                shift, factors, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,'
+  - '                yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow);'
+  - ''
+  - '        // rotate fwd'
+  - '        tmp = ggml_mul_mat_aux(ctx, tmp, rot);'
+  - ''
+  - '        tmp = ggml_cpy(ctx, tmp, cur);'
+  - '    } else {'
+  - '        // we rotate only the first n_rot dimensions'
+  - '        tmp = ggml_rope_ext_inplace(ctx, cur,'
+  - '                shift, factors, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,'
+  - '                yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow);'
+  - '    }'
+  - ''
+  - '    return tmp;'
+  - '}'
+  desc: 构建用于KV缓存移位的RoPE变换，支持量化张量的特殊处理。
+  line: 1664-1699
+  name: llama_kv_cache::build_rope_shift
+- code:
+  - ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_context
+    * lctx) const {
+  - '    auto * ctx = res->get_ctx();'
+  - '    auto * gf  = res->get_gf();'
+  - ''
+  - '    auto inp = std::make_unique<llm_graph_input_k_shift>(this);'
+  - ''
+  - '    inp->k_shift = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) get_size()*n_stream);'
+  - '    ggml_set_input(inp->k_shift);'
+  - ''
+  - '    inp->k_rot = build_input_k_rot(ctx);'
+  - ''
+  - '    const auto & cparams = lctx->get_cparams();'
+  - ''
+  - '    for (const auto & layer : layers) {'
+  - '        const uint32_t il = layer.il;'
+  - ''
+  - '        const int64_t n_head_kv    = hparams.n_head_kv(il);'
+  - '        const int64_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);'
+  - ''
+  - '        const auto n_rot         = hparams.n_rot(il);'
+  - '        const auto n_embd_head_k = hparams.n_embd_head_k(il);'
+  - '        const auto n_embd_nope   = hparams.n_lora_kv > 0 ? n_embd_head_k - n_rot
+    : 0;'
+  - ''
+  - '        const float freq_base_l  = model.get_rope_freq_base (cparams, il);'
+  - '        const float freq_scale_l = model.get_rope_freq_scale(cparams, il);'
+  - ''
+  - '        ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);'
+  - ''
+  - '        ggml_tensor * k ='
+  - '            ggml_view_3d(ctx, layer.k,'
+  - '                n_rot, n_head_kv, get_size()*n_stream,'
+  - '                ggml_row_size(layer.k->type, n_embd_head_k),'
+  - '                ggml_row_size(layer.k->type, n_embd_k_gqa),'
+  - '                ggml_row_size(layer.k->type, n_embd_nope));'
+  - ''
+  - '        ggml_tensor * cur = build_rope_shift(cparams, ctx, k, inp->k_shift, inp->k_rot,
+    rope_factors, freq_base_l, freq_scale_l, il);'
+  - ''
+  - '        ggml_build_forward_expand(gf, cur);'
+  - '    }'
+  - ''
+  - '    res->add_input(std::move(inp));'
+  - ''
+  - '    return gf;'
+  - '}'
+  desc: 构建KV缓存移位的计算图。
+  line: 1701-1737
+  name: llama_kv_cache::build_graph_shift
+- code:
+  - void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags
+    flags) const {
+  - '    GGML_UNUSED(flags);'
+  - ''
+  - '    io.write(&n_stream, sizeof(n_stream));'
+  - ''
+  - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+  - '        cell_ranges_t cr { s, {} };'
+  - ''
+  - '        uint32_t cell_count = 0;'
+  - ''
+  - '        const auto & cells = v_cells[s];'
+  - ''
+  - '        // Count the number of cells with the specified seq_id'
+  - '        // Find all the ranges of cells with this seq id (or all, when -1)'
+  - '        uint32_t cell_range_begin = cells.size();'
+  - ''
+  - '        for (uint32_t i = 0; i < cells.size(); ++i) {'
+  - '            if (!cells.is_empty(i) && (seq_id == -1 || cells.seq_has(i, seq_id)))
+    {'
+  - '                ++cell_count;'
+  - '                if (cell_range_begin == cells.size()) {'
+  - '                    cell_range_begin = i;'
+  - '                }'
+  - '            } else {'
+  - '                if (cell_range_begin != cells.size()) {'
+  - '                    cr.data.emplace_back(cell_range_begin, i);'
+  - '                    cell_range_begin = cells.size();'
+  - '                }'
+  - '            }'
+  - '        }'
+  - ''
+  - '        if (cell_range_begin != cells.size()) {'
+  - '            cr.data.emplace_back(cell_range_begin, cells.size());'
+  - '        }'
+  - ''
+  - '        // DEBUG CHECK: Sum of cell counts in ranges should equal the total cell
+    count'
+  - '        uint32_t cell_count_check = 0;'
+  - '        for (const auto & range : cr.data) {'
+  - '            cell_count_check += range.second - range.first;'
+  - '        }'
+  - '        GGML_ASSERT(cell_count == cell_count_check);'
+  - ''
+  - '        io.write(&cell_count, sizeof(cell_count));'
+  - ''
+  - '        // skip empty streams'
+  - '        if (cell_count == 0) {'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        state_write_meta(io, cr, seq_id);'
+  - '        state_write_data(io, cr);'
+  - '    }'
+  - '}'
+  desc: 将KV缓存的状态写入I/O流，支持按序列ID过滤。
+  line: 1739-1790
+  name: llama_kv_cache::state_write
+- code:
+  - void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags
+    flags) {
+  - '    GGML_UNUSED(flags);'
+  - ''
+  - '    GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));'
+  - ''
+  - '    uint32_t n_stream_cur;'
+  - '    io.read_to(&n_stream_cur, sizeof(n_stream_cur));'
+  - '    if (n_stream_cur != n_stream) {'
+  - '        throw std::runtime_error("n_stream mismatch");'
+  - '    }'
+  - ''
+  - '    for (uint32_t s = 0; s < n_stream; ++s) {'
+  - '        uint32_t cell_count;'
+  - '        io.read_to(&cell_count, sizeof(cell_count));'
+  - ''
+  - '        if (cell_count == 0) {'
+  - '            continue;'
+  - '        }'
+  - ''
+  - '        const uint32_t strm = seq_id == -1 ? s : seq_to_stream[seq_id];'
+  - ''
+  - '        slot_info sinfo;'
+  - ''
+  - '        bool res = true;'
+  - '        res = res && state_read_meta(io, strm, cell_count, sinfo, seq_id);'
+  - '        res = res && state_read_data(io, strm, cell_count, sinfo);'
+  - ''
+  - '        if (!res) {'
+  - '            if (seq_id == -1) {'
+  - '                clear(true);'
+  - '            } else {'
+  - '                seq_rm(seq_id, -1, -1);'
+  - '            }'
+  - '            throw std::runtime_error("failed to restore kv cache");'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 从I/O流读取KV缓存的状态，支持按序列ID恢复。
+  line: 1792-1825
+  name: llama_kv_cache::state_read
+- code:
+  - void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
+    & cr, llama_seq_id seq_id) const {
+  - '    const auto & cells = v_cells[cr.strm];'
+  - ''
+  - '    for (const auto & range : cr.data) {'
+  - '        for (uint32_t i = range.first; i < range.second; ++i) {'
+  - '            std::vector<llama_seq_id> seq_ids;'
+  - ''
+  - '            for (llama_seq_id cur = 0; cur < (int) n_seq_max; ++cur) {'
+  - '                if (cur == seq_id || seq_id == -1) {'
+  - '                    if (cells.seq_has(i, cur)) {'
+  - '                        seq_ids.push_back(cur);'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - ''
+  - '            const llama_pos pos     = cells.pos_get(i);'
+  - '            const uint32_t n_seq_id = seq_ids.size();'
+  - ''
+  - '            io.write(&pos,      sizeof(pos));'
+  - '            io.write(&n_seq_id, sizeof(n_seq_id));'
+  - ''
+  - '            if (hparams.n_pos_per_embd() > 1) {'
+  - '                const llama_kv_cell_ext ext = cells.ext_get(i);'
+  - '                io.write(&ext, sizeof(ext));'
+  - '            }'
+  - ''
+  - '            for (const auto & seq_id : seq_ids) {'
+  - '                io.write(&seq_id, sizeof(seq_id));'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将KV缓存的元数据（位置、序列ID等）写入I/O流。
+  line: 1827-1858
+  name: llama_kv_cache::state_write_meta
+- code:
+  - void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+    & cr) const {
+  - '    const auto & cells = v_cells[cr.strm];'
+  - ''
+  - '    const uint32_t v_trans = this->v_trans ? 1 : 0;'
+  - '    const uint32_t n_layer = layers.size();'
+  - ''
+  - '    io.write(&v_trans, sizeof(v_trans));'
+  - '    io.write(&n_layer, sizeof(n_layer));'
+  - ''
+  - '    // Iterate and write all the keys first, each row is a cell'
+  - '    // Get whole range at a time'
+  - '    for (const auto & layer : layers) {'
+  - '        const uint32_t il = layer.il;'
+  - ''
+  - '        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);'
+  - ''
+  - '        auto * k = layer.k_stream[cr.strm];'
+  - ''
+  - '        // Write key type'
+  - '        const int32_t k_type_i = (int32_t) k->type;'
+  - '        io.write(&k_type_i, sizeof(k_type_i));'
+  - ''
+  - '        // Write row size of key'
+  - '        const uint64_t k_size_row = ggml_row_size(k->type, n_embd_k_gqa);'
+  - '        io.write(&k_size_row, sizeof(k_size_row));'
+  - ''
+  - '        // Read each range of cells of k_size length and write out'
+  - '        for (const auto & range : cr.data) {'
+  - '            const size_t range_size = range.second - range.first;'
+  - '            const size_t buf_size = range_size * k_size_row;'
+  - '            io.write_tensor(k, range.first * k_size_row, buf_size);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    if (!v_trans) {'
+  - '        for (const auto & layer : layers) {'
+  - '            const uint32_t il = layer.il;'
+  - ''
+  - '            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);'
+  - ''
+  - '            auto * v = layer.v_stream[cr.strm];'
+  - '            if (!v) {'
+  - '                continue;'
+  - '            }'
+  - ''
+  - '            // Write value type'
+  - '            const int32_t v_type_i = (int32_t) v->type;'
+  - '            io.write(&v_type_i, sizeof(v_type_i));'
+  - ''
+  - '            // Write row size of value'
+  - '            const uint64_t v_size_row = ggml_row_size(v->type, n_embd_v_gqa);'
+  - '            io.write(&v_size_row, sizeof(v_size_row));'
+  - ''
+  - '            // Read each range of cells of v_size length and write out'
+  - '            for (const auto & range : cr.data) {'
+  - '                const size_t range_size = range.second - range.first;'
+  - '                const size_t buf_size = range_size * v_size_row;'
+  - '                io.write_tensor(v, range.first * v_size_row, buf_size);'
+  - '            }'
+  - '        }'
+  - '    } else {'
+  - '        // When v is transposed, we also need the element size and get the element
+    ranges from each row'
+  - '        const uint32_t kv_size = cells.size();'
+  - ''
+  - '        for (const auto & layer : layers) {'
+  - '            const uint32_t il = layer.il;'
+  - ''
+  - '            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);'
+  - ''
+  - '            auto * v = layer.v_stream[cr.strm];'
+  - '            if (!v) {'
+  - '                continue;'
+  - '            }'
+  - ''
+  - '            // Write value type'
+  - '            const int32_t v_type_i = (int32_t) v->type;'
+  - '            io.write(&v_type_i, sizeof(v_type_i));'
+  - ''
+  - '            // Write element size'
+  - '            const uint32_t v_size_el = ggml_type_size(v->type);'
+  - '            io.write(&v_size_el, sizeof(v_size_el));'
+  - ''
+  - '            // Write GQA embedding size'
+  - '            io.write(&n_embd_v_gqa, sizeof(n_embd_v_gqa));'
+  - ''
+  - '            // For each row, we get the element values of each cell'
+  - '            for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {'
+  - '                // Read each range of cells of v_size_el length and write out'
+  - '                for (const auto & range : cr.data) {'
+  - '                    const size_t range_size = range.second - range.first;'
+  - '                    const size_t src_offset = (range.first + j * kv_size) * v_size_el;'
+  - '                    const size_t buf_size = range_size * v_size_el;'
+  - '                    io.write_tensor(v, src_offset, buf_size);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将KV缓存的实际张量数据写入I/O流，处理转置和非转置两种情况。
+  line: 1860-1947
+  name: llama_kv_cache::state_write_data
+- code:
+  - bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t
+    cell_count, slot_info & sinfo, llama_seq_id dest_seq_id) {
+  - '    auto & cells = v_cells[strm];'
+  - '    auto & head  = v_heads[strm];'
+  - ''
+  - '    if (dest_seq_id != -1) {'
+  - '        // single sequence'
+  - '        seq_rm(dest_seq_id, -1, -1);'
+  - ''
+  - '        llama_batch_allocr balloc(hparams.n_pos_per_embd());'
+  - ''
+  - '        llama_ubatch ubatch = balloc.ubatch_reserve(cell_count, 1);'
+  - ''
+  - '        ubatch.seq_id_unq[0] = dest_seq_id;'
+  - ''
+  - '        for (uint32_t i = 0; i < cell_count; ++i) {'
+  - '            llama_pos pos;'
+  - '            uint32_t n_seq_id;'
+  - ''
+  - '            io.read_to(&pos,      sizeof(pos));'
+  - '            io.read_to(&n_seq_id, sizeof(n_seq_id));'
+  - ''
+  - '            if (n_seq_id != 1) {'
+  - '                LLAMA_LOG_ERROR("%s: invalid seq_id-agnostic kv cell\n", __func__);'
+  - '                return false;'
+  - '            }'
+  - ''
+  - '            if (hparams.n_pos_per_embd() > 1) {'
+  - '                llama_kv_cell_ext ext;'
+  - '                io.read_to(&ext, sizeof(ext));'
+  - ''
+  - '                ubatch.pos[i + ubatch.n_tokens]   = ext.y;'
+  - '                ubatch.pos[i + ubatch.n_tokens*2] = ext.x;'
+  - '            }'
+  - ''
+  - '            // read the sequence id, but directly discard it - we will use dest_seq_id
+    instead'
+  - '            {'
+  - '                llama_seq_id seq_id;'
+  - '                io.read_to(&seq_id, sizeof(seq_id));'
+  - '            }'
+  - ''
+  - '            ubatch.pos[i]      = pos;'
+  - '            ubatch.n_seq_id[i] = n_seq_id;'
+  - '            ubatch.seq_id[i]   = &dest_seq_id;'
+  - '        }'
+  - ''
+  - '        sinfo = find_slot(ubatch, false);'
+  - '        if (sinfo.empty()) {'
+  - '            LLAMA_LOG_ERROR("%s: failed to find available cells in kv cache\n",
+    __func__);'
+  - '            return false;'
+  - '        }'
+  - ''
+  - '        // TODO: we cannot yet restore llama_kv_cell_ext as the apply_ubatch()
+    does not support it yet'
+  - '        //       see: https://github.com/ggml-org/llama.cpp/pull/16825#issuecomment-3460868350'
+  - '        apply_ubatch(sinfo, ubatch);'
+  - ''
+  - '        LLAMA_LOG_DEBUG("%s: cell_count = %d, dest_seq_id = %d\n", __func__,
+    cell_count, dest_seq_id);'
+  - ''
+  - '        // DEBUG CHECK: verify that all cells were allocated and have correct
+    seq_id and pos values'
+  - '        GGML_ASSERT(sinfo.n_stream() == 1);'
+  - '        GGML_ASSERT(sinfo.idxs[0].size() == cell_count);'
+  - '        for (uint32_t i = 0; i < cell_count; ++i) {'
+  - '            const uint32_t idx = sinfo.idxs[0][i];'
+  - '            GGML_ASSERT(cells.pos_get(idx) == ubatch.pos[i]);'
+  - '            GGML_ASSERT(cells.seq_has(idx, dest_seq_id));'
+  - '        }'
+  - '    } else {'
+  - '        // whole KV cache restore'
+  - ''
+  - '        if (cell_count > cells.size()) {'
+  - '            LLAMA_LOG_ERROR("%s: not enough cells in kv cache\n", __func__);'
+  - '            return false;'
+  - '        }'
+  - ''
+  - '        clear(true);'
+  - ''
+  - '        for (uint32_t i = 0; i < cell_count; ++i) {'
+  - '            llama_pos pos;'
+  - '            uint32_t  n_seq_id;'
+  - ''
+  - '            io.read_to(&pos,      sizeof(pos));'
+  - '            io.read_to(&n_seq_id, sizeof(n_seq_id));'
+  - ''
+  - '            cells.pos_set(i, pos);'
+  - ''
+  - '            if (hparams.n_pos_per_embd() > 1) {'
+  - '                llama_kv_cell_ex...'
+  desc: 从I/O流读取KV缓存的元数据，并根据目标序列ID分配单元格。
+  line: 1949-2059
+  name: llama_kv_cache::state_read_meta

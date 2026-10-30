@@ -1,0 +1,269 @@
+classes:
+- desc: 一个pydantic模型，代表'发送消息给用户'这一工具，包含思维链和消息内容字段，并实现了run方法来执行消息发送。
+  methods:
+  - code:
+    - '    def run(self):'
+    - '        print(f"SendMessageToUser: {self.message}")'
+    desc: 执行发送消息的操作，打印出要发送的消息内容。
+    line: 42-43
+    name: run
+  name: SendMessageToUser
+- desc: 一个枚举类，定义了加、减、乘、除四种数学运算操作。
+  methods: []
+  name: MathOperation
+- desc: 一个pydantic计算器模型，可以对两个数字执行加、减、乘、除运算，包含number_one、operation、number_two三个字段。
+  methods:
+  - code:
+    - '    def run(self):'
+    - '        if self.operation == MathOperation.ADD:'
+    - '            return self.number_one + self.number_two'
+    - '        elif self.operation == MathOperation.SUBTRACT:'
+    - '            return self.number_one - self.number_two'
+    - '        elif self.operation == MathOperation.MULTIPLY:'
+    - '            return self.number_one * self.number_two'
+    - '        elif self.operation == MathOperation.DIVIDE:'
+    - '            return self.number_one / self.number_two'
+    - '        else:'
+    - '            raise ValueError("Unknown operation.")'
+    desc: 根据operation字段执行相应的数学运算，返回计算结果，如果操作未知则抛出ValueError异常。
+    line: 75-83
+    name: run
+  name: Calculator
+- desc: 一个枚举类，定义了图书的两个分类：虚构类和非虚构类。
+  methods: []
+  name: Category
+- desc: 一个pydantic图书模型，包含标题、作者、出版年份、关键词、分类和摘要等字段，用于结构化输出示例。
+  methods: []
+  name: Book
+desc: 该文件是llama.cpp项目的函数调用示例，演示了如何使用pydantic模型、枚举和普通Python函数定义工具函数，并通过generate_gbnf_grammar_and_documentation生成GBNF语法和文档，最后调用llama-server的/completion
+  API实现LLM与工具的交互。文件包含多个示例场景，包括最小调用、计算器、结构化输出和并发调用，并提供了将OpenAI风格函数定义转换为pydantic模型的工具函数。
+file: examples/pydantic_models_to_grammar_examples.py
+funcs:
+- code:
+  - 'def create_completion(host, prompt, gbnf_grammar):'
+  - '    print(f"  Request:\n    Grammar:\n{textwrap.indent(gbnf_grammar, ''      '')}\n    Prompt:\n{textwrap.indent(prompt.rstrip(),
+    ''      '')}")'
+  - '    headers = {"Content-Type": "application/json"}'
+  - '    data = {"prompt": prompt, "grammar": gbnf_grammar}'
+  - '    result = requests.post(f"http://{host}/completion", headers=headers, json=data).json()'
+  - '    assert data.get("error") is None, data'
+  - '    logging.info("Result: %s", result)'
+  - '    content = result["content"]'
+  - '    print(f"  Model: {result[''model'']}")'
+  - '    print(f"  Result:\n{textwrap.indent(json.dumps(json.loads(content), indent=2),
+    ''    '')}")'
+  - '    return content'
+  desc: 调用llama-server的/completion API，发送提示词和GBNF语法，并打印请求和响应信息，返回模型生成的文本内容。
+  line: 27-37
+  name: create_completion
+- code:
+  - 'def example_rce(host):'
+  - '    print("- example_rce")'
+  - '    tools = [SendMessageToUser]'
+  - '    gbnf_grammar, documentation = generate_gbnf_grammar_and_documentation('
+  - '        pydantic_model_list=tools, outer_object_name="function",'
+  - '        outer_object_content="function_parameters", model_prefix="Function",
+    fields_prefix="Parameters")'
+  - '    system_message = "You are an advanced AI, tasked to assist the user by calling
+    functions in JSON format. The following are the available functions and their
+    parameters and types:\n\n" + documentation'
+  - '    user_message = "What is 42 * 42?"'
+  - '    prompt = f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{user_message}<|im_end|>\n<|im_start|>assistant"'
+  - '    text = create_completion(host, prompt, gbnf_grammar)'
+  - '    json_data = json.loads(text)'
+  - '    tools_map = {tool.__name__:tool for tool in tools}'
+  - '    tool = tools_map.get(json_data["function"])'
+  - '    if not tool:'
+  - '        print(f"Error: unknown tool {json_data[''function'']}")'
+  - '        return 1'
+  - '    tool(**json_data["function_parameters"]).run()'
+  - '    return 0'
+  desc: 最小测试用例，LLM调用一个任意的Python函数（这里使用SendMessageToUser模型），演示了如何生成语法和文档，并处理LLM的响应。
+  line: 47-62
+  name: example_rce
+- code:
+  - 'def example_calculator(host):'
+  - '    print("- example_calculator")'
+  - '    tools = [SendMessageToUser, Calculator]'
+  - '    gbnf_grammar, documentation = generate_gbnf_grammar_and_documentation('
+  - '        pydantic_model_list=tools, outer_object_name="function",'
+  - '        outer_object_content="function_parameters", model_prefix="Function",
+    fields_prefix="Parameters")'
+  - '    system_message = "You are an advanced AI, tasked to assist the user by calling
+    functions in JSON format. The following are the available functions and their
+    parameters and types:\n\n" + documentation'
+  - '    user_message1 = "What is 42 * 42?"'
+  - '    prompt = f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{user_message1}<|im_end|>\n<|im_start|>assistant"'
+  - '    text = create_completion(host, prompt, gbnf_grammar)'
+  - '    json_data = json.loads(text)'
+  - '    expected = {'
+  - '        "function": "Calculator",'
+  - '        "function_parameters": {'
+  - '            "number_one": 42,'
+  - '            "operation": "multiply",'
+  - '            "number_two": 42'
+  - '        }'
+  - '    }'
+  - '    if json_data != expected:'
+  - '        print("  Result is not as expected!")'
+  - '    tools_map = {tool.__name__:tool for tool in tools}'
+  - '    tool = tools_map.get(json_data["function"])'
+  - '    if not tool:'
+  - '        print(f"Error: unknown tool {json_data[''function'']}")'
+  - '        return 1'
+  - '    result = tool(**json_data["function_parameters"]).run()'
+  - '    print(f"  Call {json_data[''function'']} gave result {result}")'
+  - '    return 0'
+  desc: 让LLM请求进行数学计算的示例，演示了如何将多个工具组合，生成语法后调用计算器工具并展示结果。
+  line: 89-112
+  name: example_calculator
+- code:
+  - 'def example_struct(host):'
+  - '    print("- example_struct")'
+  - '    tools = [Book]'
+  - '    gbnf_grammar, documentation = generate_gbnf_grammar_and_documentation(pydantic_model_list=tools)'
+  - '    system_message = "You are an advanced AI, tasked to create a dataset entry
+    in JSON for a Book. The following is the expected output model:\n\n" + documentation'
+  - '    text = """The Feynman Lectures on Physics is a physics textbook based on
+    some lectures by Richard Feynman, a Nobel laureate who has sometimes been called
+    \"The Great Explainer\". The lectures were presented before undergraduate students
+    at the California Institute of Technology (Caltech), during 1961–1963. The book''s
+    co-authors are Feynman, Robert B. Leighton, and Matthew Sands."""'
+  - '    prompt = f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant"'
+  - '    text = create_completion(host, prompt, gbnf_grammar)'
+  - '    json_data = json.loads(text)'
+  - '    keys = sorted(["title", "author", "published_year", "keywords", "category",
+    "summary"])'
+  - '    if keys != sorted(json_data.keys()):'
+  - '        print(f"Unexpected result: {sorted(json_data.keys())}")'
+  - '        return 1'
+  - '    book = Book(**json_data)'
+  - '    print(f"  As a Book object: %s" % book)'
+  - '    return 0'
+  desc: 基于pydantic模型的结构化输出示例，LLM需要从非结构化文本中提取Book模型的各个字段，演示了无外层对象的语法生成和数据处理。
+  line: 130-143
+  name: example_struct
+- code:
+  - 'def get_current_datetime(output_format: Optional[str] = None):'
+  - '    return datetime.datetime.now().strftime(output_format or "%Y-%m-%d %H:%M:%S")'
+  desc: 根据给定的格式字符串返回当前日期和时间，默认格式为'%Y-%m-%d %H:%M:%S'。
+  line: 148-151
+  name: get_current_datetime
+- code:
+  - 'def get_current_weather(location, unit):'
+  - '    if "London" in location:'
+  - '        return json.dumps({"location": "London", "temperature": "42", "unit":
+    unit.value})'
+  - '    elif "New York" in location:'
+  - '        return json.dumps({"location": "New York", "temperature": "24", "unit":
+    unit.value})'
+  - '    elif "North Pole" in location:'
+  - '        return json.dumps({"location": "North Pole", "temperature": "-42", "unit":
+    unit.value})'
+  - '    return json.dumps({"location": location, "temperature": "unknown"})'
+  desc: 根据位置和单位返回当前天气信息，对特定城市（伦敦、纽约、北极）返回固定温度，其他位置返回未知。
+  line: 154-160
+  name: get_current_weather
+- code:
+  - 'def example_concurrent(host):'
+  - '    print("- example_concurrent")'
+  - '    current_weather_tool = {'
+  - '        "type": "function",'
+  - '        "function": {'
+  - '            "name": "get_current_weather",'
+  - '            "description": "Get the current weather in a given location",'
+  - '            "parameters": {'
+  - '                "type": "object",'
+  - '                "properties": {'
+  - '                    "location": {'
+  - '                        "type": "string",'
+  - '                        "description": "The city and state, e.g. San Francisco,
+    CA",'
+  - '                    },'
+  - '                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},'
+  - '                },'
+  - '                "required": ["location"],'
+  - '            },'
+  - '        },'
+  - '    }'
+  - '    current_weather_tool_model = convert_dictionary_to_pydantic_model(current_weather_tool)'
+  - '    current_weather_tool_model = add_run_method_to_dynamic_model(current_weather_tool_model,
+    get_current_weather)'
+  - '    current_datetime_model = create_dynamic_model_from_function(get_current_datetime)'
+  - '    tools = [SendMessageToUser, Calculator, current_datetime_model, current_weather_tool_model]'
+  - '    gbnf_grammar, documentation = generate_gbnf_grammar_and_documentation('
+  - '        pydantic_model_list=tools, outer_object_name="function",'
+  - '        outer_object_content="params", model_prefix="Function", fields_prefix="Parameters",
+    list_of_outputs=True)'
+  - '    system_message = "You are an advanced AI assistant. You are interacting with
+    the user and with your environment by calling functions. You call functions by
+    writing JSON objects, which represent specific function calls.\nBelow is a list
+    of your available function calls:\n\n" + documentation'
+  - '    text = """Get the date and time, get the current weather in celsius in London
+    and solve the following calculation: 42 * 42"""'
+  - '    prompt = f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant"'
+  - '    text = create_completion(host, prompt, gbnf_grammar)'
+  - '    json_data = json.loads(text)'
+  - '    expected = ['
+  - '      {'
+  - '        "function": "get_current_datetime",'
+  - '        "params": {'
+  - '          "output_format": "%Y-%m-%d %H:%M:%S"'
+  - '        }'
+  - '      },'
+  - '      {'
+  - '        "function": "get_current_weather",'
+  - '        "params": {'
+  - '          "location": "London",'
+  - '          "unit": "celsius"'
+  - '        }'
+  - '      },'
+  - '      {'
+  - '        "function": "Calculator",'
+  - '        "params": {'
+  - '          "number_one": 42,'
+  - '          "operation": "multiply",'
+  - '          "number_two": 42'
+  - '        }'
+  - '      }'
+  - '    ]'
+  - '    res = 0'
+  - '    if json_data != expected:'
+  - '        print("  Result is not as expected!")'
+  - '        print("  This can happen on highly quantized models")'
+  - '        res = 1'
+  - '    tools_map = {tool.__name__:tool for tool in tools}'
+  - '    for call in json_data:'
+  - '      tool = tools_map.get(call["function"])'
+  - '      if not tool:'
+  - '          print(f"Error: unknown tool {call[''function'']}")'
+  - '          return 1'
+  - '      result = tool(**call["params"]).run()'
+  - '      print(f"  Call {call[''function'']} returned {result}")'
+  - '    return res'
+  desc: 并行函数调用示例，组合了Python函数、pydantic函数模型和OpenAI风格函数定义，演示了如何动态转换模型并同时调用多个工具获取结果。
+  line: 164-213
+  name: example_concurrent
+- code:
+  - 'def main():'
+  - '    parser = argparse.ArgumentParser(description=sys.modules[__name__].__doc__)'
+  - '    parser.add_argument("--host", default="localhost:8080", help="llama.cpp server")'
+  - '    parser.add_argument("-v", "--verbose", action="store_true", help="enables
+    logging")'
+  - '    args = parser.parse_args()'
+  - '    logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)'
+  - '    ret = 0'
+  - '    ret = ret or example_rce(args.host)'
+  - '    ret = ret or example_calculator(args.host)'
+  - '    ret = ret or example_struct(args.host)'
+  - '    ret = ret or example_concurrent(args.host)'
+  - '    return ret'
+  desc: 程序入口函数，解析命令行参数（主机地址、日志级别），依次运行rce、calculator、struct和concurrent四个示例，返回执行结果的汇总。
+  line: 215-224
+  name: main
+- code:
+  - 'if __name__ == "__main__":'
+  - '    sys.exit(main())'
+  desc: 模块入口点，调用main函数并传入退出状态码。
+  line: 226-227
+  name: __main__

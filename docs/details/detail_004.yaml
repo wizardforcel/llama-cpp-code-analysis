@@ -1,0 +1,445 @@
+code_map:
+- ./convert_hf_to_gguf.py
+- ├── GemmaModel (基础款)
+- '│   ├── set_vocab()                                 # 3081-3104 行，SPM + CodeGemma
+  特殊 token'
+- '│   ├── set_gguf_parameters()                       # 写入 head_dim 等基础参数'
+- '│   ├── modify_tensors()                            # 3106-3132 行，norm.weight +1'
+- '│   └── GemmaModel.norm_shift()                    # 1.0 默认值 (基类 TextModel.norm_shift)'
+- ├── Gemma2Model
+- '│   ├── set_vocab()                                 # SPM + add_space_prefix=False'
+- '│   ├── set_gguf_parameters()                       # attn_logit/final_logit softcapping
+  + sliding_window'
+- '│   └── modify_tensors()                            # 沿用 norm.weight +1'
+- ├── Gemma3Model (Gemma3 + Gemma3ForConditionalGeneration)
+- '│   ├── norm_shift()                               # 3242-3243 行，返回 1.0'
+- '│   ├── set_vocab()                                # 3235-3240 行，SPM/GPT2 双轨制'
+- '│   ├── set_gguf_parameters()                      # 3245-3269 行，causal_attention/sliding_window'
+- '│   └── modify_tensors()                           # 3295-3322 行，norm+1 + vocab
+  截断'
+- ├── Gemma3VisionModel (MmprojModel)
+- '│   ├── set_gguf_parameters()                      # VisionProjectorType.GEMMA3
+  + soft_emb_norm +1'
+- '│   ├── tensor_force_quant()                       # input_projection=F16, embeddings=F32'
+- '│   └── modify_tensors()                           # 仅处理 soft_emb_norm.weight +1'
+- ├── Gemma3nVisionAudioModel (ConformerAudioModel, MmprojModel)
+- '│   ├── block_tensor_mapping                       # MobileNetV5 双层 {bid}.{sid}
+  映射字典'
+- '│   ├── __init__()                                 # audio/vision hparams 重映射 +
+  audio_bos_eos'
+- '│   ├── set_gguf_parameters()                      # GEMMA3NV + GEMMA3NA projector
+  type'
+- '│   ├── tensor_force_quant()                       # input_projection/input_proj=F16,
+  embeddings=F32'
+- '│   ├── custom_map()                                # 3573-3581 行，模板化重写'
+- '│   └── modify_tensors()                           # 3583-3605 行，timm 块路由 + Audio
+  Conformer'
+- ├── Gemma3NModel (Gemma3N + Gemma3NForConditional)
+- '│   ├── __init__()                                 # 3627-3637 行，初始化 _altup_proj/_altup_unembd
+  缓冲'
+- '│   ├── norm_shift()                               # 始终返回 0.0'
+- '│   ├── set_vocab()                                # 临时删除 vocab_size_per_layer_input
+  强制使用 vocab_size=262400'
+- '│   ├── set_gguf_parameters()                      # 3654-3679 行，altup/shared_kv/sparsity/sliding_window_pattern'
+- '│   ├── _stack_matrices()                          # 3681-3687 行，3D 堆叠工具'
+- '│   └── modify_tensors()                           # 3707-3767 行，AltUp 缓冲 + embed_tokens
+  padding + _scale 后缀'
+- ├── Gemma4Model (Gemma4ForConditionalGeneration)
+- '│   ├── norm_shift()                               # 返回 0.0'
+- '│   ├── set_vocab()                                # 3823-3851 行，LlamaHfVocab +
+  visible_tokens USER_DEFINED'
+- '│   ├── set_gguf_parameters()                      # 3884-3936 行，shared_kv_layers
+  / dual head_dim / use_double_wide_mlp'
+- '│   ├── generate_extra_tensors()                   # 3938-3955 行，Proportional RoPE
+  FREQS (1e30 哨兵)'
+- '│   └── modify_tensors()                           # 3957-3977 行，per_dim_scale/layer_scalar
+  + per_expert_scale → FFN_DOWN_EXP.scale'
+- ├── Gemma4VisionAudioModel (MmprojModel)
+- '│   ├── __init__()                                 # vision/audio hparams 重映射'
+- '│   ├── set_gguf_parameters()                      # GEMMA4V + GEMMA4A projector
+  type'
+- '│   ├── is_audio_tensor()                          # audio_tower / embed_audio
+  判定'
+- '│   ├── tensor_force_quant()                       # audio conv=F32 + position_embedding_table=F32'
+- '│   └── modify_tensors()                           # 3987-4015 行，softplus + per_dim_key_scale
+  + patch_embedder 2D→4D conv'
+- └── ConformerAudioModel (基础音频父类)
+- '├── is_audio_tensor()                            # audio/codebook/conformer 关键字判定'
+- '├── tensor_force_quant()                         # audio conv 强制 F32'
+- '└── modify_tensors()                             # batch_norm 折叠 + conv 形状重塑'
+exercises:
+- contents:
+  - 阅读 ./convert_hf_to_gguf.py 第 3081-3132 行（GemmaModel.set_vocab、set_gguf_parameters、modify_tensors），回答以下问题：
+  - '1. GemmaModel.modify_tensors 中 `if name.endswith("norm.weight"): data_torch =
+    data_torch + 1` 是在做什么？为什么要做这一步？'
+  - 2. GemmaModel.set_vocab 中为什么要显式注入 prefix/suffix/mq/fsep/eot 这五个特殊 token？它们对应的
+    token ID 是多少？
+  - 3. `add_space_prefix = False` 对 SentencePiece 词表有什么意义？如果不设置会怎样？
+  'no': 1
+  title: 阅读 GemmaModel 的 norm.weight 补偿机制
+- contents:
+  - 阅读 ./convert_hf_to_gguf.py 第 3627-3767 行（Gemma3NModel.__init__、set_vocab、set_gguf_parameters、_stack_matrices、modify_tensors），理解
+    AltUp 多通道投影与 vision/audio token 嵌入 padding 的协作：
+  - 1. `__init__` 中 `_altup_proj = [Tensor(), Tensor(), Tensor()]` 三个空张量的目的是什么？为什么用空张量占位而不是
+    None？
+  - 2. 在 modify_tensors 中，按 `.0./.1./.2.` 三分支分写入 _altup_proj 缓冲，当三个槽都被填满时如何触发 `_stack_matrices`？最终产出的
+    3D 张量 shape 是什么？
+  - 3. `embed_tokens.weight` padding 到 262400 的逻辑中，`vocab_size_per_layer_input = 262144`
+    是来自哪个字段？为什么 Gemma3N 必须把视觉 token 放在词表末尾而不是用专用 embedding？
+  - 4. `sliding_window_pattern` 与 `layer_types` 的对齐逻辑具体如何实现？请画出循环过程。
+  - 5. set_vocab 中为什么要先删除 vocab_size_per_layer_input 后恢复？
+  'no': 2
+  title: 追踪 Gemma3N AltUp 投影与 vocab padding 的完整流水线
+- contents:
+  - 阅读 ./convert_hf_to_gguf.py 第 3823-3977 行（Gemma4Model.set_vocab、set_gguf_parameters、generate_extra_tensors、modify_tensors），回答：
+  - 1. Gemma4Model.set_vocab 为什么要用 `gguf.LlamaHfVocab(self.dir_model)` 而不是 `_set_vocab_sentencepiece`？visible_tokens
+    集合的设计目的是什么？
+  - 2. 在 set_gguf_parameters 中，`add_shared_kv_layers(num_kv_shared_layers)` 与 `use_double_wide_mlp`
+    如何协同工作？为什么 shared KV 层的 FFN 要翻倍？
+  - 3. `generate_extra_tensors` 中 `1e30` 哨兵的物理含义是什么？partial_rotary_factor=0.25 时，`n_rot_full`
+    与 `n_unrot_full` 分别如何计算？
+  - 4. modify_tensors 中 `.per_expert_scale` 名称如何被改写为 FFN_DOWN_EXP 的 .scale 后缀张量？这个映射是为了配合
+    GGML的哪个哪个？
+  - 5. dual head_dim 设计中，global_head_dim 与 head_dim 分别如何通过 add_key_length / add_key_length_swa
+    写入？
+  'no': 3
+  title: 剖析 Gemma4 共享 KV 与 Proportional RoPE 的实现细节
+- contents:
+  - 阅读 ./convert_hf_to_gguf.py 中 Gemma3Model.norm_shift (3242-3243 行) 与 Gemma3NModel.norm_shift
+    实现，回答：
+  - 1. Gemma3Model.norm_shift 返回 1.0，而 Gemma3NModel.norm_shift 返回 0.0，背后的数学原因是什么？请用
+    Gemma3RMSNorm 与 Gemma3p5RMSNorm 的 forward 公式说明。
+  - 2. 如果你误把 Gemma3N 的 norm_shift 改为 1.0，会出现什么后果？GGML 端的权重会发生什么数值变化？
+  - 3. 请在代码中搜索其他 Gemma 家族成员的 norm_shift 实现（GemmaModel、Gemma2Model、Gemma4Model），画出一张
+    norm_shift 值对照表。
+  - 4. Gemma3VisionModel.modify_tensors 中只对 `soft_emb_norm.weight` 单独 +1（其他 norm 不修正），背后的设计原则是什么？
+  'no': 4
+  title: 对比 Gemma3 与 Gemma3N 的 norm_shift 差异
+- contents:
+  - 阅读 ./convert_hf_to_gguf.py 中 Gemma3nVisionAudioModel (3573-3605 行) 与 Gemma4VisionAudioModel
+    (3987-4015 行) 的 modify_tensors / custom_map / is_audio_tensor：
+  - 1. Gemma3nVisionAudioModel.block_tensor_mapping 字典的设计哲学是什么？为什么 timm 风格的 MobileNetV5
+    不走标准 tensor_mapping.py？
+  - 2. custom_map 如何解析 `model.vision_tower.timm_model.blocks.{bid}.{sid}.suffix` 的双层路径？
+  - 3. Gemma4VisionAudioModel.is_audio_tensor 如何区分 audio_tower / embed_audio 与 vision_tower？两条路径分别走什么
+    modify_tensors 分支？
+  - 4. Gemma4VisionAudioModel.modify_tensors 中 audio 塔的 `_per_dim_key_scale` 如何应用
+    softplus？vision 塔的 patch_embedder 如何 reshape 为 2D→4D conv 格式？
+  - 5. 对比 Gemma3VisionModel（只处理 vision）、Gemma3nVisionAudioModel（vision+audio 双塔）、Gemma4VisionAudioModel（vision+audio
+    双塔），它们在 set_gguf_parameters 中分别写入了哪些 projector type？
+  'no': 5
+  title: 解读 Gemma3nVisionAudioModel 与 Gemma4VisionAudioModel 的多模态分流
+learning_targets:
+- 理解 Gemma 家族在 GGUF 转换中的四代演进：基础款 norm.weight+1、Gemma3 的 vocab 截断与多模态分流、Gemma3N 的 AltUp
+  多通道堆叠、Gemma4 的共享 KV 与比例 RoPE
+- 掌握 Gemma 系列 norm_shift（+1 偏移）的反向补偿机制，以及 Gemma3N 为何关闭 norm_shift
+- 理解 Gemma3N 视觉塔使用 MobileNetV5 双层 block 路径映射（bid.{sid}.suffix）的解析原理
+- 了解 Gemma3N AltUp 投影张量的捕获与 3D 堆叠过程，以及 vision/audio token 嵌入 padding 到 262400 的工作机制
+- 掌握 Gemma4 共享 KV 层标记、PL Embedding 维度、dual head_dim（global vs sliding）以及 Proportional
+  RoPE 频率因子（partial_rotary_factor=0.25 + 1e30 哨兵）的实现细节
+- 熟悉 Gemma3/Gemma4 的 sliding_window_pattern 与 layer_types 对齐机制，以及 Activation Sparsity
+  Pattern 的 normal.icdf 还原方法
+- 掌握 Gemma3/Gemma4 多模态转换器（mmproj）的实现差异，包括 Gemma3VisionModel 的 soft_emb_norm +1 与 Gemma3nVisionAudioModel
+  的 MobileNetV5 block_tensor_mapping
+- 熟悉 Gemma4VisionAudioModel 的 audio Conformer（softplus + per_dim_key_scale）与 vision（patch_embedder
+  2D→4D conv）处理流程
+life_analogy:
+- 想象 Gemma 家族是一座「Google 大厦的四代升级工程」：
+- '- **Gemma 基础款** = 一栋毛坯公寓，每间房（norm 层）需要开发商偷偷给家具加 1cm 垫片（norm.weight+1），搬进 GGML 大厦时必须把垫片拆加'
+- '- **Gemma3** = 在公寓里加装智能家居系统，根据户型图（is_causal）决定要不要装安防摄像头（causal_attention），多余的房间号（OOV
+  vocab）直接封掉'
+- '- **Gemma3N** = 引入 AltUp「四胞胎平行电梯」，每个乘客（token）有 4 套独立通道，管家（_stack_matrices）把三块分散的电梯控制板拼成一块
+  3D 总控屏'
+- '- **Gemma3N 的 vision/audio 嵌入** = 大厦顶层留出 256 个「客房」（262144-262399）给访客住，本地居民（语言 token）走正门，访客走侧门（vision/audio
+  独立路径）'
+- '- **Gemma4** = 在顶层加盖「共享办公区」（shared_kv layers），最后 N 层共用会议室（KV cache），会议室按 global/sliding
+  模式分大小（dual head_dim）'
+- '- **Proportional RoPE** = 旋转门只转 25%（partial_rotary_factor），剩下 75% 用 1e30「液压墙」挡住，让
+  ggml 知道这些维度不能转'
+- '- **Gemma3n Vision 的 MobileNetV5** = 大厦装了一套 timm 牌「折叠家居」，每块家具用 {bid}.{sid} 双层编号（哪个抽屉的哪个格子），custom_map
+  是一张自动翻译表'
+- '- **Gemma4 Audio Conformer** = 语音管家用 softplus 给每个旋钮（per_dim_key_scale）加软化滤镜，让声音更圆润；patch_embedder
+  则把 2D 拼图重新拼成 3D 立体画'
+- 就像四代大厦不断迭代，大堂经理（norm_shift）从「+1 垫片」变成「不加垫片」，电梯工（AltUp）从无到有，旋转门工程师（RoPE）也在不断换新工艺。
+'no': 3
+summary:
+- concept: GemmaModel.norm.weight+1
+  desc: HF forward 在 RMSNorm 时乘 (1+w)，存储时已减去 1；转换时必须 +1 反向补偿给 GGML 端
+- concept: Gemma3Model.vocab 截断
+  desc: embed_tokens.weight 仅保留真实 vocab 大小（去掉 OOV），配合 is_causal/sliding_window 写入元数据
+- concept: Gemma3NModel._altup_proj 堆叠
+  desc: 捕获 .0./.1./.2. 三组 AltUp 投影矩阵，_stack_matrices 后产出 model.altup_*_projections.weight
+    3D 张量
+- concept: Gemma3NModel.vocab_size=262400
+  desc: vocab_size_per_layer_input=262144 + 256 个 vision/audio token，embed_tokens
+    末尾 zero-pad
+- concept: Gemma3NModel.norm_shift=0.0
+  desc: Gemma3p5RMSNorm 已隐含在 forward 中，存储时不再需要补偿偏移
+- concept: Gemma3nVisionAudioModel.block_tensor_mapping
+  desc: MobileNetV5 timm blocks.{bid}.{sid}.suffix 双层路径模板化映射到 v.blk.{bid}.{sid}.suffix
+- concept: Gemma4Model.shared_kv_layers
+  desc: add_shared_kv_layers 标记末尾 N 层共享 KV cache，配合 use_double_wide_mlp 让 FFN 翻倍
+- concept: Gemma4Model.dual head_dim
+  desc: global_head_dim (add_key_length) 与 head_dim (add_key_length_swa) 并存，运行时按 layer_types
+    选择
+- concept: Gemma4Model.Proportional RoPE FREQS
+  desc: partial_rotary_factor=0.25，生成 (1.0)*n_rot + (1e30)*n_unrot 的 ROPE_FREQS，让
+    ggml 跳过未旋转位置
+- concept: Gemma4Model.per_expert_scale → FFN_DOWN_EXP.scale
+  desc: MoE 路由的 per_expert_scale 标量被映射为专家 down 投影的的 .scale 后缀张量
+- concept: Gemma3NModel.Activation Sparsity
+  desc: normal.icdf(sparsity) 反推 multiplier 写入 add_activation_sparsity_scale，用于推理跳过低激活维度
+- concept: Gemma3Model.sliding_window_pattern
+  desc: 遍历 layer_types 生成布尔列表与 add_sliding_window_pattern 严格对齐，ISWA 双缓存策略依赖此标记
+- concept: Gemma3VisionModel.soft_emb_norm+1
+  desc: Gemma3 RMSNorm forward 公式 (1+w)，在 Gemma3 mmproj 中只有 soft_emb_norm 需要 +1，其他
+    norm 来自 SigLIP 已正确
+- concept: Gemma3NModel.set_vocab 覆盖
+  desc: 临时删除 vocab_size_per_layer_input 强制读取 vocab_size=262400，让 SentencePiece/GPT2
+    写出 262400 行 tokens
+- concept: Gemma4VisionAudioModel.per_dim_key_scale softplus
+  desc: audio 塔的 per_dim_key_scale 后用 softplus 激活并加 .weight 后缀映射为 F32 张量
+- concept: Gemma4VisionAudioModel.patch_embedder 2D→4D
+  desc: patch_embedder.input_proj 从 [n_embd, patch*patch*3] reshape 成 [n_embd, 3,
+    patch, patch] 标准 conv2d 格式
+- concept: Gemma3NModel.embed_tokens_per_layer padding
+  desc: 不仅embed_tokens.weight，embed_tokens_per_layer 同样按 vocab_size - current_size
+    末尾 zero-pad
+- concept: Gemma4VisionAudioModel.is_audio_tensor
+  desc: 通过 audio_tower/embed_audio 关键字判定走 audio Conformer 分支，否则走 vision ViT 分支
+units:
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 3106-3132
+    method_or_func: GemmaModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3081-3104
+    method_or_func: GemmaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: GemmaModel 内
+    method_or_func: GemmaModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 继承 GemmaModel.modify_tensors
+    method_or_func: Gemma2Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3242-3243
+    method_or_func: Gemma3Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 3627-3637 内
+    method_or_func: Gemma3NModel.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 3823-3823 内
+    method_or_func: Gemma4Model.norm_shift()
+  - file: ./convert_hf_to_gguf.py
+    line: 3295-3322
+    method_or_func: Gemma3Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3245-3269
+    method_or_func: Gemma3Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 3235-3240
+    method_or_func: Gemma3Model.set_vocab()
+  name: Gemma 家族解码器的「转换四部曲」—— 从基础归一化到前沿 AltUp、滑动窗口
+  'no': 1
+  points:
+  - '**为什么需要 Gemma 家族章节？**'
+  - '- 统一解析 Gemma、Gemma3、Gemma3N、Gemma4 在 GGUF 转换中的差异点'
+  - '- 理解不同代次的 norm_shift（+1 偏移）机制'
+  - '- 看 AltUp 投影、共享 KV 层、滑动窗口模式如何被特殊处理'
+  - '**为什么 norm_shift = +1 是 Gemma 的标志？**'
+  - '- Gemma RMSNorm 在 forward 时执行 `weight * (1.0 + w)`，因此存储时减去 1'
+  - '- 在 `convert_hf_to_gguf.py` 中通过 `norm_shift()` 方法做反向补偿'
+  - '- Gemma3 默认为 1.0，但 Gemma3N/Gemma4 关闭（0.0），因为其 NormScale shift 在 forward 已隐含'
+  - '**GemmaModel 基础款：norm.weight +1 的艺术**'
+  - '- `modify_tensors` 中检查 `name.endswith("norm.weight")`'
+  - '- `data_torch = data_torch + 1` 反向补偿回 GGML 端期望的值'
+  - '- `set_vocab` 标记 `add_space_prefix = False`，符合 SentencePiece 规范'
+  - '**Gemma3Model：因果 vs 非因果与 vocab 截断**'
+  - '- 通过 `is_causal` 自动写入 `causal_attention` 元数据'
+  - '- OOV 行裁剪：`embed_tokens.weight` 只保留真实 vocab 大小'
+  - '- sliding_window_pattern != 1 时写入 `sliding_window` KV 元数据'
+  - '**Gemma3NModel：AltUp 多通道与 vision/audio token 嵌入填充**'
+  - '`_altup_proj` 与 `_altup_unembd` 缓冲三组 AltUp 投影矩阵，堆叠为 3D 张量：'
+  - '- 通过 `if ".0." / ".1." / ".2."` 分支识别索引'
+  - '- `_stack_matrices` 检测全部到齐后写入 `model.altup_*_projections.weight`'
+  - '**Gemma3NModel：vision/audio 嵌入 padding 机制**'
+  - '- 由于 `vocab_size_per_layer_input = 262144`，但实际含视觉 token 后总长 262400'
+  - '- `embed_tokens.weight` 末尾追加 zero padding，让 vision 走独立路径'
+  - '- `sliding_window_pattern` 列表与 `layer_types` 严格对齐'
+  - '**Gemma4Model：共享 KV 层与 per-layer 输入嵌入**'
+  - '- `add_shared_kv_layers(num_kv_shared_layers)` 标记最后 N 层为 KV 共享'
+  - '- `add_embedding_length_per_layer_input` 写入 per-layer 投影维度'
+  - '- 区分 head_dim_full（global）与 head_dim_swa（sliding）写入 `add_key_length(_swa)`'
+  - '**Gemma4Model：Proportional RoPE 频率因子**'
+  - '- `generate_extra_tensors` 中：rotary_dim 取 head_dim_full 一半'
+  - '- 用 `1e30` 标记不旋转的维度，让 ggml 跳过对应位置'
+  - '- 生成 `ROPE_FREQS` 张量，与 Llama3 RoPE 频率因子机制一致'
+  - '**Gemma3VisionModel / Gemma3nVisionAudioModel / Gemma4VisionAudioModel**'
+  - '- `Gemma3VisionModel` 写入 GEMMA3 projector 并修正 `soft_emb_norm.weight` +1'
+  - '- `Gemma3nVisionAudioModel` 通过 `block_tensor_mapping` 模板化 MobileNetV5 `{bid}.{sid}`
+    双层路径'
+  - '- `Gemma4VisionAudioModel` 对 audio `per_dim_key_scale` 做 `softplus` 变换并把 2D conv
+    折叠成 4D 格式'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 3081-3104
+    method_or_func: GemmaModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3235-3240
+    method_or_func: Gemma3Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3823-3851
+    method_or_func: Gemma4Model.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3660-3680
+    method_or_func: Gemma3NModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3573-3581
+    method_or_func: Gemma3nVisionAudioModel.custom_map()
+  - file: ./convert_hf_to_gguf.py
+    line: 3583-3605
+    method_or_func: Gemma3nVisionAudioModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015
+    method_or_func: Gemma4VisionAudioModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015 内
+    method_or_func: Gemma4VisionAudioModel.is_audio_tensor()
+  name: Gemma 词表与特殊 token —— GGUF 转换中的「token 翻译官」
+  'no': 2
+  points:
+  - '**GemmaModel 的词表特殊性**'
+  - '- 使用 SentencePiece，`_set_vocab_sentencepiece` 读取 tokenizer.model'
+  - '- 显式注入 `prefix/suffix/middle/fsep/eot` 特殊 token（CodeGemma 专属）'
+  - '- `chat_template = None` 避免 SpecialVocab 重复注入'
+  - '**Gemma3Model 词表双轨制**'
+  - '- 若存在 `tokenizer.model`，调用 SentencePiece 路径并关闭 add_space_prefix'
+  - '- 否则 fallback 到 `_set_vocab_gpt2`（支持 Gemma3 多模态版本）'
+  - '- 自动通过 `get_vocab_base_pre` 验证预分词器哈希'
+  - '**Gemma4Model：LlamaHfVocab 抽象的复用**'
+  - '- 直接构造 `gguf.LlamaHfVocab(self.dir_model)`'
+  - '- 通过 `visible_tokens` 集合强制 `<|channel|>` 等控制 token 标记为 USER_DEFINED'
+  - '- 这样 chat parser 能正确读取 channel 标签'
+  - '**Gemma3nVisionAudioModel：MobileNetV5 双层映射**'
+  - '- `block_tensor_mapping` 字典实现 `{bid}.{sid}` 双层 block 路径映射'
+  - '- `custom_map` 解析 `model.vision_tower.timm_model.blocks.{bid}.{sid}.suffix`'
+  - '- 视觉 encoder 走 MobileNetV5 的 timm 风格，文本 mmproj 走 ggml 标准路径'
+  - '**Gemma4VisionAudioModel：post layernorm 偏移为 1**'
+  - '- `_per_dim_key_scale` 后应用 `softplus` 变换'
+  - '- 通过 `unsqueeze` 把 scalar 扩展成 1D 张量'
+  - '- patch_embedder.input_proj 从 2D 折叠成 (C, 3, H, W) 标准 conv2d 格式'
+  - '**Gemma3NModel.set_vocab 的特殊覆盖逻辑**'
+  - '- 临时删除 `vocab_size_per_layer_input` 字段，强制读取 `vocab_size`'
+  - '- 调用父类后恢复 `vocab_size_per_layer_input`，供后续 padding 流程使用'
+  - '- 这样才能正确支持 vision/audio token 区间 262144-262399'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 3627-3637
+    method_or_func: Gemma3NModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 3654-3679
+    method_or_func: Gemma3NModel.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 3707-3767
+    method_or_func: Gemma3NModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3681-3687
+    method_or_func: Gemma3NModel._stack_matrices()
+  - file: ./convert_hf_to_gguf.py
+    line: 3660-3680
+    method_or_func: Gemma3NModel.set_vocab()
+  - file: ./convert_hf_to_gguf.py
+    line: 3573-3573 周围
+    method_or_func: Gemma3nVisionAudioModel.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 3583-3605
+    method_or_func: Gemma3nVisionAudioModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3583-3583 内
+    method_or_func: ConformerAudioModel.is_audio_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: ConformerAudioModel 内
+    method_or_func: ConformerAudioModel.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: ConformerAudioModel 内
+    method_or_func: ConformerAudioModel.modify_tensors()
+  name: Gemma3N AltUp 投影器 —— 解读「多通道并行预测」转换管线
+  'no': 3
+  points:
+  - '**为什么 Gemma3N 单独处理 AltUp？**'
+  - '- AltUp 是 Google 的多通道预测机制：每个 token 维护 4 个并行表示'
+  - '- 在 GGUF 中被压缩为 3D 张量（hidden_size, hidden_size, num_inputs-1）'
+  - '- `altup_active_idx` 决定哪一通道参与当前推理'
+  - '**AltUp 投影张量的捕获**'
+  - '- `_altup_proj = [Tensor(), Tensor(), Tensor()]` 三元素列表作为 buffer'
+  - '- `modify_tensors` 中 `if ".0." / ".1." / ".2."` 按 index 写入对应槽'
+  - '- 全部到齐后调用 `_stack_matrices` 一次性 stack 出 3D 输出'
+  - '**Vision/Audio 特殊 Token 的嵌入 padding**'
+  - '- 因 `vocab_size_per_layer_input = 262144`，但真实模型含视觉 token 到 262400'
+  - '- `embed_tokens.weight` 与 `embed_tokens_per_layer` 都需 zero-pad 到 `vocab_size`'
+  - '- `name.replace("language_model.", "")` 去除多模态命名空间'
+  - '**Activation Sparsity Pattern 的统计近似**'
+  - '- 通过 `torch.distributions.normal.Normal(0, 1).icdf(sparsity)` 还原 multiplier'
+  - '- `add_activation_sparsity_scale(activation_sparsity_scale)` 写入元数据'
+  - '- 用于在 GGML 推理时跳过低激活维度的计算'
+  - '**Sliding Window Pattern 与 layer_types 严格对齐**'
+  - '- 遍历 `hparams["layer_types"]`，生成布尔列表 `t == "sliding_attention"`'
+  - '- `add_sliding_window_pattern(...)` 与 sliding_window 长度匹配'
+  - '- 让运行时精准区分 ISWA 双缓存策略'
+  - '**Gemma3nVisionAudioModel.tensor_force_quant 行为**'
+  - '- `input_projection/input_proj` 强制 F16 精度（避免 quantization 精度损失）'
+  - '- `.embeddings.` 和 `stem` 强制 F32 精度（保护位置编码与 stem 卷积）'
+- codes:
+  - file: ./convert_hf_to_gguf.py
+    line: 3884-3936
+    method_or_func: Gemma4Model.set_gguf_parameters()
+  - file: ./convert_hf_to_gguf.py
+    line: 3938-3955
+    method_or_func: Gemma4Model.generate_extra_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3957-3977
+    method_or_func: Gemma4Model.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015 内
+    method_or_func: Gemma4VisionAudioModel.is_audio_tensor()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015
+    method_or_func: Gemma4VisionAudioModel.modify_tensors()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015 内
+    method_or_func: Gemma4VisionAudioModel.tensor_force_quant()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015 内
+    method_or_func: Gemma4VisionAudioModel.__init__()
+  - file: ./convert_hf_to_gguf.py
+    line: 3987-4015 内
+    method_or_func: Gemma4VisionAudioModel.set_gguf_parameters()
+  name: Gemma4 共享 KV 与滑动窗口 —— 双缓存机制与 RoPE 比例
+  'no': 4
+  points:
+  - '**为什么 Gemma4 有共享 KV 层？**'
+  - '- 节省长推理的 KV cache 占用'
+  - '- `hparams["num_kv_shared_layers"]` 标记末尾 N 层共享 KV'
+  - '- `add_shared_kv_layers(...)` 让 C++ 端识别哪些层可以共享'
+  - '**Gemma4 的 per-layer 输入嵌入（PL Embedding）**'
+  - '- `hidden_size_per_layer_input` 是辅助输入的维度'
+  - '- 通过 `add_embedding_length_per_layer_input` 写入'
+  - '- 用于 `project_per_layer_inputs` 投影层'
+  - '**dual head_dim：global vs sliding 双轨并行**'
+  - '- `global_head_dim` 与 `head_dim` 在 Gemma4 中并存'
+  - '- 写入 `add_key_length` (global) 与 `add_key_length_swa` (sliding)'
+  - '- 运行时根据 layer_types 决定读哪个'
+  - '**use_double_wide_mlp 与 FFN 双倍扩容**'
+  - '- 当 `use_double_wide_mlp = True` 时，shared KV 层用 2 倍 FFN'
+  - '- 动态生成 `n_ff_arr` 数组，写入 `add_feed_forward_length(n_ff_arr)`'
+  - '- 让 C++ 端按 per-layer 维度调整'
+  - '**Proportional RoPE 频率因子的精妙**'
+  - '- `partial_rotary_factor = 0.25`，即只有 25% 维度参与旋转'
+  - '- `freqs = 1.0 / (base ** (arange(0, dim, 2) / dim))` 生成基础频率'
+  - '- 未旋转维度用 `1e30` 标记，让 ggml 在 RoPE 公式中跳过'
+  - '**Gemma4VisionAudioModel.audio / vision 处理差异**'
+  - '- audio 走 Conformer 路径，`is_audio_tensor` 区分 audio_tower / embed_audio'
+  - '- vision 走 SigLIP 风格 ViT + Gemma4MultimodalEmbedder 投影头'
+  - '- `_per_dim_key_scale` 后应用 `softplus(data_torch)` 变换'
+  - '- `patch_embedder.input_proj` reshape 成 (n_embd, 3, patch_size, patch_size) 标准
+    conv2d'

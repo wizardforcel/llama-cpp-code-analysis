@@ -1,0 +1,636 @@
+classes:
+- desc: Struct representing the WAV file header fields for PCM audio output
+  methods: []
+  name: wav_header
+desc: 'This file implements a text-to-speech (TTS) system for OuteTTS models. It converts
+  input text into audio waveforms using a two-stage LLM pipeline: text-to-codes (TTC)
+  followed by codes-to-speech (CTS). The file includes terminal utilities, WAV file
+  writing, audio signal processing (STFT/inverse FFT), text preprocessing, tokenization
+  helpers, speaker profile handling, and the main inference loop.The file implements
+  a Text-to-Speech (TTS) tool using LLaMA models. This code segment (starting from
+  line 793) is the latter portion of the main function, containing the core inference
+  loop for token generation with guide token support, batch decoding, audio code extraction
+  and filtering, vocoder encoding, spectrogram-to-audio conversion via embeddings,
+  and WAV file output. It orchestrates prompt evaluation, parallel sequence sampling,
+  token post-processing, and final audio synthesis.'
+file: tools/tts/tts.cpp
+funcs:
+- code:
+  - static int rgb2xterm256(int r, int g, int b) {
+  - '    unsigned char cube[] = {0, 0137, 0207, 0257, 0327, 0377};'
+  - '    int av, ir, ig, ib, il, qr, qg, qb, ql;'
+  - '    av = r * .299 + g * .587 + b * .114 + .5;'
+  - '    ql = (il = av > 238 ? 23 : (av - 3) / 10) * 10 + 8;'
+  - '    qr = cube[(ir = UNCUBE(r))];'
+  - '    qg = cube[(ig = UNCUBE(g))];'
+  - '    qb = cube[(ib = UNCUBE(b))];'
+  - '    if (SQR(qr - r) + SQR(qg - g) + SQR(qb - b) <='
+  - '        SQR(ql - r) + SQR(ql - g) + SQR(ql - b))'
+  - '        return ir * 36 + ig * 6 + ib + 020;'
+  - '    return il + 0350;'
+  - '}'
+  desc: Quantizes 24-bit RGB color values to xterm256 terminal color code in range
+    [16, 255]
+  line: 35-46
+  name: rgb2xterm256
+- code:
+  - static std::string set_xterm256_foreground(int r, int g, int b) {
+  - '    int x = rgb2xterm256(r, g, b);'
+  - '    std::ostringstream oss;'
+  - '    oss << "\033[38;5;" << x << "m";'
+  - '    return oss.str();'
+  - '}'
+  desc: Generates ANSI escape sequence string for setting xterm256 foreground color
+  line: 48-53
+  name: set_xterm256_foreground
+- code:
+  - static void print_usage(int, char ** argv) {
+  - '    LOG("\nexample usage:\n");'
+  - '    LOG("\n    %s -m model.gguf -p "Hello!"\n", argv[0]);'
+  - '    LOG("\n");'
+  - '}'
+  desc: Prints example usage instructions for the TTS command-line tool
+  line: 65-69
+  name: print_usage
+- code:
+  - static bool save_wav16(const std::string & fname, const std::vector<float> & data,
+    int sample_rate) {
+  - '    std::ofstream file(fname, std::ios::binary);'
+  - '    if (!file) {'
+  - '        LOG_ERR("%s: Failed to open file ''%s'' for writing.\n", __func__, fname.c_str());'
+  - '        return false;'
+  - '    }'
+  - ''
+  - '    wav_header header;'
+  - '    header.sample_rate = sample_rate;'
+  - '    header.byte_rate = header.sample_rate * header.num_channels * (header.bits_per_sample
+    / 8);'
+  - '    header.block_align = header.num_channels * (header.bits_per_sample / 8);'
+  - '    header.data_size = data.size() * (header.bits_per_sample / 8);'
+  - '    header.chunk_size = 36 + header.data_size;'
+  - ''
+  - '    file.write(reinterpret_cast<const char*>(&header), sizeof(header));'
+  - ''
+  - '    for (const auto & sample : data) {'
+  - '        int16_t pcm_sample = static_cast<int16_t>(std::clamp(sample * 32767.0,
+    -32768.0, 32767.0));'
+  - '        file.write(reinterpret_cast<const char*>(&pcm_sample), sizeof(pcm_sample));'
+  - '    }'
+  - ''
+  - '    return file.good();'
+  - '}'
+  desc: Writes float audio samples to a 16-bit PCM WAV file with proper header construction
+  line: 86-107
+  name: save_wav16
+- code:
+  - static void fill_hann_window(int length, bool periodic, float * output) {
+  - '    int offset = -1;'
+  - '    if (periodic) {'
+  - '        offset = 0;'
+  - '    }'
+  - '    for (int i = 0; i < length; i++) {'
+  - '        output[i] = 0.5 * (1.0 - cosf((2.0 * M_PI * i) / (length + offset)));'
+  - '    }'
+  - '}'
+  desc: Generates a Hann window function of specified length for audio signal processing
+  line: 109-117
+  name: fill_hann_window
+- code:
+  - static void twiddle(float * real, float * imag, int k, int N) {
+  - '    float angle = 2 * M_PI * k / N;'
+  - '    *real = cos(angle);'
+  - '    *imag = sin(angle);'
+  - '}'
+  desc: Computes twiddle factors (cosine and sine components) for FFT butterfly operations
+  line: 120-124
+  name: twiddle
+- code:
+  - static void irfft(int n, const float * inp_cplx, float * out_real) {
+  - '    int N = n / 2 + 1;'
+  - ''
+  - '    std::vector<float> real_input(N);'
+  - '    std::vector<float> imag_input(N);'
+  - '    for (int i = 0; i < N; ++i) {'
+  - '        real_input[i] = inp_cplx[2 * i];'
+  - '        imag_input[i] = inp_cplx[2 * i + 1];'
+  - '    }'
+  - ''
+  - '    std::vector<float> real_output(n);'
+  - '    std::vector<float> imag_output(n);'
+  - ''
+  - '    for (int k = 0; k < n; ++k) {'
+  - '        real_output[k] = 0.0f;'
+  - '        imag_output[k] = 0.0f;'
+  - '        for (int m = 0; m < N; ++m) {'
+  - '            float twiddle_real;'
+  - '            float twiddle_imag;'
+  - ''
+  - '            twiddle(&twiddle_real, &twiddle_imag, k * m, n);'
+  - ''
+  - '            real_output[k] += real_input[m] * twiddle_real - imag_input[m] *
+    twiddle_imag;'
+  - '            imag_output[k] += real_input[m] * twiddle_imag + imag_input[m] *
+    twiddle_real;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int i = 0; i < n; ++i) {'
+  - '        out_real[i] = real_output[i] / N;'
+  - '    }'
+  - '}'
+  desc: Computes inverse real-valued FFT from complex frequency domain to time domain
+    samples
+  line: 126-153
+  name: irfft
+- code:
+  - static void fold(const std::vector<float> & data, int64_t n_out, int64_t n_win,
+    int64_t n_hop, int64_t n_pad, std::vector<float> & output) {
+  - '    int64_t output_height = n_out;'
+  - '    int64_t kernel_w = n_win;'
+  - '    int64_t stride_w = n_hop;'
+  - '    int64_t width    = n_out;'
+  - ''
+  - '    output.resize(width, 0.0f);'
+  - ''
+  - '    int64_t col_idx = 0;'
+  - '    for (int64_t w_col = 0; w_col < width; ++w_col) {'
+  - '        int64_t start = w_col * stride_w - n_pad;'
+  - '        int64_t end   = start + kernel_w;'
+  - ''
+  - '        for (int64_t w_im = start; w_im < end; ++w_im) {'
+  - '            if (w_im >= 0 && w_im < output_height && col_idx < (int64_t) data.size())
+    {'
+  - '                output[w_im] += data[col_idx];'
+  - '            }'
+  - '            col_idx++;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    output.resize(n_out - 2 * n_pad);'
+  - '}'
+  desc: Implements PyTorch-like fold operation for converting spectrogram frames back
+    to audio waveform
+  line: 165-187
+  name: fold
+- code:
+  - static std::vector<float> embd_to_audio(
+  - '        const float * embd,'
+  - '        const int n_codes,'
+  - '        const int n_embd,'
+  - '        const int n_thread) {'
+  - '    const int n_fft = 1280;'
+  - '    const int n_hop = 320;'
+  - '    const int n_win = 1280;'
+  - '    const int n_pad = (n_win - n_hop)/2;'
+  - '    const int n_out = (n_codes - 1)*n_hop + n_win;'
+  - ''
+  - '    std::vector<float> hann(n_fft);'
+  - ''
+  - '    fill_hann_window(hann.size(), true, hann.data());'
+  - ''
+  - '    int n_spec = n_embd*n_codes;'
+  - ''
+  - '    std::vector<float> E (n_spec);'
+  - '    std::vector<float> S (n_spec);'
+  - '    std::vector<float> ST(n_spec);'
+  - ''
+  - '    for (int l = 0; l < n_codes; ++l) {'
+  - '        for (int k = 0; k < n_embd; ++k) {'
+  - '            E[k*n_codes + l] = embd[l*n_embd + k];'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int k = 0; k < n_embd/2; ++k) {'
+  - '        for (int l = 0; l < n_codes; ++l) {'
+  - '            float mag = E[(k           )*n_codes + l];'
+  - '            float phi = E[(k + n_embd/2)*n_codes + l];'
+  - ''
+  - '            mag = exp(mag);'
+  - ''
+  - '            if (mag > 1e2) {'
+  - '                mag = 1e2;'
+  - '            }'
+  - '            S[2*(k*n_codes + l) + 0] = mag*cosf(phi);'
+  - '            S[2*(k*n_codes + l) + 1] = mag*sinf(phi);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    for (int l = 0; l < n_codes; ++l) {'
+  - '        for (int k = 0; k < n_embd/2; ++k) {'
+  - '            ST[l*n_embd + 2*k + 0] = S[2*(k*n_codes + l) + 0];'
+  - '            ST[l*n_embd + 2*k + 1] = S[2*(k*n_codes + l) + 1];'
+  - '        }'
+  - '    }'
+  - ''
+  - '    std::vector<float> res  (n_codes*n_fft);'
+  - '    std::vector<float> hann2(n_codes*n_fft);'
+  - ''
+  - '    std::vector<std::thread> workers(n_thread);'
+  - '    for (int i = 0; i < n_thread; ++i) {'
+  - '        workers[i] = std::thread([&, i]() {'
+  - '            for (int l = i; l < n_codes; l += n_thread) {'
+  - '                irfft(n_fft, ST.data() + l*n_embd, res.data() + l*n_fft);'
+  - '                for (int j = 0; j < n_fft; ++j) {'
+  - '                    res  [l*n_fft + j] *= hann[j];'
+  - '                    hann2[l*n_fft + j]  = hann[j] * hann[j];'
+  - '                }'
+  - '            }'
+  - '        });'
+  - '    }'
+  - '    for (int i = 0; i < n_thread; ++i) {'
+  - '        workers[i].join();'
+  - '    }'
+  - ''
+  - '    std::vector<float> audio;'
+  - '    std::vector<float> env;'
+  - ''
+  - '    fold(res,   n_out, n_win, n_hop, n_pad, audio);'
+  - '    fold(hann2, n_out, n_win, n_hop, n_pad, env); // TODO: can be done once'
+  - ''
+  - '    for (size_t i = 0; i < audio.size(); ++i) {'
+  - '        audio[i] /= env[i];'
+  - '    }'
+  - ''
+  - '    return audio;'
+  - '}'
+  desc: Converts embedding codes to raw audio waveform using STFT inversion, windowing,
+    and overlap-add
+  line: 190-261
+  name: embd_to_audio
+- code:
+  - static std::string convert_less_than_thousand(int num) {
+  - '    std::string result;'
+  - ''
+  - '    if (num >= 100) {'
+  - '        result += ones.at(num / 100) + " hundred ";'
+  - '        num %= 100;'
+  - '    }'
+  - ''
+  - '    if (num >= 20) {'
+  - '        result += tens.at(num / 10);'
+  - '        if (num % 10 > 0) {'
+  - '            result += "-" + ones.at(num % 10);'
+  - '        }'
+  - '    } else if (num > 0) {'
+  - '        result += ones.at(num);'
+  - '    }'
+  - ''
+  - '    return result;'
+  - '}'
+  desc: Converts integer less than 1000 to its English word representation
+  line: 274-291
+  name: convert_less_than_thousand
+- code:
+  - static std::string number_to_words(const std::string & number_str) {
+  - '    try {'
+  - '        size_t decimal_pos = number_str.find(''.'');'
+  - '        std::string integer_part = number_str.substr(0, decimal_pos);'
+  - ''
+  - '        int int_number = std::stoi(integer_part);'
+  - '        std::string result;'
+  - ''
+  - '        if (int_number == 0) {'
+  - '            result = "zero";'
+  - '        } else {'
+  - '            if (int_number >= 1000000000) {'
+  - '                int billions = int_number / 1000000000;'
+  - '                result += convert_less_than_thousand(billions) + " billion ";'
+  - '                int_number %= 1000000000;'
+  - '            }'
+  - ''
+  - '            if (int_number >= 1000000) {'
+  - '                int millions = int_number / 1000000;'
+  - '                result += convert_less_than_thousand(millions) + " million ";'
+  - '                int_number %= 1000000;'
+  - '            }'
+  - ''
+  - '            if (int_number >= 1000) {'
+  - '                int thousands = int_number / 1000;'
+  - '                result += convert_less_than_thousand(thousands) + " thousand
+    ";'
+  - '                int_number %= 1000;'
+  - '            }'
+  - ''
+  - '            if (int_number > 0) {'
+  - '                result += convert_less_than_thousand(int_number);'
+  - '            }'
+  - '        }'
+  - ''
+  - '        // Handle decimal part'
+  - '        if (decimal_pos != std::string::npos) {'
+  - '            result += " point";'
+  - '            std::string decimal_part = number_str.substr(decimal_pos + 1);'
+  - '            for (char digit : decimal_part) {'
+  - '                result += " " + ones.at(digit - ''0'');'
+  - '            }'
+  - '        }'
+  - ''
+  - '        return result;'
+  - '    } catch (const std::exception& e) {'
+  - '        // Skip if fails'
+  - '        return " ";'
+  - '    }'
+  - '}'
+  desc: Converts numeric string (including decimals) to full English word representation
+  line: 293-337
+  name: number_to_words
+- code:
+  - static std::string replace_numbers_with_words(const std::string & input_text)
+    {
+  - '    std::regex number_pattern(R"(\d+(\.\d+)?)");'
+  - '    std::string result;'
+  - '    auto it = std::sregex_iterator(input_text.begin(), input_text.end(), number_pattern);'
+  - '    auto end = std::sregex_iterator();'
+  - ''
+  - '    size_t last_pos = 0;'
+  - '    for (std::sregex_iterator i = it; i != end; ++i) {'
+  - '        const std::smatch& match = *i;'
+  - '        result.append(input_text, last_pos, match.position() - last_pos);'
+  - '        result.append(number_to_words(match.str()));'
+  - '        last_pos = match.position() + match.length();'
+  - '    }'
+  - '    result.append(input_text, last_pos);'
+  - ''
+  - '    return result;'
+  - '}'
+  desc: Replaces all numeric sequences in text with their English word equivalents
+    using regex
+  line: 339-355
+  name: replace_numbers_with_words
+- code:
+  - static std::string process_text(const std::string & text, const outetts_version
+    tts_version = OUTETTS_V0_2) {
+  - ''
+  - '    // For now I skipped text romanization as I am unsure how to handle'
+  - '    // uroman and MeCab implementations in C++'
+  - '    // maybe something like https://github.com/anyascii/anyascii/ could work.'
+  - '    // currently only English would be supported in this function'
+  - ''
+  - '    std::string processed_text = replace_numbers_with_words(text);'
+  - ''
+  - '    std::transform(processed_text.begin(), processed_text.end(),'
+  - '                  processed_text.begin(), ::tolower);'
+  - ''
+  - '    std::regex special_chars(R"([-_/,\.\])");'
+  - "    processed_text = std::regex_replace(processed_text, special_chars, \" \\\
+    \ \");\",\n                "
+  - ",\n                "
+  - std::regex non_alpha(R"([^a-z\s
+  desc: Normalizes and preprocesses input text by replacing numbers, lowercasing,
+    cleaning special chars, and adding separator tokens
+  line: 358-389
+  name: process_text
+- code:
+  - static void prompt_add(llama_tokens & prompt, llama_token token) {
+  - '    prompt.push_back(token);'
+  - '}'
+  - ''
+  - static void prompt_add(llama_tokens & prompt, const llama_tokens & tokens) {
+  - '    prompt.insert(prompt.end(), tokens.begin(), tokens.end());'
+  - '}'
+  - ''
+  - static void prompt_add(llama_tokens & prompt, const llama_vocab * vocab, const
+    std::string & txt, bool add_special, bool parse_special) {
+  - '    auto tmp = common_tokenize(vocab, txt, add_special, parse_special);'
+  - '    prompt_add(prompt, tmp);'
+  - '}'
+  desc: Overloaded helper functions to append single token, token vector, or tokenized
+    text to prompt token list
+  line: 391-402
+  name: prompt_add
+- code:
+  - static void prompt_init(llama_tokens & prompt, const llama_vocab * vocab) {
+  - '    prompt.clear();'
+  - ''
+  - '    prompt_add(prompt, vocab, "<|im_start|>\n", true, true);'
+  - '}'
+  desc: Initializes prompt with the start-of-text marker token sequence
+  line: 404-408
+  name: prompt_init
+- code:
+  - static std::vector<llama_token> prepare_guide_tokens(const llama_vocab * vocab,
+    const std::string & str, const outetts_version tts_version = OUTETTS_V0_2) {
+  - '    const std::string& delimiter = (tts_version == OUTETTS_V0_3 ? "<|space|>"
+    : "<|text_sep|>");'
+  - ''
+  - '    std::vector<llama_token> result;'
+  - '    size_t start = 0;'
+  - '    size_t end = str.find(delimiter);'
+  - ''
+  - '    //first token is always a newline, as it was not previously added'
+  - '    result.push_back(common_tokenize(vocab, "\n", false, true)[0]);'
+  - ''
+  - '    while (end != std::string::npos) {'
+  - '        std::string current_word = str.substr(start, end - start);'
+  - '        auto tmp = common_tokenize(vocab, current_word, false, true);'
+  - '        result.push_back(tmp[0]);'
+  - '        start = end + delimiter.length();'
+  - '        end = str.find(delimiter, start);'
+  - '    }'
+  - ''
+  - '    // Add the last part'
+  - '    std::string current_word = str.substr(start);'
+  - '    auto tmp = common_tokenize(vocab, current_word, false, true);'
+  - '    if (tmp.size() > 0) {'
+  - '        result.push_back(tmp[0]);'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: Extracts first tokens of each word segment separated by text/space delimiters
+    for guidance during speech generation
+  line: 410-433
+  name: prepare_guide_tokens
+- code:
+  - static json speaker_from_file(const std::string & speaker_file) {
+  - '    std::ifstream file(speaker_file);'
+  - '    if (!file) {'
+  - '        LOG_ERR("%s: Failed to open file ''%s'' for reading\n", __func__, speaker_file.c_str());'
+  - '        return json();'
+  - '    }'
+  - ''
+  - '    json speaker = json::parse(file);'
+  - '    return speaker;'
+  - '}'
+  desc: Loads and parses speaker voice profile from JSON file
+  line: 435-444
+  name: speaker_from_file
+- code:
+  - static outetts_version get_tts_version(llama_model *model, json speaker = json::object())
+    {
+  - '    if (speaker.contains("version")) {'
+  - '        std::string version = speaker["version"].get<std::string>();'
+  - '        if (version == "0.2") {'
+  - '            return OUTETTS_V0_2;'
+  - '        } else if (version == "0.3") {'
+  - '            return OUTETTS_V0_3;'
+  - '        } else {'
+  - '            LOG_ERR("%s: Unsupported speaker version ''%s''\n", __func__, version.c_str());'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // Also could get version from model itself'
+  - '    const char *chat_template = llama_model_chat_template(model, nullptr);'
+  - '    if (chat_template && std::string(chat_template) == "outetts-0.3") {'
+  - '        return OUTETTS_V0_3;'
+  - '    }'
+  - ''
+  - '    // Use 0.2 as the default version'
+  - '    return OUTETTS_V0_2;'
+  - '}'
+  desc: Determines OuteTTS model version (0.2 or 0.3) from speaker profile or model
+    chat template
+  line: 446-465
+  name: get_tts_version
+- code:
+  - static std::string audio_text_from_speaker(json speaker, const outetts_version
+    tts_version = OUTETTS_V0_2) {
+  - '    std::string audio_text = "<|text_start|>";'
+  - ''
+  - '    if (tts_version == OUTETTS_V0_2 || tts_version == OUTETTS_V0_3) {'
+  - '        std::string separator = (tts_version == OUTETTS_V0_3) ? "<|space|>" :
+    "<|text_sep|>";'
+  - '        for (const auto &word : speaker["words"]) {'
+  - '            audio_text += word["word"].get<std::string>() + separator;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return audio_text;'
+  - '}'
+  desc: Builds formatted audio text string from speaker profile words with appropriate
+    separators
+  line: 467-478
+  name: audio_text_from_speaker
+- code:
+  - static std::string audio_data_from_speaker(json speaker, const outetts_version
+    tts_version = OUTETTS_V0_2) {
+  - '    std::string audio_data = "<|audio_start|>\n";'
+  - ''
+  - '    if (tts_version == OUTETTS_V0_2 || tts_version == OUTETTS_V0_3) {'
+  - '        std::string code_start = (tts_version == OUTETTS_V0_3) ? "" : "<|code_start|>";'
+  - '        std::string code_end = (tts_version == OUTETTS_V0_3) ? "<|space|>" :
+    "<|code_end|>";'
+  - '        for (const auto &word : speaker["words"]) {'
+  - '            std::string word_text = word["word"].get<std::string>();'
+  - '            double duration = word["duration"].get<double>();'
+  - '            std::vector<int> codes = word["codes"].get<std::vector<int>>();'
+  - ''
+  - '            // Create the audio output entry'
+  - '            std::ostringstream word_entry;'
+  - '            word_entry << word_text << "<|t_" << std::fixed << std::setprecision(2)'
+  - '                       << duration << "|>" + code_start;'
+  - '            for (const auto &Code : codes) {'
+  - '                word_entry << "<|" << Code << "|>";'
+  - '            }'
+  - '            word_entry << code_end << "\n";'
+  - '            audio_data += word_entry.str();'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return audio_data;'
+  - '}'
+  desc: Constructs formatted audio data string with word durations and acoustic codes
+    from speaker profile
+  line: 480-504
+  name: audio_data_from_speaker
+- code:
+  - int main(int argc, char ** argv) {
+  - '    std::setlocale(LC_NUMERIC, "C");'
+  - ''
+  - '    common_params params;'
+  - ''
+  - '    params.out_file = "output.wav";'
+  - '    params.prompt = "";'
+  - ''
+  - '    params.n_predict = 4096;'
+  - '    params.n_batch   = 8192;'
+  - '    params.n_ctx     = 8192;'
+  - ''
+  - '    params.sampling.top_k = 4;'
+  - '    params.sampling.samplers = { COMMON_SAMPLER_TYPE_TOP_K, };'
+  - ''
+  - '    common_init();'
+  - ''
+  - '    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_TTS, print_usage))
+    {'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    const int n_parallel = params.n_parallel;'
+  - '    const int n_predict  = params.n_predict;'
+  - ''
+  - '    // ... (LLM initialization, model loading, prompt construction,'
+  - '    //      voice generation loop, audio decoding, and WAV file output)'
+  - '}'
+  desc: 'Entry point for TTS application: initializes models, processes text, generates
+    audio codes via LLM, decodes embeddings to waveform, and saves WAV file'
+  line: 506-1000+
+  name: main
+- code:
+  - // token-by-token prompt printing
+  - LOG("\n");
+  - 'for (auto id : prompt_inp) {'
+  - '    LOG("%s", common_token_to_piece(ctx_ttc, id).c_str());'
+  - '}'
+  - 'LOG_INF("%s: prompt size: %d\n", __func__, (int) prompt_inp.size());'
+  - ''
+  - // create batch and evaluate prompt
+  - llama_batch batch = llama_batch_init(std::max(prompt_inp.size(), (size_t) n_parallel),
+    0, n_parallel);
+  - std::vector<llama_seq_id> seq_ids(n_parallel, 0);
+  - for (int32_t i = 0; i < n_parallel; ++i) { seq_ids[i] = i; }
+  - for (size_t i = 0; i < prompt_inp.size(); ++i) { common_batch_add(batch, prompt_inp[i],
+    i, seq_ids, false); }
+  - GGML_ASSERT(batch.n_tokens == (int) prompt_inp.size());
+  - batch.logits[batch.n_tokens - 1] = true;
+  - if (llama_decode(ctx_ttc, batch) != 0) { return 1; }
+  - llama_synchronize(ctx_ttc);
+  - ''
+  - // main generation loop with sampling and guide tokens
+  - std::vector<int32_t> i_batch(n_parallel, batch.n_tokens - 1);
+  - int n_past = batch.n_tokens;
+  - int n_decode = 0;
+  - bool next_token_uses_guide_token = true;
+  - while (n_decode <= n_predict) {
+  - '    common_batch_clear(batch);'
+  - '    for (int32_t i = 0; i < n_parallel; ++i) {'
+  - '        if (i_batch[i] < 0) continue;'
+  - '        llama_token new_token_id = common_sampler_sample(smpl[i], ctx_ttc, i_batch[i]);'
+  - '        if (!guide_tokens.empty() && next_token_uses_guide_token && ...)'
+  - '            new_token_id = guide_tokens[0]; guide_tokens.erase(guide_tokens.begin());'
+  - '        next_token_uses_guide_token = (new_token_id == 198);'
+  - '        common_sampler_accept(smpl[i], new_token_id, true);'
+  - '        codes.push_back(new_token_id);'
+  - '        if (llama_vocab_is_eog(vocab, new_token_id) || n_decode == n_predict)
+    { i_batch[i] = -1; continue; }'
+  - '        common_batch_add(batch, new_token_id, n_past, { i }, true);'
+  - '    }'
+  - '    if (batch.n_tokens == 0) break;'
+  - '    n_decode++; n_past++;'
+  - '    if (llama_decode(ctx_ttc, batch)) { return 1; }'
+  - '}'
+  - llama_batch_free(batch);
+  - ''
+  - // filter and normalize audio codes
+  - codes.erase(std::remove_if(codes.begin(), codes.end(), [](llama_token t) { return
+    t < 151672 || t > 155772; }), codes.end());
+  - 'for (auto & token : codes) { token -= 151672; }'
+  - ''
+  - // vocoder encode and spectral-to-audio conversion
+  - llama_batch batch = llama_batch_init(n_codes, 0, 1);
+  - for (size_t i = 0; i < codes.size(); ++i) { common_batch_add(batch, codes[i],
+    i, { 0 }, true); }
+  - if (llama_encode(ctx_cts, batch) != 0) { return 1; }
+  - llama_synchronize(ctx_cts);
+  - const float * embd = llama_get_embeddings(ctx_cts);
+  - auto audio = embd_to_audio(embd, n_codes, n_embd, params.cpuparams.n_threads);
+  - for (int i = 0; i < 24000/4; ++i) { audio[i] = 0.0f; }
+  - if (save_wav16(params.out_file, audio, n_sr)) { ... }
+  - llama_backend_free();
+  - return retval;
+  desc: 'The main function body that orchestrates the TTS inference pipeline: evaluates
+    the prompt through the text-to-codes transformer, runs a generative sampling loop
+    with guide token support for parallel sequences, filters and normalizes audio
+    tokens, encodes them via the vocoder model (llama_encode), converts spectral embeddings
+    to raw audio waveform, and saves the result as a WAV file.'
+  line: 793-1041
+  name: __main__

@@ -1,0 +1,232 @@
+classes:
+- desc: 存储量化统计测试所需的参数，包括模型路径、选项标志和层/类型过滤器。
+  methods: []
+  name: quantize_stats_params
+- desc: 累积记录量化误差统计数据，包括样本数、总平方误差、最大误差和误差直方图数组。
+  methods: []
+  name: error_stats
+desc: 该文件实现了量化统计测试工具，用于评估不同量化类型在模型层上的前向转换、后向转换以及误差统计，支持命令行参数控制测试层、类型和输出，并利用多线程加速大规模张量处理。
+file: tests/test-quantize-stats.cpp
+funcs:
+- code:
+  - static void quantize_stats_print_usage(int /*argc*/, char ** argv) {
+  - '    quantize_stats_params params;'
+  - '    fprintf(stderr, "usage: %s [options]\n", argv[0]);'
+  - '    fprintf(stderr, "\n");'
+  - '    fprintf(stderr, "options:\n");'
+  - '    fprintf(stderr, "  -h, --help            show this help message and exit\n");'
+  - '    fprintf(stderr, "  -m FNAME, --model FNAME\n");'
+  - '    fprintf(stderr, "                        model path (default: %s)\n", params.model.c_str());'
+  - '    fprintf(stderr, "  -r, --reference\n");'
+  - '    fprintf(stderr, "                        use reference implementation (default:
+    false)\n");'
+  - '    fprintf(stderr, "  -v, --verbose\n");'
+  - '    fprintf(stderr, "                        verbose output (default: false)\n");'
+  - '    fprintf(stderr, "  -p, --per-layer-stats\n");'
+  - '    fprintf(stderr, "                        print stats per layer (default:
+    false)\n");'
+  - '    fprintf(stderr, "  --histogram\n");'
+  - '    fprintf(stderr, "                        print error histogram (default:
+    false)\n");'
+  - '    fprintf(stderr, "  -l LAYER, --include-layer LAYER\n");'
+  - '    fprintf(stderr, "                        only test layers matching pattern\n");'
+  - '    fprintf(stderr, "  -L LAYER, --exclude-layer LAYER\n");'
+  - '    fprintf(stderr, "                        exclude layers matching pattern\n");'
+  - '    fprintf(stderr, "  -t TYPE, --type TYPE\n");'
+  - '    fprintf(stderr, "                        only test given type (q4_0, q4_1)\n");'
+  - '    fprintf(stderr, "\n");'
+  - '}'
+  desc: 打印命令行工具的用法说明和所有可用选项。
+  line: 56-83
+  name: quantize_stats_print_usage
+- code:
+  - static bool layer_included(const quantize_stats_params & params, const std::string
+    & layer) {
+  - '    for (const auto& excluded : params.exclude_layers) {'
+  - '        if (std::regex_search(layer, std::regex(excluded))) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    for (const auto& included : params.include_layers) {'
+  - '        if (std::regex_search(layer, std::regex(included))) {'
+  - '            return true;'
+  - '        }'
+  - '    }'
+  - '    return params.include_layers.empty();'
+  - '}'
+  desc: 根据排除和包含层的正则表达式模式，判断给定层名称是否应该被包含在测试中。
+  line: 88-99
+  name: layer_included
+- code:
+  - static void update_error_stats(int64_t nelements, const float * input, const float
+    * output, error_stats & stats) {
+  - '    for (int64_t i = 0; i < nelements; i++) {'
+  - '        double diff = input[i] - output[i];'
+  - '        stats.total_error += diff * diff;'
+  - '        stats.max_error = fmax(fabs(diff), stats.max_error);'
+  - '        stats.error_histogram[std::max(std::min((size_t) floor(fabs(diff) / HISTOGRAM_RANGE
+    * HISTOGRAM_BUCKETS), HISTOGRAM_BUCKETS-1), (size_t) 0)]++;'
+  - '    }'
+  - '    stats.num_samples += nelements;'
+  - '}'
+  desc: 根据输入和输出向量之间的差异，更新误差统计结构中的总误差、最大误差和直方图。
+  line: 104-112
+  name: update_error_stats
+- code:
+  - static void combine_error_stats(error_stats & into, const error_stats & from)
+    {
+  - '    into.num_samples += from.num_samples;'
+  - '    into.total_error += from.total_error;'
+  - '    if (from.max_error > into.max_error) into.max_error = from.max_error;'
+  - '    for (size_t i=0; i<HISTOGRAM_BUCKETS; ++i) into.error_histogram[i] += from.error_histogram[i];'
+  - '}'
+  desc: 将一个误差统计结构的数据合并到另一个结构中，用于多线程结果的聚合。
+  line: 115-120
+  name: combine_error_stats
+- code:
+  - static double find_quantile(const error_stats & stats, double quantile) {
+  - '    double sum = std::accumulate(std::begin(stats.error_histogram), std::end(stats.error_histogram),
+    0.0);'
+  - ''
+  - '    double accum = 0;'
+  - '    for (size_t i = 0; i < HISTOGRAM_BUCKETS; i++) {'
+  - '        accum += stats.error_histogram[i];'
+  - '        if (accum >= sum*quantile) {'
+  - '            return (i+1) * HISTOGRAM_RANGE / HISTOGRAM_BUCKETS;'
+  - '        }'
+  - '    }'
+  - '    return INFINITY;'
+  - '}'
+  desc: 根据误差直方图数据计算指定分位数对应的误差值。
+  line: 123-135
+  name: find_quantile
+- code:
+  - static void print_error_stats(const std::string & name, const error_stats & stats,
+    bool print_histogram) {
+  - '    double rmse = sqrt(stats.total_error / (double) stats.num_samples);'
+  - '    double median = find_quantile(stats, .5);'
+  - '    double pct95 = find_quantile(stats, .95);'
+  - '    printf("%-50s: rmse %.8f, maxerr %.8f, 95pct<%.4f, median<%.4f\n", name.c_str(),
+    rmse, stats.max_error, pct95, median);'
+  - '    if (print_histogram) {'
+  - '        printf("Error distribution:\n");'
+  - '        for (size_t i = 0; i < HISTOGRAM_BUCKETS; i++) {'
+  - '            double lower = i * HISTOGRAM_RANGE / HISTOGRAM_BUCKETS;'
+  - '            double upper = (i+1) * HISTOGRAM_RANGE / HISTOGRAM_BUCKETS;'
+  - '            if (i == HISTOGRAM_BUCKETS -1) upper = INFINITY;'
+  - '            printf("[%3.4f, %3.4f): %11" PRIu64 "\n", lower, upper, stats.error_histogram[i]);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 打印指定名称的误差统计信息，包括RMSE、最大误差、分位数，并可选打印直方图分布。
+  line: 138-154
+  name: print_error_stats
+- code:
+  - static bool tensor_is_contiguous(const struct ggml_tensor * tensor) {
+  - '    static_assert(GGML_MAX_DIMS == 4, "GGML_MAX_DIMS is not 4 - update this function");'
+  - ''
+  - '    return'
+  - '        tensor->nb[0] == ggml_type_size(tensor->type) &&'
+  - '        tensor->nb[1] == (tensor->nb[0]*tensor->ne[0])/ggml_blck_size(tensor->type)
+    &&'
+  - '        tensor->nb[2] == tensor->nb[1]*tensor->ne[1] &&'
+  - '        tensor->nb[3] == tensor->nb[2]*tensor->ne[2];'
+  - '}'
+  desc: 检查给定张量是否在内存中连续存储，即步长符合连续布局的要求。
+  line: 158-167
+  name: tensor_is_contiguous
+- code:
+  - static void test_roundtrip_on_chunk(
+  - '    const ggml_tensor * layer, int64_t offset, int64_t chunk_size, const ggml_type_traits
+    & qfns, const ggml_type_traits_cpu & qfns_cpu, bool use_reference,'
+  - '    float * input_scratch, char * quantized_scratch, float * output_scratch,
+    error_stats & stats'
+  - ) {
+  - '    if (layer->type == GGML_TYPE_F16) {'
+  - '        for (int i = 0; i < chunk_size; i++) {'
+  - '            input_scratch[i] = ggml_get_f32_1d(layer, i + offset);'
+  - '        }'
+  - '    } else {'
+  - '        input_scratch = ggml_get_data_f32(layer) + offset;'
+  - '    }'
+  - ''
+  - '    if (use_reference) {'
+  - '        qfns.from_float_ref(input_scratch, quantized_scratch, chunk_size);'
+  - '    } else {'
+  - '        qfns_cpu.from_float(input_scratch, quantized_scratch, chunk_size);'
+  - '    }'
+  - '    qfns.to_float(quantized_scratch, output_scratch, chunk_size);'
+  - ''
+  - '    update_error_stats(chunk_size, input_scratch, output_scratch, stats);'
+  - '}'
+  desc: 对一个大张量的一部分执行量化往返测试，即从原类型转换到目标量化类型再转回，并更新误差统计。
+  line: 170-194
+  name: test_roundtrip_on_chunk
+- code:
+  - static void test_roundtrip_on_layer(
+  - '    std::string & name, bool print_layer_stats, const ggml_type_traits & qfns,
+    const ggml_type_traits_cpu & qfns_cpu, bool use_reference,'
+  - '    const ggml_tensor * layer, std::vector<float> & input_scratch, std::vector<char>
+    & quantized_scratch,'
+  - '    std::vector<float> & output_scratch, error_stats & total_error, int max_thread
+    = 0'
+  - ) {
+  - '    assert(tensor_is_contiguous(layer));'
+  - '    error_stats layer_error {};'
+  - '    uint64_t nelements = ggml_nelements(layer);'
+  - ''
+  - '    float* input_scratch_ptr = nullptr;'
+  - '    if (layer->type == GGML_TYPE_F16) {'
+  - '        if (input_scratch.size() < nelements) input_scratch.resize(nelements);'
+  - '        input_scratch_ptr = input_scratch.data();'
+  - '    }'
+  - '    if (quantized_scratch.size() < 4*nelements) quantized_scratch.resize(4*nelements);'
+  - '    if (output_scratch.size() < nelements) output_scratch.resize(nelements);'
+  - ''
+  - '    if (max_thread < 1) max_thread = std::thread::hardware_concurrency();'
+  - '    int chunk_size = 32*512;'
+  - '    int num_chunks = (nelements + chunk_size - 1)/chunk_size;'
+  - ''
+  - '    if (num_chunks < 2 || max_thread < 2) {'
+  - '        test_roundtrip_on_chunk(layer, 0, nelements, qfns, qfns_cpu, use_reference,
+    input_scratch_ptr, quantized_scratch.data(),'
+  - '                output_scratch.data(), print_layer_stats ? layer_error : total_error);'
+  - '    } else {'
+  - '        auto & stats = print_layer_stats ? layer_error : total_error;'
+  - '        std::mutex mutex;'
+  - '        uint64_t counter = 0;'
+  - '        auto compute = [&mutex, &counter, &stats, &qfns, &qfns_cpu, nelements,
+    layer, use_reference, input_scratch_ptr,'
+  - '             &quantized_scratch, &output_scratch, chunk_size] () {'
+  - '            error_stats local_stats {};'
+  - '            while (true) {'
+  - '                std::unique_lock<std::mutex> lock(mutex);'
+  - '                uint64_t offset = counter; counter += chunk_size;'
+  - '                if (offset >= nelements) {'
+  - '                    combine_error_stats(stats, local_stats);'
+  - '                    break;'
+  - '                }'
+  - '                lock.unlock();'
+  - '                uint64_t chunk = offset + chunk_size < nelements ? chunk_size
+    : nelements - offset;'
+  - '                test_roundtrip_on_chunk(layer, offset, chunk, qfns, qfns_cpu,
+    use_reference, input_scratch_ptr + offset,'
+  - '                        quantized_scratch.data() + 4*offset, output_scratch.data()
+    + offset, local_stats);'
+  - '            }'
+  - '        };'
+  - '        int nthread = std::min(num_chunks, max_thread);'
+  - '        std::vector<std::thread> workers(nthread-1);'
+  - '        for (auto& w : workers) w = std::thread(compute);'
+  - '        compute();'
+  - '        for (auto& w : workers) w.join();'
+  - '    }'
+  - ''
+  - '    if (print_layer_stats) {'
+  - '        print_error_stats(name, layer_error, false);'
+  - '        combine_error_stats(total_error, layer_error);'
+  - '    }'
+  - '}'
+  desc: 对一个完整层执行量化往返测试，分配必要的暂存空间，根据需要分割工作负载并在多线程间分配，最后汇总误差统计。
+  line: 197-250
+  name: test_roundtrip_on_layer

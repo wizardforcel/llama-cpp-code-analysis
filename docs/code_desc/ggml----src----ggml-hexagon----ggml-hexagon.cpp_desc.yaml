@@ -1,0 +1,3194 @@
+classes:
+- desc: 管理Hexagon DSP后端的一个会话，负责与DSP的通信队列、操作调度和资源管理。
+  methods:
+  - code:
+    - ggml_hexagon_session(int dev_id, ggml_backend_dev_t dev) noexcept(false);
+    - '    // constructor body not shown, only declaration'
+    desc: 构造函数，初始化会话参数并创建后端设备。
+    line: 120-124
+    name: ggml_hexagon_session
+  - code:
+    - ~ggml_hexagon_session() noexcept(true);
+    - '    // destructor body not shown, only declaration'
+    desc: 析构函数，释放会话资源。
+    line: 125-125
+    name: ~ggml_hexagon_session
+  - code:
+    - void allocate(int dev_id) noexcept(false);
+    - '    // body not shown, only declaration'
+    desc: 分配会话资源，如创建DSP队列和句柄。
+    line: 127-127
+    name: allocate
+  - code:
+    - void release() noexcept(true);
+    - '    // body not shown, only declaration'
+    desc: 释放会话资源。
+    line: 128-128
+    name: release
+  - code:
+    - void enqueue(struct htp_general_req &req, struct dspqueue_buffer *bufs, uint32_t
+      n_bufs, bool sync = false);
+    - '    this->op_pending++;'
+    - '    int err = dspqueue_write(this->queue,'
+    - '                             0,'
+    - '                             n_bufs,'
+    - '                             bufs,'
+    - '                             sizeof(req),'
+    - '                             (const uint8_t *) &req,'
+    - '                             DSPQUEUE_TIMEOUT'
+    - '    );'
+    - '    if (err != 0) {'
+    - '        GGML_ABORT("ggml-hex: %s dspqueue_write failed: 0x%08x\n", this->name.c_str(),
+      (unsigned) err);'
+    - '    }'
+    - '    if (sync) {'
+    - '        flush();'
+    - '    }'
+    desc: 将一个操作请求添加到DSP队列中，可选地同步执行。
+    line: 145-163
+    name: enqueue
+  - code:
+    - void ggml_hexagon_session::flush() {
+    - '    dspqueue_t q = this->queue;'
+    - '    while (this->op_pending) {'
+    - '        struct htp_general_rsp rsp;'
+    - '        uint32_t               rsp_size;'
+    - '        uint32_t               flags;'
+    - '        struct dspqueue_buffer bufs[HTP_MAX_PACKET_BUFFERS];'
+    - '        uint32_t               n_bufs;'
+    - '        int err = dspqueue_read(q, &flags,'
+    - '                                HTP_MAX_PACKET_BUFFERS,'
+    - '                                &n_bufs,'
+    - '                                bufs,'
+    - '                                sizeof(rsp),'
+    - '                                &rsp_size,'
+    - '                                (uint8_t *) &rsp,'
+    - '                                DSPQUEUE_TIMEOUT);'
+    - '        if (err == AEE_EEXPIRED) {'
+    - '            continue;'
+    - '        }'
+    - '        if (err != 0) {'
+    - '            GGML_ABORT("ggml-hex: dspqueue_read failed: 0x%08x\n", (unsigned)
+      err);'
+    - '        }'
+    - '        if (rsp_size != sizeof(rsp)) {'
+    - '            GGML_ABORT("ggml-hex: dspcall : bad response (size)\n");'
+    - '        }'
+    - '        if (rsp.status != HTP_STATUS_OK) {'
+    - '            GGML_LOG_ERROR("ggml-hex: dspcall : dsp-rsp: %s\n", status_to_str(rsp.status));'
+    - '        }'
+    - '        this->prof_usecs  = rsp.prof_usecs;'
+    - '        this->prof_cycles = rsp.prof_cycles;'
+    - '        this->prof_pkts   = rsp.prof_pkts;'
+    - '        this->op_pending--;'
+    - '    }'
+    - '}'
+    desc: 从DSP队列读取所有响应，直到所有挂起的操作完成。
+    line: 166-198
+    name: flush
+  name: ggml_hexagon_session
+- desc: 为Hexagon后端缓冲区类型提供上下文，存储会话指针和类型名称。
+  methods:
+  - code:
+    - ggml_backend_hexagon_buffer_type_context(const std::string & name, ggml_hexagon_session
+      * sess) {
+    - '    this->sess = sess;'
+    - '    this->name = name;'
+    - '}'
+    desc: 构造函数，初始化会话指针和名称。
+    line: 213-216
+    name: ggml_backend_hexagon_buffer_type_context
+  name: ggml_backend_hexagon_buffer_type_context
+- desc: 管理一个Hexagon后端的缓冲区，包括内存分配、映射和释放。
+  methods:
+  - code:
+    - bool mmap_to(ggml_hexagon_session * s) {
+    - '    HEX_VERBOSE("ggml-hex: %s mmaping buffer: base %p domain-id %d session-id
+      %d size %zu fd %d repack %d\n",'
+    - '                s->name.c_str(), (void *) this->base, s->domain_id, s->session_id,
+      this->size, this->fd,'
+    - '                (int) this->repack);'
+    - '    int err = fastrpc_mmap(s->domain_id, this->fd, (void *) this->base, 0,
+      this->size, FASTRPC_MAP_FD);'
+    - '    if (err != 0) {'
+    - '        GGML_LOG_ERROR("ggml-hex: buffer mapping failed : domain_id %d size
+      %zu fd %d error 0x%08x\n",'
+    - '                s->domain_id, this->size, this->fd, (unsigned) err);'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 将缓冲区映射到指定的Hexagon会话域。
+    line: 233-245
+    name: mmap_to
+  - code:
+    - bool mmap() {
+    - '    if (this->mapped) {'
+    - '        return true;'
+    - '    }'
+    - '    if (!mmap_to(this->sess)) {'
+    - '        return false;'
+    - '    }'
+    - '    this->mapped = true;'
+    - '    return true;'
+    - '}'
+    desc: 如果缓冲区尚未映射，则将其映射到会话。
+    line: 247-255
+    name: mmap
+  - code:
+    - void munmap() {
+    - '    if (!this->mapped) {'
+    - '        return;'
+    - '    }'
+    - '    fastrpc_munmap(this->sess->domain_id, this->fd, this->base, this->size);'
+    - '    this->mapped = false;'
+    - '}'
+    desc: 解除缓冲区在会话中的映射。
+    line: 257-265
+    name: munmap
+  - code:
+    - ggml_backend_hexagon_buffer_context(ggml_hexagon_session * sess, size_t size,
+      bool repack) {
+    - '    size += 4 * 1024;  // extra page for padding'
+    - '    this->base = (uint8_t *) rpcmem_alloc2(RPCMEM_HEAP_ID_SYSTEM, RPCMEM_DEFAULT_FLAGS
+      | RPCMEM_HEAP_NOREG, size);'
+    - '    if (!this->base) {'
+    - '        GGML_LOG_ERROR("ggml-hex: %s failed to allocate buffer : size %zu\n",
+      sess->name.c_str(), size);'
+    - '        throw std::runtime_error("ggml-hex: rpcmem_alloc failed (see log for
+      details)");'
+    - '    }'
+    - '    this->fd = rpcmem_to_fd(this->base);'
+    - '    if (this->fd < 0) {'
+    - '        GGML_LOG_ERROR("ggml-hex: %s failed to get FD for buffer %p\n", sess->name.c_str(),
+      (void *) this->base);'
+    - '        rpcmem_free(this->base);'
+    - '        this->base = NULL;'
+    - '        throw std::runtime_error("ggml-hex: rpcmem_to_fd failed (see log for
+      details)");'
+    - '    }'
+    - '    HEX_VERBOSE("ggml-hex: %s allocated buffer: base %p size %zu fd %d repack
+      %d\n", sess->name.c_str(),'
+    - '                (void *) this->base, size, this->fd, (int) repack);'
+    - '    this->sess   = sess;'
+    - '    this->size   = size;'
+    - '    this->mapped = false;'
+    - '    this->repack = repack;'
+    - '}'
+    desc: 构造函数，分配快速RPC内存并获取文件描述符。
+    line: 267-292
+    name: ggml_backend_hexagon_buffer_context
+  - code:
+    - ~ggml_backend_hexagon_buffer_context() {
+    - '    munmap();'
+    - '    if (this->base) {'
+    - '        rpcmem_free(this->base);'
+    - '        this->base = NULL;'
+    - '    }'
+    - '}'
+    desc: 析构函数，解除映射并释放内存。
+    line: 294-299
+    name: ~ggml_backend_hexagon_buffer_context
+  name: ggml_backend_hexagon_buffer_context
+- desc: Hexagon DSP会话类，管理FastRPC远程过程调用会话的生命周期，包括资源分配、队列创建和句柄管理。
+  methods:
+  - code:
+    - void ggml_hexagon_session::allocate(int dev_id) noexcept(false) {
+    - '    this->valid_session = false;'
+    - '    this->valid_handle  = false;'
+    - '    this->valid_queue   = false;'
+    - '    this->valid_iface   = false;'
+    - '    this->domain_id  = 3;'
+    - '    this->session_id = 0;'
+    - '    this->dev_id     = dev_id;'
+    - '    this->name       = std::string("HTP") + std::to_string(dev_id);'
+    - '    this->op_pending  = 0;'
+    - '    this->prof_usecs  = 0;'
+    - '    this->prof_cycles = 0;'
+    - '    this->prof_pkts   = 0;'
+    - '    GGML_LOG_INFO("ggml-hex: allocating new session: %s\n", this->name.c_str());'
+    - '    domain * my_domain = get_domain(this->domain_id);'
+    - '    if (my_domain == NULL) {'
+    - '        GGML_LOG_ERROR("ggml-hex: unable to get domain struct for CDSP\n");'
+    - '        throw std::runtime_error("ggml-hex: failed to get CDSP domain (see
+      log for details)");'
+    - '    }'
+    - '    if (dev_id != 0) {'
+    - '        struct remote_rpc_reserve_new_session n;'
+    - '        n.domain_name_len  = strlen(CDSP_DOMAIN_NAME);'
+    - '        n.domain_name      = const_cast<char *>(CDSP_DOMAIN_NAME);'
+    - '        n.session_name     = const_cast<char *>(this->name.c_str());'
+    - '        n.session_name_len = this->name.size();'
+    - '        int err = remote_session_control(FASTRPC_RESERVE_NEW_SESSION, (void
+      *) &n, sizeof(n));'
+    - '        if (err != AEE_SUCCESS) {'
+    - '            GGML_LOG_ERROR("ggml-hex: failed to reserve new session %d : error
+      0x%x\n", dev_id, err);'
+    - '            throw std::runtime_error("ggml-hex: remote_session_control(new-sess)
+      failed (see log for details)");'
+    - '        }'
+    - '        this->session_id    = n.session_id;'
+    - '        this->domain_id     = n.effective_domain_id;'
+    - '        this->valid_session = true;'
+    - '    }'
+    - '    char session_uri[256];'
+    - '    {'
+    - '        char htp_uri[256];'
+    - '        snprintf(htp_uri, sizeof(htp_uri), "file:///libggml-htp-v%u.so?htp_iface_skel_handle_invoke&_modver=1.0",
+      opt_arch);'
+    - '        struct remote_rpc_get_uri u = {};'
+    - '        u.session_id      = this->session_id;'
+    - '        u.domain_name     = const_cast<char *>(CDSP_DOMAIN_NAME);'
+    - '        u.domain_name_len = strlen(CDSP_DOMAIN_NAME);'
+    - '        u.module_uri      = const_cast<char *>(htp_uri);'
+    - '        u.module_uri_len  = strlen(htp_uri);'
+    - '        u.uri             = session_uri;'
+    - '        u.uri_len         = sizeof(session_uri);'
+    - '        int err = remote_session_control(FASTRPC_GET_URI, (void *) &u, sizeof(u));'
+    - '        if (err != AEE_SUCCESS) {'
+    - '            int htp_URI_domain_len = strlen(htp_uri) + MAX_DOMAIN_NAMELEN;'
+    - '            snprintf(session_uri, htp_URI_domain_len, "%s%s", htp_uri, my_domain->uri);'
+    - '            GGML_LOG_WARN("ggml-hex: failed to get URI for session %d : error
+      0x%x. Falling back to single session URI: %s\n", dev_id, err, session_uri);'
+    - '        }'
+    - '    }'
+    - '    {'
+    - '        struct remote_rpc_control_unsigned_module u;'
+    - '        u.domain = this->domain_id;'
+    - '        u.enable = 1;'
+    - '        int err  = remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE, (void
+      *) &u, sizeof(u));'
+    - '        if (err != AEE_SUCCESS) {'
+    - '            GGML_LOG_ERROR("ggml-hex: failed to enable unsigned PD for session
+      %d : error 0x%x\n", dev_id, err);'
+    - '            throw std::runtime_error("ggml-hex: remote_session_control(unsign)
+      failed (see log for details)");'
+    - '        }'
+    - '    }'
+    - '    int err = htp_iface_open(session_uri, &this->handle);'
+    - '    if (err != AEE_SUCCESS) {'
+    - '        GGML_LOG_ERROR("ggml-hex: failed to open session %d : error 0x%x\n",
+      dev_id, err);'
+    - '        throw std::runtime_error("ggml-hex: failed to open session (see log
+      for details)");'
+    - '    }'
+    - '    this->valid_handle = true;'
+    - '    GGML_LOG_INFO("ggml-hex: new session: %s : session-id %d domain-id %d uri
+      %s handle 0x%lx\n", this->name.c_str(),'
+    - '                  this->session_id, this->domain_id, session_uri, (unsigned
+      long) this->handle);'
+    - '    {'
+    - '        struct remote_rpc_control_latency l;'
+    - '        l.enable = 1;'
+    - '        int err = remote_handle64_control(this->handle, DSPRPC_CONTROL_LATENCY,
+      (void *) &l, sizeof(l));'
+    - '        if (err != 0) {'
+    - '            GGML_LOG_WARN("ggml-hex: failed to enable fastrpc QOS mode: 0x%08x\n",
+      (unsigned) err);'
+    - '        }'
+    - '    }'
+    - '    err = dspqueue_create(this->domain_id,'
+    - '                          0,'
+    - '                          128 * 1024,'
+    - '                          64 * 1024,'
+    - '                          nullptr,'
+    - '                          nullptr,'
+    - '                          (void *) this,'
+    - '                          &queue);'
+    - '    if (err != 0) {'
+    - '        GGML_LOG_ERROR("ggml-hex: %s dspqueue_create failed: 0x%08x\n", this->name.c_str(),
+      (unsigned) err);'
+    - '        throw std::runtime_error("ggml-hex: failed to create dspqueue (see
+      log for details)");'
+    - '    }'
+    - '    this->valid_queue = true;'
+    - '    err = dspqueue_export(queue, &this->queue_id);'
+    - '    if (err != 0) {'
+    - '        GGML_LOG_ERROR("ggml-hex: dspqueue_export failed: 0x%08x\n", (unsigned)
+      err);'
+    - '        throw std::runtime_error("ggml-hex: dspqueue export failed (see log
+      for details)");'
+    - '    }'
+    - '    if (opt_etm) {'
+    - '        err = htp_iface_enable_etm(this->handle);'
+    - '        if (err != 0) {'
+    - '            GGML_LOG_ERROR("ggml-hex: failed to enable ETM tracing: 0x%08x\n",
+      (unsigned) err);'
+    - '        }'
+    - '    }'
+    - '    err = htp_iface_start(this->handle, dev_id, this->queue_id, opt_nhvx, opt_use_hmx);'
+    - '    if (err != 0) {'
+    - '        GGML_LOG_ERROR("ggml-hex: failed to start session: 0x%08x\n", (unsigned)
+      err);'
+    - '        throw std::runtime_error("ggml-hex: iface start failed (see log for
+      details)");'
+    - '    }'
+    - '    this->valid_iface = true;'
+    - '}'
+    desc: 初始化Hexagon DSP会话，包括创建会话、获取URI、启用未签名模块、打开句柄、创建DSP队列并启动服务。
+    line: 921-1054
+    name: allocate
+  - code:
+    - void ggml_hexagon_session::release() noexcept(true) {
+    - '    GGML_LOG_INFO("ggml-hex: releasing session: %s\n", this->name.c_str());'
+    - '    int err;'
+    - '    if (this->valid_iface) {'
+    - '        err = htp_iface_stop(this->handle);'
+    - '        if (err != 0) {'
+    - '            GGML_ABORT("ggml-hex: htp_iface_stop failed: 0x%08x\n", (unsigned)
+      err);'
+    - '        }'
+    - '    }'
+    - '    if (opt_etm) {'
+    - '        err = htp_iface_disable_etm(this->handle);'
+    - '        if (err != 0) {'
+    - '            GGML_LOG_ERROR("ggml-hex: warn : failed to disable ETM tracing:
+      0x%08x\n", (unsigned) err);'
+    - '        }'
+    - '    }'
+    - '    if (this->valid_queue) {'
+    - '        err = dspqueue_close(queue);'
+    - '        if (err != 0) {'
+    - '            GGML_ABORT("ggml-hex: dspqueue_close failed: 0x%08x\n", (unsigned)
+      err);'
+    - '        }'
+    - '    }'
+    - '    if (this->valid_handle) {'
+    - '        htp_iface_close(this->handle);'
+    - '    }'
+    - '}'
+    desc: 释放Hexagon DSP会话资源，包括停止服务、关闭队列和句柄。
+    line: 1056-1080
+    name: release
+  - code:
+    - ggml_hexagon_session::ggml_hexagon_session(int dev_id, ggml_backend_dev_t dev)
+      noexcept(false) {
+    - '    buffer_type.device        = dev;'
+    - '    repack_buffer_type.device = dev;'
+    - '    try {'
+    - '        allocate(dev_id);'
+    - '        buffer_type.iface   = ggml_backend_hexagon_buffer_type_interface;'
+    - '        buffer_type.context = new ggml_backend_hexagon_buffer_type_context(this->name,
+      this);'
+    - '        repack_bu'
+    desc: 构造函数，初始化会话并配置缓冲区类型。
+    line: 1082-1089
+    name: ggml_hexagon_session
+  name: ggml_hexagon_session
+- desc: 表示一个 Hexagon DSP 后端会话，管理设备分配、缓冲区类型与接口，以及请求队列的调度执行。
+  methods:
+  - code:
+    - ggml_hexagon_session(int dev_id, ggml_backend_dev_t dev) noexcept(false) {
+    - '    buffer_type.device        = dev;'
+    - '    repack_buffer_type.device = dev;'
+    - '    try {'
+    - '        allocate(dev_id);'
+    - '        buffer_type.iface   = ggml_backend_hexagon_buffer_type_interface;'
+    - '        buffer_type.context = new ggml_backend_hexagon_buffer_type_context(this->name,
+      this);'
+    - '        repack_buffer_type.iface   = ggml_backend_hexagon_repack_buffer_type_interface;'
+    - '        repack_buffer_type.context = new ggml_backend_hexagon_buffer_type_context(this->name
+      + "-REPACK", this);'
+    - '    } catch (const std::exception & exc) {'
+    - '        release();'
+    - '        throw;'
+    - '    }'
+    - '}'
+    desc: 构造函数，初始化设备与缓冲区类型，并尝试分配设备资源。
+    line: 1784-1798
+    name: ggml_hexagon_session
+  - code:
+    - ~ggml_hexagon_session() noexcept(true) {
+    - '    release();'
+    - '    delete static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer_type.context);'
+    - '    delete static_cast<ggml_backend_hexagon_buffer_type_context *>(repack_buffer_type.context);'
+    - '}'
+    desc: 析构函数，释放设备资源并清理缓冲区类型上下文。
+    line: 1800-1806
+    name: ~ggml_hexagon_session
+  name: ggml_hexagon_session
+- desc: 辅助结构体，封装了计算图节点（ggml_tensor）以及与其融合的后续操作信息，用于支持Hexagon后端的图优化逻辑。
+  methods:
+  - code:
+    - ggml_op op() const {
+    - '    return node->op;'
+    - '}'
+    desc: 返回当前节点的操作类型（ggml_op枚举值）。
+    line: 2830-2834
+    name: op
+  - code:
+    - const ggml_tensor * dst() const {
+    - '    return fused.empty() ? node : fused.back();'
+    - '}'
+    desc: 返回节点的目标张量，若存在融合节点则返回最后一个融合张量，否则返回原节点。
+    line: 2836-2840
+    name: dst
+  - code:
+    - const ggml_tensor * src0() const {
+    - '    return node->src[0];'
+    - '}'
+    desc: 返回节点的第一个输入源张量。
+    line: 2842-2846
+    name: src0
+  - code:
+    - const ggml_tensor * src1() const {
+    - '    return node->src[1];'
+    - '}'
+    desc: 返回节点的第二个输入源张量。
+    line: 2848-2852
+    name: src1
+  - code:
+    - bool is_empty() const {
+    - '    return ggml_op_is_empty(node->op);'
+    - '}'
+    desc: 检查当前操作是否为”空“操作（如NONE、RESHAPE等）。
+    line: 2854-2858
+    name: is_empty
+  - code:
+    - void add_fused(ggml_tensor * t) {
+    - '    fused.push_back(t);'
+    - '}'
+    desc: 将给定的张量添加到fused列表中，记录一个融合的操作节点。
+    line: 2860-2864
+    name: add_fused
+  - code:
+    - bool stackable() const {
+    - '    switch (this->op()) {'
+    - '        case GGML_OP_MUL_MAT:'
+    - '        case GGML_OP_MUL_MAT_ID:'
+    - '            return ggml_is_quantized(this->src0()->type);'
+    - '        default:'
+    - '            return false;'
+    - '    }'
+    - '}'
+    desc: 判断当前节点是否可堆叠（即MUL_MAT或MUL_MAT_ID且第一个源已量化），用于图优化中的VTCM复用。
+    line: 2866-2875
+    name: stackable
+  - code:
+    - bool same_input(const node_info& n) const {
+    - '    return n.src1() == this->src1();'
+    - '}'
+    desc: 判断另一个node_info是否与当前节点共享相同的第二输入源（src1）。
+    line: 2877-2881
+    name: same_input
+  name: node_info
+- desc: Hexagon后端的注册表类，负责管理多个设备（会话）的生命周期，包括创建和销毁。
+  methods:
+  - code:
+    - ggml_hexagon_registry::ggml_hexagon_registry(ggml_backend_reg_t reg) {
+    - '    GGML_LOG_INFO("ggml-hex: Hexagon backend (experimental) : allocating new
+      registry : ndev %zu\n", opt_ndev);'
+    - '    if (!opt_arch) {'
+    - '        int err = get_hex_arch_ver(CDSP_DOMAIN_ID, &opt_arch);'
+    - '        if (err != 0) {'
+    - '            GGML_LOG_ERROR("ggml-hex: failed to query HTP version (err %d)
+      defaulting to v73\n", err);'
+    - '            opt_arch = 73;'
+    - '        }'
+    - '    }'
+    - '    #if defined(__ANDROID__)'
+    - '    if (opt_arch < 75) {'
+    - '        opt_ndev = 1;'
+    - '        GGML_LOG_WARN("ggml-hex: forcing ndev to 1 for SoCs archs lower than
+      v75.\n");'
+    - '    }'
+    - '    #endif'
+    - '    GGML_LOG_INFO("ggml-hex: Hexagon Arch version v%d\n", opt_arch);'
+    - '    for (size_t i = 0; i < opt_ndev; i++) {'
+    - '        devices[i].iface = ggml_backend_hexagon_device_i;'
+    - '        devices[i].reg   = reg;'
+    - '        try {'
+    - '            devices[i].context = new ggml_hexagon_session(i, &devices[i]);'
+    - '        } catch (const std::exception & exc) {'
+    - '            GGML_LOG_ERROR("ggml-hex: failed to create device/session %zu\n",
+      i);'
+    - '            devices[i].context = nullptr;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 构造函数，初始化Hexagon架构版本，并为每个设备索引创建对应的Hexagon会话实例。
+    line: 3199-3228
+    name: ggml_hexagon_registry
+  - code:
+    - ggml_hexagon_registry::~ggml_hexagon_registry() {
+    - '    GGML_LOG_INFO("ggml-hex: releasing registry\n");'
+    - '    for (size_t i = 0; i < opt_ndev; i++) {'
+    - '        auto sess = static_cast<ggml_hexagon_session *>(devices[i].context);'
+    - '        delete sess;'
+    - '    }'
+    - '}'
+    desc: 析构函数，释放所有会话（设备）的资源。
+    line: 3230-3238
+    name: ~ggml_hexagon_registry
+  name: ggml_hexagon_registry
+desc: 该文件是ggml项目中用于Qualcomm Hexagon DSP的硬件后端实现。它通过快速RPC (fastrpc) 与Hexagon DSP通信，负责在HTP
+  (Hexagon Tensor Processor) 上执行量化的张量运算。文件实现了缓冲区管理（基于快速RPC内存映射）、张量的q4_0到q4x4x2以及q8_0到q8x4x2格式的重新打包（repacking），以及后端会话（session）的创建、队列管理和同步/异步操作执行等功能。该文件是GGML库的Hexagon后端实现，负责在Qualcomm
+  Hexagon DSP上提供张量计算支持。代码实现了针对量化张量类型（如Q4_0、Q8_0、IQ4_NL、MXFP4）的专门张量数据重打包和解包功能，将标准GGML量化格式转换为Hexagon优化的内部格式，并实现了后端缓冲区操作接口，包括张量数据的设置、获取、复制和清理。此外，代码还管理Hexagon
+  DSP会话的生命周期，包括会话分配、释放和资源管理。该文件是 GGML 库中 Hexagon DSP 后端的核心实现，负责将 GGML 计算图中的张量操作调度到高通
+  Hexagon DSP 上执行。它定义了后端会话管理、缓冲区管理、操作支持检查、请求构建与分发等机制，利用 DSP 队列提交计算任务，并针对硬件特性进行了优化（如常量缓存、量化复用等）。该文件是ggml项目中Hexagon后端实现的C++源文件，负责将ggml计算图调度到Qualcomm
+  Hexagon DSP（HTP）硬件上执行，包括设备/会话管理、缓冲区管理、操作调度与执行、图优化（如算子融合和重排序）以及后端注册等功能。
+file: ggml/src/ggml-hexagon/ggml-hexagon.cpp
+funcs:
+- code:
+  - static inline uint64_t hex_is_aligned(void * addr, uint32_t align) {
+  - '    return ((size_t) addr & (align - 1)) == 0;'
+  - '}'
+  desc: 检查地址是否按指定字节对齐。
+  line: 48-50
+  name: hex_is_aligned
+- code:
+  - static inline size_t hex_round_up(size_t n, size_t m) {
+  - '    return m * ((n + m - 1) / m);'
+  - '}'
+  desc: 将数字向上舍入到指定倍数。
+  line: 52-54
+  name: hex_round_up
+- code:
+  - static const char * status_to_str(uint32_t status) {
+  - '    switch (status) {'
+  - '        case HTP_STATUS_OK:'
+  - '            return "OK";'
+  - '        case HTP_STATUS_NO_SUPPORT:'
+  - '            return "NO-SUPPORT";'
+  - '        case HTP_STATUS_INVAL_PARAMS:'
+  - '            return "INVAL-PARAMS";'
+  - '        case HTP_STATUS_VTCM_TOO_SMALL:'
+  - '            return "VTCM-TOO-SMALL";'
+  - '        case HTP_STATUS_INTERNAL_ERR:'
+  - '            return "INTERNAL-ERROR";'
+  - '        default:'
+  - '            return "UNKNOWN";'
+  - '    }'
+  - '}'
+  desc: 将HTP状态码转换为字符串描述。
+  line: 56-68
+  name: status_to_str
+- code:
+  - static void ggml_hexagon_dump_op_exec(const std::string &sess_name, const ggml_tensor
+    * op, const uint32_t req_flags) {
+  - '    if (!opt_verbose) return;'
+  - '    op_desc desc(op);'
+  - '    GGML_LOG_DEBUG("ggml-hex: %s execute-op %s: %s : %s : %s : %s : %s : flags
+    0x%x\n", sess_name.c_str(),'
+  - '                ggml_op_name(op->op), desc.names, desc.dims, desc.types, desc.strides,
+    desc.buffs, req_flags);'
+  - '}'
+  desc: 记录操作的执行信息，用于调试。
+  line: 75-80
+  name: ggml_hexagon_dump_op_exec
+- code:
+  - static void ggml_hexagon_dump_op_supp(const std::string &sess_name, const struct
+    ggml_tensor * op, bool supp) {
+  - '    if (!opt_verbose) return;'
+  - '    op_desc desc(op);'
+  - '    GGML_LOG_DEBUG("ggml-hex: %s supports-op %s : %s : %s : %s : %s : %s : %s\n",
+    sess_name.c_str(),'
+  - '                ggml_op_name(op->op), desc.names, desc.dims, desc.types, desc.strides,
+    desc.buffs, supp ? "yes" : "no");'
+  - '}'
+  desc: 记录操作支持情况，用于调试。
+  line: 83-88
+  name: ggml_hexagon_dump_op_supp
+- code:
+  - static void ggml_hexagon_dump_op_prof(const std::string &sess_name, const ggml_tensor
+    * op,
+  - '                                      uint32_t op_usec, uint32_t op_cycles, uint32_t
+    op_pkts, uint64_t call_usec) {'
+  - '    if (!opt_profile) return;'
+  - '    op_desc desc(op);'
+  - '    GGML_LOG_DEBUG("ggml-hex: %s profile-op %s: %s : %s : %s : %s : %s : op-usec
+    %u op-cycles %u op-pkts %u (%f) call-usec %llu\n", sess_name.c_str(),'
+  - '                ggml_op_name(op->op), desc.names, desc.dims, desc.types, desc.strides,
+    desc.buffs,'
+  - '                op_usec, op_cycles, op_pkts, (float) op_cycles / op_pkts, (unsigned
+    long long) call_usec);'
+  - '}'
+  desc: 记录操作的性能数据，用于分析。
+  line: 91-97
+  name: ggml_hexagon_dump_op_prof
+- code:
+  - static ggml_hexagon_session * ggml_backend_hexagon_buffer_get_sess(ggml_backend_buffer_t
+    buffer) {
+  - '    return static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer->buft->context)->sess;'
+  - '}'
+  desc: 从缓冲区获取其所属的Hexagon会话对象。
+  line: 305-307
+  name: ggml_backend_hexagon_buffer_get_sess
+- code:
+  - static void ggml_backend_hexagon_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    auto ctx = static_cast<ggml_backend_hexagon_buffer_context *>(buffer->context);'
+  - '    delete ctx;'
+  - '}'
+  desc: 释放Hexagon后端缓冲区。
+  line: 309-312
+  name: ggml_backend_hexagon_buffer_free_buffer
+- code:
+  - static void * ggml_backend_hexagon_buffer_get_base(ggml_backend_buffer_t buffer)
+    {
+  - '    auto ctx = static_cast<ggml_backend_hexagon_buffer_context *>(buffer->context);'
+  - '    return ctx->base;'
+  - '}'
+  desc: 获取缓冲区的基础地址。
+  line: 314-317
+  name: ggml_backend_hexagon_buffer_get_base
+- code:
+  - static enum ggml_status ggml_backend_hexagon_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, ggml_tensor * tensor) {
+  - '    auto ctx  = static_cast<ggml_backend_hexagon_buffer_context *>(buffer->context);'
+  - '    auto sess = ctx->sess;'
+  - '    HEX_VERBOSE("ggml-hex: %s init-tensor %s : base %p data %p nbytes %zu usage
+    %d repack %d\n", sess->name.c_str(),'
+  - '                tensor->name, (void *) ctx->base, tensor->data, ggml_nbytes(tensor),
+    (int) buffer->usage,'
+  - '                (int) ctx->repack);'
+  - '    if (tensor->view_src != NULL && tensor->view_offs == 0) {'
+  - '        ; // nothing to do for the view'
+  - '    } else {'
+  - '        if (!ctx->mapped) {'
+  - '            ctx->mmap();'
+  - '        }'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 初始化缓冲区中的张量，必要时进行内存映射。
+  line: 319-334
+  name: ggml_backend_hexagon_buffer_init_tensor
+- code:
+  - static x2_q4 unpack_q4(uint8_t v) {
+  - '    x2_q4 x = { (int) (v & 0x0f) - 8, (int) (v >> 4) - 8 };'
+  - '    return x;'
+  - '}'
+  desc: 解包一个4位量化值，将其转换为两个有符号整数。
+  line: 342-345
+  name: unpack_q4
+- code:
+  - static void dump_block_q4_0(const block_q4_0 * b, int i) {
+  - '    HEX_VERBOSE("ggml-hex: repack q4_0 %d: %d %d %d %d ... %d %d %d %d : %.6f\n",
+    i, unpack_q4(b->qs[0]).v[0],'
+  - '                unpack_q4(b->qs[1]).v[0], unpack_q4(b->qs[2]).v[0], unpack_q4(b->qs[3]).v[0],
+    unpack_q4(b->qs[12]).v[1],'
+  - '                unpack_q4(b->qs[13]).v[1], unpack_q4(b->qs[14]).v[1], unpack_q4(b->qs[15]).v[1],'
+  - '                GGML_FP16_TO_FP32(b->d));'
+  - '}'
+  desc: 打印q4_0块的内容，用于调试。
+  line: 347-351
+  name: dump_block_q4_0
+- code:
+  - static void dump_packed_block_q4x4x2(const uint8_t * v, unsigned int i, size_t
+    k) {
+  - '    static const int qk        = QK_Q4_0x4x2;'
+  - '    const int        dblk_size = 8 * 2;   // 8x __fp16'
+  - '    const int        qblk_size = qk / 2;  // int4'
+  - '    const int        qrow_size = k / 2;   // int4 (not padded)'
+  - '    const uint8_t * v_q = v + 0;          // quants first'
+  - '    const uint8_t * v_d = v + qrow_size;  // then scales'
+  - '    const uint8_t *   q = v_q + i * qblk_size;'
+  - '    const ggml_half * d = (const ggml_half *) (v_d + i * dblk_size);'
+  - '    HEX_VERBOSE("ggml-hex: repack q4x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n", i,'
+  - '                unpack_q4(q[0]).v[0], unpack_q4(q[1]).v[0], unpack_q4(q[2]).v[0],
+    unpack_q4(q[3]).v[0],'
+  - '                unpack_q4(q[60]).v[0], unpack_q4(q[61]).v[0], unpack_q4(q[62]).v[0],
+    unpack_q4(q[63]).v[0],'
+  - '                unpack_q4(q[124]).v[0], unpack_q4(q[125]).v[0], unpack_q4(q[126]).v[0],
+    unpack_q4(q[127]).v[0],'
+  - '                GGML_FP16_TO_FP32(d[0]), GGML_FP16_TO_FP32(d[1]), GGML_FP16_TO_FP32(d[2]),
+    GGML_FP16_TO_FP32(d[3]));'
+  - '    HEX_VERBOSE("ggml-hex: repack q4x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n",'
+  - '                i + 1, unpack_q4(q[0]).v[1], unpack_q4(q[1]).v[1], unpack_q4(q[2]).v[1],
+    unpack_q4(q[3]).v[1],'
+  - '                unpack_q4(q[60]).v[1], unpack_q4(q[61]).v[1], unpack_q4(q[62]).v[1],
+    unpack_q4(q[63]).v[1],'
+  - '                unpack_q4(q[124]).v[1], unpack_q4(q[125]).v[1], unpack_q4(q[126]).v[1],
+    unpack_q4(q[127]).v[1],'
+  - '                GGML_FP16_TO_FP32(d[4]), GGML_FP16_TO_FP32(d[5]), GGML_FP16_TO_FP32(d[6]),
+    GGML_FP16_TO_FP32(d[7]));'
+  - '}'
+  desc: 打印打包的q4x4x2块内容，用于调试。
+  line: 353-372
+  name: dump_packed_block_q4x4x2
+- code:
+  - static void unpack_q4_0_quants(uint8_t * qs, const block_q4_0 * x, unsigned int
+    bi) {
+  - '    static const int qk = QK4_0;'
+  - '    for (unsigned int i = 0; i < qk / 2; ++i) {'
+  - '        const int x0             = (x->qs[i] & 0x0F);'
+  - '        const int x1             = (x->qs[i] >> 4);'
+  - '        qs[bi * qk + i + 0]      = x0;'
+  - '        qs[bi * qk + i + qk / 2] = x1;'
+  - '    }'
+  - '}'
+  desc: 解包q4_0块的量化值到中间缓冲区。
+  line: 374-382
+  name: unpack_q4_0_quants
+- code:
+  - static void pack_q4_0_quants(block_q4_0 * x, const uint8_t * qs, unsigned int
+    bi) {
+  - '    static const int qk = QK4_0;'
+  - '    for (unsigned int i = 0; i < qk / 2; ++i) {'
+  - '        const uint8_t x0 = qs[bi * qk + i + 0];'
+  - '        const uint8_t x1 = qs[bi * qk + i + qk / 2];'
+  - '        x->qs[i]         = x0 | (x1 << 4);'
+  - '    }'
+  - '}'
+  desc: 将中间缓冲区的量化值打包回q4_0块。
+  line: 384-392
+  name: pack_q4_0_quants
+- code:
+  - static void repack_row_q4x4x2(uint8_t * y, const block_q4_0 * x, int64_t k) {
+  - '    static const int qk = QK_Q4_0x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    const int        nloe = k % qk;'
+  - '    const int dblk_size = 8 * 2;'
+  - '    const int qblk_size = qk / 2;'
+  - '    const int qrow_size = k / 2;'
+  - '    uint8_t * y_q = y + 0;'
+  - '    uint8_t * y_d = y + qrow_size;'
+  - '    // Repack the quants'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        uint8_t qs[QK_Q4_0x4x2];'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 0], 0);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 1], 1);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 2], 2);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 3], 3);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 4], 4);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 5], 5);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 6], 6);'
+  - '        unpack_q4_0_quants(qs, &x[i * 8 + 7], 7);'
+  - '        bool partial = (nloe && i == nb-1);'
+  - '        uint8_t * q = y_q + (i * qblk_size);'
+  - '        for (int j = 0; j < qk / 2; j++) {'
+  - '            q[j] = partial ? (qs[j*2+1] << 4) | qs[j*2+0] : (qs[j+128] << 4)
+    | qs[j+000];'
+  - '        }'
+  - '    }'
+  - '    // Repack the scales'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        ggml_half * d = (ggml_half *) (y_d + i * dblk_size);'
+  - '        d[0]          = x[i * 8 + 0].d;'
+  - '        d[1]          = x[i * 8 + 1].d;'
+  - '        d[2]          = x[i * 8 + 2].d;'
+  - '        d[3]          = x[i * 8 + 3].d;'
+  - '        d[4]          = x[i * 8 + 4].d;'
+  - '        d[5]          = x[i * 8 + 5].d;'
+  - '        d[6]          = x[i * 8 + 6].d;'
+  - '        d[7]          = x[i * 8 + 7].d;'
+  - '    }'
+  - '}'
+  desc: 将一行q4_0数据重新打包为q4x4x2格式。
+  line: 394-432
+  name: repack_row_q4x4x2
+- code:
+  - static void unpack_row_q4x4x2(block_q4_0 * x, const uint8_t * y, int64_t k) {
+  - '    static const int qk = QK_Q4_0x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    const int        nloe = k % qk;'
+  - '    const int dblk_size = 8 * 2;'
+  - '    const int qblk_size = qk / 2;'
+  - '    const int qrow_size = k / 2;'
+  - '    const uint8_t * y_q = y + 0;'
+  - '    const uint8_t * y_d = y + qrow_size;'
+  - '    // Unpack the quants'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        uint8_t qs[QK_Q4_0x4x2];'
+  - '        bool partial = (nloe && i == nb-1);'
+  - '        const uint8_t * q = y_q + (i * qblk_size);'
+  - '        for (int j = 0; j < qk / 2; j++) {'
+  - '            if (partial) {'
+  - '                qs[j*2+0] = q[j] & 0xf;'
+  - '                qs[j*2+1] = q[j] >> 4;'
+  - '            } else {'
+  - '                qs[j+000] = q[j] & 0xf;'
+  - '                qs[j+128] = q[j] >> 4;'
+  - '            }'
+  - '        }'
+  - '        pack_q4_0_quants(&x[i * 8 + 0], qs, 0);'
+  - '        pack_q4_0_quants(&x[i * 8 + 1], qs, 1);'
+  - '        pack_q4_0_quants(&x[i * 8 + 2], qs, 2);'
+  - '        pack_q4_0_quants(&x[i * 8 + 3], qs, 3);'
+  - '        pack_q4_0_quants(&x[i * 8 + 4], qs, 4);'
+  - '        pack_q4_0_quants(&x[i * 8 + 5], qs, 5);'
+  - '        pack_q4_0_quants(&x[i * 8 + 6], qs, 6);'
+  - '        pack_q4_0_quants(&x[i * 8 + 7], qs, 7);'
+  - '    }'
+  - '    // Repack the scales'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const ggml_half * d = (const ggml_half *) (y_d + i * dblk_size);'
+  - '        x[i * 8 + 0].d      = d[0];'
+  - '        x[i * 8 + 1].d      = d[1];'
+  - '        x[i * 8 + 2].d      = d[2];'
+  - '        x[i * 8 + 3].d      = d[3];'
+  - '        x[i * 8 + 4].d      = d[4];'
+  - '        x[i * 8 + 5].d      = d[5];'
+  - '        x[i * 8 + 6].d      = d[6];'
+  - '        x[i * 8 + 7].d      = d[7];'
+  - '    }'
+  - '}'
+  desc: 将一行q4x4x2数据解包回q4_0格式。
+  line: 434-474
+  name: unpack_row_q4x4x2
+- code:
+  - static void init_row_q4x4x2(block_q4_0 * x, int64_t k) {
+  - '    static const int qk = QK_Q4_0x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    uint8_t qs[QK_Q4_0x4x2];'
+  - '    memset(qs, 8, sizeof(qs));'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        pack_q4_0_quants(&x[i * 8 + 0], qs, 0);'
+  - '        pack_q4_0_quants(&x[i * 8 + 1], qs, 1);'
+  - '        pack_q4_0_quants(&x[i * 8 + 2], qs, 2);'
+  - '        pack_q4_0_quants(&x[i * 8 + 3], qs, 3);'
+  - '        pack_q4_0_quants(&x[i * 8 + 4], qs, 4);'
+  - '        pack_q4_0_quants(&x[i * 8 + 5], qs, 5);'
+  - '        pack_q4_0_quants(&x[i * 8 + 6], qs, 6);'
+  - '        pack_q4_0_quants(&x[i * 8 + 7], qs, 7);'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        x[i * 8 + 0].d = 0;'
+  - '        x[i * 8 + 1].d = 0;'
+  - '        x[i * 8 + 2].d = 0;'
+  - '        x[i * 8 + 3].d = 0;'
+  - '        x[i * 8 + 4].d = 0;'
+  - '        x[i * 8 + 5].d = 0;'
+  - '        x[i * 8 + 6].d = 0;'
+  - '        x[i * 8 + 7].d = 0;'
+  - '    }'
+  - '}'
+  desc: 初始化一行q4x0数据，将量化值设为0，缩放设为0。
+  line: 476-496
+  name: init_row_q4x4x2
+- code:
+  - static void repack_q4_0_q4x4x2(ggml_tensor * t, const void * data, size_t size)
+    {
+  - '    int64_t nrows = ggml_nrows(t);'
+  - '    size_t row_size    = ggml_row_size(t->type, t->ne[0]);'
+  - '    size_t row_size_pd = ggml_row_size(t->type, hex_round_up(t->ne[0], QK_Q4_0x4x2));'
+  - '    size_t row_size_rp = row_size * 2;'
+  - '    const size_t total_tensor_size = (size_t)nrows * row_size;'
+  - '    const size_t n_bytes_to_copy = size < total_tensor_size ? size : total_tensor_size;'
+  - '    const int64_t n_full_rows = n_bytes_to_copy / row_size;'
+  - '    const size_t  n_rem_bytes = n_bytes_to_copy % row_size;'
+  - '    void * buf_pd = ggml_aligned_malloc(row_size_pd);'
+  - '    GGML_ASSERT(buf_pd != NULL);'
+  - '    void * buf_rp = ggml_aligned_malloc(row_size_rp);'
+  - '    GGML_ASSERT(buf_rp != NULL);'
+  - '    init_row_q4x4x2((block_q4_0 *) buf_pd, t->ne[0]);'
+  - '    for (int64_t i = 0; i < n_full_rows; i++) {'
+  - '        const uint8_t * src = (const uint8_t *) data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) t->data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        repack_row_q4x4x2((uint8_t *) buf_rp, (const block_q4_0 *) buf_pd, t->ne[0]);'
+  - '        memcpy(dst, buf_rp, row_size);'
+  - '    }'
+  - '    if (n_rem_bytes > 0) {'
+  - '        const int64_t i = n_full_rows;'
+  - '        const uint8_t * src = (const uint8_t *) data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) t->data + (i * row_size);'
+  - '        init_row_q4x4x2((block_q4_0 *) buf_pd, t->ne[0]);'
+  - '        memcpy(buf_pd, src, n_rem_bytes);'
+  - '        repack_row_q4x4x2((uint8_t *) buf_rp, (const block_q4_0 *) buf_pd, t->ne[0]);'
+  - '        memcpy(dst, buf_rp, n_rem_bytes);'
+  - '    }'
+  - '    ggml_aligned_free(buf_pd, row_size_pd);'
+  - '    ggml_aligned_free(buf_rp, row_size_rp);'
+  - '}'
+  desc: 将一个完整的q4_0张量重新打包为q4x4x2格式，处理部分行和内存管理。
+  line: 498-526
+  name: repack_q4_0_q4x4x2
+- code:
+  - static void repack_q4x4x2_q4_0(void * data, const ggml_tensor * t, size_t size)
+    {
+  - '    int64_t nrows = ggml_nrows(t);'
+  - '    size_t row_size    = ggml_row_size(t->type, t->ne[0]);'
+  - '    size_t row_size_pd = ggml_row_size(t->type, hex_round_up(t->ne[0], QK_Q4_0x4x2));'
+  - '    size_t row_size_rp = row_size * 2;'
+  - '    const size_t total_tensor_size = (size_t)nrows * row_size;'
+  - '    const size_t n_bytes_to_copy = size < total_tensor_size ? size : total_tensor_size;'
+  - '    const int64_t n_full_rows = n_bytes_to_copy / row_size;'
+  - '    const size_t  n_rem_bytes = n_bytes_to_copy % row_size;'
+  - '    void * buf_pd = ggml_aligned_malloc(row_size_pd);'
+  - '    GGML_ASSERT(buf_pd != NULL);'
+  - '    void * buf_rp = ggml_aligned_malloc(row_size_rp);'
+  - '    GGML_ASSERT(buf_rp != NULL);'
+  - '    memset(buf_pd, 0, row_size_pd);'
+  - '    for (int64_t i = 0; i < n_full_rows; i++) {'
+  - '        const uint8_t * src = (const uint8_t *) t->data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        unpack_row_q4x4x2((block_q4_0 *) buf_rp, (const uint8_t *) buf_pd, t->ne[0]);'
+  - '        memcpy(dst, buf_rp, row_size);'
+  - '    }'
+  - '    if (n_rem_bytes > 0) {'
+  - '        const int64_t i = n_full_rows;'
+  - '        const uint8_t * src = (const uint8_t *) t->data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        unpack_row_q4x4x2((block_q4_0 *) buf_rp, (const uint8_t *) buf_pd, t->ne[0]);'
+  - '        memcpy(dst, buf_rp, n_rem_bytes);'
+  - '    }'
+  - '    ggml_aligned_free(buf_pd, row_size_pd);'
+  - '    ggml_aligned_free(buf_rp, row_size_rp);'
+  - '}'
+  desc: 将一个完整的q4x4x2张量解包回q4_0格式，处理部分行和内存管理。
+  line: 528-556
+  name: repack_q4x4x2_q4_0
+- code:
+  - static void dump_block_q8_0(const block_q8_0 * b, int i) {
+  - '    HEX_VERBOSE("ggml-hex: repack q8_0 %d: %d %d %d %d ... %d %d %d %d : %.6f\n",
+    i, b->qs[0], b->qs[1], b->qs[2],'
+  - '                b->qs[3], b->qs[28], b->qs[29], b->qs[30], b->qs[31], GGML_FP16_TO_FP32(b->d));'
+  - '}'
+  desc: 打印q8_0块的内容，用于调试。
+  line: 559-562
+  name: dump_block_q8_0
+- code:
+  - static void dump_packed_block_q8x4x2(const uint8_t * v, unsigned int i, size_t
+    k) {
+  - '    static const int qk        = QK_Q8_0x4x2;'
+  - '    const int        dblk_size = 8 * 2;   // 8x __fp16'
+  - '    const int        qblk_size = qk;      // int8'
+  - '    const int        qrow_size = k;       // int8 (not padded)'
+  - '    const uint8_t * v_q = v + 0;          // quants first'
+  - '    const uint8_t * v_d = v + qrow_size;  // then scales'
+  - '    const uint8_t *   q = v_q + i * qblk_size;'
+  - '    const ggml_half * d = (const ggml_half *) (v_d + i * dblk_size);'
+  - '    HEX_VERBOSE("ggml-hex: repack q8x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n", i,'
+  - '                q[0], q[1], q[2], q[3], q[60], q[61], q[62], q[63], q[124], q[125],
+    q[126], q[127],'
+  - '                GGML_FP16_TO_FP32(d[0]), GGML_FP16_TO_FP32(d[1]), GGML_FP16_TO_FP32(d[2]),
+    GGML_FP16_TO_FP32(d[3]));'
+  - '    HEX_VERBOSE("ggml-hex: repack q8x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n",'
+  - '                i + 1, q[128], q[129], q[130], q[131], q[192], q[193], q[194],
+    q[195], q[252], q[253], q[254], q[255],'
+  - '                GGML_FP16_TO_FP32(d[4]), GGML_FP16_TO_FP32(d[5]), GGML_FP16_TO_FP32(d[6]),
+    GGML_FP16_TO_FP32(d[7]));'
+  - '}'
+  desc: 打印打包的q8x4x2块内容，用于调试。
+  line: 564-580
+  name: dump_packed_block_q8x4x2
+- code:
+  - static void unpack_q8_0_quants(uint8_t * qs, const block_q8_0 * x, unsigned int
+    bi) {
+  - '    static const int qk = QK8_0;'
+  - '    for (unsigned int i = 0; i < qk; ++i) {'
+  - '        qs[bi * qk + i] = x->qs[i];'
+  - '    }'
+  - '}'
+  desc: 解包q8_0块的量化值到中间缓冲区。
+  line: 582-588
+  name: unpack_q8_0_quants
+- code:
+  - static void pack_q8_0_quants(block_q8_0 * x, const uint8_t * qs, unsigned int
+    bi) {
+  - '    static const int qk = QK8_0;'
+  - '    for (unsigned int i = 0; i < qk; ++i) {'
+  - '        x->qs[i] = qs[bi * qk + i];'
+  - '    }'
+  - '}'
+  desc: 将中间缓冲区的量化值打包回q8_0块。
+  line: 590-596
+  name: pack_q8_0_quants
+- code:
+  - static x2_mxfp4 unpack_mxfp4(uint8_t v) {
+  - '    x2_mxfp4 x;'
+  - '    x.v[0] = kvalues_mxfp4[(v & 0x0f)];'
+  - '    x.v[1] = kvalues_mxfp4[(v >> 4)];'
+  - '    return x;'
+  - '}'
+  desc: 解包单个MXFP4字节，返回包含两个int值的结构体。
+  line: 700-705
+  name: unpack_mxfp4
+- code:
+  - static void dump_block_mxfp4(const block_mxfp4 * b, int i) {
+  - '    HEX_VERBOSE("ggml-hex: repack mxfp4 %d: %d %d %d %d ... %d %d %d %d : %.6f\n",
+    i, unpack_mxfp4(b->qs[0]).v[0],'
+  - '                unpack_mxfp4(b->qs[1]).v[0], unpack_mxfp4(b->qs[2]).v[0], unpack_mxfp4(b->qs[3]).v[0],'
+  - '                unpack_mxfp4(b->qs[12]).v[1], unpack_mxfp4(b->qs[13]).v[1], unpack_mxfp4(b->qs[14]).v[1],'
+  - '                unpack_mxfp4(b->qs[15]).v[1], GGML_E8M0_TO_FP32_HALF(b->e));'
+  - '}'
+  desc: 打印单个MXFP4块的调试信息。
+  line: 706-712
+  name: dump_block_mxfp4
+- code:
+  - static void dump_packed_block_mxfp4x4x2(const uint8_t * v, unsigned int i, size_t
+    k) {
+  - '    static const int qk        = QK_MXFP4x4x2;'
+  - '    const int        eblk_size = 8 * 1;'
+  - '    const int        qblk_size = qk / 2;'
+  - '    const int        qrow_size = k / 2;'
+  - '    const uint8_t * v_q = v + 0;'
+  - '    const uint8_t * v_e = v + qrow_size;'
+  - '    const uint8_t * q = v_q + i * qblk_size;'
+  - '    const uint8_t * e = (const uint8_t *) (v_e + i * eblk_size);'
+  - '    HEX_VERBOSE("ggml-hex: repack mxfp4x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n", i,'
+  - '                unpack_mxfp4(q[0]).v[0], unpack_mxfp4(q[1]).v[0], unpack_mxfp4(q[2]).v[0],
+    unpack_mxfp4(q[3]).v[0],'
+  - '                unpack_mxfp4(q[60]).v[0], unpack_mxfp4(q[61]).v[0], unpack_mxfp4(q[62]).v[0],
+    unpack_mxfp4(q[63]).v[0],'
+  - '                unpack_mxfp4(q[124]).v[0], unpack_mxfp4(q[125]).v[0], unpack_mxfp4(q[126]).v[0],'
+  - '                unpack_mxfp4(q[127]).v[0], GGML_E8M0_TO_FP32_HALF(e[0]), GGML_E8M0_TO_FP32_HALF(e[1]),'
+  - '                GGML_E8M0_TO_FP32_HALF(e[2]), GGML_E8M0_TO_FP32_HALF(e[3]));'
+  - '    HEX_VERBOSE("ggml-hex: repack mxfp4x4x2-%d: %d %d %d %d ... %d %d %d %d ...
+    %d %d %d %d : %.6f %.6f %.6f %.6f\n",'
+  - '                i + 1, unpack_mxfp4(q[0]).v[1], unpack_mxfp4(q[1]).v[1], unpack_mxfp4(q[2]).v[1],'
+  - '                unpack_mxfp4(q[3]).v[1], unpack_mxfp4(q[60]).v[1], unpack_mxfp4(q[61]).v[1],
+    unpack_mxfp4(q[62]).v[1],'
+  - '                unpack_mxfp4(q[63]).v[1], unpack_mxfp4(q[124]).v[1], unpack_mxfp4(q[125]).v[1],'
+  - '                unpack_mxfp4(q[126]).v[1], unpack_mxfp4(q[127]).v[1], GGML_E8M0_TO_FP32_HALF(e[4]),'
+  - '                GGML_E8M0_TO_FP32_HALF(e[5]), GGML_E8M0_TO_FP32_HALF(e[6]), GGML_E8M0_TO_FP32_HALF(e[7]));'
+  - '}'
+  desc: 打印打包格式的MXFP4x4x2块调试信息。
+  line: 713-733
+  name: dump_packed_block_mxfp4x4x2
+- code:
+  - static void unpack_mxfp4_quants(uint8_t * qs, const block_mxfp4 * x, unsigned
+    int bi) {
+  - '    static const int qk = QK_MXFP4;'
+  - '    for (unsigned int i = 0; i < qk / 2; ++i) {'
+  - '        const uint8_t x0         = (x->qs[i] & 0x0F);'
+  - '        const uint8_t x1         = (x->qs[i] >> 4);'
+  - '        qs[bi * qk + i + 0]      = x0;'
+  - '        qs[bi * qk + i + qk / 2] = x1;'
+  - '    }'
+  - '}'
+  desc: 将MXFP4块的量化数据解包到临时缓冲区。
+  line: 735-742
+  name: unpack_mxfp4_quants
+- code:
+  - static void pack_mxfp4_quants(block_mxfp4 * x, const uint8_t * qs, unsigned int
+    bi) {
+  - '    static const int qk = QK4_0;'
+  - '    for (unsigned int i = 0; i < qk / 2; ++i) {'
+  - '        const uint8_t x0 = qs[bi * qk + i + 0];'
+  - '        const uint8_t x1 = qs[bi * qk + i + qk / 2];'
+  - '        x->qs[i]         = x0 | (x1 << 4);'
+  - '    }'
+  - '}'
+  desc: 将临时缓冲区的量化数据打包回MXFP4块。
+  line: 744-751
+  name: pack_mxfp4_quants
+- code:
+  - static void repack_row_mxfp4x4x2(uint8_t * y, const block_mxfp4 * x, int64_t k)
+    {
+  - '    static const int qk = QK_MXFP4x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    const int        nloe = k % qk;'
+  - '    const int eblk_size = 8 * 1;'
+  - '    const int qblk_size = qk / 2;'
+  - '    const int qrow_size = k / 2;'
+  - '    uint8_t * y_q = y + 0;'
+  - '    uint8_t * y_e = y + qrow_size;'
+  - '    if (opt_verbose > 2) {'
+  - '        for (int i = 0; i < nb; i++) {'
+  - '            dump_block_mxfp4(&x[i * 8 + 0], 0);'
+  - '            dump_block_mxfp4(&x[i * 8 + 1], 1);'
+  - '            dump_block_mxfp4(&x[i * 8 + 2], 2);'
+  - '            dump_block_mxfp4(&x[i * 8 + 3], 3);'
+  - '            dump_block_mxfp4(&x[i * 8 + 4], 4);'
+  - '            dump_block_mxfp4(&x[i * 8 + 5], 5);'
+  - '            dump_block_mxfp4(&x[i * 8 + 6], 6);'
+  - '            dump_block_mxfp4(&x[i * 8 + 7], 7);'
+  - '        }'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        uint8_t qs[QK_MXFP4x4x2];'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 0], 0);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 1], 1);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 2], 2);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 3], 3);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 4], 4);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 5], 5);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 6], 6);'
+  - '        unpack_mxfp4_quants(qs, &x[i * 8 + 7], 7);'
+  - '        bool partial = (nloe && i == nb-1);'
+  - '        uint8_t * q = y_q + (i * qblk_size);'
+  - '        for (int j = 0; j < qk / 2; j++) {'
+  - '            q[j] = partial ? (qs[j*2+1] << 4) | qs[j*2+0] : (qs[j+128] << 4)
+    | qs[j+000];'
+  - '        }'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        uint8_t * e = (uint8_t *) (y_e + i * eblk_size);'
+  - '        e[0]        = x[i * 8 + 0].e;'
+  - '        e[1]        = x[i * 8 + 1].e;'
+  - '        e[2]        = x[i * 8 + 2].e;'
+  - '        e[3]        = x[i * 8 + 3].e;'
+  - '        e[4]        = x[i * 8 + 4].e;'
+  - '        e[5]        = x[i * 8 + 5].e;'
+  - '        e[6]        = x[i * 8 + 6].e;'
+  - '        e[7]        = x[i * 8 + 7].e;'
+  - '    }'
+  - '    if (opt_verbose > 2) {'
+  - '        for (int i = 0; i < nb; i++) {'
+  - '            dump_packed_block_mxfp4x4x2(y, i, k);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将一行MXFP4块转换为MXFP4x4x2格式。
+  line: 753-812
+  name: repack_row_mxfp4x4x2
+- code:
+  - static void unpack_row_mxfp4x4x2(block_mxfp4 * x, const uint8_t * y, int64_t k)
+    {
+  - '    static const int qk = QK_MXFP4x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    const int        nloe = k % qk;'
+  - '    const int eblk_size = 8 * 1;'
+  - '    const int qblk_size = qk / 2;'
+  - '    const int qrow_size = k / 2;'
+  - '    const uint8_t * y_q = y + 0;'
+  - '    const uint8_t * y_e = y + qrow_size;'
+  - '    if (opt_verbose > 2) {'
+  - '        for (int i = 0; i < nb; i++) {'
+  - '            dump_packed_block_mxfp4x4x2(y, i, k);'
+  - '        }'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        uint8_t qs[QK_MXFP4x4x2];'
+  - '        bool partial = (nloe && i == nb-1);'
+  - '        const uint8_t * q = y_q + (i * qblk_size);'
+  - '        for (int j = 0; j < qk / 2; j++) {'
+  - '            if (partial) {'
+  - '                qs[j*2+0] = q[j] & 0xf;'
+  - '                qs[j*2+1] = q[j] >> 4;'
+  - '            } else {'
+  - '                qs[j+000] = q[j] & 0xf;'
+  - '                qs[j+128] = q[j] >> 4;'
+  - '            }'
+  - '        }'
+  - '        pack_mxfp4_quants(&x[i * 8 + 0], qs, 0);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 1], qs, 1);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 2], qs, 2);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 3], qs, 3);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 4], qs, 4);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 5], qs, 5);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 6], qs, 6);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 7], qs, 7);'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        const uint8_t * e = (const uint8_t *) (y_e + i * eblk_size);'
+  - '        x[i * 8 + 0].e    = e[0];'
+  - '        x[i * 8 + 1].e    = e[1];'
+  - '        x[i * 8 + 2].e    = e[2];'
+  - '        x[i * 8 + 3].e    = e[3];'
+  - '        x[i * 8 + 4].e    = e[4];'
+  - '        x[i * 8 + 5].e    = e[5];'
+  - '        x[i * 8 + 6].e    = e[6];'
+  - '        x[i * 8 + 7].e    = e[7];'
+  - '    }'
+  - '    if (opt_verbose > 2) {'
+  - '        for (int i = 0; i < nb; i++) {'
+  - '            dump_block_mxfp4(&x[i * 8 + 0], 0);'
+  - '            dump_block_mxfp4(&x[i * 8 + 1], 1);'
+  - '            dump_block_mxfp4(&x[i * 8 + 2], 2);'
+  - '            dump_block_mxfp4(&x[i * 8 + 3], 3);'
+  - '            dump_block_mxfp4(&x[i * 8 + 4], 4);'
+  - '            dump_block_mxfp4(&x[i * 8 + 5], 5);'
+  - '            dump_block_mxfp4(&x[i * 8 + 6], 6);'
+  - '            dump_block_mxfp4(&x[i * 8 + 7], 7);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将一行MXFP4x4x2格式转换为MXFP4块。
+  line: 814-880
+  name: unpack_row_mxfp4x4x2
+- code:
+  - static void init_row_mxfp4x4x2(block_mxfp4 * x, int64_t k) {
+  - '    static const int qk = QK_MXFP4x4x2;'
+  - '    const int        nb = (k + qk - 1) / qk;'
+  - '    uint8_t qs[QK_MXFP4x4x2];'
+  - '    memset(qs, 0, sizeof(qs));'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        pack_mxfp4_quants(&x[i * 8 + 0], qs, 0);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 1], qs, 1);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 2], qs, 2);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 3], qs, 3);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 4], qs, 4);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 5], qs, 5);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 6], qs, 6);'
+  - '        pack_mxfp4_quants(&x[i * 8 + 7], qs, 7);'
+  - '    }'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        x[i * 8 + 0].e = 0;'
+  - '        x[i * 8 + 1].e = 0;'
+  - '        x[i * 8 + 2].e = 0;'
+  - '        x[i * 8 + 3].e = 0;'
+  - '        x[i * 8 + 4].e = 0;'
+  - '        x[i * 8 + 5].e = 0;'
+  - '        x[i * 8 + 6].e = 0;'
+  - '        x[i * 8 + 7].e = 0;'
+  - '    }'
+  - '}'
+  desc: 初始化一行MXFP4x4x2块为零。
+  line: 882-901
+  name: init_row_mxfp4x4x2
+- code:
+  - static void repack_mxfp4_mxfp4x4x2(ggml_tensor * t, const void * data, size_t
+    size) {
+  - '    int64_t nrows = ggml_nrows(t);'
+  - '    size_t row_size    = ggml_row_size(t->type, t->ne[0]);'
+  - '    size_t row_size_pd = ggml_row_size(t->type, hex_round_up(t->ne[0], QK_MXFP4x4x2));'
+  - '    size_t row_size_rp = row_size * 2;'
+  - '    const size_t total_tensor_size = (size_t)nrows * row_size;'
+  - '    const size_t n_bytes_to_copy = size < total_tensor_size ? size : total_tensor_size;'
+  - '    const int64_t n_full_rows = n_bytes_to_copy / row_size;'
+  - '    const size_t  n_rem_bytes = n_bytes_to_copy % row_size;'
+  - '    void * buf_pd = ggml_aligned_malloc(row_size_pd);'
+  - '    GGML_ASSERT(buf_pd != NULL);'
+  - '    void * buf_rp = ggml_aligned_malloc(row_size_rp);'
+  - '    GGML_ASSERT(buf_rp != NULL);'
+  - '    HEX_VERBOSE("ggml-hex: repack-mxfp4-mxfp4x4x2 %s : data %p size %zu dims
+    %ldx%ld row-size %zu\n", t->name, data,'
+  - '                size, t->ne[0], nrows, row_size);'
+  - '    init_row_mxfp4x4x2((block_mxfp4 *) buf_pd, t->ne[0]);'
+  - '    for (int64_t i = 0; i < n_full_rows; i++) {'
+  - '        const uint8_t * src = (const uint8_t *) data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) t->data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        repack_row_mxfp4x4x2((uint8_t *) buf_rp, (const block_mxfp4 *) buf_pd,
+    t->ne[0]);'
+  - '        memcpy(dst, buf_rp, row_size);'
+  - '    }'
+  - '    if (n_rem_bytes > 0) {'
+  - '        const int64_t i = n_full_rows;'
+  - '        const uint8_t * src = (const uint8_t *) data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) t->data + (i * row_size);'
+  - '        init_row_mxfp4x4x2((block_mxfp4 *) buf_pd, t->ne[0]);'
+  - '        memcpy(buf_pd, src, n_rem_bytes);'
+  - '        repack_row_mxfp4x4x2((uint8_t *) buf_rp, (const block_mxfp4 *) buf_pd,
+    t->ne[0]);'
+  - '        memcpy(dst, buf_rp, n_rem_bytes);'
+  - '    }'
+  - '    ggml_aligned_free(buf_pd, row_size_pd);'
+  - '    ggml_aligned_free(buf_rp, row_size_rp);'
+  - '}'
+  desc: 将MXFP4数据重打包为MXFP4x4x2张量格式。
+  line: 903-935
+  name: repack_mxfp4_mxfp4x4x2
+- code:
+  - static void repack_mxfp4x4x2_mxfp4(void * data, const ggml_tensor * t, size_t
+    size) {
+  - '    int64_t nrows = ggml_nrows(t);'
+  - '    size_t row_size    = ggml_row_size(t->type, t->ne[0]);'
+  - '    size_t row_size_pd = ggml_row_size(t->type, hex_round_up(t->ne[0], QK_MXFP4x4x2));'
+  - '    size_t row_size_rp = row_size * 2;'
+  - '    const size_t total_tensor_size = (size_t)nrows * row_size;'
+  - '    const size_t n_bytes_to_copy = size < total_tensor_size ? size : total_tensor_size;'
+  - '    const int64_t n_full_rows = n_bytes_to_copy / row_size;'
+  - '    const size_t  n_rem_bytes = n_bytes_to_copy % row_size;'
+  - '    void * buf_pd = ggml_aligned_malloc(row_size_pd);'
+  - '    GGML_ASSERT(buf_pd != NULL);'
+  - '    void * buf_rp = ggml_aligned_malloc(row_size_rp);'
+  - '    GGML_ASSERT(buf_rp != NULL);'
+  - '    HEX_VERBOSE("ggml-hex: repack-mxfp4x4x2-mxfp4 %s : data %p size %zu dims
+    %ldx%ld row-size %zu\n", t->name, data,'
+  - '                size, t->ne[0], nrows, row_size);'
+  - '    memset(buf_pd, 0, row_size_pd);'
+  - '    for (int64_t i = 0; i < n_full_rows; i++) {'
+  - '        const uint8_t * src = (const uint8_t *) t->data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        unpack_row_mxfp4x4x2((block_mxfp4 *) buf_rp, (const uint8_t *) buf_pd,
+    t->ne[0]);'
+  - '        memcpy(dst, buf_rp, row_size);'
+  - '    }'
+  - '    if (n_rem_bytes > 0) {'
+  - '        const int64_t i = n_full_rows;'
+  - '        const uint8_t * src = (const uint8_t *) t->data + (i * row_size);'
+  - '        uint8_t *       dst = (uint8_t *) data + (i * row_size);'
+  - '        memcpy(buf_pd, src, row_size);'
+  - '        unpack_row_mxfp4x4x2((block_mxfp4 *) buf_rp, (const uint8_t *) buf_pd,
+    t->ne[0]);'
+  - '        memcpy(dst, buf_rp, n_rem_bytes);'
+  - '    }'
+  - '    ggml_aligned_free(buf_pd, row_size_pd);'
+  - '    ggml_aligned_free(buf_rp, row_size_rp);'
+  - '}'
+  desc: 将MXFP4x4x2张量格式转换回MXFP4数据。
+  line: 937-964
+  name: repack_mxfp4x4x2_mxfp4
+- code:
+  - static void ggml_backend_hexagon_buffer_set_tensor(ggml_backend_buffer_t buffer,
+  - '                                                   ggml_tensor *         tensor,'
+  - '                                                   const void *          data,'
+  - '                                                   size_t                offset,'
+  - '                                                   size_t                size)
+    {'
+  - '    auto ctx  = (ggml_backend_hexagon_buffer_context *) buffer->context;'
+  - '    auto sess = ctx->sess;'
+  - '    HEX_VERBOSE("ggml-hex: %s set-tensor %s : data %p offset %zu size %zu\n",
+    sess->name.c_str(), tensor->name, data,'
+  - '                offset, size);'
+  - '    switch (tensor->type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q4_0_q4x4x2(tensor, data, size);'
+  - '            break;'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q8_0_q8x4x2(tensor, data, size);'
+  - '            break;'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q4_0_q4x4x2(tensor, data, size);'
+  - '            break;'
+  - '        case GGML_TYPE_MXFP4:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_mxfp4_mxfp4x4x2(tensor, data, size);'
+  - '            break;'
+  - '        default:'
+  - '            memcpy((char *) tensor->data + offset, data, size);'
+  - '            break;'
+  - '    }'
+  - '}'
+  desc: 将数据设置到张量缓冲区，根据张量类型自动转换格式。
+  line: 966-993
+  name: ggml_backend_hexagon_buffer_set_tensor
+- code:
+  - static void ggml_backend_hexagon_buffer_get_tensor(ggml_backend_buffer_t buffer,
+  - '                                                   const ggml_tensor *   tensor,'
+  - '                                                   void *                data,'
+  - '                                                   size_t                offset,'
+  - '                                                   size_t                size)
+    {'
+  - '    auto ctx  = (ggml_backend_hexagon_buffer_context *) buffer->context;'
+  - '    auto sess = ctx->sess;'
+  - '    HEX_VERBOSE("ggml-hex: %s get-tensor %s : data %p offset %zu size %zu\n",
+    sess->name.c_str(), tensor->name, data,'
+  - '                offset, size);'
+  - '    switch (tensor->type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q4x4x2_q4_0(data, tensor, size);'
+  - '            break;'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q8x4x2_q8_0(data, tensor, size);'
+  - '            break;'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_q4x4x2_q4_0(data, tensor, size);'
+  - '            break;'
+  - '        case GGML_TYPE_MXFP4:'
+  - '            GGML_ASSERT(offset == 0);'
+  - '            GGML_ASSERT(offset + size <= ggml_nbytes(tensor));'
+  - '            repack_mxfp4x4x2_mxfp4(data, tensor, size);'
+  - '            break;'
+  - '        default:'
+  - '            memcpy(data, (const char *) tensor->data + offset, size);'
+  - '            break;'
+  - '    }'
+  - '}'
+  desc: 从张量缓冲区获取数据，根据张量类型自动转换回标准格式。
+  line: 995-1022
+  name: ggml_backend_hexagon_buffer_get_tensor
+- code:
+  - static bool ggml_backend_hexagon_buffer_cpy_tensor(ggml_backend_buffer_t      buffer,
+  - '                                                   const struct ggml_tensor *
+    src,'
+  - '                                                   struct ggml_tensor *       dst)
+    {'
+  - '    GGML_UNUSED(buffer);'
+  - '    GGML_UNUSED(src);'
+  - '    GGML_UNUSED(dst);'
+  - '    return false;'
+  - '}'
+  desc: 复制张量，目前总是返回false以使用慢速路径。
+  line: 1023-1028
+  name: ggml_backend_hexagon_buffer_cpy_tensor
+- code:
+  - static void ggml_backend_hexagon_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    auto ctx  = (ggml_backend_hexagon_buffer_context *) buffer->context;'
+  - '    auto sess = ctx->sess;'
+  - '    HEX_VERBOSE("ggml-hex: %s clear-buff base %p size %zu\n", sess->name.c_str(),
+    (void *) ctx->base, ctx->size);'
+  - '    memset(ctx->base, value, ctx->size);'
+  - '}'
+  desc: 用指定值清空缓冲区。
+  line: 1030-1034
+  name: ggml_backend_hexagon_buffer_clear
+- code:
+  - static const char * ggml_backend_hexagon_buffer_type_name(ggml_backend_buffer_type_t
+    buffer_type) {
+  - '    return static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer_type->context)->name.c_str();'
+  - '}'
+  desc: 返回缓冲区类型名称。
+  line: 1038-1040
+  name: ggml_backend_hexagon_buffer_type_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_hexagon_buffer_type_alloc_buffer(
+  - '            ggml_backend_buffer_type_t buffer_type, size_t size) {'
+  - '    auto sess = static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer_type->context)->sess;'
+  - '    try {'
+  - '        ggml_backend_hexagon_buffer_context * ctx = new ggml_backend_hexagon_buffer_context(sess,
+    size, false);'
+  - '        return ggml_backend_buffer_init(buffer_type, ggml_backend_hexagon_buffer_interface,
+    ctx, size);'
+  - '    } catch (const std::exception & exc) {'
+  - '        GGML_LOG_ERROR("ggml-hex: %s failed to allocate buffer context: %s\n",
+    sess->name.c_str(), exc.what());'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: 分配标准缓冲区。
+  line: 1042-1050
+  name: ggml_backend_hexagon_buffer_type_alloc_buffer
+- code:
+  - static ggml_backend_buffer_t ggml_backend_hexagon_repack_buffer_type_alloc_buffer(
+  - '            ggml_backend_buffer_type_t buffer_type, size_t size) {'
+  - '    auto sess = static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer_type->context)->sess;'
+  - '    try {'
+  - '        ggml_backend_hexagon_buffer_context * ctx = new ggml_backend_hexagon_buffer_context(sess,
+    size, true);'
+  - '        return ggml_backend_buffer_init(buffer_type, ggml_backend_hexagon_buffer_interface,
+    ctx, size);'
+  - '    } catch (const std::exception & exc) {'
+  - '        GGML_LOG_ERROR("ggml-hex: %s failed to allocate buffer context: %s\n",
+    sess->name.c_str(), exc.what());'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: 分配带重打包功能的缓冲区。
+  line: 1052-1060
+  name: ggml_backend_hexagon_repack_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_hexagon_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buffer_type) {
+  - '    return 128;'
+  - '    GGML_UNUSED(buffer_type);'
+  - '}'
+  desc: 返回缓冲区对齐要求。
+  line: 1062-1065
+  name: ggml_backend_hexagon_buffer_type_get_alignment
+- code:
+  - static size_t ggml_backend_hexagon_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const struct ggml_tensor * t) {
+  - '    return ggml_nbytes(t);'
+  - '}'
+  desc: 返回张量所需分配大小。
+  line: 1067-1069
+  name: ggml_backend_hexagon_buffer_type_get_alloc_size
+- code:
+  - static size_t ggml_backend_hexagon_buffer_type_get_max_size(ggml_backend_buffer_type_t
+    buffer_type) {
+  - '    return 1 * 1024 * 1024 * 1024;'
+  - '    GGML_UNUSED(buffer_type);'
+  - '}'
+  desc: 返回缓冲区最大大小限制。
+  line: 1071-1074
+  name: ggml_backend_hexagon_buffer_type_get_max_size
+- code:
+  - static bool ggml_backend_hexagon_buffer_type_is_host(ggml_backend_buffer_type_t
+    buft) {
+  - '    return opt_hostbuf;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 判断缓冲区是否为宿主内存。
+  line: 1076-1079
+  name: ggml_backend_hexagon_buffer_type_is_host
+- code:
+  - static bool ggml_backend_hexagon_repack_buffer_type_is_host(ggml_backend_buffer_type_t
+    buft) {
+  - '    return false;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 判断重打包缓冲区是否为宿主内存。
+  line: 1081-1084
+  name: ggml_backend_hexagon_repack_buffer_type_is_host
+- code:
+  - static ggml_backend_buffer_i ggml_backend_hexagon_buffer_interface = {
+  - '    /* .free_buffer     = */ ggml_backend_hexagon_buffer_free_buffer,'
+  - '    /* .get_base        = */ ggml_backend_hexagon_buffer_get_base,'
+  - '    /* .init_tensor     = */ ggml_backend_hexagon_buffer_init_tensor,'
+  - '    /* .memset_tensor   = */ NULL,'
+  - '    /* .set_tensor      = */ ggml_backend_hexagon_buffer_set_tensor,'
+  - '    /* .get_tensor      = */ ggml_backend_hexagon_buffer_get_tensor,'
+  - '    /* .cpy_tensor      = */ ggml_backend_hexagon_buffer_cpy_tensor,'
+  - '    /* .clear           = */ ggml_backend_hexagon_buffer_clear,'
+  - '    /* .reset           = */ NULL,'
+  - '};'
+  - static ggml_backend_buffer_type_i ggml_backend_hexagon_buffer_type_interface =
+    {
+  - '    /* .get_name         = */ ggml_backend_hexagon_buffer_type_name,'
+  - '    /* .alloc_buffer     = */ ggml_backend_hexagon_buffer_type_alloc_buffer,'
+  - '    /* .get_alignment    = */ ggml_backend_hexagon_buffer_type_get_alignment,'
+  - '    /* .get_max_size     = */ ggml_backend_hexagon_buffer_type_get_max_size,'
+  - '    /* .get_alloc_size   = */ ggml_backend_hexagon_buffer_type_get_alloc_size,'
+  - '    /* .is_host          = */ ggml_backend_hexagon_buffer_type_is_host,'
+  - '};'
+  - static ggml_backend_buffer_type_i ggml_backend_hexagon_repack_buffer_type_interface
+    = {
+  - '    /* .get_name         = */ ggml_backend_hexagon_buffer_type_name,'
+  - '    /* .alloc_buffer     = */ ggml_backend_hexagon_repack_buffer_type_alloc_buffer,'
+  - '    /* .get_alignment    = */ ggml_backend_hexagon_buffer_type_get_alignment,'
+  - '    /* .get_max_size     = */ ggml_backend_hexagon_buffer_type_get_max_size,'
+  - '    /* .get_alloc_size   = */ ggml_backend_hexagon_buffer_type_get_alloc_size,'
+  - '    /* .is_host          = */ ggml_backend_hexagon_repack_buffer_type_is_host,'
+  - '};'
+  desc: 定义缓冲区接口和缓冲区类型接口的全局变量初始化代码。
+  line: 1036-1090
+  name: __main__
+- code:
+  - static bool ggml_backend_buffer_is_hexagon(const struct ggml_backend_buffer *
+    b) {
+  - '    return b->buft->iface.get_alignment == ggml_backend_hexagon_buffer_type_get_alignment;'
+  - '}'
+  desc: 检查给定的后端缓冲区是否为 Hexagon 缓冲区（通过比较对齐函数指针）。
+  line: 1810-1812
+  name: ggml_backend_buffer_is_hexagon
+- code:
+  - static inline bool ggml_backend_buffer_is_hexagon_repack(const struct ggml_backend_buffer
+    * b) {
+  - '    if (!opt_hostbuf) {'
+  - '        return ggml_backend_buffer_is_hexagon(b);'
+  - '    }'
+  - '    return b->buft->iface.alloc_buffer == ggml_backend_hexagon_repack_buffer_type_alloc_buffer;'
+  - '}'
+  desc: 检查缓冲区是否为 Hexagon 的 repack 类型缓冲区。
+  line: 1814-1819
+  name: ggml_backend_buffer_is_hexagon_repack
+- code:
+  - static bool ggml_hexagon_supported_flash_attn_ext(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * src2 = op->src[2];'
+  - '    const struct ggml_tensor * src3 = op->src[3];'
+  - '    const struct ggml_tensor * src4 = op->src[4];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if ((src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_F32) || src1->type
+    != GGML_TYPE_F16 || src2->type != GGML_TYPE_F16) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src3 && src3->type != GGML_TYPE_F16) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src4 && src4->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32 && dst->type != GGML_TYPE_F16) {'
+  - '        return false;'
+  - '    }'
+  - '    return opt_experimental;'
+  - '}'
+  desc: 检查 Flash Attention Ext 操作的输入输出类型是否受 Hexagon 后端支持。
+  line: 1821-1850
+  name: ggml_hexagon_supported_flash_attn_ext
+- code:
+  - static bool ggml_hexagon_supported_mul_mat(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * dst) {
+  - '    const struct ggml_tensor * src0 = dst->src[0];'
+  - '    const struct ggml_tensor * src1 = dst->src[1];'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->type != GGML_TYPE_F32 && src1->type != GGML_TYPE_F16) {'
+  - '        return false;'
+  - '    }'
+  - '    switch (src0->type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '        case GGML_TYPE_MXFP4:'
+  - '            if (src0->ne[0] % 32) {'
+  - '                return false;'
+  - '            }'
+  - '            if (ggml_nrows(src0) > 16 * 1024) {'
+  - '                return false;'
+  - '            }'
+  - '            if (ggml_nrows(src1) > 1024 || src1->ne[2] != 1 || src1->ne[3] !=
+    1) {'
+  - '                return false;'
+  - '            }'
+  - '            if (src0->buffer && !ggml_backend_buffer_is_hexagon_repack(src0->buffer))
+    {'
+  - '                return false;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_TYPE_F16:'
+  - '            if (src0->nb[1] < src0->nb[0]) {'
+  - '                GGML_LOG_DEBUG("ggml_hexagon_supported_mul_mat: permuted F16
+    src0 not supported\n");'
+  - '                return false;'
+  - '            }'
+  - '            if (ggml_nrows(src1) > 1024) {'
+  - '                return false;'
+  - '            }'
+  - '            break;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查矩阵乘法操作的源和目标张量是否满足 Hexagon 后端的支持条件（类型、形状和缓冲区类型）。
+  line: 1852-1892
+  name: ggml_hexagon_supported_mul_mat
+- code:
+  - static bool ggml_hexagon_supported_mul_mat_id(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * src2 = op->src[2];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 || src2->type
+    != GGML_TYPE_I32) {'
+  - '        return false;'
+  - '    }'
+  - '    switch (src0->type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '        case GGML_TYPE_MXFP4:'
+  - '            if ((src0->ne[0] % 32)) {'
+  - '                return false;'
+  - '            }'
+  - '            if (src0->buffer && !ggml_backend_buffer_is_hexagon_repack(src0->buffer))
+    {'
+  - '                return false;'
+  - '            }'
+  - '            break;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查带 ID 的矩阵乘法（多专家）操作的源张量类型是否受支持。
+  line: 1894-1917
+  name: ggml_hexagon_supported_mul_mat_id
+- code:
+  - static bool ggml_hexagon_supported_binary(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type == GGML_TYPE_F32) {'
+  - '        if (src1->type != GGML_TYPE_F32) {'
+  - '            return false;'
+  - '        }'
+  - '        if (dst->type != GGML_TYPE_F32) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    else if (src0->type == GGML_TYPE_F16) {'
+  - '        if (src1->type != GGML_TYPE_F16) {'
+  - '            return false;'
+  - '        }'
+  - '        if (dst->type != GGML_TYPE_F16) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    else {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_are_same_shape(src0, dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_can_repeat(src1, src0) || ggml_is_permuted(src1)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查二元操作（如加、减、乘、除）的源和目标张量类型及形状是否受支持。
+  line: 1919-1951
+  name: ggml_hexagon_supported_binary
+- code:
+  - static bool ggml_hexagon_supported_add_id(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_are_same_shape(src0, dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst))
+    {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 ADD_ID 操作（MoE 中的 Expert 激活相加）是否受支持。
+  line: 1953-1975
+  name: ggml_hexagon_supported_add_id
+- code:
+  - static bool ggml_hexagon_supported_unary(const struct ggml_hexagon_session * sess,
+    const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_are_same_shape(src0, dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查一元操作（如归一化）的输入输出类型与连续性是否受支持。
+  line: 1977-1992
+  name: ggml_hexagon_supported_unary
+- code:
+  - static bool ggml_hexagon_supported_sum_rows(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查按行求和操作的张量类型与连续性是否受支持。
+  line: 1994-2007
+  name: ggml_hexagon_supported_sum_rows
+- code:
+  - static bool ggml_hexagon_supported_activations(const struct ggml_hexagon_session
+    * sess,
+  - '                                               const struct ggml_tensor *          op)
+    {'
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1) {'
+  - '        if (src1->type != GGML_TYPE_F32) {'
+  - '            return false;'
+  - '        }'
+  - '        if (!ggml_are_same_shape(src0, src1)) {'
+  - '            return false;'
+  - '        }'
+  - '        if (!ggml_is_contiguous(src1)) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查激活函数操作的输入输出类型、形状和连续性是否受支持。
+  line: 2009-2033
+  name: ggml_hexagon_supported_activations
+- code:
+  - static bool ggml_hexagon_supported_softmax(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * src2 = op->src[2];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src2) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1) {'
+  - '        if (src1->type != GGML_TYPE_F32 && src1->type != GGML_TYPE_F16) {'
+  - '            return false;'
+  - '        }'
+  - '        if (src0->ne[0] != src1->ne[0]) {'
+  - '            return false;'
+  - '        }'
+  - '        if (src1->ne[1] < src0->ne[1]) {'
+  - '            return false;'
+  - '        }'
+  - '        if (src0->ne[2] % src1->ne[2] != 0) {'
+  - '            return false;'
+  - '        }'
+  - '        if (src0->ne[3] % src1->ne[3] != 0) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    if (src1) {'
+  - '        if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst))
+    {'
+  - '            return false;'
+  - '        }'
+  - '    } else {'
+  - '        if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst)) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 Softmax 操作（包括掩码和缩放）的输入输出类型、形状和大小的支持情况。
+  line: 2035-2075
+  name: ggml_hexagon_supported_softmax
+- code:
+  - static bool ggml_hexagon_supported_set_rows(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->type != GGML_TYPE_I32 && src1->type != GGML_TYPE_I64) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F16) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 SetRows 操作（使用索引将值写入目标）的源和目标张量类型是否受支持。
+  line: 2077-2094
+  name: ggml_hexagon_supported_set_rows
+- code:
+  - static bool ggml_hexagon_supported_get_rows(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->type != GGML_TYPE_I32 && src1->type != GGML_TYPE_I64) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 GetRows 操作（使用索引从源张量中提取行）的类型是否受支持。
+  line: 2096-2113
+  name: ggml_hexagon_supported_get_rows
+- code:
+  - static bool ggml_hexagon_supported_argsort(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_I32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src0->ne[0] > (16*1024)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 Argsort 操作（按行排序并返回索引）的输入输出类型和行大小限制。
+  line: 2115-2131
+  name: ggml_hexagon_supported_argsort
+- code:
+  - static bool ggml_hexagon_supported_rope(const struct ggml_hexagon_session * sess,
+    const struct ggml_tensor * op) {
+  - '    const int32_t * op_params = &op->op_params[0];'
+  - '    int mode = op_params[2];'
+  - '    if ((mode & GGML_ROPE_TYPE_MROPE) || (mode & GGML_ROPE_TYPE_VISION)) {'
+  - '        return false;'
+  - '    }'
+  - '    if (mode & 1) {'
+  - '        return false;'
+  - '    }'
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * src2 = op->src[2];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->type != GGML_TYPE_I32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src2) {'
+  - '        if (src2->type != GGML_TYPE_F32) {'
+  - '            return false;'
+  - '        }'
+  - '        int n_dims = op_params[1];'
+  - '        if (src2->ne[0] < (n_dims / 2)) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    if (src2) {'
+  - '        if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(src2)
+    ||'
+  - '            !ggml_is_contiguous(dst)) {'
+  - '            return false;'
+  - '        }'
+  - '    } else {'
+  - '        if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst))
+    {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查旋转位置编码（RoPE）操作的参数和输入输出类型是否受支持。
+  line: 2133-2176
+  name: ggml_hexagon_supported_rope
+- code:
+  - static bool ggml_hexagon_supported_ssm_conv(const struct ggml_hexagon_session
+    * sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * src1 = op->src[1];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type
+    != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src0->ne[3] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1 || dst->ne[3]
+    != 1) {'
+  - '        return false;'
+  - '    }'
+  - '    const int d_conv = src1->ne[0];'
+  - '    const int d_inner = src0->ne[1];'
+  - '    const int n_t = dst->ne[1];'
+  - '    const int n_s = dst->ne[2];'
+  - '    if (src0->ne[0] != d_conv - 1 + n_t || src0->ne[1] != d_inner || src0->ne[2]
+    != n_s) {'
+  - '        return false;'
+  - '    }'
+  - '    if (src1->ne[0] != d_conv || src1->ne[1] != d_inner) {'
+  - '        return false;'
+  - '    }'
+  - '    if (dst->ne[0] != d_inner || dst->ne[1] != n_t || dst->ne[2] != n_s) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst))
+    {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 SSM 卷积操作的张量维度、类型和连续性是否受支持。
+  line: 2178-2212
+  name: ggml_hexagon_supported_ssm_conv
+- code:
+  - static bool ggml_hexagon_supported_cumsum(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst)) {'
+  - '        return false;'
+  - '    }'
+  - '    GGML_UNUSED(sess);'
+  - '    return true;'
+  - '}'
+  desc: 检查累积求和（cumsum）操作的输入输出类型和连续性是否受支持。
+  line: 2214-2226
+  name: ggml_hexagon_supported_cumsum
+- code:
+  - static void dspqbuf_dump(dspqueue_buffer * d, const struct ggml_tensor * t, dspqbuf_type
+    type) {
+  - '    if (opt_verbose < 2) return;'
+  - '    auto buf  = static_cast<ggml_backend_hexagon_buffer_context *>(t->buffer->context);'
+  - '    auto sess = buf->sess;'
+  - '    GGML_LOG_DEBUG("ggml-hex: %s dspqbuf : %s base-addr %p base-size %zu data
+    %p offset %u size %u\n", sess->name.c_str(),'
+  - '                t->name, (void *) buf->base, buf->size, (void *) d->ptr, (unsigned
+    int) d->offset,'
+  - '                (unsigned int) d->size);'
+  - '}'
+  desc: 调试辅助函数，当详细级别大于等于2时，打印 DSP 队列缓冲区的信息。
+  line: 2235-2242
+  name: dspqbuf_dump
+- code:
+  - static void htp_req_tensor_init(htp_tensor * h, const ggml_tensor * t) {
+  - '    h->data  = 0;'
+  - '    h->type  = t->type;'
+  - '    h->ne[0] = t->ne[0];'
+  - '    h->ne[1] = t->ne[1];'
+  - '    h->ne[2] = t->ne[2];'
+  - '    h->ne[3] = t->ne[3];'
+  - '    h->nb[0] = t->nb[0];'
+  - '    h->nb[1] = t->nb[1];'
+  - '    h->nb[2] = t->nb[2];'
+  - '    h->nb[3] = t->nb[3];'
+  - '}'
+  desc: 初始化 htp_tensor 结构体，从 GGML 张量复制类型和形状信息。
+  line: 2244-2256
+  name: htp_req_tensor_init
+- code:
+  - static size_t htp_req_buff_init(htp_tensor *h, dspqueue_buffer * d, const ggml_tensor
+    * t, dspqbuf_type type) {
+  - '    if (!t) {'
+  - '        return 0;'
+  - '    }'
+  - '    auto buf = static_cast<ggml_backend_hexagon_buffer_context *>(t->buffer->context);'
+  - '    memset(d, 0, sizeof(*d));'
+  - '    d->fd     = buf->fd;'
+  - '    d->ptr    = t->data;'
+  - '    d->offset = (uint8_t *) t->data - buf->base;'
+  - '    d->size   = ggml_nbytes(t);'
+  - '    if (!d->size) {'
+  - '        d->size = 64;'
+  - '    }'
+  - '    switch (type) {'
+  - '        case DSPQBUF_TYPE_DSP_WRITE_CPU_READ:'
+  - '            d->flags = DSPQUEUE_BUFFER_FLAG_FLUSH_SENDER;'
+  - '            break;'
+  - '        case DSPQBUF_TYPE_CPU_WRITE_DSP_READ:'
+  - '            d->flags = DSPQUEUE_BUFFER_FLAG_FLUSH_SENDER | DSPQUEUE_BUFFER_FLAG_INVALIDATE_RECIPIENT;'
+  - '            break;'
+  - '        default:'
+  - '            d->flags = 0;'
+  - '            break;'
+  - '    }'
+  - '    htp_req_tensor_init(h, t);'
+  - '    dspqbuf_dump(d, t, type);'
+  - '    return 1;'
+  - '}'
+  desc: 初始化 DSP 队列缓冲区，并设置缓存维护标志（如 Flush 和 Invalidate）。
+  line: 2258-2285
+  name: htp_req_buff_init
+- code:
+  - template <htp_req_init_func_t _init_req_func>
+  - static inline void ggml_hexagon_dispatch_op(ggml_hexagon_session *sess, const
+    struct ggml_tensor * op, uint32_t flags) {
+  - '    uint64_t t = ggml_time_us();'
+  - '    htp_general_req req;'
+  - '    memset(&req, 0, sizeof(req));'
+  - '    req.flags = flags;'
+  - '    if (!(opt_opmask & HTP_OPMASK_QUANTIZE)) {'
+  - '        req.flags |= HTP_OPFLAGS_SKIP_QUANTIZE;'
+  - '    }'
+  - '    if (!(opt_opmask & HTP_OPMASK_COMPUTE)) {'
+  - '        req.flags |= HTP_OPFLAGS_SKIP_COMPUTE;'
+  - '    }'
+  - '    ggml_hexagon_dump_op_exec(sess->name, op, req.flags);'
+  - '    if ((opt_opmask & HTP_OPMASK_QUEUE)) {'
+  - '        dspqueue_buffer bufs[HTP_MAX_PACKET_BUFFERS];'
+  - '        size_t n_bufs = _init_req_func(&req, bufs, op);'
+  - '        sess->enqueue(req, bufs, n_bufs, opt_opsync);'
+  - '    }'
+  - '    t = ggml_time_us() - t;'
+  - '    ggml_hexagon_dump_op_prof(sess->name, op, sess->prof_usecs, sess->prof_cycles,
+    sess->prof_pkts, t);'
+  - '}'
+  desc: 模板函数，用于构造和排队单个 HTP 操作请求，支持根据操作掩码跳过量化或计算。
+  line: 2301-2321
+  name: ggml_hexagon_dispatch_op
+- code:
+  - template <bool _is_src0_constant>
+  - static inline size_t init_binary_req(htp_general_req * req, dspqueue_buffer *
+    bufs, const ggml_tensor * t) {
+  - '    switch (t->op) {'
+  - '        case GGML_OP_MUL_MAT:'
+  - '            req->op = HTP_OP_MUL_MAT;'
+  - '            break;'
+  - '        case GGML_OP_MUL:'
+  - '            req->op = HTP_OP_MUL;'
+  - '            break;'
+  - '        case GGML_OP_ADD:'
+  - '            req->op = HTP_OP_ADD;'
+  - '            break;'
+  - '        case GGML_OP_SUB:'
+  - '            req->op = HTP_OP_SUB;'
+  - '            break;'
+  - '        case GGML_OP_DIV:'
+  - '            req->op = HTP_OP_DIV;'
+  - '            break;'
+  - '        default:'
+  - '            GGML_ABORT("ggml-hex: binary : unsupported op: %d\n", t->op);'
+  - '            break;'
+  - '    }'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], _is_src0_constant
+    ? DSPQBUF_TYPE_CONSTANT : DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化二元操作（如矩阵乘法和逐元素运算）的 HTP 请求。
+  line: 2323-2347
+  name: init_binary_req
+- code:
+  - static inline size_t init_cpy_req(htp_general_req * req, dspqueue_buffer * bufs,
+    const ggml_tensor * t) {
+  - '    req->op = HTP_OP_CPY;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化复制操作（CPY）的 HTP 请求。
+  line: 2349-2356
+  name: init_cpy_req
+- code:
+  - static inline size_t init_cont_req(htp_general_req * req, dspqueue_buffer * bufs,
+    const ggml_tensor * t) {
+  - '    req->op = HTP_OP_CPY;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化连续化（CONT）操作的 HTP 请求，本质上复用 CPY 操作。
+  line: 2358-2365
+  name: init_cont_req
+- code:
+  - static inline size_t init_repeat_req(htp_general_req * req, dspqueue_buffer *
+    bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_REPEAT;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化重复（REPEAT）操作的 HTP 请求。
+  line: 2367-2374
+  name: init_repeat_req
+- code:
+  - static inline size_t init_cumsum_req(htp_general_req * req, dspqueue_buffer *
+    bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_CUMSUM;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化累积求和（CUMSUM）操作的 HTP 请求。
+  line: 2376-2383
+  name: init_cumsum_req
+- code:
+  - static inline size_t init_get_rows_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_GET_ROWS;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化获得行（GET_ROWS）操作的 HTP 请求，包括源、索引和目标缓冲区。
+  line: 2385-2393
+  name: init_get_rows_req
+- code:
+  - static inline size_t init_argsort_req(htp_general_req * req, dspqueue_buffer *
+    bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_ARGSORT;'
+  - '    memcpy(&req->op_params, &t->op_params, sizeof(t->op_params));'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化 Argsort 操作的 HTP 请求，并复制操作参数。
+  line: 2395-2404
+  name: init_argsort_req
+- code:
+  - template <bool _is_src0_constant>
+  - static inline size_t init_binary_id_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    switch (t->op) {'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '            req->op = HTP_OP_MUL_MAT_ID;'
+  - '            break;'
+  - '        case GGML_OP_ADD_ID:'
+  - '            req->op = HTP_OP_ADD_ID;'
+  - '            break;'
+  - '        default:'
+  - '            GGML_ABORT("ggml-hex: unsupported op: %d\n", t->op);'
+  - '    }'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], _is_src0_constant
+    ? DSPQBUF_TYPE_CONSTANT : DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src2, &bufs[n_bufs], t->src[2], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化带 ID 的二元操作（如 MoE 的 MUL_MAT_ID 和 ADD_ID）的 HTP 请求。
+  line: 2406-2427
+  name: init_binary_id_req
+- code:
+  - static inline size_t init_set_rows_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_SET_ROWS;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化 SetRows 操作的 HTP 请求，包括源值、索引和目标缓冲区。
+  line: 2429-2437
+  name: init_set_rows_req
+- code:
+  - static inline size_t init_unary_req(htp_general_req * req, dspqueue_buffer * bufs,
+    const ggml_tensor * t) {
+  - '    memcpy(&req->op_params, &t->op_params, sizeof(t->op_params));'
+  - '    bool supported = false;'
+  - '    switch (t->op) {'
+  - '        case GGML_OP_RMS_NORM:'
+  - '            req->op   = HTP_OP_RMS_NORM;'
+  - '            supported = true;'
+  - '            break;'
+  - '        case GGML_OP_SCALE:'
+  - '            req->op   = HTP_OP_SCALE;'
+  - '            supported = true;'
+  - '            break;'
+  - '        case GGML_OP_SQR:'
+  - '            req->op   = HTP_OP_SQR;'
+  - '            supported = true;'
+  - '            break;'
+  - '        case GGML_OP_SQRT:'
+  - '            req->op   = HTP_OP_SQRT;'
+  - '            supported = true;'
+  - '            break;'
+  - '        case GGML_OP_UNARY:'
+  - '            switch (ggml_get_unary_op(t)) {'
+  - '            case GGML_UNARY_OP_SILU:'
+  - '                req->op   = HTP_OP_UNARY_SILU;'
+  - '                supported = true;'
+  - '                break;'
+  - '            case  GGML_UNARY_OP_GELU:'
+  - '                req->op   = HTP_OP_UNARY_GELU;'
+  - '                supported = true;'
+  - '                break;'
+  - '            case GGML_UNARY_OP_SIGMOID:'
+  - '                req->op   = HTP_OP_UNARY_SIGMOID;'
+  - '                supported = true;'
+  - '                break;'
+  - '            case GGML_UNARY_OP_NEG:'
+  - '                req->op   = HTP_OP_UNARY_NEG;'
+  - '                supported = true;'
+  - '                break;'
+  - '            case GGML_UNARY_OP_EXP:'
+  - '                req->op   = HTP_OP_UNARY_EXP;'
+  - '                supported = true;'
+  - '                break;'
+  - '            case GGML_UNARY_OP_SOFTPLUS:'
+  - '                req->op   = HTP_OP_UNARY_SOFTPLUS;'
+  - '                supported = true;'
+  - '                break;'
+  - '            default:'
+  - '                break;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_GLU:'
+  - '            if (ggml_get_glu_op(t) == GGML_GLU_OP_SWIGLU) {'
+  - '                req->op   = HTP_OP_GLU_SWIGLU;'
+  - '                supported = true;'
+  - '            } else if (ggml_get_glu_op(t) == GGML_GLU_OP_SWIGLU_OAI) {'
+  - '                req->op   = HTP_OP_GLU_SWIGLU_OAI;'
+  - '                supported = true;'
+  - '            } else if (ggml_get_glu_op(t) == GGML_GLU_OP_GEGLU) {'
+  - '                req->op   = HTP_OP_GLU_GEGLU;'
+  - '                supported = true;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_SOFT_MAX:'
+  - '            req->op   = HTP_OP_SOFTMAX;'
+  - '            supported = true;'
+  - '            break;'
+  - '        default:'
+  - '            break;'
+  - '    }'
+  - '    if (!supported) {'
+  - '        GGML_ABORT("ggml-hex: unary : unsupported op: %d\n", t->op);'
+  - '    }'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化一元操作（如 RMS_NORM、SCALE、各种激活函数）的 HTP 请求，并进行操作映射。
+  line: 2439-2507
+  name: init_unary_req
+- code:
+  - static inline size_t init_sum_rows_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    memcpy(&req->op_params, &t->op_params, sizeof(t->op_params));'
+  - '    req->op = HTP_OP_SUM_ROWS;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化按行求和（SUM_ROWS）操作的 HTP 请求。
+  line: 2509-2518
+  name: init_sum_rows_req
+- code:
+  - static inline size_t init_rope_req(htp_general_req * req, dspqueue_buffer * bufs,
+    const ggml_tensor * t) {
+  - '    memcpy(&req->op_params, &t->op_params, sizeof(t->op_params));'
+  - '    req->op = HTP_OP_ROPE;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src2, &bufs[n_bufs], t->src[2], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化 RoPE 操作的 HTP 请求，并复制操作参数。
+  line: 2520-2531
+  name: init_rope_req
+- code:
+  - static inline size_t init_flash_attn_ext_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    memcpy(&req->op_params, &t->op_params, sizeof(t->op_params));'
+  - '    req->op = HTP_OP_FLASH_ATTN_EXT;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src2, &bufs[n_bufs], t->src[2], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src3, &bufs[n_bufs], t->src[3], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src4, &bufs[n_bufs], t->src[4], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化 Flash Attention Ext 操作的 HTP 请求，处理最多 5 个源张量。
+  line: 2533-2547
+  name: init_flash_attn_ext_req
+- code:
+  - static inline size_t init_ssm_conv_req(htp_general_req * req, dspqueue_buffer
+    * bufs, const ggml_tensor * t) {
+  - '    req->op = HTP_OP_SSM_CONV;'
+  - '    size_t n_bufs = 0;'
+  - '    n_bufs += htp_req_buff_init(&req->src0, &bufs[n_bufs], t->src[0], DSPQBUF_TYPE_CPU_WRITE_DSP_READ);'
+  - '    n_bufs += htp_req_buff_init(&req->src1, &bufs[n_bufs], t->src[1], DSPQBUF_TYPE_CONSTANT);'
+  - '    n_bufs += htp_req_buff_init(&req->dst,  &bufs[n_bufs], t,         DSPQBUF_TYPE_DSP_WRITE_CPU_READ);'
+  - '    return n_bufs;'
+  - '}'
+  desc: 初始化 SSM 卷积操作的 HTP 请求，其中权重被视为常量。
+  line: 2549-2557
+  name: init_ssm_conv_req
+- code:
+  - static const char * ggml_backend_hexagon_name(ggml_backend_t backend) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(backend->context);'
+  - '    return sess->name.c_str();'
+  - '}'
+  desc: 返回后端会话的名称。
+  line: 2559-2563
+  name: ggml_backend_hexagon_name
+- code:
+  - static void ggml_backend_hexagon_free(ggml_backend_t backend) {
+  - '    delete backend;'
+  - '}'
+  desc: 释放后端对象（只删除 backend 结构，会话由注册表管理）。
+  line: 2565-2569
+  name: ggml_backend_hexagon_free
+- code:
+  - static inline int act_quant_family(enum ggml_type wtype) {
+  - '    switch (wtype) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '        case GGML_TYPE_MXFP4:'
+  - '            return 1;'
+  - '        default:'
+  - '            return 0;'
+  - '    }'
+  - '}'
+  desc: 将权重类型映射到激活量化家族 ID，用于优化量化激活复用。
+  line: 2579-2589
+  name: act_quant_family
+- code:
+  - static inline bool op_reuse_src1(const ggml_tensor * op1, const ggml_tensor *
+    op0) {
+  - '    return (op0 && op0->src[1] == op1->src[1] &&'
+  - '            act_quant_family(op0->src[0]->type) == act_quant_family(op1->src[0]->type)
+    &&'
+  - '            act_quant_family(op0->src[0]->type) != 0);'
+  - '}'
+  desc: 检查两个相邻操作是否可以复用第二个源的量化激活（当属于同一量化家族时）。
+  line: 2591-2595
+  name: op_reuse_src1
+- code:
+  - static inline bool is_compute_op(ggml_tensor *node)
+  - '{'
+  - '    return !ggml_op_is_empty(node->op) && !ggml_is_empty(node) && (node->flags
+    & GGML_TENSOR_FLAG_COMPUTE);'
+  - '}'
+  desc: 检查节点是否为需要执行的计算操作（非空操作且设置了计算标志）。
+  line: 2597-2600
+  name: is_compute_op
+- code:
+  - static inline int last_compute_op(ggml_cgraph * graph) {
+  - '    int last = 0;'
+  - '    for (int i = 0; i < graph->n_nodes; ++i) {'
+  - '        if (is_compute_op(graph->nodes[i])) {'
+  - '            last = i;'
+  - '        }'
+  - '    }'
+  - '    return last;'
+  - '}'
+  desc: 扫描计算图，返回最后一个计算操作的索引，用于请求提前唤醒优化。
+  line: 2602-2610
+  name: last_compute_op
+- code:
+  - static ggml_status ggml_backend_hexagon_graph_compute(ggml_backend_t backend,
+    ggml_cgraph * graph) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(backend->context);'
+  - '    HEX_VERBOSE("ggml-hex: %s graph-compute n_nodes %d\n", sess->name.c_str(),
+    graph->n_nodes);'
+  - '    const int last = last_compute_op(graph);'
+  - '    const struct ggml_tensor * prev_op = nullptr;'
+  - '    for (int i = 0; i < graph->n_nodes; ++i) {'
+  - '        ggml_tensor * node = graph->nodes[i];'
+  - '        if (!is_compute_op(node)) {'
+  - '            continue;'
+  - '        }'
+  - '        uint32_t flags = 0;'
+  - '        if (op_reuse_src1(node, prev_op)) {'
+  - '            flags |= HTP_OPFLAGS_SKIP_QUANTIZE;'
+  - '        }'
+  - '        prev_op = node;'
+  - '        if (i == last) {'
+  - '            flags |= HTP_OPFLAGS_EARLY_WAKEUP;'
+  - '        }'
+  - '        switch (node->op) {'
+  - '            case GGML_OP_MUL_MAT:'
+  - '                if (ggml_is_quantized(node->src[0]->type)) {'
+  - '                    ggml_hexagon_dispatch_op<init_binary_req<true>>(sess, node,
+    flags);'
+  - '                } else {'
+  - '                    ggml_hexagon_dispatch_op<init_binary_req<false>>(sess, node,
+    flags);'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_MUL_MAT_ID:'
+  - '                if (ggml_is_quantized(node->src[0]->type)) {'
+  - '                    ggml_hexagon_dispatch_op<init_binary_id_req<true>>(sess,
+    node, flags);'
+  - '                } else {'
+  - '                    ggml_hexagon_dispatch_op<init_binary_id_req<false>>(sess,
+    node, flags);'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_MUL:'
+  - '            case GGML_OP_ADD:'
+  - '            case GGML_OP_SUB:'
+  - '            case GGML_OP_DIV:'
+  - '                ggml_hexagon_dispatch_op<init_binary_req<false>>(sess, node,
+    flags);'
+  - '                break;'
+  - '            case GGML_OP_ADD_ID:'
+  - '                ggml_hexagon_dispatch_op<init_binary_id_req<false>>(sess, node,
+    flags);'
+  - '                break;'
+  - '            case GGML_OP_RMS_NORM:'
+  - '            case GGML_OP_SCALE:'
+  - '                ggml_hexagon_dispatch_op<init_unary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SQR:'
+  - '            case GGML_OP_SQRT:'
+  - '                ggml_hexagon_dispatch_op<init_unary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SUM_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_sum_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_UNARY:'
+  - '                switch (ggml_get_unary_op(node)) {'
+  - '                    case GGML_UNARY_OP_NEG:'
+  - '                    case GGML_UNARY_OP_EXP:'
+  - '                    case GGML_UNARY_OP_SIGMOID:'
+  - '                    case GGML_UNARY_OP_SOFTPLUS:'
+  - '                    case GGML_UNARY_OP_SILU:'
+  - '                    case GGML_UNARY_OP_GELU:'
+  - '                        ggml_hexagon_dispatch_op<init_unary_req>(sess, node,
+    flags);'
+  - '                        break;'
+  - '                    default:'
+  - '                        break;'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_GLU:'
+  - '                switch (ggml_get_glu_op(node)) {'
+  - '                    case GGML_GLU_OP_SWIGLU:'
+  - '                    case GGML_GLU_OP_SWIGLU_OAI:'
+  - '                    case GGML_GLU_OP_GEGLU:'
+  - '                        ggml_hexagon_dispatch_op<init_unary_req>(sess, node,
+    flags);'
+  - '                        break;'
+  - '                    default:'
+  - '                        break;'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_SOFT_MAX:'
+  - '                ggml_hexagon_dispatch_op<init_unary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_ROPE:'
+  - '                ggml_hexagon_dispatch_op<init_rope_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_FLASH_ATTN_EXT:'
+  - '                ggml_hexagon_dispatch_op<init_flash_attn_ext_req>(sess, node,
+    flags);'
+  - '                break;'
+  - '            case GGML_OP_SET_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_set_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_GET_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_get_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_CPY:'
+  - '                ggml_hexagon_dispatch_op<init_cpy_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_CONT:'
+  - '                ggml_hexagon_dispatch_op<init_cont_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_REPEAT:'
+  - '                ggml_hexagon_dispatch_op<init_repeat_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_ARGSORT:'
+  - '                ggml_hexagon_dis'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 计算图的主调度函数，遍历节点，对每个计算操作分发到 Hexagon DSP 执行，并应用优化（如跳过量化等）。
+  line: 2612-2810
+  name: ggml_backend_hexagon_graph_compute
+- code:
+  - static struct ggml_backend_i hexagon_backend_i = {
+  - '    /* .get_name                = */ ggml_backend_hexagon_name,'
+  - '    /* .free                    = */ ggml_backend_hexagon_free,'
+  - '    /* .set_tensor_async        = */ NULL,'
+  - '    /* .get_tensor_async        = */ NULL,'
+  - '    /* .cpy_tensor_async        = */ NULL,'
+  - '    /* .synchronize             = */ ggml_backend_hexagon_synchronize,'
+  - '    /* .graph_plan_create       = */ NULL,'
+  - '    /* .graph_plan_free         = */ NULL,'
+  - '    /* .graph_plan_update       = */ NULL,'
+  - '    /* .graph_plan_compute      = */ NULL,'
+  - '    /* .graph_compute           = */ ggml_backend_hexagon_graph_compute,'
+  - '    /* .event_record            = */ NULL,'
+  - '    /* .event_wait              = */ NULL,'
+  - '    /* .graph_optimize          = */ ggml_backend_hexagon_graph_optimize,'
+  - '};'
+  desc: 文件中所有全局代码，包括静态变量定义（如hexagon_backend_i、ggml_backend_hexagon_reg_i）、环境变量参数初始化以及在ggml_backend_hexagon_reg函数中的后端注册逻辑。
+  line: 2860-2874
+  name: __main__
+- code:
+  - static ggml_guid_t ggml_backend_hexagon_guid() {
+  - '    static ggml_guid guid = { 0x7b, 0x57, 0xdc, 0xaf, 0xde, 0x12, 0x1d, 0x49,'
+  - '                              0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11
+    };'
+  - '    return &guid;'
+  - '}'
+  desc: 返回一个静态的全局唯一标识符（GUID），用于标识Hexagon后端。
+  line: 2878-2882
+  name: ggml_backend_hexagon_guid
+- code:
+  - bool ggml_backend_is_hexagon(ggml_backend_t backend) {
+  - '    return backend && backend->iface.get_name == ggml_backend_hexagon_name;'
+  - '}'
+  desc: 检查给定的后端是否为Hexagon后端。
+  line: 2884-2886
+  name: ggml_backend_is_hexagon
+- code:
+  - static ggml_backend_t ggml_backend_hexagon_device_init(ggml_backend_dev_t dev,
+    const char * params) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    return new ggml_backend{'
+  - '        /* .guid      = */ ggml_backend_hexagon_guid(),'
+  - '        /* .interface = */ hexagon_backend_i,'
+  - '        /* .device    = */ dev,'
+  - '        /* .context   = */ sess,'
+  - '    };'
+  - '    GGML_UNUSED(params);'
+  - '}'
+  desc: 初始化一个Hexagon后端设备实例，返回包含接口和会话上下文的后端结构。
+  line: 2891-2901
+  name: ggml_backend_hexagon_device_init
+- code:
+  - static const char * ggml_backend_hexagon_device_get_name(ggml_backend_dev_t dev)
+    {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    return sess->name.c_str();'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 返回Hexagon设备（会话）的名称。
+  line: 2903-2907
+  name: ggml_backend_hexagon_device_get_name
+- code:
+  - static const char * ggml_backend_hexagon_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    return "Hexagon";'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 返回设备描述字符串，固定为'Hexagon'。
+  line: 2909-2912
+  name: ggml_backend_hexagon_device_get_description
+- code:
+  - static void ggml_backend_hexagon_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '    *free  = 2ULL * 1024 * 1024 * 1024;'
+  - '    *total = *free;'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 返回设备可用和总内存大小，当前固定估算为2GB。
+  line: 2914-2919
+  name: ggml_backend_hexagon_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_hexagon_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    return GGML_BACKEND_DEVICE_TYPE_GPU;'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 返回设备类型，这里标记为GPU类型。
+  line: 2921-2925
+  name: ggml_backend_hexagon_device_get_type
+- code:
+  - static void ggml_backend_hexagon_device_get_props(ggml_backend_dev_t dev, struct
+    ggml_backend_dev_props * props) {
+  - '    props->name        = ggml_backend_hexagon_device_get_name(dev);'
+  - '    props->description = ggml_backend_hexagon_device_get_description(dev);'
+  - '    props->type        = ggml_backend_hexagon_device_get_type(dev);'
+  - '    ggml_backend_hexagon_device_get_memory(dev, &props->memory_free, &props->memory_total);'
+  - '    props->caps = {'
+  - '        /* .async                 = */ true,'
+  - '        /* .host_buffer           = */ (bool) opt_hostbuf,'
+  - '        /* .buffer_from_host_ptr  = */ false,'
+  - '        /* .events                = */ false,'
+  - '    };'
+  - '}'
+  desc: 填充设备的属性结构，包括名称、描述、类型、内存和功能支持能力。
+  line: 2927-2937
+  name: ggml_backend_hexagon_device_get_props
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_hexagon_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    return &sess->buffer_type;'
+  - '}'
+  desc: 返回指定设备（会话）的缓冲区类型。
+  line: 2939-2943
+  name: ggml_backend_hexagon_device_get_buffer_type
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_hexagon_device_get_repack_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    return &sess->repack_buffer_type;'
+  - '}'
+  desc: 返回指定设备（会话）的重打包缓冲区类型。
+  line: 2945-2949
+  name: ggml_backend_hexagon_device_get_repack_buffer_type
+- code:
+  - static bool ggml_hexagon_supported_buffer(ggml_hexagon_session *sess, const struct
+    ggml_tensor * t) {
+  - '    if (t && t->buffer) {'
+  - '        if (ggml_backend_buffer_is_hexagon(t->buffer)      == false) return false;'
+  - '        if (ggml_backend_hexagon_buffer_get_sess(t->buffer) != sess) return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查张量是否使用了指定会话的Hexagon缓冲区。
+  line: 2951-2958
+  name: ggml_hexagon_supported_buffer
+- code:
+  - static bool ggml_hexagon_supported_buffers(ggml_hexagon_session *sess, const struct
+    ggml_tensor * t) {
+  - '    if (!ggml_hexagon_supported_buffer(sess, t)) {'
+  - '        return false;'
+  - '    }'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        if (!ggml_hexagon_supported_buffer(sess, t->src[i])) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查张量及其所有源张量是否都使用了指定会话的Hexagon缓冲区。
+  line: 2960-2973
+  name: ggml_hexagon_supported_buffers
+- code:
+  - static bool ggml_hexagon_supported_cpy(const struct ggml_hexagon_session * sess,
+    const struct ggml_tensor * op) {
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16) return false;'
+  - '    if ( dst->type != GGML_TYPE_F32 &&  dst->type != GGML_TYPE_F16) return false;'
+  - '    const bool sametype   = (src0->type == dst->type);'
+  - '    const bool transposed = ggml_is_transposed(src0) || ggml_is_transposed(dst);'
+  - '    const bool sameshape  = !transposed && ggml_are_same_shape(src0, dst);'
+  - '    if (sametype) return true;'
+  - '    if (!sameshape) return false;'
+  - '    return true;'
+  - '}'
+  desc: 检查是否支持在f32和f16类型间进行拷贝操作（不支持转置且同形状的条件限制）。
+  line: 2975-2988
+  name: ggml_hexagon_supported_cpy
+- code:
+  - static bool ggml_hexagon_supported_cont(const struct ggml_hexagon_session * sess,
+    const struct ggml_tensor * op) {
+  - '    GGML_UNUSED(sess);'
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16) return false;'
+  - '    return true;'
+  - '}'
+  desc: 检查是否支持连续化（CONT）操作，仅支持f32和f16类型。
+  line: 2990-2997
+  name: ggml_hexagon_supported_cont
+- code:
+  - static bool ggml_hexagon_supported_repeat(const struct ggml_hexagon_session *
+    sess, const struct ggml_tensor * op) {
+  - '    GGML_UNUSED(sess);'
+  - '    const struct ggml_tensor * src0 = op->src[0];'
+  - '    const struct ggml_tensor * dst  = op;'
+  - '    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16) return false;'
+  - '    if (src0->type != dst->type) return false;'
+  - '    if (dst->ne[0] % src0->ne[0] != 0) return false;'
+  - '    if (dst->ne[1] % src0->ne[1] != 0) return false;'
+  - '    if (dst->ne[2] % src0->ne[2] != 0) return false;'
+  - '    if (dst->ne[3] % src0->ne[3] != 0) return false;'
+  - '    if (ggml_is_transposed(src0) || ggml_is_transposed(dst)) return false;'
+  - '    return true;'
+  - '}'
+  desc: 检查是否支持重复（REPEAT）操作，要求同类型、目标维度为源维度的整数倍且张量连续。
+  line: 2999-3013
+  name: ggml_hexagon_supported_repeat
+- code:
+  - static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, const
+    struct ggml_tensor * op) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    if (!ggml_hexagon_supported_buffers(sess, op)) {'
+  - '        ggml_hexagon_dump_op_supp(sess->name, op, false);'
+  - '        return false;'
+  - '    }'
+  - '    bool supp = false;'
+  - '    switch (op->op) {'
+  - '        case GGML_OP_NONE: case GGML_OP_RESHAPE: case GGML_OP_VIEW: case GGML_OP_PERMUTE:
+    case GGML_OP_TRANSPOSE:'
+  - '            supp = true; break;'
+  - '        case GGML_OP_MUL_MAT: supp = ggml_hexagon_supported_mul_mat(sess, op);
+    break;'
+  - '        case GGML_OP_MUL_MAT_ID: supp = ggml_hexagon_supported_mul_mat_id(sess,
+    op); break;'
+  - '        case GGML_OP_MUL: case GGML_OP_ADD: case GGML_OP_SUB: case GGML_OP_DIV:'
+  - '            supp = ggml_hexagon_supported_binary(sess, op); break;'
+  - '        case GGML_OP_ADD_ID: supp = ggml_hexagon_supported_add_id(sess, op);
+    break;'
+  - '        case GGML_OP_RMS_NORM: case GGML_OP_SCALE:'
+  - '            supp = ggml_hexagon_supported_unary(sess, op); break;'
+  - '        case GGML_OP_SQR: case GGML_OP_SQRT:'
+  - '            supp = ggml_hexagon_supported_unary(sess, op); break;'
+  - '        case GGML_OP_SUM_ROWS: supp = ggml_hexagon_supported_sum_rows(sess, op);
+    break;'
+  - '        case GGML_OP_SOFT_MAX: supp = ggml_hexagon_supported_softmax(sess, op);
+    break;'
+  - '        case GGML_OP_UNARY:'
+  - '            switch (ggml_get_unary_op(op)) {'
+  - '                case GGML_UNARY_OP_NEG: case GGML_UNARY_OP_EXP: case GGML_UNARY_OP_SIGMOID:
+    case GGML_UNARY_OP_SOFTPLUS:'
+  - '                    supp = ggml_hexagon_supported_unary(sess, op); break;'
+  - '                case GGML_UNARY_OP_SILU: case GGML_UNARY_OP_GELU:'
+  - '                    supp = ggml_hexagon_supported_activations(sess, op); break;'
+  - '                default: break;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_GLU:'
+  - '            switch (ggml_get_glu_op(op)) {'
+  - '                case GGML_GLU_OP_SWIGLU: case GGML_GLU_OP_SWIGLU_OAI: case GGML_GLU_OP_GEGLU:'
+  - '                    supp = ggml_hexagon_supported_activations(sess, op); break;'
+  - '                default: break;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_ROPE: supp = ggml_hexagon_supported_rope(sess, op); break;'
+  - '        case GGML_OP_FLASH_ATTN_EXT: supp = ggml_hexagon_supported_flash_attn_ext(sess,
+    op); break;'
+  - '        case GGML_OP_SET_ROWS: supp = ggml_hexagon_supported_set_rows(sess, op);
+    break;'
+  - '        case GGML_OP_GET_ROWS: supp = ggml_hexagon_supported_get_rows(sess, op);
+    break;'
+  - '        case GGML_OP_CPY: supp = ggml_hexagon_supported_cpy(sess, op); break;'
+  - '        case GGML_OP_CONT: supp = ggml_hexagon_supported_cont(sess, op); break;'
+  - '        case GGML_OP_REPEAT: supp = ggml_hexagon_supported_repeat(sess, op);
+    break;'
+  - '        case GGML_OP_ARGSORT: supp = ggml_hexagon_supported_argsort(sess, op);
+    break;'
+  - '        case GGML_OP_SSM_CONV: supp = ggml_hexagon_supported_ssm_conv(sess, op);
+    break;'
+  - '        case GGML_OP_CUMSUM: supp = ggml_hexagon_supported_cumsum(sess, op);
+    break;'
+  - '        default: break;'
+  - '    }'
+  - '    ggml_hexagon_dump_op_supp(sess->name, op, supp);'
+  - '    return supp;'
+  - '}'
+  desc: 设备操作支持判定总入口，根据操作类型分发到对应的支持性检查函数，并输出调试日志。
+  line: 3015-3088
+  name: ggml_backend_hexagon_device_supports_op
+- code:
+  - static bool ggml_backend_hexagon_device_supports_buft(ggml_backend_dev_t dev,
+    ggml_backend_buffer_type_t buft) {
+  - '    if (buft->iface.get_alignment != ggml_backend_hexagon_buffer_type_get_alignment)
+    {'
+  - '        return false;'
+  - '    }'
+  - '    auto s0 = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    auto s1 = static_cast<ggml_backend_hexagon_buffer_type_context *>(buft->context)->sess;'
+  - '    bool supp = (s0->session_id == s1->session_id);'
+  - '    HEX_VERBOSE("ggml-hex: %s device-supports-buft %s (%d)\n", s0->name.c_str(),
+    s1->name.c_str(), (int) supp);'
+  - '    return supp;'
+  - '}'
+  desc: 检查给定缓冲区类型是否与设备（会话）兼容。
+  line: 3090-3101
+  name: ggml_backend_hexagon_device_supports_buft
+- code:
+  - static ggml_backend_buffer_type_t * ggml_backend_hexagon_device_get_extra_buffers_type(ggml_backend_dev_t
+    dev) {
+  - '    auto s0 = static_cast<ggml_hexagon_session *>(dev->context);'
+  - '    HEX_VERBOSE("ggml-hex: device-get-extra-buft : %s \n", s0->name.c_str());'
+  - '    static ggml_backend_buffer_type_t bufts[2];'
+  - '    bufts[0] = ggml_backend_hexagon_device_get_repack_buffer_type(dev);'
+  - '    bufts[1] = NULL;'
+  - '    return bufts;'
+  - '}'
+  desc: 返回额外的缓冲区类型数组（目前包含重打包缓冲区，通过静态数组实现）。
+  line: 3103-3111
+  name: ggml_backend_hexagon_device_get_extra_buffers_type
+- code:
+  - static const char * ggml_backend_hexagon_reg_get_name(ggml_backend_reg_t reg)
+    {
+  - '    return "HTP";'
+  - '    GGML_UNUSED(reg);'
+  - '}'
+  desc: 返回后端注册器的名称，固定为'HTP'。
+  line: 3242-3246
+  name: ggml_backend_hexagon_reg_get_name
+- code:
+  - static size_t ggml_backend_hexagon_reg_get_device_count(ggml_backend_reg_t reg)
+    {
+  - '    return opt_ndev;'
+  - '    GGML_UNUSED(reg);'
+  - '}'
+  desc: 返回后端注册器管理的设备数量。
+  line: 3248-3252
+  name: ggml_backend_hexagon_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_hexagon_reg_get_device(ggml_backend_reg_t
+    reg, size_t index) {
+  - '    auto hreg = static_cast<ggml_hexagon_registry *>(reg->context);'
+  - '    if (index >= opt_ndev || !hreg->devices[index].context) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return &hreg->devices[index];'
+  - '}'
+  desc: 按索引获取指定设备，如果设备未初始化则返回nullptr。
+  line: 3254-3262
+  name: ggml_backend_hexagon_reg_get_device
+- code:
+  - static void * ggml_backend_hexagon_get_proc_address(ggml_backend_reg_t reg, const
+    char * name) {
+  - '    if (strcmp(name, "ggml_backend_dev_get_extra_bufts") == 0 && opt_hostbuf)
+    {'
+  - '        ggml_backend_dev_get_extra_bufts_t fct = ggml_backend_hexagon_device_get_extra_buffers_type;'
+  - '        return (void *) fct;'
+  - '    }'
+  - '    return NULL;'
+  - '}'
+  desc: 提供后端动态过程地址查询，目前用于支持获取额外缓冲区类型。
+  line: 3264-3270
+  name: ggml_backend_hexagon_get_proc_address
+- code:
+  - static void ggml_hexagon_init(ggml_backend_reg * reg) {
+  - '    static_assert((unsigned int) HTP_TYPE_Q4_0 == (unsigned int) GGML_TYPE_Q4_0,'
+  - '                  "please update hexagon_type to match ggml_type");'
+  - '    static_assert((unsigned int) HTP_TYPE_Q8_0 == (unsigned int) GGML_TYPE_Q8_0,'
+  - '                  "please update hexagon_type to match ggml_type");'
+  - '    static_assert((unsigned int) HTP_TYPE_MXFP4 == (unsigned int) GGML_TYPE_MXFP4,'
+  - '                  "please update hexagon_type to match ggml_type");'
+  - '    static_assert((unsigned int) HTP_TYPE_IQ4_NL == (unsigned int) GGML_TYPE_IQ4_NL,'
+  - '                  "please update hexagon_type to match ggml_type");'
+  - '    const char * str_experimental = getenv("GGML_HEXAGON_EXPERIMENTAL");'
+  - '    const char * str_verbose = getenv("GGML_HEXAGON_VERBOSE");'
+  - '    const char * str_hostbuf = getenv("GGML_HEXAGON_HOSTBUF");'
+  - '    const char * str_opmask  = getenv("GGML_HEXAGON_OPMASK");'
+  - '    const char * str_opsync  = getenv("GGML_HEXAGON_OPSYNC");'
+  - '    const char * str_profile = getenv("GGML_HEXAGON_PROFILE");'
+  - '    const char * str_etm     = getenv("GGML_HEXAGON_ETM");'
+  - '    const char * str_nhvx    = getenv("GGML_HEXAGON_NHVX");'
+  - '    const char * str_use_hmx = getenv("GGML_HEXAGON_USE_HMX");'
+  - '    const char * str_ndev    = getenv("GGML_HEXAGON_NDEV");'
+  - '    const char * str_arch    = getenv("GGML_HEXAGON_ARCH");'
+  - '    opt_experimental = str_experimental ? atoi(str_experimental) : 0;'
+  - '    opt_verbose      = str_verbose ? atoi(str_verbose) : 0;'
+  - '    opt_hostbuf      = str_hostbuf ? atoi(str_hostbuf) : opt_hostbuf;'
+  - '    opt_opmask       = str_opmask  ? strtoul(str_opmask, NULL, 0) : opt_opmask;'
+  - '    opt_opsync       = str_opsync  ? atoi(str_opsync)  : 0;'
+  - '    opt_profile      = str_profile ? atoi(str_profile) : 0;'
+  - '    opt_etm          = str_etm     ? atoi(str_etm)     : 0;'
+  - '    opt_nhvx         = str_nhvx    ? strtoul(str_nhvx, NULL, 0) : opt_nhvx;'
+  - '    opt_use_hmx      = str_use_hmx ? atoi(str_use_hmx) : opt_use_hmx;'
+  - '    opt_ndev         = str_ndev    ? strtoul(str_ndev, NULL, 0) : opt_ndev;'
+  - '    if (opt_ndev > GGML_HEXAGON_MAX_SESSIONS) {'
+  - '        opt_ndev = GGML_HEXAGON_MAX_SESSIONS;'
+  - '    }'
+  - '    if (str_arch) {'
+  - '        if (str_arch[0] == ''v'') {'
+  - '            str_arch++;'
+  - '        }'
+  - '        opt_arch = strtoul(str_arch, NULL, 0);'
+  - '    }'
+  - '    opt_hostbuf = str_hostbuf ? atoi(str_hostbuf) : 1;'
+  - '    reg->context = new ggml_hexagon_registry(reg);'
+  - '    HEX_VERBOSE("ggml-hex: size-of-general-req %zu size-of-general-rsp %zu\n",
+    sizeof(struct htp_general_req), sizeof(struct htp_general_rsp));'
+  - '}'
+  desc: 执行后端初始化，包括编译时断言、读取环境变量配置并创建注册表实例。
+  line: 3272-3301
+  name: ggml_hexagon_init
+- code:
+  - ggml_backend_reg_t ggml_backend_hexagon_reg(void) {
+  - '    static bool initialized = false;'
+  - '    static ggml_backend_reg reg = { /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '                                    /* .iface       = */ ggml_backend_hexagon_reg_i,'
+  - '                                    /* .context     = */ NULL };'
+  - '    {'
+  - '        static std::mutex           mutex;'
+  - '        std::lock_guard<std::mutex> lock(mutex);'
+  - '        if (!initialized) {'
+  - '            auto nErr = htpdrv_init();'
+  - '            if (nErr != AEE_SUCCESS) {'
+  - '                return NULL;'
+  - '            }'
+  - '            ggml_hexagon_init(&reg);'
+  - '        }'
+  - '        initialized = true;'
+  - '    }'
+  - '    return &reg;'
+  - '}'
+  desc: 注册Hexagon后端的入口函数，使用互斥锁确保只初始化一次，并返回注册器结构。
+  line: 3309-3326
+  name: ggml_backend_hexagon_reg
+- code:
+  - static void ggml_backend_hexagon_synchronize(ggml_backend_t backend) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(backend->context);'
+  - '    HEX_VERBOSE("ggml-hex: %s synchronize\n", sess->name.c_str());'
+  - '    sess->flush();'
+  - '}'
+  desc: 同步后端操作，等待所有挂起的操作完成。
+  line: 2801-2807
+  name: ggml_backend_hexagon_synchronize
+- code:
+  - static std::vector<int> ggml_hexagon_graph_optimize_reorder(const std::vector<node_info>
+    & nodes) {
+  - '    const int n = nodes.size();'
+  - '    std::vector<int> res;'
+  - '    res.reserve(n);'
+  - '    std::vector<bool> used(n, false);'
+  - '    for (int i0 = 0; i0 < n; i0++) {'
+  - '        if (used[i0]) {'
+  - '            continue;'
+  - '        }'
+  - '        res.push_back(i0);'
+  - '        const auto & node0 = nodes[i0];'
+  - '        if (!node0.stackable()) {'
+  - '            continue;'
+  - '        }'
+  - '        constexpr int N_FORWARD = 16;'
+  - '        for (int i1 = i0 + 1; i1 < i0 + N_FORWARD && i1 < n; i1++) {'
+  - '            if (used[i1]) {'
+  - '                continue;'
+  - '            }'
+  - '            const auto & node1 = nodes[i1];'
+  - '            if (node1.stackable() && node1.same_input(node0)) {'
+  - '                res.push_back(i1);'
+  - '                used[i1] = true;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return res;'
+  - '}'
+  desc: 对节点执行重排序优化，将拥有相同src1输入的堆叠节点（如量化MUL_MAT）分组，以促进VTCM复用。
+  line: 3153-3184
+  name: ggml_hexagon_graph_optimize_reorder
+- code:
+  - static void ggml_backend_hexagon_graph_optimize(ggml_backend_t backend, ggml_cgraph
+    * gf) {
+  - '    const int n = gf->n_nodes;'
+  - '    constexpr int MAX_FUSE = 16;'
+  - '    enum ggml_op ops[MAX_FUSE];'
+  - '    std::vector<node_info> nodes;'
+  - '    nodes.reserve(gf->n_nodes);'
+  - '    for (int i = 0; i < n; i++) {'
+  - '        node_info node = {'
+  - '            /*.node =*/gf->nodes[i],'
+  - '            /*.fused =*/{},'
+  - '        };'
+  - '        if (node.op() == GGML_OP_ADD || node.op() == GGML_OP_NORM || node.op()
+    == GGML_OP_RMS_NORM) {'
+  - '            ops[0] = node.op();'
+  - '            int f = i + 1;'
+  - '            while (f < n && f < i + MAX_FUSE) {'
+  - '                if (gf->nodes[f]->op != GGML_OP_ADD && gf->nodes[f]->op != GGML_OP_MUL
+    &&'
+  - '                    gf->nodes[f]->op != GGML_OP_NORM && gf->nodes[f]->op != GGML_OP_RMS_NORM)
+    {'
+  - '                    break;'
+  - '                }'
+  - '                ops[f - i] = gf->nodes[f]->op;'
+  - '                f++;'
+  - '            }'
+  - '            f -= i;'
+  - '            for (; f > 1; f--) {'
+  - '                if (ggml_can_fuse(gf, i, ops, f)) {'
+  - '                    break;'
+  - '                }'
+  - '            }'
+  - '            for (int k = 1; k < f; k++) {'
+  - '                ++i;'
+  - '                node.add_fused(gf->nodes[i]);'
+  - '            }'
+  - '        }'
+  - '        nodes.push_back(std::move(node));'
+  - '    }'
+  - '    const auto order = ggml_hexagon_graph_optimize_reorder(nodes);'
+  - '    {'
+  - '        int j = 0;'
+  - '        for (const auto i : order) {'
+  - '            const auto & node = nodes[i];'
+  - '            gf->nodes[j++] = node.node;'
+  - '            for (auto * fused : node.fused) {'
+  - '                gf->nodes[j++] = fused;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 对计算图进行优化，先融合可融合的操作，再执行重排序，最后解融合以恢复原始节点顺序。
+  line: 3186-3253
+  name: ggml_backend_hexagon_graph_optimize
+- code:
+  - static enum ggml_status ggml_backend_hexagon_graph_compute(ggml_backend_t backend,
+    ggml_cgraph * gf) {
+  - '    auto sess = static_cast<ggml_hexagon_session *>(backend->context);'
+  - '    const int n = gf->n_nodes;'
+  - '    const uint32_t flags = sess->convert_opmask(gf);'
+  - '    for (int i = 0; i < n; i++) {'
+  - '        ggml_tensor * node = gf->nodes[i];'
+  - '        switch (node->op) {'
+  - '            case GGML_OP_NONE: case GGML_OP_RESHAPE: case GGML_OP_VIEW: case
+    GGML_OP_PERMUTE: case GGML_OP_TRANSPOSE:'
+  - '                break;'
+  - '            case GGML_OP_ADD_ID:'
+  - '                ggml_hexagon_dispatch_op<init_add_id_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_MUL_MAT:'
+  - '                ggml_hexagon_dispatch_op<init_mul_mat_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_MUL_MAT_ID:'
+  - '                ggml_hexagon_dispatch_op<init_mul_mat_id_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_MUL: case GGML_OP_ADD: case GGML_OP_SUB: case GGML_OP_DIV:'
+  - '                ggml_hexagon_dispatch_op<init_binary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_RMS_NORM: case GGML_OP_SCALE:'
+  - '                ggml_hexagon_dispatch_op<init_unary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SQR: case GGML_OP_SQRT:'
+  - '                ggml_hexagon_dispatch_op<init_unary_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SUM_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_sum_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SOFT_MAX:'
+  - '                ggml_hexagon_dispatch_op<init_softmax_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_UNARY:'
+  - '                switch (ggml_get_unary_op(node)) {'
+  - '                    case GGML_UNARY_OP_NEG: case GGML_UNARY_OP_EXP: case GGML_UNARY_OP_SIGMOID:
+    case GGML_UNARY_OP_SOFTPLUS:'
+  - '                        ggml_hexagon_dispatch_op<init_unary_req>(sess, node,
+    flags);'
+  - '                        break;'
+  - '                    case GGML_UNARY_OP_SILU: case GGML_UNARY_OP_GELU:'
+  - '                        ggml_hexagon_dispatch_op<init_activation_req>(sess, node,
+    flags);'
+  - '                        break;'
+  - '                    default: GGML_ABORT("unsupported unary op");'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_GLU:'
+  - '                switch (ggml_get_glu_op(node)) {'
+  - '                    case GGML_GLU_OP_SWIGLU: case GGML_GLU_OP_SWIGLU_OAI: case
+    GGML_GLU_OP_GEGLU:'
+  - '                        ggml_hexagon_dispatch_op<init_activation_req>(sess, node,
+    flags);'
+  - '                        break;'
+  - '                    default: GGML_ABORT("unsupported glu op");'
+  - '                }'
+  - '                break;'
+  - '            case GGML_OP_ROPE:'
+  - '                ggml_hexagon_dispatch_op<init_rope_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_FLASH_ATTN_EXT:'
+  - '                ggml_hexagon_dispatch_op<init_flash_attn_ext_req>(sess, node,
+    flags);'
+  - '                break;'
+  - '            case GGML_OP_SET_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_set_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_GET_ROWS:'
+  - '                ggml_hexagon_dispatch_op<init_get_rows_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_CPY:'
+  - '                ggml_hexagon_dispatch_op<init_cpy_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_CONT:'
+  - '                ggml_hexagon_dispatch_op<init_cont_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_REPEAT:'
+  - '                ggml_hexagon_dispatch_op<init_repeat_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_ARGSORT:'
+  - '                ggml_hexagon_dispatch_op<init_argsort_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_SSM_CONV:'
+  - '                ggml_hexagon_dispatch_op<init_ssm_conv_req>(sess, node, flags);'
+  - '                break;'
+  - '            case GGML_OP_CUMSUM:'
+  - '                ggml_hexagon_dispatch_op<init_cumsum_req>(sess, node, flags);'
+  - '                break;'
+  - '            default:'
+  - '                GGML_ABORT("\nggml-hex: graph-compute %s is not supported\n",
+    ggml_op_desc(node));'
+  - '        }'
+  - '    }'
+  - '    sess->flush();'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 执行计算图中的每个操作，将操作分派到对应的Hexagon调度函数，并在所有操作完成后刷新会话。
+  line: 2772-2800
+  name: ggml_backend_hexagon_graph_compute

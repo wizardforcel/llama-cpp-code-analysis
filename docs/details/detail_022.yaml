@@ -1,0 +1,470 @@
+code_map:
+- src/llama-adapter.h
+- '├── struct llama_adapter_cvec                       # 控制向量适配器'
+- '│   ├── tensor_for(int il)                          # 按层号获取对应张量'
+- '│   ├── apply_to(ctx, cur, il)                      # 在计算图节点上注入残差'
+- '│   ├── apply(model, data, len, n_embd, il_start, il_end)  # 写入数据或禁用'
+- '│   └── init(model)                                 # 内部初始化：分配 ctx+buf'
+- '│       ├── layer_start / layer_end                 # 作用层范围'
+- '│       ├── std::vector<ggml_context_ptr> ctxs      # 各后端的 ggml_context'
+- '│       ├── std::vector<ggml_backend_buffer_ptr> bufs # 各后端的缓冲区'
+- '│       └── std::vector<ggml_tensor *> tensors      # 每层一个张量（[0]=nullptr）'
+- '├── using llama_adapter_cvec_ptr = shared_ptr       # 智能指针封装'
+- '├── struct llama_adapter_lora_weight                # 单个 LoRA 权重对'
+- '│   ├── ggml_tensor * a                             # 升维矩阵 (rank × in_dim)'
+- '│   ├── ggml_tensor * b                             # 降维矩阵 (out_dim × rank)'
+- '│   ├── get_scale(alpha, adapter_scale)            # 计算真实缩放因子'
+- '│   ├── llama_adapter_lora_weight()                 # 默认构造函数'
+- '│   └── llama_adapter_lora_weight(a, b)             # 双参构造器'
+- '├── struct llama_adapter_lora                       # LoRA 适配器外壳'
+- '│   ├── llama_model * model                         # 绑定基础模型'
+- '│   ├── unordered_map<string, lora_weight> ab_map   # 张量名→A/B 对'
+- '│   ├── vector<ggml_context_ptr> ctxs               # 各后端 context'
+- '│   ├── vector<ggml_backend_buffer_ptr> bufs        # 各后端 buffer'
+- '│   ├── float alpha                                 # LoRA 缩放参数'
+- '│   ├── unordered_map<string,string> gguf_kv        # 缓存的 GGUF 元数据'
+- '│   ├── vector<llama_token> alora_invocation_tokens # aLoRA 触发序列'
+- '│   ├── llama_adapter_lora(model)                   # 构造函数'
+- '│   ├── ~llama_adapter_lora()                       # 默认析构函数'
+- '│   ├── get_weight(w)                               # 按基础模型张量反查'
+- '│   └── get_n_nodes()                               # 估算图节点数（每对 6 个）'
+- '├── using llama_adapter_loras                       # unordered_map<lora*, float>'
+- '└── using llama_adapter_loras_ptr                    # unique_ptr 封装'
+- ''
+- src/llama-adapter.cpp
+- '├── llama_adapter_cvec::tensor_for()                # 层号边界检查'
+- '├── llama_adapter_cvec::apply_to()                  # 调用 ggml_add 注入方向向量'
+- '├── llama_adapter_cvec::init()                      # 初始化'
+- '│   ├── std::map<buft, ctx*> ctx_map                # 按后端类型聚合'
+- '│   ├── ctx_for_buft lambda                         # 懒分配 ggml_context'
+- '│   ├── tensors[0] = nullptr                        # 第 0 层协议约定'
+- '│   └── ggml_backend_buffer_clear()                 # 清零初始状态'
+- '├── llama_adapter_cvec::apply()                     # 写入数据或禁用'
+- '│   ├── data==nullptr 时禁用                        # 设置 layer_start/end=-1'
+- '│   ├── n_embd 校验                                 # 与模型维度匹配'
+- '│   └── 按 il 写入对应层张量                        # 偏移 n_embd*(il-1)'
+- '├── llama_adapter_lora::get_weight()                # 按名查找 A/B 对'
+- '├── llama_adapter_lora_init_impl()                  # 加载主流程（七步）'
+- '│   ├── gguf_init_from_file()                       # 打开 GGUF'
+- '│   ├── 元数据遍历+校验                             # type/arch/alpha/aLoRA'
+- '│   ├── A/B 张量配对                                # str_endswith 判定'
+- '│   ├── _norm.weight 忽略                           # 暂不支持 LoRA-norm'
+- '│   ├── buft_extra 获取                             # 避免 repacking buffer'
+- '│   ├── 形状校验                                    # token_embd 翻转'
+- │   ├── ggml_dup_tensor() 复制到目标 ctx
+- '│   ├── 按 buft 分配缓冲区                          # ggml_backend_alloc_ctx_tensors_from_buft'
+- '│   └── 数据回填                                    # llama_file + offset'
+- '├── llama_adapter_lora_init()                       # 异常安全入口（try/catch）'
+- '├── 元数据查询接口                                  # meta_val_str / count / key_by_index'
+- '├── llama_adapter_lora_free()                       # 幂等释放'
+- '└── aLoRA 调用 Token 接口                           # alora_n_invocation_tokens / alora_invocation_tokens'
+- ''
+- src/llama-chat.h
+- '├── enum llm_chat_template                          # 50+ 模板枚举'
+- '│   ├── LLM_CHAT_TEMPLATE_CHATML                    # 通用 ChatML'
+- '│   ├── LLM_CHAT_TEMPLATE_LLAMA_2                   # 原始 Llama-2'
+- │   ├── LLM_CHAT_TEMPLATE_LLAMA_2_SYS / SYS_BOS / SYS_STRIP
+- │   ├── LLM_CHAT_TEMPLATE_MISTRAL_V1 / V3 / V3_TEKKEN / V7 / V7_TEKKEN
+- │   ├── LLM_CHAT_TEMPLATE_PHI_3 / PHI_4
+- │   ├── LLM_CHAT_TEMPLATE_GEMMA
+- │   ├── LLM_CHAT_TEMPLATE_LLAMA_3 / LLAMA4
+- │   ├── LLM_CHAT_TEMPLATE_DEEPSEEK / DEEPSEEK_2 / DEEPSEEK_3 / DEEPSEEK_OCR
+- │   ├── LLM_CHAT_TEMPLATE_EXAONE_3 / EXAONE_4 / EXAONE_MOE
+- │   ├── LLM_CHAT_TEMPLATE_GRANITE_3_X / GRANITE_4_0
+- │   ├── LLM_CHAT_TEMPLATE_HUNYUAN_DENSE / HUNYUAN_MOE / HUNYUAN_OCR
+- │   ├── LLM_CHAT_TEMPLATE_BAILING / BAILING_THINK / BAILING2
+- │   ├── LLM_CHAT_TEMPLATE_KIMI_K2 / SEED_OSS / GROK_2
+- '│   ├── LLM_CHAT_TEMPLATE_OPENAI_MOE                # GPT-OSS Harmony 风格'
+- '│   └── LLM_CHAT_TEMPLATE_UNKNOWN                   # 降级兜底'
+- '├── llm_chat_template_from_str(name)               # 字符串转枚举映射'
+- '├── llm_chat_detect_template(tmpl)                 # 字符串指纹检测'
+- '└── llm_chat_apply_template()                       # 手写渲染入口'
+- ''
+- src/llama-chat.cpp
+- '├── LU8 宏                                         # C++20 前 UTF-8 兼容'
+- '├── trim()                                         # 去除首尾空白'
+- '├── LLM_CHAT_TEMPLATES                              # std::map 字符串转枚举'
+- '├── llm_chat_template_from_str()                    # O(log n) 查找'
+- '├── llm_chat_detect_template()                      # 启发式检测'
+- '│   ├── 精确名字匹配优先                            # 失败则降级'
+- '│   ├── ChatML 族                                    # <|im_start|> + 分支'
+- '│   ├── Mistral 族                                   # [INST]/[SYSTEM_PROMPT]/v1-v7'
+- '│   ├── Llama-2 族                                   # <<SYS>> / bos+[INST] / content.strip()'
+- │   ├── Gemma / ChatGLM / Phi / Zephyr / Monarch 等
+- '│   └── 中文模型（DeepSeek / Hunyuan / MiniCPM）      # 利用 LU8 中文字符'
+- '├── llm_chat_apply_template()                        # 50+ 分支渲染器'
+- │   ├── add_ass 决定是否追加 assistant 引导
+- │   ├── Gemma 无 system 角色 → 合并到首条 user
+- │   └── UNKNOWN 返回 -1 提示不支持
+- '└── llama_chat_builtin_templates()                  # 暴露模板名清单'
+exercises:
+- contents:
+  - 阅读 `src/llama-adapter.cpp` 第 1-120 行（`llama_adapter_cvec` 全部实现），理解：
+  - 1. `init()` 中的 `ctx_for_buft` lambda 是如何实现「按后端类型懒分配」的？
+  - 2. 为什么 `tensors[0]` 必须是 `nullptr`？
+  - 3. `apply()` 中传入 `data == nullptr` 的语义是什么？
+  - 4. 第 il 层的张量数据在输入缓冲区中的偏移量是多少？为什么是这个公式？
+  - 回答问题：
+  - '- `ggml_backend_buffer_clear(buf, 0)` 的作用是什么？'
+  - '- 为什么 `init()` 使用 `no_alloc=true` 而在最后才 `alloc_ctx_tensors_from_buft`？'
+  - '- 如果模型有 32 层，`ctxs` 和 `bufs` 最多可能有多少个元素？'
+  'no': 1
+  title: 阅读控制向量适配器实现
+- contents:
+  - 阅读 `src/llama-adapter.cpp` 第 144-330 行（`llama_adapter_lora_init_impl`），按顺序梳理：
+  - 1. **元数据校验阶段**：检查了哪些键？`general.type`、`adapter.type`、`adapter.lora.alpha` 分别是什么含义？
+  - 2. **aLoRA 解析阶段**：`adapter.alora.invocation_tokens` 的 GGUF 类型约束是什么？数组元素类型是什么？
+  - 3. **A/B 张量配对阶段**：使用什么函数判断后缀？`_norm.weight` 为什么被 `continue`？
+  - 4. **形状校验阶段**：`token_embd.weight` 的校验为什么与其他张量相反？
+  - 5. **buft_extra 兜底阶段**：什么情况下 LoRA 需要回退到 CPU？
+  - 6. **缓冲区分配阶段**：为什么按 buft 分配而不是按张量分配？
+  - 7. **数据回填阶段**：`llama_file` + `gguf_get_data_offset` 是如何精确定位张量数据的？
+  - 回答问题：
+  - '- 如果 LoRA 文件中存在未配对的 `.lora_a` 张量，会发生什么？'
+  - '- 形状校验失败时抛出的错误信息对用户排查问题有什么帮助？'
+  'no': 2
+  title: 追踪 LoRA 加载的七步流水线
+- contents:
+  - 阅读 `src/llama-chat.cpp` 中 `llm_chat_apply_template` 函数（第 247 行起），对比以下三组模板：
+  - 1. **ChatML / Llama-3 / DeepSeek-3**：它们各自用什么 token 包裹 user/assistant 消息？
+  - 2. **Gemma / Orion / MiniCPM**：这三个模型都没有原生 `system` 角色，模板是如何处理 system 消息的？
+  - 3. **Mistral-V7 / Mistral-V1 / Mistral-V3**：它们在 system 消息、turn 结构、尾部 token 上有何差异？
+  - 回答问题：
+  - '- `add_ass` 参数对哪些模板有实际意义？对哪些模板无效？'
+  - '- `LLM_CHAT_TEMPLATE_UNKNOWN` 分支为什么返回 -1 而不是空字符串？'
+  - '- 中文模板（DeepSeek-3 / Hunyuan / MiniCPM）如何利用 `LU8` 宏？'
+  'no': 3
+  title: 对比聊天模板分支
+- contents:
+  - 阅读 `src/llama-chat.cpp` 中 `llm_chat_detect_template` 函数（第 127 行起），理解其检测策略：
+  - 1. 为什么要先尝试 `llm_chat_template_from_str` 精确匹配，失败后才进入启发式分支？
+  - 2. ChatML 家族是如何通过 `<|im_sep|>` 和 `<end_of_utterance>` 区分 Phi-4 与 SmolVLM 的？
+  - 3. Mistral 家族的四级分支（v7 / v1 / v3 / v3-tekken）的判定条件是什么？
+  - 4. Llama-2 家族的四种变体（LLAMA_2 / SYS / SYS_BOS / SYS_STRIP）的判定顺序如何排列？
+  - 回答问题：
+  - '- 如果一个 GGUF 文件的模板字符串是空的，函数会返回什么？'
+  - '- 启发式检测「宁可错漏也别阻塞」的设计哲学是如何体现的？'
+  - '- 如果误判了模板（例如把 Phi-3 识别成 Falcon-3），会产生什么后果？'
+  'no': 4
+  title: 逆向模板指纹检测
+learning_targets:
+- 理解控制向量（cvec）与 LoRA 适配器的数据结构设计及其在 GGML 计算图中的注入方式
+- 掌握 llama_adapter_cvec 的 init / apply / apply_to 三阶段生命周期管理，包括按后端类型的懒分配策略
+- 深入理解 LoRA 适配器的 GGUF 加载流水线、元数据校验、A/B 张量配对与形状校验
+- 熟悉 LoRA 适配器的元数据查询接口、释放机制以及 aLoRA 调用 Token 的获取方法
+- 掌握 llm_chat_template 枚举体系中 50+ 内置模板的分类与命名规范
+- 理解 llm_chat_apply_template 如何通过手写分支渲染不同模板，避免 Jinja 解析的开销
+- 掌握 llm_chat_detect_template 基于字符串指纹的启发式检测算法与降级策略
+- 能阅读并修改自定义聊天模板与适配器数据流
+life_analogy:
+- 想象你是一位 **乐师**，正在为不同 LLM「调音」：
+- '- **控制向量（cvec）** = 给每根琴弦（每层）单独贴一张「力度标签」，让音色整体偏移'
+- '    - 标签存在仓库（ggml_context）的某个货架（backend buffer）上'
+- '    - 第 0 层「不允许贴标签」（tensors[0]=nullptr），是协议约定的「保护层」'
+- '    - 需要改变音色时只需更换标签内容（apply 重新写入），无需重买琴弦（重新训练）'
+- '- **LoRA 适配器** = 一对可拆卸的「效果器踏板」'
+- '    - A 踏板负责「升维」（rank × in_dim），B 踏板负责「降维」（out_dim × rank）'
+- '    - `alpha/rank` 是效果器上的「强度旋钮」，决定信号放大倍数'
+- '    - 多个踏板可以同时踩下（loras map），每个力度独立可调（float 缩放）'
+- '- **aLoRA** = 「延迟触发踏板」，必须先听到特定乐句（invocation tokens）才激活'
+- '- **GGUF 加载流程** = 「拆箱验货」流水线'
+- '    - 检查外箱标签（general.type=adapter, adapter.type=lora）'
+- '    - 验证物品型号（adapter.arch == model.arch）'
+- '    - 把 A、B 两件物品成对摆上对应货架（按 buft 分配缓冲区）'
+- '    - 读出物品清单（metadata）贴到档案柜（gguf_kv）'
+- '- **聊天模板** = 不同餐厅的「点菜规矩」'
+- '    - 通用 API 只接受「前菜/主菜/甜点」（system/user/assistant）'
+- '    - 模板负责翻译成特定餐厅的暗语（ChatML / Llama-2 / Mistral 等）'
+- '    - `llm_chat_detect_template` 像「侦探」看几眼菜单就猜出餐厅风格'
+- '- **模板自动检测** = 看菜单里有没有「<|im_start|>」（ChatML 指纹）、「[INST]」（Mistral 指纹）等关键词'
+- '- **UNKNOWN 模板** = 「这家餐厅太奇怪了，菜单读不懂」，提醒上层兜底'
+'no': 21
+summary:
+- concept: '`llama_adapter_cvec`'
+  desc: 控制向量，每层一个 F32 张量，通过 `ggml_add` 注入残差流，第 0 层永远为 nullptr
+- concept: '`llama_adapter_cvec::init`'
+  desc: 按后端缓冲区类型懒分配 ggml_context，统一清零初始状态
+- concept: '`llama_adapter_cvec::apply`'
+  desc: data==nullptr 即禁用，否则按层号偏移写入方向向量
+- concept: '`llama_adapter_lora_weight`'
+  desc: A 升维 + B 降维，get_scale 自动推导 `alpha*adapter_scale/rank`
+- concept: '`llama_adapter_lora::ab_map`'
+  desc: 张量名→A/B 对的哈希表，去除 .lora_a/.lora_b 后缀做 key
+- concept: '`llama_adapter_lora::gguf_kv`'
+  desc: 缓存 GGUF 元数据，供对外查询接口读取
+- concept: '`llama_adapter_lora::alora_invocation_tokens`'
+  desc: aLoRA 触发序列，必须是 uint32 token 数组
+- concept: '`llama_adapter_lora_init_impl`'
+  desc: 七步流水线：打开→校验→配对→校验形状→分配→回填→注册
+- concept: '`llama_adapter_lora_init`'
+  desc: 异常安全的入口，try/catch 失败时 delete 返回 nullptr
+- concept: '`buft_extra` 兜底'
+  desc: LoRA 落到 repacking buffer 时回退到 CPU，避免布局冲突
+- concept: '`token_embd` 形状翻转'
+  desc: 因 `llm_build_inp_embd` 会转置，A/B 维度与基础模型相反
+- concept: '`_norm.weight` 忽略'
+  desc: LoRA-norm 暂不支持，向下兼容旧模型
+- concept: '`llama_adapter_lora_free`'
+  desc: 先从 model.loras 擦除，再 delete，避免悬空指针
+- concept: '`llama_adapter_meta_*` 接口'
+  desc: 对称于模型元数据查询：单值 / 按索引 / 计数
+- concept: '`llm_chat_template` 枚举'
+  desc: 50+ 内置模板，覆盖主流 LLM 的对话格式
+- concept: '`LLM_CHAT_TEMPLATES` map'
+  desc: O(log n) 字符串→枚举查找，未命中抛异常
+- concept: '`llm_chat_apply_template`'
+  desc: 不用 Jinja，手写 50+ 分支渲染器，效率高但维护成本高
+- concept: '`llm_chat_detect_template`'
+  desc: 基于特征子串的启发式检测（ChatML/Mistral/Llama-2/Gemma 等）
+- concept: '`LU8` 宏'
+  desc: 兼容 C++17 的 u8 字面量，保证 UTF-8 字符串字面量
+- concept: '`UNKNOWN` 兜底'
+  desc: 检测不到时返回 UNKNOWN，应用层再回退到 Jinja 解析
+- concept: '`llama_chat_builtin_templates`'
+  desc: 对外暴露模板名清单，支持客户端枚举可用模板
+units:
+- codes:
+  - file: src/llama-adapter.h
+    line: 13-32
+    method_or_func: llama_adapter_cvec
+  - file: src/llama-adapter.cpp
+    line: 10-16
+    method_or_func: llama_adapter_cvec.tensor_for()
+  - file: src/llama-adapter.cpp
+    line: 18-25
+    method_or_func: llama_adapter_cvec.apply_to()
+  - file: src/llama-adapter.cpp
+    line: 27-83
+    method_or_func: llama_adapter_cvec.init()
+  - file: src/llama-adapter.cpp
+    line: 85-117
+    method_or_func: llama_adapter_cvec.apply()
+  name: 控制向量适配器 —— 模型行为的「隐形调音台」
+  'no': 1
+  points:
+  - '**为什么需要 `llama_adapter_cvec`？**'
+  - '- 让用户通过加在残差流上的方向向量「微调」模型行为，无需重新训练'
+  - '- 每一个 transformer 层（除第 0 层）都可以拥有一个独立的 `n_embd` 长度 F32 张量'
+  - '- 通过 `ggml_add` 在 `apply_to` 阶段注入到计算图中'
+  - '- `tensor_for()` 通过层号边界检查决定是否激活，是「按需启用」的关键'
+  - '**`init()` 的精髓：按缓冲区类型分配上下文**'
+  - '- 用 `std::map<buft, ctx*>` 聚合，避免重复创建 ggml_context'
+  - '- `ctx_for_buft` lambda 实现懒分配：第一次遇到某后端类型时初始化'
+  - '- `no_alloc=true` 让 ggml 推迟内存分配到 buffer 阶段'
+  - '- `tensors[0]` 永远为 `nullptr`，因为「第 0 层不应用控制向量」是协议约定'
+  - '- 用 `ggml_backend_alloc_ctx_tensors_from_buft` 按后端类型一次性分配缓冲区'
+  - '- `ggml_backend_buffer_clear(buf, 0)` 把内存清零，初始为「无影响」状态'
+  - '**`apply_to()` 在计算图上注入方向向量**'
+  - '- 由构图阶段调用，把控制向量张量通过 `ggml_add` 加到残差流节点上'
+  - '- 第 0 层 `tensor_for(0) == nullptr` 会直接跳过 `ggml_add` 调用'
+  - '**`apply()` 的双模式：传入 nullptr 即禁用**'
+  - '- 校验 `n_embd` 与模型 `hparams.n_embd` 是否一致'
+  - '- 通过 `layer_start` / `layer_end` 控制作用区间'
+  - '- 数据按 `n_embd * (il - 1)` 偏移写入对应层张量'
+  - '- 第 0 层无对应数据，这是协议层的不对称设计'
+  - '**智能指针封装：`llama_adapter_cvec_ptr`**'
+  - '- 用 `shared_ptr` 自动管理生命周期，方便在上下文与适配器集合间共享'
+- codes:
+  - file: src/llama-adapter.h
+    line: 42-56
+    method_or_func: llama_adapter_lora_weight
+  - file: src/llama-adapter.h
+    line: 58-80
+    method_or_func: llama_adapter_lora
+  - file: src/llama-adapter.h
+    line: 82-84
+    method_or_func: llama_adapter_loras
+  - file: src/llama-adapter.cpp
+    line: 121-131
+    method_or_func: llama_adapter_lora.get_weight()
+  name: LoRA 适配器权重对 —— A/B 张量的「双人舞」
+  'no': 2
+  points:
+  - '**`llama_adapter_lora_weight`：A 升维 + B 降维**'
+  - '- 标准的 LoRA 形式：`W'' = W + alpha/r * (B @ A)`'
+  - '- `a` 张量形状 `(rank, in_dim)`，`b` 张量形状 `(out_dim, rank)`'
+  - '- `get_scale()` 自动推导真实缩放因子：`alpha * adapter_scale / rank`'
+  - '- 当 `alpha == 0` 时退化为纯 `adapter_scale`，兼容老旧 LoRA 写法'
+  - '- 默认构造函数 `llama_adapter_lora_weight()` 用于在 ab_map 中先占位'
+  - '- 双参构造器 `llama_adapter_lora_weight(a, b)` 用于一次性创建 A/B 对'
+  - '**`llama_adapter_lora`：适配器外壳与模型绑定**'
+  - '- 通过构造函数 `llama_adapter_lora(model)` 绑定到具体 `llama_model *`'
+  - '- 默认析构函数 `~llama_adapter_lora()` 自动清理 `ab_map` 与 `ctxs`'
+  - '- `ab_map`：用张量名（去掉 `.lora_a`/`.lora_b` 后缀）做 key'
+  - '- `gguf_kv`：缓存 GGUF 元数据供 `llama_adapter_meta_*` 系列查询'
+  - '- `alora_invocation_tokens`：支持 activated LoRA（aLoRA）的触发 token 序列'
+  - '- `get_n_nodes()` 估算图节点数：每个 LoRA 对占 6 个节点（a/b/scale/add + 2*mul_mat）'
+  - '- `get_weight(w)` 通过基础模型张量指针反查对应的 LoRA A/B 对'
+  - '**类型定义：`llama_adapter_loras` 是带缩放的集合**'
+  - '- `std::unordered_map<llama_adapter_lora*, float>`：键是适配器，值是它的缩放系数'
+  - '- `llama_adapter_loras_ptr` 用 `unique_ptr` 封装，支持上下文独占持有'
+- codes:
+  - file: src/llama-adapter.cpp
+    line: 144-330
+    method_or_func: llama_adapter_lora_init_impl()
+  - file: src/llama-adapter.cpp
+    line: 332-345
+    method_or_func: llama_adapter_lora_init()
+  name: LoRA 加载流程 —— 从 GGUF 到张量的「拆箱流水线」
+  'no': 3
+  points:
+  - '**入口：`llama_adapter_lora_init_impl` 的七步流水线**'
+  - '- 用 `gguf_init_from_file(no_alloc=true)` 打开 GGUF 元数据'
+  - '- **元数据校验**：检查 `general.type == adapter`、`adapter.type == lora`、`general.architecture`
+    与基础模型一致'
+  - '- 读取 `adapter.lora.alpha` 作为缩放因子'
+  - '- 解析 aLoRA 的 `adapter.alora.invocation_tokens` 数组（必须是 `uint32` 数组）'
+  - '- 遍历所有张量，按后缀缀 `lora_a` / `lora_b` 成对绑定到 `ab_map`'
+  - '- **重要**：`_norm.weight` 被忽略（LoRA-norm 暂未支持，向下兼容旧模型）'
+  - '- **关键约束**：必须是合法的 A/B 对，遇到其他后缀即抛异常'
+  - '**设备感知的多缓冲区分配**'
+  - '- 遍历 `ab_map`，按 `model.get_tensor(name)->buffer` 反查基础模型张量的后端类型'
+  - '- `buft_extra` 列表：避免把 LoRA 放到 repacking 缓冲区，必要时回退到 CPU'
+  - '- 通过 `ctx_for_buft` lambda 实现「按后端类型懒分配 ggml_context」'
+  - '- **`token_embd` 的形状校验**：A/B 维度与基础模型相反（因为 `llm_build_inp_embd` 会转置）'
+  - '- 其他张量的校验：A 的 `ne[0]`、`B` 的 `ne[1]` 必须与基础模型一致'
+  - '- 用 `ggml_dup_tensor` 在目标设备的 context 中复制 A/B 结构'
+  - '**数据回填与注册**'
+  - '- 用 `llama_file` + 偏移直接定位到 GGUF 数据段，避免重新解析'
+  - '- 对每个 A/B 对分别调用 `ggml_backend_tensor_set` 写入后端缓冲区'
+  - '- 最后调用 `model.loras.insert(&adapter)` 把适配器注册到基础模型'
+  - '**入口封装：异常安全的 `llama_adapter_lora_init`**'
+  - '- try-catch 包裹整个加载过程'
+  - '- 失败时 `delete adapter` 释放内存并返回 `nullptr`'
+  - '- 上层调用方只需判断返回值是否为 `nullptr`'
+- codes:
+  - file: src/llama-adapter.cpp
+    line: 347-358
+    method_or_func: llama_adapter_meta_val_str()
+  - file: src/llama-adapter.cpp
+    line: 360-362
+    method_or_func: llama_adapter_meta_count()
+  - file: src/llama-adapter.cpp
+    line: 364-375
+    method_or_func: llama_adapter_meta_key_by_index()
+  - file: src/llama-adapter.cpp
+    line: 377-388
+    method_or_func: llama_adapter_meta_val_str_by_index()
+  name: LoRA 元数据查询接口 —— 适配器的「档案柜」
+  'no': 4
+  points:
+  - '**为什么需要元数据查询？**'
+  - '- 用户可能想知道 LoRA 的训练语料、tokenizer 设置、license 等'
+  - '- GGUF 文件中 `adapter.*` 开头的键值对需要被对外暴露'
+  - '**单值查询：`llama_adapter_meta_val_str`**'
+  - '- 找不到时 `buf[0] = ''\0''` 并返回 `-1`'
+  - '- 找到时用 `snprintf` 写入用户缓冲区，返回写入字节数'
+  - '**索引式查询：与 `llama_model_meta_*` 对称设计**'
+  - '- `llama_adapter_meta_count` 返回元数据总数'
+  - '- `llama_adapter_meta_key_by_index` 按下标取 key（O(n) 遍历 `unordered_map`）'
+  - '- `llama_adapter_meta_val_str_by_index` 按下标取 value'
+  - '- 这种 API 设计允许用户以「枚举」方式遍历未知元数据'
+- codes:
+  - file: src/llama-adapter.cpp
+    line: 390-401
+    method_or_func: llama_adapter_lora_free()
+  - file: src/llama-adapter.cpp
+    line: 403-408
+    method_or_func: llama_adapter_get_alora_n_invocation_tokens()
+  - file: src/llama-adapter.cpp
+    line: 410-413
+    method_or_func: llama_adapter_get_alora_invocation_tokens()
+  name: LoRA 释放与 aLoRA 调用 Token —— 适配器的「退出与启动信号」
+  'no': 5
+  points:
+  - '**`llama_adapter_lora_free`：幂等释放**'
+  - '- 入参 `nullptr` 直接返回，避免野指针'
+  - '- 必须从 `model->loras` 集合中先 erase（防止持有悬空指针）'
+  - '- 然后 `delete adapter` 触发 `~llama_adapter_lora()`（默认析构即可清理 `ab_map`）'
+  - '**aLoRA（Activated LoRA）的调用序列**'
+  - '- 不是所有 LoRA 都持续生效：aLoRA 只在「特定 token 出现时」才激活'
+  - '- `llama_adapter_get_alora_n_invocation_tokens` 返回触发序列长度'
+  - '- `llama_adapter_get_alora_invocation_tokens` 返回 `llama_token*` 指针（指向 GGUF 内嵌数组）'
+  - '- 客户端可在检测到这些 token 时才把 LoRA 投入推理图'
+  - '- `GGML_ASSERT(adapter)` 保证非空，避免空指针解引用'
+- codes:
+  - file: src/llama-chat.h
+    line: 7-66
+    method_or_func: llm_chat_template
+  - file: src/llama-chat.h
+    line: 78-82
+    method_or_func: llm_chat_apply_template
+  - file: src/llama-chat.cpp
+    line: 247-580
+    method_or_func: llm_chat_apply_template()
+  - file: src/llama-chat.cpp
+    line: 123-125
+    method_or_func: llm_chat_template_from_str()
+  - file: src/llama-chat.cpp
+    line: 16-26
+    method_or_func: trim()
+  name: 聊天模板系统 —— LLM 的「对话礼仪教材」
+  'no': 6
+  points:
+  - '**为什么需要聊天模板？**'
+  - '- 每个 LLM 都期望特定格式的输入（特殊 token、角色标签、消息分隔符）'
+  - '- 用户层只关心「system/user/assistant」三类消息，模板负责翻译成模型专属 prompt'
+  - '**`llm_chat_template` 枚举：50+ 模板的大家庭**'
+  - '- 从经典 ChatML、Llama-2、Mistral 到中英日韩各种地域化模板'
+  - '- 包括 `LLM_CHAT_TEMPLATE_UNKNOWN` 作为降级选项'
+  - '- 中文字符用 `LU8(x)` 宏保证 C++20 之前的 UTF-8 兼容性'
+  - '**模板名 → 枚举：`llm_chat_template_from_str`**'
+  - '- 用 `std::map` 实现 O(log n) 查找（而非 unordered_map，因为数据量小）'
+  - '- `LLM_CHAT_TEMPLATES.at(name)` 找不到即抛 `out_of_range`'
+  - '**`llm_chat_apply_template`：手写 50+ 模板渲染器**'
+  - '- 不用 Jinja 解析，效率高但维护成本也高'
+  - '- 严格按枚举分支，匹配到 `UNKNOWN` 返回 `-1` 提示不支持'
+  - '- `add_ass` 决定是否追加 assistant 引导 token'
+  - '- 对没有 system 角色的模型（Gemma），会把 system 合并到 user 第一条'
+  - '- 对带工具调用的模型（EXAONE-4、Granite-4）增加了 `tool` 角色分支'
+  - '**辅助工具：`trim()` 与 `LU8()`**'
+  - '- `trim()` 去除字符串首尾空白，被多个模板调用'
+  - '- `LU8()` 跨 C++ 标准地保证 UTF-8 字符串字面量'
+- codes:
+  - file: src/llama-chat.h
+    line: '74'
+    method_or_func: llm_chat_detect_template()
+  - file: src/llama-chat.cpp
+    line: 127-244
+    method_or_func: llm_chat_detect_template()
+  name: 模板自动检测 —— 看一眼字符串猜你是谁
+  'no': 7
+  points:
+  - '**为什么需要自动检测？**'
+  - '- GGUF 中可能只存了原始 Jinja 字符串，需要识别出对应的内置枚举'
+  - '- 不同模型的模板字符串千差万别，但都有「指纹」特征'
+  - '**`llm_chat_detect_template`：字符串指纹匹配**'
+  - '- 先尝试精确名字匹配（`llm_chat_template_from_str`）'
+  - '- 失败后用 `tmpl_contains` 在字符串中搜索特征子串'
+  - '- **ChatML 系**：通过 `<|im_start|>` 识别，区分 PHI-4（带 `<|im_sep|>`）和 SmolVLM（带 `<end_of_utterance>`）'
+  - '- **Mistral 系**：先判 `[INST]` 前缀，再区分 v7（带 `[SYSTEM_PROMPT]`）、v1（带单引号）、v3-tekken（带双引号）'
+  - '- **Llama-2 系**：根据 `<<SYS>>`、`bos_token + ''[INST]``、`content.strip()` 三个特征细分四种变体'
+  - '- **Gemma**：用 `<start_of_turn>` 唯一识别'
+  - '- **DeepSeek-3 / Hunyuan**：利用中文特殊 token `<｜...|>`'
+  - '- **Yandex**：通过俄语 `Ассистент:` 标识'
+  - '**最后的降级**：所有特征都不匹配则返回 `LLM_CHAT_TEMPLATE_UNKNOWN`'
+  - 这是「软启发式」的典型实践：宁可错漏也别阻塞，由上层再做兜底
+- codes:
+  - file: src/llama-chat.cpp
+    line: 582-589
+    method_or_func: llama_chat_builtin_templates()
+  - file: src/llama-chat.h
+    line: '73'
+    method_or_func: llm_chat_template_from_str()
+  - file: src/llama-chat.h
+    line: '74'
+    method_or_func: llm_chat_detect_template()
+  name: 内置模板清单 —— 「对话礼仪教材」的目录
+  'no': 8
+  points:
+  - '**`llama_chat_builtin_templates`：对外暴露模板名清单**'
+  - '- 让客户端程序能够枚举所有可用模板名'
+  - '- 用 `min(len, LLM_CHAT_TEMPLATES.size())` 防止越界写入'
+  - '- 迭代器步进写入用户提供的 `const char **` 数组'
+  - '**它与枚举头的关系**'
+  - '- 枚举在 `llama-chat.h`，清单在 `llama-chat.cpp`'
+  - '- 这种「头文件公开枚举、实现文件公开清单」的设计便于增量扩展'
+  - '- 客户端可用 `llama_chat_builtin_templates` 拿到所有合法模板名，再调用 `llm_chat_template_from_str`
+    拿到对应枚举'
+  - '**示例流程**'
+  - '- 列出所有支持的模板 → 用户选择 → 转枚举 → 调用 `llm_chat_apply_template` 渲染'

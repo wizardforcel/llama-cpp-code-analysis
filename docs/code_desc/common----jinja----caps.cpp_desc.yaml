@@ -1,0 +1,103 @@
+classes:
+- desc: 表示 Jinja 模板支持的各项消息和工具调用能力。
+  methods:
+  - code:
+    - std::map<std::string, bool> caps::to_map() const {
+    - '    return {'
+    - '        {"supports_string_content", supports_string_content},'
+    - '        {"supports_typed_content", supports_typed_content},'
+    - '        {"supports_tools", supports_tools},'
+    - '        {"supports_tool_calls", supports_tool_calls},'
+    - '        {"supports_parallel_tool_calls", supports_parallel_tool_calls},'
+    - '        {"supports_system_role", supports_system_role},'
+    - '        {"supports_preserve_reasoning", supports_preserve_reasoning},'
+    - '        {"supports_object_arguments", supports_object_arguments},'
+    - '    };'
+    - '}'
+    desc: 将 caps 对象中的各项能力标志转换为字符串到布尔值的映射。
+    line: 41-52
+    name: to_map
+  - code:
+    - std::string caps::to_string() const {
+    - '    std::ostringstream ss;'
+    - '    ss << "Caps(\n";'
+    - '    for (const auto & [key, value] : to_map()) {'
+    - '        ss << "  " << key << "=" << (value ? "true" : "false") << "\n";'
+    - '    }'
+    - '    ss << ")";'
+    - '    return ss.str();'
+    - '}'
+    desc: 将所有能力标志格式化为便于调试的多行字符串。
+    line: 54-63
+    name: to_string
+  name: caps
+desc: 该文件实现 Jinja 模板程序的能力分析机制，通过构造不同的消息和工具输入并执行模板，检查模板对字符串内容、类型化内容、系统角色、工具调用、对象参数、并行工具调用以及推理内容保留等特性的支持情况，同时提供能力结果的映射和字符串表示。
+file: common/jinja/caps.cpp
+funcs:
+- code:
+  - static void caps_try_execute(jinja::program & prog,
+  - '                             const caps_json_fn & messages_fn,'
+  - '                             const caps_json_fn & tools_fn,'
+  - '                             const caps_analyze_fn & analyze_fn) {'
+  - '    context ctx;'
+  - '    ctx.is_get_stats = true;'
+  - '    jinja::global_from_json(ctx, json{'
+  - '        {"messages", messages_fn()},'
+  - '        {"tools", tools_fn()},'
+  - '        {"bos_token", ""},'
+  - '        {"eos_token", ""},'
+  - '        {"add_generation_prompt", true}'
+  - '    }, true);'
+  - ''
+  - '    auto messages = ctx.get_val("messages");'
+  - '    auto tools = ctx.get_val("tools");'
+  - ''
+  - '    bool success = false;'
+  - '    std::string result;'
+  - '    try {'
+  - '        jinja::runtime runtime(ctx);'
+  - '        auto results = runtime.execute(prog);'
+  - '        auto parts = jinja::runtime::gather_string_parts(results);'
+  - '        result = parts->as_string().str();'
+  - '        success = true;'
+  - '    } catch (const std::exception & e) {'
+  - '        JJ_DEBUG("Exception during execution: %s", e.what());'
+  - '        result = "";'
+  - '    }'
+  - ''
+  - '    analyze_fn(success, messages, tools);'
+  - '}'
+  desc: 使用给定的消息和工具输入执行 Jinja 程序，并将执行结果、消息和工具值交给分析回调处理。
+  line: 18-39
+  name: caps_try_execute
+- code:
+  - static void caps_print_stats(value & v, const std::string & path) {
+  - '    std::string ops;'
+  - '    for (const auto & name : v->stats.ops) {'
+  - '        ops += name + " ";'
+  - '    }'
+  - '    JJ_DEBUG("Value %s, type: %s %s, ops: %s",'
+  - '             path.c_str(),'
+  - '             v->type().c_str(),'
+  - '             v->stats.used ? "(used)" : "",'
+  - '             ops.c_str());'
+  - '}'
+  desc: 输出 value 的类型、是否被使用以及执行期间记录的操作统计信息。
+  line: 43-53
+  name: caps_print_stats
+- code:
+  - caps caps_get(jinja::program & prog) {
+  - '    caps result;'
+  - ''
+  - '    static const auto has_op = [](value & v, const std::string & op_name) {'
+  - '        return v->stats.ops.find(op_name) != v->stats.ops.end();'
+  - '    };'
+  - ''
+  - '    // 依次检查类型化内容、系统角色、工具调用、参数类型、并行工具调用和推理内容保留能力'
+  - '    // 每项检查通过 caps_try_execute 执行模板并根据 value 统计信息更新 result'
+  - ''
+  - '    return result;'
+  - '}'
+  desc: 通过多组模拟消息和工具调用场景执行模板，分析并返回模板支持的各项能力。
+  line: 65-329
+  name: caps_get

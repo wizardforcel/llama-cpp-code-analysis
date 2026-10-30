@@ -1,0 +1,165 @@
+classes:
+- desc: 模型管理静态服务类，封装了与服务器模型 API 的交互逻辑和模型 ID 解析工具方法
+  methods:
+  - code:
+    - 'static async list(): Promise<ApiModelListResponse> {'
+    - "\t\treturn apiFetch<ApiModelListResponse>(API_MODELS.LIST);"
+    - "\t}"
+    desc: 从 OpenAI 兼容端点获取模型列表，适用于 MODEL 和 ROUTER 两种模式
+    line: 33-35
+    name: list
+  - code:
+    - 'static async listRouter(): Promise<ApiRouterModelsListResponse> {'
+    - "\t\treturn apiFetch<ApiRouterModelsListResponse>(API_MODELS.LIST);"
+    - "\t}"
+    desc: 从 Router 模式获取包含详细元数据（加载状态、路径等配置信息）的模型列表
+    line: 43-45
+    name: listRouter
+  - code:
+    - 'static async load(modelId: string, extraArgs?: string[]): Promise<ApiRouterModelsLoadResponse>
+      {'
+    - "\t\tconst payload: { model: string; extra_args?: string[] } = { model: modelId\
+      \ };"
+    - "\t\tif (extraArgs && extraArgs.length > 0) {"
+    - "\t\t\tpayload.extra_args = extraArgs;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn apiPost<ApiRouterModelsLoadResponse>(API_MODELS.LOAD, payload);"
+    - "\t}"
+    desc: 加载指定模型（仅 Router 模式），支持传递额外参数，注意接口立即返回成功但需轮询确认实际加载完成
+    line: 58-65
+    name: load
+  - code:
+    - 'static async unload(modelId: string): Promise<ApiRouterModelsUnloadResponse>
+      {'
+    - "\t\treturn apiPost<ApiRouterModelsUnloadResponse>(API_MODELS.UNLOAD, { model:\
+      \ modelId });"
+    - "\t}"
+    desc: 卸载指定模型（仅 Router 模式），接口立即返回成功但需轮询确认实际卸载完成
+    line: 74-76
+    name: unload
+  - code:
+    - 'static isModelLoaded(model: ApiModelDataEntry): boolean {'
+    - "\t\treturn model.status.value === ServerModelStatus.LOADED;"
+    - "\t}"
+    desc: 检查模型是否处于已加载状态
+    line: 90-92
+    name: isModelLoaded
+  - code:
+    - 'static isModelLoading(model: ApiModelDataEntry): boolean {'
+    - "\t\treturn model.status.value === ServerModelStatus.LOADING;"
+    - "\t}"
+    desc: 检查模型是否正在加载中
+    line: 100-102
+    name: isModelLoading
+  - code:
+    - 'static parseModelId(modelId: string): ParsedModelId {'
+    - "\t\tconst result: ParsedModelId = {"
+    - "\t\t\traw: modelId,"
+    - "\t\t\torgName: null,"
+    - "\t\t\tmodelName: null,"
+    - "\t\t\tparams: null,"
+    - "\t\t\tactivatedParams: null,"
+    - "\t\t\tquantization: null,"
+    - "\t\t\ttags: []"
+    - "\t\t};"
+    - ''
+    - "\t\t// 1. Extract colon-separated quantization (e.g. `model:Q4_K_M`)"
+    - "\t\tconst colonIdx = modelId.indexOf(MODEL_ID_QUANTIZATION_SEPARATOR);"
+    - "\t\tlet modelPath: string;"
+    - ''
+    - "\t\tif (colonIdx !== MODEL_ID_NOT_FOUND) {"
+    - "\t\t\tresult.quantization = modelId.slice(colonIdx + 1) || null;"
+    - "\t\t\tmodelPath = modelId.slice(0, colonIdx);"
+    - "\t\t} else {"
+    - "\t\t\tmodelPath = modelId;"
+    - "\t\t}"
+    - ''
+    - "\t\t// 2. Extract org name (e.g. `org/model` -> org = \"org\")"
+    - "\t\tconst slashIdx = modelPath.indexOf(MODEL_ID_ORG_SEPARATOR);"
+    - "\t\tlet modelStr: string;"
+    - ''
+    - "\t\tif (slashIdx !== MODEL_ID_NOT_FOUND) {"
+    - "\t\t\tresult.orgName = modelPath.slice(0, slashIdx);"
+    - "\t\t\tmodelStr = modelPath.slice(slashIdx + 1);"
+    - "\t\t} else {"
+    - "\t\t\tmodelStr = modelPath;"
+    - "\t\t}"
+    - ''
+    - "\t\t// 3. Handle dot-separated quantization (e.g. `model-name.Q4_K_M`)"
+    - "\t\tconst dotIdx = modelStr.lastIndexOf('.');"
+    - ''
+    - "\t\tif (dotIdx !== MODEL_ID_NOT_FOUND && !result.quantization) {"
+    - "\t\t\tconst afterDot = modelStr.slice(dotIdx + 1);"
+    - ''
+    - "\t\t\tif (MODEL_QUANTIZATION_SEGMENT_RE.test(afterDot)) {"
+    - "\t\t\t\tresult.quantization = afterDot;"
+    - "\t\t\t\tmodelStr = modelStr.slice(0, dotIdx);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\tconst segments = modelStr.split(MODEL_ID_SEGMENT_SEPARATOR);"
+    - ''
+    - "\t\t// 4. Detect trailing quantization from dash-separated segments"
+    - "\t\t//    Handle UD-prefixed quantization (e.g. `UD-Q8_K_XL`) and"
+    - "\t\t//    standalone quantization (e.g. `Q4_K_M`, `BF16`, `F16`, `MXFP4`)"
+    - "\t\tif (!result.quantization && segments.length > 1) {"
+    - "\t\t\tconst last = segments[segments.length - 1];"
+    - "\t\t\tconst secondLast = segments.length > 2 ? segments[segments.length - 2]\
+      \ : null;"
+    - ''
+    - "\t\t\tif (MODEL_QUANTIZATION_SEGMENT_RE.test(last)) {"
+    - "\t\t\t\tif (secondLast && MODEL_CUSTOM_QUANTIZATION_PREFIX_RE.test(secondLast))\
+      \ {"
+    - "\t\t\t\t\tresult.quantization = `${secondLast}-${last}`;"
+    - "\t\t\t\t\tsegments.splice(segments.length - 2, 2);"
+    - "\t\t\t\t} else {"
+    - "\t\t\t\t\tresult.quantization = last;"
+    - "\t\t\t\t\tsegments.pop();"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\t// 5. Find params and activated params"
+    - "\t\tlet paramsIdx = MODEL_ID_NOT_FOUND;"
+    - "\t\tlet activatedParamsIdx = MODEL_ID_NOT_FOUND;"
+    - ''
+    - "\t\tfor (let i = 0; i < segments.length; i++) {"
+    - "\t\t\tconst seg = segments[i];"
+    - ''
+    - "\t\t\tif (paramsIdx === MODEL_ID_NOT_FOUND && MODEL_PARAMS_RE.test(seg)) {"
+    - "\t\t\t\tparamsIdx = i;"
+    - "\t\t\t\tresult.params = seg.toUpperCase();"
+    - "\t\t\t} else if (paramsIdx !== MODEL_ID_NOT_FOUND && MODEL_ACTIVATED_PARAMS_RE.test(seg))\
+      \ {"
+    - "\t\t\t\tactivatedParamsIdx = i;"
+    - "\t\t\t\tresult.activatedParams = seg.toUpperCase();"
+    - "\t\t\t}"
+    - "\t\t}"
+    - ''
+    - "\t\t// 6. Model name = segments before params; tags = remaining segments after\
+      \ params"
+    - "\t\tconst pivotIdx = paramsIdx !== MODEL_ID_NOT_FOUND ? paramsIdx : segments.length;"
+    - ''
+    - "\t\tresult.modelName = segments.slice(0, pivotIdx).join(MODEL_ID_SEGMENT_SEPARATOR)\
+      \ || null;"
+    - ''
+    - "\t\tif (paramsIdx !== MODEL_ID_NOT_FOUND) {"
+    - "\t\t\tresult.tags = segments.slice(paramsIdx + 1).filter((_, relIdx) => {"
+    - "\t\t\t\tconst absIdx = paramsIdx + 1 + relIdx;"
+    - "\t\t\t\tif (absIdx === activatedParamsIdx) return false;"
+    - ''
+    - "\t\t\t\treturn !MODEL_IGNORED_SEGMENTS.has(segments[absIdx].toUpperCase());"
+    - "\t\t\t});"
+    - "\t\t}"
+    - ''
+    - "\t\treturn result;"
+    - "\t}"
+    desc: 解析模型 ID 字符串为结构化组件，支持识别组织名、模型名、参数量、激活参数、标签和多种量化格式（包括冒号分隔、点分隔和短横线分隔）
+    line: 120-199
+    name: parseModelId
+  name: ModelsService
+desc: 该文件定义了 ModelsService 服务类，用于与服务器端模型管理 API 交互，支持获取模型列表（包括 OpenAI 兼容模式和 Router
+  详细模式）、加载/卸载模型、检查模型状态（已加载/加载中），以及提供强大的模型 ID 解析功能，能够识别组织名、模型名、参数量、激活参数和量化格式等结构化信息。
+file: tools/server/webui/src/lib/services/models.service.ts
+funcs: []

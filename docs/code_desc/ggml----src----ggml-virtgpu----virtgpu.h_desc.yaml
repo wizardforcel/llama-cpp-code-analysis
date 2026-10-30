@@ -1,0 +1,120 @@
+classes: []
+desc: 该文件是虚拟GPU（virtgpu）后端的头文件，定义了virtgpu结构体和核心API，用于管理虚拟GPU设备、支持APIR（API Remoting）远程调用机制，并通过共享内存实现主机与guest之间的命令传输，为上层图形/计算API（如Vulkan）提供底层支持。
+file: ggml/src/ggml-virtgpu/virtgpu.h
+funcs:
+- code:
+  - '#pragma once'
+  - '#include "virtgpu-utils.h"'
+  - '#include "virtgpu-shm.h"'
+  - '#include "virtgpu-apir.h"'
+  - '#include "backend/shared/api_remoting.h"'
+  - '#include "backend/shared/apir_cs.h"'
+  - '#include <fcntl.h>'
+  - '#include <stdbool.h>'
+  - '#include <stdio.h>'
+  - '#include <sys/stat.h>'
+  - '#include <sys/sysmacros.h>'
+  - '#include <threads.h>'
+  - '#include <xf86drm.h>'
+  - '#include <cstring>'
+  - '#include "ggml-remoting.h"'
+  - '#define VIRGL_RENDERER_UNSTABLE_APIS 1'
+  - '#include "apir_hw.h"'
+  - '#include <drm/virtgpu_drm.h>'
+  - '#include "venus_hw.h"'
+  - '#ifndef VIRTGPU_DRM_CAPSET_APIR'
+  - '#    define VIRTGPU_DRM_CAPSET_APIR 10'
+  - '#endif'
+  - '#define VENUS_COMMAND_TYPE_LENGTH 331'
+  - '#ifndef VIRTGPU_DRM_CAPSET_VENUS'
+  - '#    define VIRTGPU_DRM_CAPSET_VENUS 4'
+  - '#endif'
+  - typedef uint32_t virgl_renderer_capset;
+  - '#define VIRTGPU_PCI_VENDOR_ID       0x1af4'
+  - '#define VIRTGPU_PCI_DEVICE_ID       0x1050'
+  - '#define VIRTGPU_BLOB_MEM_GUEST_VRAM 0x0004'
+  - '#define VIRTGPU_PARAM_GUEST_VRAM    9'
+  - '#define SHMEM_DATA_SIZE  0x1830000'
+  - '#define SHMEM_REPLY_SIZE 0x4000'
+  - '#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))'
+  - enum virt_gpu_result_t {
+  - '    APIR_SUCCESS                     = 0,'
+  - '    APIR_ERROR_INITIALIZATION_FAILED = -1,'
+  - '};'
+  - '#define PRINTFLIKE(f, a) __attribute__((format(__printf__, f, a)))'
+  - struct virtgpu {
+  - '    bool use_apir_capset;'
+  - '    int fd;'
+  - '    struct {'
+  - '        virgl_renderer_capset      id;'
+  - '        uint32_t                   version;'
+  - '        virgl_renderer_capset_apir data;'
+  - '    } capset;'
+  - '    util_sparse_array shmem_array;'
+  - '    virtgpu_shmem reply_shmem;'
+  - '    virtgpu_shmem data_shmem;'
+  - '    mtx_t data_shmem_mutex;'
+  - '    struct {'
+  - '        char *   description;'
+  - '        char *   name;'
+  - '        int32_t  device_count;'
+  - '        uint32_t type;'
+  - '        size_t   memory_free;'
+  - '        size_t   memory_total;'
+  - '    } cached_device_info;'
+  - '    struct {'
+  - '        apir_buffer_type_host_handle_t host_handle;'
+  - '        char *                         name;'
+  - '        size_t                         alignment;'
+  - '        size_t                         max_size;'
+  - '    } cached_buffer_type;'
+  - '};'
+  - static inline int virtgpu_ioctl(virtgpu * gpu, unsigned long request, void * args)
+    {
+  - '    return drmIoctl(gpu->fd, request, args);'
+  - '}'
+  - virtgpu * create_virtgpu();
+  - apir_encoder * remote_call_prepare(virtgpu * gpu, ApirCommandType apir_cmd_type,
+    int32_t cmd_flags);
+  - uint32_t remote_call(virtgpu *       gpu,
+  - '                     apir_encoder *  enc,'
+  - '                     apir_decoder ** dec,'
+  - '                     float           max_wait_ms,'
+  - '                     long long *     call_duration_ns);'
+  - void remote_call_finish(virtgpu * gpu, apir_encoder * enc, apir_decoder * dec);
+  desc: 文件全局作用域，包含宏定义、结构体定义、常量定义和函数声明，定义了virtgpu设备的结构与管程接口。
+  line: 1-125
+  name: __main__
+- code:
+  - static inline int virtgpu_ioctl(virtgpu * gpu, unsigned long request, void * args)
+    {
+  - '    return drmIoctl(gpu->fd, request, args);'
+  - '}'
+  desc: 封装drmIoctl系统调用的内联函数，用于向virtgpu设备文件描述符发送IO控制命令。
+  line: 96-98
+  name: virtgpu_ioctl
+- code:
+  - virtgpu * create_virtgpu();
+  desc: 创建并初始化virtgpu对象，返回指向新实例的指针。
+  line: '100'
+  name: create_virtgpu
+- code:
+  - apir_encoder * remote_call_prepare(virtgpu * gpu, ApirCommandType apir_cmd_type,
+    int32_t cmd_flags);
+  desc: 准备一次APIR远程调用，创建并返回一个名为apir_encoder的编码器实例。
+  line: '102'
+  name: remote_call_prepare
+- code:
+  - uint32_t remote_call(virtgpu *       gpu,
+  - '                     apir_encoder *  enc,'
+  - '                     apir_decoder ** dec,'
+  - '                     float           max_wait_ms,'
+  - '                     long long *     call_duration_ns);'
+  desc: 执行APIR远程调用，通过编码器发送命令并解码返回结果，支持超时控制和耗时统计。
+  line: 104-108
+  name: remote_call
+- code:
+  - void remote_call_finish(virtgpu * gpu, apir_encoder * enc, apir_decoder * dec);
+  desc: 完成并清理一次APIR远程调用，释放编码器和解码器资源。
+  line: '110'
+  name: remote_call_finish

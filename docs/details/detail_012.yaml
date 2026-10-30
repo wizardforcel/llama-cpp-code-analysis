@@ -1,0 +1,516 @@
+code_map:
+- src/llama-arch.h
+- '├── enum llm_arch                     # 100+模型架构枚举（LLM_ARCH_LLAMA/MAMBA/RWKV7/QWEN3NEXT等）'
+- '├── enum llm_kv                       # GGUF元数据键枚举（通用/词表/注意力/RoPE/分词器/SSM）'
+- '├── enum llm_tensor                   # 张量类型枚举（TOKEN_EMBD/ATTN_Q/SSM_A/TIME_MIX_*等）'
+- '├── enum llm_tensor_layer             # 张量所属层类型（INPUT/REPEATING/OUTPUT）'
+- '├── struct LLM_KV                     # 键生成器（接收arch和suffix，生成完整键名）'
+- '│   ├── LLM_KV()                      # 构造函数，初始化arch与suffix'
+- '│   └── operator()(llm_kv)            # 生成带架构前缀的完整键名'
+- '├── struct LLM_TN_IMPL                # 张量命名实现（含arch/tensor/bid/xid/model_tensors）'
+- '│   ├── LLM_TN_IMPL()                 # 构造函数'
+- '│   ├── str()                         # 格式化张量名为blk.%d.attn_q.weight等'
+- '│   ├── operator std::string()        # 隐式字符串转换'
+- '│   ├── operator==() / operator!=()   # 与std::string的相等比较'
+- '├── struct LLM_TN                     # 张量命名用户接口（包装arch调用LLM_TN_IMPL）'
+- '│   ├── LLM_TN(llm_arch)              # 构造函数'
+- '│   └── operator()(llm_tensor,...)    # 调用LLM_TN_IMPL构造'
+- '├── struct llm_tensor_info            # 张量元信息（layer + ggml_op）'
+- '├── llm_arch_all()                    # 返回所有架构列表'
+- '├── llm_arch_name(arch)               # 枚举转字符串'
+- '├── llm_arch_from_string(name)        # 字符串转枚举'
+- '├── llm_tensor_info_for(tensor)       # 获取张量的层类型与算子'
+- '├── llm_arch_is_recurrent(arch)       # 检测循环架构'
+- '├── llm_arch_is_hybrid(arch)          # 检测混合架构'
+- '└── llm_arch_is_diffusion(arch)       # 检测扩散架构'
+- ''
+- src/llama-arch.cpp
+- '├── LLM_ARCH_NAMES（10-120）          # 架构枚举到字符串的静态映射表'
+- '├── LLM_KV_NAMES（30-180）            # 元数据键枚举到字符串的映射表（含%s占位符）'
+- '├── LLM_TENSOR_NAMES（120-300）       # 张量类型到格式化字符串映射（含%d层号）'
+- '├── llm_get_tensor_names(arch)        # 按架构返回其所需张量集合（150-700）'
+- '├── LLM_TENSOR_INFOS（500-700）       # 张量到{layer, op}的元信息表'
+- '├── LLM_KV::LLM_KV()                  # 构造函数实现'
+- '├── LLM_KV::operator()                # 生成带架构前缀的完整键名（180-190）'
+- '├── LLM_TN_IMPL::LLM_TN_IMPL()        # 构造函数实现'
+- '├── LLM_TN_IMPL::str()                # 格式化张量名为blk.%d.attn_q.weight等'
+- '├── llm_arch_all()                    # 从LLM_ARCH_NAMES提取所有架构'
+- '├── llm_arch_name()                   # 从map中查找字符串名'
+- '├── llm_arch_from_string()            # 遍历查找字符串对应的枚举'
+- '├── llm_tensor_info_for()             # 从LLM_TENSOR_INFOS获取元信息'
+- '├── llm_arch_is_recurrent()           # switch case: MAMBA/MAMBA2/RWKV6/7/ARWKV7/RWKV6QWEN2'
+- '├── llm_arch_is_hybrid()              # switch case: JAMBA/FALCON_H1/QWEN3NEXT/NEMOTRON_H等'
+- '└── llm_arch_is_diffusion()           # switch case: DREAM/LLADA/LLADA_MOE/RND1'
+- ''
+- src/llama-hparams.h
+- '├── enum llama_expert_gating_func_type  # 专家门控函数类型（SOFTMAX/SIGMOID/...）'
+- '├── enum llama_swa_type                # 滑动窗口类型（NONE/STANDARD/CHUNKED/SYMMETRIC）'
+- '├── struct llama_hparams_posnet       # PosNet子结构（WavTokenizer）'
+- '├── struct llama_hparams_convnext     # ConvNeXt子结构'
+- '├── struct llama_hparams              # 超参数主结构'
+- │   ├── 基础字段：n_embd/n_layer/n_ctx_train/vocab_only/no_alloc
+- │   ├── 专家字段：n_expert/n_expert_used/n_ff_exp/n_ff_shexp/n_ff_chexp
+- │   ├── 注意力字段：n_embd_head_k_full/_swa, n_rot_full/_swa, n_embd_head_k_mla_impl
+- │   ├── 数组字段：n_head_arr/n_head_kv_arr/n_ff_arr（每层可变维度）
+- │   ├── SWA字段：swa_type/n_swa/swa_layers[]（每层SWA标志）
+- │   ├── SSM字段：ssm_d_conv/ssm_d_inner/ssm_d_state/ssm_dt_rank/ssm_n_group
+- │   ├── KDA字段：n_embd_head_kda（Kimi Linear专用）
+- │   ├── 循环层字段：recurrent_layer_arr[]（混合架构每层循环标记）
+- │   ├── RoPE字段：rope_freq_base_train/_swa, rope_sections, yarn_*
+- │   ├── 特殊字段：n_altup/laurel_rank（gemma3n）、n_embd_per_layer（gemma4）
+- │   ├── MoE字段：expert_group_scale/expert_weights_scale/moe_every_n_layers
+- │   └── 方法：set_swa_pattern/n_head/n_embd_head_k/is_swa/is_mla/has_kv/use_mrope
+- '└── static_assert trivially_copyable   # 强制hparams是trivially copyable'
+- ''
+- src/llama-hparams.cpp
+- '├── set_swa_pattern(n_pattern, dense_first)   # 按模式设置swa_layers数组'
+- '├── is_swa_any()                              # 检测是否存在SWA层'
+- '├── n_head(il) / n_head_kv(il) / n_ff(il)    # 按层读取数组，越界GGML_ABORT'
+- '├── n_gqa(il)                                 # n_head/n_head_kv（GQA分组数）'
+- '├── n_rot(il)                                 # 根据SWA返回n_rot_full或n_rot_swa'
+- '├── n_embd_inp()                              # 输入嵌入维度（含deepstack额外）'
+- '├── n_embd_out()                              # 输出嵌入维度（默认n_embd）'
+- '├── n_embd_head_k(il) / n_embd_head_v(il)     # 按层返回SWA或full头维度'
+- '├── n_embd_k_gqa(il) / n_embd_v_gqa(il)       # 单层KV总维度'
+- '├── is_n_embd_k_gqa_variable()                # 检测KV维度是否层间变化'
+- '├── n_embd_k_gqa_max() / n_embd_v_gqa_max()   # 最大KV维度'
+- '├── n_embd_r()                                # 滚动状态维度（RWKV/Mamba/LFM2/Kimi KDA）'
+- '├── n_embd_s()                                # 循环状态维度（RWKV wkv/Mamba ssm/Kimi
+  KDA）'
+- '├── is_recurrent(il)                          # 混合架构层是否为循环'
+- '├── n_pos_per_embd()                          # M-RoPE返回4，否则1'
+- '├── is_swa(il)                                # 查询swa_layers数组'
+- '├── is_mla()                                  # MLA通过n_embd_head_*_mla_impl非零判断'
+- '├── n_embd_head_k_mla() / n_embd_head_v_mla() # MLA专用头维度获取'
+- '├── has_kv(il) / n_layer_kv()                 # 支持前n_layer_kv_from_start层有KV'
+- '├── use_mrope()                               # M-RoPE通过rope_sections判断'
+- '└── is_masked_swa()                           # SWA掩码判定（static函数，性能内联）'
+exercises:
+- contents:
+  - 阅读 `src/llama-arch.h` 第1-120行的 `enum llm_arch` 与 `src/llama-arch.cpp` 第10-120行的
+    `LLM_ARCH_NAMES`。
+  - 回答问题：
+  - '- llama.cpp 目前支持多少种模型架构？请列出至少10种不同家族的架构。'
+  - '- `LLM_ARCH_CLIP` 注释说是 ''dummy, only used by llama-quantize''，为什么需要这个虚拟架构？'
+  - '- `LLM_ARCH_UNKNOWN` 的字符串名是什么？它的实际用途是什么？'
+  'no': 1
+  title: 阅读 llm_arch 枚举与映射表
+- contents:
+  - 阅读 `src/llama-arch.cpp` 第120-300行的 `LLM_TENSOR_NAMES`、`LLM_TN_IMPL::str()`（约190-200行）以及
+    `LLM_TN_IMPL::operator std::string`/`operator==`。
+  - 回答问题：
+  - '- 调用 `LLM_TN(LLM_ARCH_LLAMA)(LLM_TENSOR_ATTN_Q, "weight", 5)` 会生成什么字符串？'
+  - '- 如果请求的张量不在该架构的 `model_tensors` 集合中，会发生什么？'
+  - '- `LLM_TENSOR_TIME_MIX_W0`、`LLM_TENSOR_TIME_MIX_A0` 等 `W0/A0/V0` 张量属于哪种模型？它们的作用是什么？'
+  - '- 如何判断某个 `std::string` 是否等于一个 `LLM_TN_IMPL`？'
+  'no': 2
+  title: 追踪张量命名生成流程
+- contents:
+  - 阅读 `src/llama-arch.cpp` 第30-180行的 `LLM_KV_NAMES` 与 `LLM_KV::operator()`（约180-190行）。
+  - 回答问题：
+  - '- 通用键（如 `general.architecture`）与架构特定键（如 `llama.attention.head_count`）在 `LLM_KV_NAMES`
+    中有什么区别？'
+  - '- 调用 `LLM_KV(LLM_ARCH_LLAMA)("attention.head_count")` 和 `LLM_KV(LLM_ARCH_QWEN2)("attention.head_count")`
+    会生成什么？'
+  - '- `LLM_KV_NAMES` 中以 `%s` 开头的键（如 `%s.vocab_size`）如何被替换？'
+  - '- 当 `LLM_KV` 的 `suffix` 参数不为空时，生成的键名会变成什么样子？'
+  'no': 3
+  title: 理解 GGUF 元数据键名生成
+- contents:
+  - 阅读 `src/llama-hparams.h` 第30-200行的 `struct llama_hparams`。
+  - 回答问题：
+  - '- 哪些字段用于支持滑动窗口注意力（SWA）？它们如何区分全注意力层与 SWA 层？'
+  - '- 哪些字段与 MoE（混合专家）相关？请列举 n_expert、n_ff_exp、n_ff_shexp、n_ff_chexp 的区别。'
+  - '- `ssm_d_conv/ssm_d_inner/ssm_d_state` 与 `n_embd_head_kda` 分别对应哪种架构？'
+  - '- `recurrent_layer_arr[]` 和 `swa_layers[]` 数组的作用有什么异同？'
+  'no': 4
+  title: 分析 llama_hparams 字段分类
+- contents:
+  - 阅读 `src/llama-hparams.cpp` 中的 `n_head()/n_head_kv()/n_ff()`、`n_embd_head_k()/n_embd_head_v()`、`is_swa()/is_mla()`、`n_embd_r()/n_embd_s()`、`has_kv()/n_layer_kv()`、`n_pos_per_embd()/use_mrope()`。
+  - 回答问题：
+  - '- `n_embd_head_k(il)` 如何区分 SWA 层与全注意力层？'
+  - '- `is_mla()` 通过哪两个字段判断？返回 true 时 `n_embd_head_k_mla()` 返回什么？'
+  - '- `n_embd_r()` 对 RWKV、Mamba、LFM2、Kimi KDA 分别返回什么公式？'
+  - '- `has_kv(il)` 在 `n_layer_kv_from_start` 设置为非负值时返回什么？这种设计支持什么特殊场景？'
+  - '- `n_pos_per_embd()` 何时返回 4？它如何与 `use_mrope()` 配合？'
+  'no': 5
+  title: 理解超参数派生方法
+- contents:
+  - 阅读 `src/llama-arch.cpp` 第220-260行的 `llm_arch_is_recurrent/is_hybrid/is_diffusion`。
+  - 回答问题：
+  - '- `LLM_ARCH_QWEN3NEXT` 是循环架构吗？它是混合架构吗？为什么这样分类？'
+  - '- `LLM_ARCH_RWKV7` 既是循环架构又是不是混合架构？两者矛盾吗？'
+  - '- `LLM_ARCH_LLADA_MOE` 属于哪种特殊类型？它的计算图会有何不同？'
+  - '- 如果一个未来模型同时支持循环、混合和扩散特性，这种三元分类体系需要如何扩展？'
+  'no': 6
+  title: 追踪架构类型识别
+- contents:
+  - 阅读 `src/llama-arch.cpp` 第500-700行的 `LLM_TENSOR_INFOS` 表以及 `llm_tensor_info_for()`
+    函数。
+  - 回答问题：
+  - '- `LLM_TENSOR_TOKEN_EMBD` 的 `layer` 与 `op` 是什么？为什么选择 `GGML_OP_GET_ROWS`？'
+  - '- `LLM_TENSOR_FFN_GATE_EXPS/FFN_DOWN_EXPS/FFN_UP_EXPS` 的 `op` 与普通 FFN 有何不同？'
+  - '- `LLM_TENSOR_TIME_MIX_FIRST` 的 `op` 为什么是 `GGML_OP_RWKV_WKV6`？'
+  - '- 输入层张量（如 TOKEN_EMBD）的 `layer` 是 `LLM_TENSOR_LAYER_INPUT`，这意味着什么缓冲区分配策略？'
+  - '- `llm_tensor_info_for()` 如何处理一个不存在的张量类型？'
+  'no': 7
+  title: 分析 LLM_TENSOR_INFOS 的元信息
+learning_targets:
+- 理解 llama.cpp 中 llm_arch 枚举的设计思想：如何用统一 ID 表示上百种模型架构
+- 掌握 LLM_TN/LLM_TN_IMPL 机制：如何为不同架构生成规范的张量命名
+- 了解 LLM_KV 与 LLM_KV_NAMES 系统：如何将逻辑键映射为 GGUF 元数据键名
+- 理解 llama_hparams 结构：如何集中管理模型维度、层数、注意力头等超参数
+- 掌握超参数派生方法：n_head()/n_embd_head_k()/is_swa()/is_mla() 等的层特定计算
+- 理解架构类型识别函数：llm_arch_is_recurrent/is_hybrid/is_diffusion 的设计
+- 学会阅读 LLM_TENSOR_INFOS：如何为张量指定层类型与 GGML 算子以辅助缓冲区分配
+- 熟悉 SWA 滑动窗口、Mamba/RWKV 循环状态、MLA 多头潜在注意力的超参数存储模式
+life_analogy:
+- 想象 llama.cpp 的模型世界是一座**国际大都市的建筑管理局**：
+- '- **llm_arch 枚举** = 建筑许可证编号系统（每种建筑风格——写字楼、工厂、医院——都有唯一编号）'
+- '- **LLM_ARCH_NAMES 映射表** = 许可证翻译字典（编号001 = 写字楼，编号037 = 医院）'
+- '- **LLM_TN/LLM_TN_IMPL** = 楼层地址生成器（''A座3楼会议室'' → ''blk.3.attn_q.weight''）'
+- '- **LLM_KV 与 LLM_KV_NAMES** = 建筑档案柜的标签系统（''general.architecture'' = ''建筑类型''）'
+- '- **llama_hparams** = 建筑设计图纸（层数、窗户数、承重墙厚度等参数）'
+- '- **n_head_arr 数组** = 每层独立设计（有些楼3米层高，有些4米），按楼层号查询'
+- '- **is_swa(il)** = 查询某层是不是''节能模式窗户''（只开部分窗）'
+- '- **is_mla()** = 是否采用''中央空调集中供冷''（MLA多头潜在注意力）'
+- '- **n_embd_r()** = 估算大楼的水箱容量（RWKV/Mamba的状态缓存）'
+- '- **llm_arch_is_recurrent/is_hybrid/is_diffusion** = 建筑类型分类器（摩天楼/loft/展览馆）'
+- 就像建筑管理局需要为每栋楼建立档案、设计图纸、地址编码体系，llama.cpp 也需要为每个模型架构建立标识、参数、命名规则，否则上百种模型就会变成一团乱麻。
+'no': 11
+summary:
+- concept: '`enum llm_arch`'
+  desc: 模型架构统一标识，避免字符串硬编码与魔法数字
+- concept: '`LLM_ARCH_NAMES`'
+  desc: 架构枚举到字符串的静态映射表，用于日志与序列化
+- concept: '`llm_arch_name/from_string`'
+  desc: 架构枚举与字符串的双向转换接口
+- concept: '`llm_arch_all`'
+  desc: 返回所有支持的架构列表，用于遍历与初始化
+- concept: '`enum llm_tensor`'
+  desc: 张量类型枚举（token_embd/attn_q/ffn_gate/ssm_a 等）
+- concept: '`LLM_TENSOR_NAMES`'
+  desc: 张量格式化字符串映射（blk.%d.attn_q 等含层号占位符）
+- concept: '`LLM_TN/LLM_TN_IMPL`'
+  desc: 张量命名生成器：封装 arch+b+x+suffix 生成完整张量名
+- concept: '`LLM_TN_IMPL::operator std::string`'
+  desc: 张量命名到字符串的隐式转换，便于直接赋值
+- concept: '`LLM_TN_IMPL::operator==/operator!=`'
+  desc: 张量名与字符串的相等性比较，用于按名查找张量
+- concept: '`llm_get_tensor_names`'
+  desc: 按架构返回其实际使用的张量集合，避免未知张量
+- concept: '`LLM_TENSOR_INFOS`'
+  desc: 张量元信息表：指定 layer（INPUT/REPEATING/OUTPUT）与 ggml_op
+- concept: '`enum llm_kv`'
+  desc: GGUF 元数据键枚举，按主题分组（GENERAL/ATTENTION/ROPE 等）
+- concept: '`LLM_KV_NAMES`'
+  desc: 元数据键名映射表，部分含%s占位符插入架构名
+- concept: '`LLM_KV::operator()`'
+  desc: 生成带架构前缀的完整键名（如 llama.attention.head_count）
+- concept: '`struct llama_hparams`'
+  desc: 模型超参数容器，集中管理所有维度/层数/专家/SWA/SSM 配置
+- concept: '`n_head_arr/n_head_kv_arr/n_ff_arr`'
+  desc: 每层可变的超参数数组，通过 n_head(il) 等方法按层访问
+- concept: '`n_embd_head_k_full/_swa`'
+  desc: 区分全注意力与 SWA 层的键头维度，支持混合注意力
+- concept: '`n_rot_full/n_rot_swa`'
+  desc: 区分全注意力与 SWA 层的 RoPE 旋转维度
+- concept: '`n_expert/n_expert_used/n_ff_exp/shexp/chexp`'
+  desc: MoE 相关：路由专家/共享专家/分组专家数量与维度
+- concept: '`ssm_d_conv/ssm_d_inner/ssm_d_state/ssm_dt_rank`'
+  desc: SSM 超参数：卷积核/内部维度/状态维度/时间步秩
+- concept: '`n_embd_head_kda`'
+  desc: Kimi Linear KDA 专用头维度，决定循环状态大小
+- concept: '`recurrent_layer_arr[]`'
+  desc: 混合架构中标记哪些层为循环层（Mamba+Attn 混合）
+- concept: '`swa_type/n_swa/swa_layers[]`'
+  desc: SWA 类型与每层 SWA 配置，支持 STANDARD/CHUNKED/SYMMETRIC
+- concept: '`set_swa_pattern`'
+  desc: 按 pattern 设置 SWA 层模式（如每3层1个 dense）
+- concept: '`is_swa(il)/is_mla()/is_recurrent(il)`'
+  desc: 按层/全局判断注意力/架构类型的派生判定函数
+- concept: '`has_kv(il)/n_layer_kv()`'
+  desc: 支持前 n 层有 KV 缓存的稀疏配置（如纯 SSM + 部分 Attn）
+- concept: '`n_embd_r()`'
+  desc: 计算滚动状态嵌入维度（RWKV token_shift/Mamba conv/Kimi KDA）
+- concept: '`n_embd_s()`'
+  desc: 计算循环状态嵌入维度（RWKV wkv/Mamba ssm/Kimi KDA）
+- concept: '`llm_arch_is_recurrent`'
+  desc: 检测 Mamba/RWKV 等循环架构，选择相应计算图与内存策略
+- concept: '`llm_arch_is_hybrid`'
+  desc: 检测 Jamba/Falcon-H1/Qwen3Next 等混合架构
+- concept: '`llm_arch_is_diffusion`'
+  desc: 检测 LLaDA/Dream 等扩散模型，启用非因果注意力
+- concept: '`llm_tensor_info_for`'
+  desc: 根据张量类型返回 layer 与 op，用于缓冲区类型分配决策
+- concept: '`LLAMA_MAX_LAYERS=512 / MAX_EXPERTS=512`'
+  desc: 编译期上限，决定数组容量，修改需重新编译
+units:
+- codes:
+  - file: src/llama-arch.h
+    line: 1-120
+    method_or_func: enum llm_arch
+  - file: src/llama-arch.cpp
+    line: 10-120
+    method_or_func: LLM_ARCH_NAMES
+  - file: src/llama-arch.h
+    line: 400-402
+    method_or_func: llm_arch_name()
+  - file: src/llama-arch.cpp
+    line: 200-210
+    method_or_func: llm_arch_name()
+  - file: src/llama-arch.h
+    line: 402-404
+    method_or_func: llm_arch_from_string()
+  - file: src/llama-arch.cpp
+    line: 212-220
+    method_or_func: llm_arch_from_string()
+  - file: src/llama-arch.h
+    line: 398-400
+    method_or_func: llm_arch_all()
+  - file: src/llama-arch.cpp
+    line: 190-200
+    method_or_func: llm_arch_all()
+  name: 架构枚举与名称映射 —— 模型世界的「身份证」
+  'no': 1
+  points:
+  - '**为什么需要 `enum llm_arch`？** 用于统一标识 llama.cpp 支持的所有模型架构，避免字符串硬编码和魔法数字。'
+  - '- `LLM_ARCH_NAMES` 映射将枚举值映射为可读的字符串，方便日志输出、序列化和用户界面显示。'
+  - '- `llm_arch_name()` 和 `llm_arch_from_string()` 实现枚举与字符串的双向转换，便于从 GGUF 文件中的架构名查找对应的枚举值。'
+  - '- `llm_arch_all()` 返回所有支持的架构列表，用于初始化、遍历和验证。'
+- codes:
+  - file: src/llama-arch.h
+    line: 120-350
+    method_or_func: enum llm_tensor
+  - file: src/llama-arch.h
+    line: 350-400
+    method_or_func: LLM_TN_IMPL
+  - file: src/llama-arch.h
+    line: 370-385
+    method_or_func: LLM_TN_IMPL.str()
+  - file: src/llama-arch.h
+    line: 365-368
+    method_or_func: LLM_TN_IMPL.LLM_TN_IMPL()
+  - file: src/llama-arch.h
+    line: 388-390
+    method_or_func: LLM_TN_IMPL.operator std::string
+  - file: src/llama-arch.h
+    line: 392-400
+    method_or_func: LLM_TN_IMPL.operator== / operator!=
+  - file: src/llama-arch.h
+    line: 402-415
+    method_or_func: LLM_TN
+  - file: src/llama-arch.h
+    line: 403-405
+    method_or_func: LLM_TN.LLM_TN()
+  - file: src/llama-arch.h
+    line: 407-415
+    method_or_func: LLM_TN.operator()
+  - file: src/llama-arch.cpp
+    line: 120-300
+    method_or_func: LLM_TENSOR_NAMES
+  - file: src/llama-arch.cpp
+    line: 150-500
+    method_or_func: llm_get_tensor_names()
+  - file: src/llama-arch.cpp
+    line: 500-700
+    method_or_func: LLM_TENSOR_INFOS
+  - file: src/llama-arch.cpp
+    line: 170-175
+    method_or_func: LLM_TN_IMPL.LLM_TN_IMPL()
+  - file: src/llama-arch.cpp
+    line: 177-195
+    method_or_func: LLM_TN_IMPL.str()
+  - file: src/llama-arch.h
+    line: 416-418
+    method_or_func: llm_tensor_info_for()
+  - file: src/llama-arch.cpp
+    line: 237-240
+    method_or_func: llm_tensor_info_for()
+  name: 张量命名与架构关联 —— 模型权重的「字典」
+  'no': 2
+  points:
+  - '- `enum llm_tensor` 定义了所有可能的张量类型（token_embd, attn_q, ffn_gate 等），为张量命名提供统一标识。'
+  - '- `LLM_TENSOR_NAMES` 映射为每个张量类型提供格式化字符串（如 `blk.%d.attn_norm`），其中 `%d` 表示层号。'
+  - '- `LLM_TN` 和 `LLM_TN_IMPL` 结构用于生成带架构和层号的完整张量名称，`LLM_TN` 是用户接口，`LLM_TN_IMPL` 包含实际名称和模型张量集合。'
+  - '- `LLM_TN_IMPL` 通过 `operator std::string`、`operator==`、`operator!=` 提供与字符串的无缝互操作，便于查找与比较。'
+  - '- `llm_get_tensor_names()` 根据架构返回该架构使用的张量集合，避免未知张量的引入，确保只加载模型实际需要的张量。'
+  - '- `LLM_TENSOR_INFOS` 映射为每个张量指定其所属层类型（INPUT/REPEATING/OUTPUT）和使用的 GGML 算子，用于缓冲区分配和后端选择。'
+  - '- `llm_tensor_info_for()` 提供从张量类型查询其元信息的接口。'
+- codes:
+  - file: src/llama-arch.h
+    line: 150-350
+    method_or_func: enum llm_kv
+  - file: src/llama-arch.h
+    line: 350-370
+    method_or_func: LLM_KV
+  - file: src/llama-arch.h
+    line: 351-353
+    method_or_func: LLM_KV.LLM_KV()
+  - file: src/llama-arch.h
+    line: 355-365
+    method_or_func: LLM_KV.operator()
+  - file: src/llama-arch.cpp
+    line: 30-120
+    method_or_func: LLM_KV_NAMES
+  - file: src/llama-arch.cpp
+    line: 175-177
+    method_or_func: LLM_KV.LLM_KV()
+  - file: src/llama-arch.cpp
+    line: 180-190
+    method_or_func: LLM_KV.operator()
+  name: GGUF 元数据键值系统 —— 模型配置的「密码本」
+  'no': 3
+  points:
+  - '- `enum llm_kv` 列举了所有 GGUF 元数据键的逻辑标识，涵盖通用、词汇表、注意力、RoPE、分词器等领域。'
+  - '- `LLM_KV_NAMES` 映射将逻辑键转换为字符串键名（如 `general.architecture`），部分键使用 `%s` 占位符插入架构名，实现架构特定的键名。'
+  - '- `LLM_KV` 结构接受一个架构和可选后缀，其构造函数 `LLM_KV()` 初始化成员变量，`operator()` 生成带架构前缀的完整键名，如
+    `%s.attention.head_count` 替换为 `llama.attention.head_count`。'
+  - '- 这种设计允许同一逻辑键在不同架构下有不同的前缀，增强了元数据系统的灵活性和可扩展性。'
+- codes:
+  - file: src/llama-hparams.h
+    line: 30-200
+    method_or_func: struct llama_hparams
+  - file: src/llama-hparams.h
+    line: 10-15
+    method_or_func: enum llama_expert_gating_func_type
+  - file: src/llama-hparams.h
+    line: 17-22
+    method_or_func: enum llama_swa_type
+  name: 超参数结构体定义 —— 模型属性的「容器」
+  'no': 4
+  points:
+  - '- `struct llama_hparams` 将模型的所有超参数集中管理，包括维度、层数、注意力头数、前馈网络维度等基础参数。'
+  - '- 区分 `n_embd_head_k_full`/`n_embd_head_k_swa` 和 `n_rot_full`/`n_rot_swa`，以支持滑动窗口注意力（SWA）中不同的头维度和
+    RoPE 维度。'
+  - '- MoE 相关字段：`n_expert`, `n_expert_used`, `n_ff_exp`, `n_ff_shexp`, `n_ff_chexp`
+    等，覆盖路由专家、共享专家和分组专家的维度。'
+  - '- SSM 相关字段：`ssm_d_conv`, `ssm_d_inner`, `ssm_d_state`, `ssm_dt_rank` 等，用于描述 Mamba/RWKV
+    等状态空间模型的超参数。'
+  - '- 数组字段如 `n_head_arr`, `n_head_kv_arr`, `n_ff_arr` 支持每层不同的超参数，通过 `n_head(il)`
+    等方法访问。'
+  - '- `static_assert` 强制 `llama_hparams` 是 trivially copyable，以便安全地在内存中序列化与传递。'
+- codes:
+  - file: src/llama-hparams.cpp
+    line: 10-22
+    method_or_func: llama_hparams::set_swa_pattern()
+  - file: src/llama-hparams.cpp
+    line: 24-32
+    method_or_func: llama_hparams::is_swa_any()
+  - file: src/llama-hparams.cpp
+    line: 34-42
+    method_or_func: llama_hparams::n_head()
+  - file: src/llama-hparams.cpp
+    line: 44-52
+    method_or_func: llama_hparams::n_head_kv()
+  - file: src/llama-hparams.cpp
+    line: 54-62
+    method_or_func: llama_hparams::n_ff()
+  - file: src/llama-hparams.cpp
+    line: 64-74
+    method_or_func: llama_hparams::n_gqa()
+  - file: src/llama-hparams.cpp
+    line: 76-82
+    method_or_func: llama_hparams::n_rot()
+  - file: src/llama-hparams.cpp
+    line: 84-90
+    method_or_func: llama_hparams::n_embd_inp()
+  - file: src/llama-hparams.cpp
+    line: 92-94
+    method_or_func: llama_hparams::n_embd_out()
+  - file: src/llama-hparams.cpp
+    line: 96-102
+    method_or_func: llama_hparams::n_embd_head_k()
+  - file: src/llama-hparams.cpp
+    line: 104-110
+    method_or_func: llama_hparams::n_embd_head_v()
+  - file: src/llama-hparams.cpp
+    line: 112-116
+    method_or_func: llama_hparams::n_embd_k_gqa()
+  - file: src/llama-hparams.cpp
+    line: 118-122
+    method_or_func: llama_hparams::n_embd_v_gqa()
+  - file: src/llama-hparams.cpp
+    line: 124-132
+    method_or_func: llama_hparams::is_n_embd_k_gqa_variable()
+  - file: src/llama-hparams.cpp
+    line: 134-142
+    method_or_func: llama_hparams::is_n_embd_v_gqa_variable()
+  - file: src/llama-hparams.cpp
+    line: 144-150
+    method_or_func: llama_hparams::n_embd_k_gqa_max()
+  - file: src/llama-hparams.cpp
+    line: 152-158
+    method_or_func: llama_hparams::n_embd_v_gqa_max()
+  - file: src/llama-hparams.cpp
+    line: 160-185
+    method_or_func: llama_hparams::n_embd_r()
+  - file: src/llama-hparams.cpp
+    line: 187-200
+    method_or_func: llama_hparams::n_embd_s()
+  - file: src/llama-hparams.cpp
+    line: 202-208
+    method_or_func: llama_hparams::is_recurrent()
+  - file: src/llama-hparams.cpp
+    line: 210-212
+    method_or_func: llama_hparams::n_pos_per_embd()
+  - file: src/llama-hparams.cpp
+    line: 214-220
+    method_or_func: llama_hparams::is_swa()
+  - file: src/llama-hparams.cpp
+    line: 222-228
+    method_or_func: llama_hparams::is_mla()
+  - file: src/llama-hparams.cpp
+    line: 230-232
+    method_or_func: llama_hparams::n_embd_head_k_mla()
+  - file: src/llama-hparams.cpp
+    line: 234-236
+    method_or_func: llama_hparams::n_embd_head_v_mla()
+  - file: src/llama-hparams.cpp
+    line: 238-248
+    method_or_func: llama_hparams::has_kv()
+  - file: src/llama-hparams.cpp
+    line: 250-258
+    method_or_func: llama_hparams::n_layer_kv()
+  - file: src/llama-hparams.cpp
+    line: 260-262
+    method_or_func: llama_hparams::use_mrope()
+  name: 超参数派生计算 —— 模型配置的「计算器」
+  'no': 5
+  points:
+  - '- `n_head(il)` 和 `n_head_kv(il)` 返回指定层的注意力头数，从数组中读取，若层索引越界则中止。'
+  - '- `n_embd_head_k(il)` 根据层是否为 SWA 返回对应的 key 头维度，实现层特定的维度切换。'
+  - '- `n_embd_k_gqa(il)` 计算 GQA 的 key 总维度：`n_embd_head_k(il) * n_head_kv(il)`，并提供了最大值和变量检测方法。'
+  - '- `n_embd_r()` 根据模型类型（RWKV, LFM2, Kimi KDA, Mamba）计算滚动状态嵌入维度，为循环架构提供状态缓存大小。'
+  - '- `is_swa(il)` 判断指定层是否启用滑动窗口注意力，`is_mla()` 判断模型是否使用多头潜在注意力（MLA）。'
+  - '- `has_kv(il)` 和 `n_layer_kv()` 确定哪些层需要 KV 缓存，支持从起始层开始跳过 KV 缓存的配置。'
+  - '- `n_pos_per_embd()` 在使用 M-RoPE/iRoPE 时返回 4，否则返回 1，与 `use_mrope()` 协同工作。'
+  - '- `n_embd_s()` 计算循环状态嵌入维度（RWKV wkv 状态、Mamba ssm 状态、Kimi KDA 状态）。'
+  - '- `is_masked_swa()` 是一个静态内联函数，根据 SWA 类型（STANDARD/CHUNKED/SYMMETRIC）判定两个位置是否需要掩码。'
+- codes:
+  - file: src/llama-arch.cpp
+    line: 220-230
+    method_or_func: llm_arch_is_recurrent()
+  - file: src/llama-arch.cpp
+    line: 232-250
+    method_or_func: llm_arch_is_hybrid()
+  - file: src/llama-arch.cpp
+    line: 252-260
+    method_or_func: llm_arch_is_diffusion()
+  - file: src/llama-arch.h
+    line: 420-422
+    method_or_func: llm_arch_is_recurrent()
+  - file: src/llama-arch.h
+    line: 423-425
+    method_or_func: llm_arch_is_hybrid()
+  - file: src/llama-arch.h
+    line: 426-428
+    method_or_func: llm_arch_is_diffusion()
+  name: 架构类型识别 —— 模型家族的「分类器」
+  'no': 6
+  points:
+  - '- `llm_arch_is_recurrent()` 检测架构是否为循环架构（如 Mamba, RWKV），用于选择合适的计算图和内存管理策略。'
+  - '- `llm_arch_is_hybrid()` 检测是否为混合架构（如 Jamba, Falcon-H1, Qwen3Next），结合了 Transformer
+    和状态空间模型的特点。'
+  - '- `llm_arch_is_diffusion()` 检测是否为扩散模型（如 LLaDA, Dream），用于启用非因果注意力和迭代去噪。'
+  - '- 这些函数在运行时根据架构枚举进行判断，为上层逻辑提供统一的架构分类接口。'

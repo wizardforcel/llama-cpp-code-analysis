@@ -1,0 +1,67 @@
+classes: []
+desc: 该文件是ggml项目中用于HIP (Heterogeneous-Computing Interface for Portability) 后端的头文件，主要功能是将CUDA
+  API和类型映射到HIP平台对应的API和类型，提供一套兼容层。同时定义了根据AMD GPU架构标识符（如gfx900、gfx942等）来确定GCN、CDNA和RDNA等GPU代际宏，并实现了几个内联的SIMD辅助函数，用于模拟CUDA中的向量饱和运算和比较运算。
+file: ggml/src/ggml-cuda/vendors/hip.h
+funcs:
+- code:
+  - static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
+  - '    const int8x4_t va = reinterpret_cast<const int8x4_t&>(a);'
+  - '    const int8x4_t vb = reinterpret_cast<const int8x4_t&>(b);'
+  - '#if __has_builtin(__builtin_elementwise_sub_sat)'
+  - '    const int8x4_t c = __builtin_elementwise_sub_sat(va, vb);'
+  - '    return reinterpret_cast<const int &>(c);'
+  - '#else'
+  - '    int8x4_t c;'
+  - '    int16_t tmp;'
+  - '#pragma unroll'
+  - '    for (int i = 0; i < 4; i++) {'
+  - '        tmp = va[i] - vb[i];'
+  - '        if(tmp > std::numeric_limits<int8_t>::max()) tmp = std::numeric_limits<int8_t>::max();'
+  - '        if(tmp < std::numeric_limits<int8_t>::min()) tmp = std::numeric_limits<int8_t>::min();'
+  - '        c[i] = tmp;'
+  - '    }'
+  - '    return reinterpret_cast<int &>(c);'
+  - '#endif // __has_builtin(__builtin_elementwise_sub_sat)'
+  - '}'
+  desc: 一个设备端内联函数，用于对两个打包在int中的4个int8_t元素进行饱和减法运算，实现CUDA __vsubss4的语义。
+  line: 220-238
+  name: __vsubss4
+- code:
+  - static __device__ __forceinline__ int __vsub4(const int a, const int b) {
+  - '    return __vsubss4(a, b);'
+  - '}'
+  desc: 一个设备端内联包装函数，直接调用__vsubss4实现4个int8_t元素的饱和减法。
+  line: 240-243
+  name: __vsub4
+- code:
+  - static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigned
+    int b) {
+  - '    const uint8x4_t& va = reinterpret_cast<const uint8x4_t&>(a);'
+  - '    const uint8x4_t& vb = reinterpret_cast<const uint8x4_t&>(b);'
+  - '    unsigned int c;'
+  - '    uint8x4_t& vc = reinterpret_cast<uint8x4_t&>(c);'
+  - '#pragma unroll'
+  - '    for (int i = 0; i < 4; ++i) {'
+  - '        vc[i] = va[i] == vb[i] ? 0xff : 0x00;'
+  - '    }'
+  - '    return c;'
+  - '}'
+  desc: 一个设备端内联函数，用于比较两个unsigned int中打包的4个uint8_t元素，相同则对应字节置为0xff，否则置0x00，模拟CUDA的__vcmpeq4指令。
+  line: 245-255
+  name: __vcmpeq4
+- code:
+  - static __device__ __forceinline__ unsigned int __vcmpne4(unsigned int a, unsigned
+    int b) {
+  - '    const uint8x4_t& va = reinterpret_cast<const uint8x4_t&>(a);'
+  - '    const uint8x4_t& vb = reinterpret_cast<const uint8x4_t&>(b);'
+  - '    unsigned int c;'
+  - '    uint8x4_t& vc = reinterpret_cast<uint8x4_t&>(c);'
+  - '#pragma unroll'
+  - '    for (int i = 0; i < 4; ++i) {'
+  - '        vc[i] = va[i] == vb[i] ? 0x00 : 0xff;'
+  - '    }'
+  - '    return c;'
+  - '}'
+  desc: 一个设备端内联函数，用于比较两个unsigned int中打包的4个uint8_t元素，不相同则对应字节置为0xff，否则置0x00，模拟CUDA的__vcmpne4指令（逻辑与__vcmpeq4相反）。
+  line: 257-267
+  name: __vcmpne4

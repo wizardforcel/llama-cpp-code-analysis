@@ -1,0 +1,2513 @@
+classes:
+- desc: 一个抽象基类，继承自ggml::cpu::tensor_traits，声明了纯虚的repack方法，用于定义张量重打包操作的接口。
+  methods:
+  - code:
+    - virtual int repack(struct ggml_tensor * t, const void * data, size_t data_size)
+      = 0;
+    desc: 纯虚函数，用于将给定数据以指定的量化块类型重新打包到张量中。
+    line: 3390-3390
+    name: repack
+  name: tensor_traits_base
+- desc: 一个模板类，继承自tensor_traits_base，针对特定的量化块类型（BLOC_TYPE）、交错大小（INTER_SIZE）、列数（NB_COLS）和参数类型（PARAM_TYPE）提供具体的张量处理逻辑，包括工作空间大小计算和矩阵乘法前向传播实现。
+  methods:
+  - code:
+    - bool work_size(int /* n_threads */, const struct ggml_tensor * op, size_t &
+      size) override {
+    - '    switch (op->op) {'
+    - '        case GGML_OP_MUL_MAT:'
+    - '            {'
+    - '                size = ggml_row_size(PARAM_TYPE, ggml_nelements(op->src[1]));'
+    - '                return true;'
+    - '            }'
+    - '        case GGML_OP_MUL_MAT_ID:'
+    - '            {'
+    - '                size = ggml_row_size(PARAM_TYPE, ggml_nelements(op->src[1]));'
+    - '                size = GGML_PAD(size, sizeof(int64_t));'
+    - ''
+    - '                const int64_t ne02 = op->src[0]->ne[2];'
+    - '                const int64_t ne12 = op->src[1]->ne[2];'
+    - ''
+    - '                const size_t sizeof_mmid_row_mapping = sizeof(int64_t);'
+    - ''
+    - '                size += sizeof_mmid_row_mapping*ne02*(ne12 + 1);'
+    - ''
+    - '                return true;'
+    - '            }'
+    - '        default:'
+    - '            break;'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 计算执行特定操作（MUL_MAT或MUL_MAT_ID）所需的工作空间大小，并返回是否成功计算。
+    line: 3396-3420
+    name: work_size
+  - code:
+    - bool compute_forward(struct ggml_compute_params * params, struct ggml_tensor
+      * op) override {
+    - '    switch (op->op) {'
+    - '        case GGML_OP_MUL_MAT:'
+    - '            forward_mul_mat(params, op);'
+    - '            return true;'
+    - '        case GGML_OP_MUL_MAT_ID:'
+    - '            forward_mul_mat_id(params, op);'
+    - '            return true;'
+    - '        default:'
+    - '            break;'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 根据操作的op字段调用相应的前向传播函数（MUL_MAT或MUL_MAT_ID），并返回是否成功处理。
+    line: 3421-3433
+    name: compute_forward
+  - code:
+    - void forward_mul_mat_one_chunk(ggml_compute_params * params,
+    - '                               ggml_tensor *         op,'
+    - '                               int64_t               src0_start,'
+    - '                               int64_t               src0_end,'
+    - '                               int64_t               src1_start,'
+    - '                               int64_t               src1_end) {'
+    - '    const ggml_tensor * src0 = op->src[0];'
+    - '    const ggml_tensor * src1 = op->src[1];'
+    - '    ggml_tensor *       dst  = op;'
+    - ''
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - ''
+    - '    const size_t src1_col_stride = ggml_row_size(PARAM_TYPE, ne10);'
+    - ''
+    - '    GGML_ASSERT(ne03 == 1 && ne13 == 1);'
+    - '    GGML_ASSERT(ne12 % ne02 == 0);'
+    - '    const int64_t r2 = ne12 / ne02;'
+    - ''
+    - '    const int64_t i12 = src1_start / ne1;'
+    - '    const int64_t i11 = src1_start - i12 * ne1;'
+    - ''
+    - '    const int64_t i02 = i12 / r2;'
+    - ''
+    - '    const int64_t i1 = i11;'
+    - '    const int64_t i2 = i12;'
+    - ''
+    - '    const char * src0_ptr = (const char *) src0->data + i02 * nb02;'
+    - '    const char * src1_ptr = (const char *) params->wdata + (i11 + i12 * ne11)
+      * src1_col_stride;'
+    - '    char *       dst_ptr  = ((char *) dst->data + (i1 * nb1 + i2 * nb2));'
+    - ''
+    - '    const int64_t nrows = src1_end - src1_start;'
+    - '    const int64_t ncols = src0_end - src0_start;'
+    - ''
+    - '    GGML_ASSERT(src1_ptr + src1_col_stride * nrows <= (const char *) params->wdata
+      + params->wsize);'
+    - ''
+    - '    if (nrows > 3) {'
+    - '        gemm<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *) (dst_ptr)
+      + src0_start, nb1 / nb0,'
+    - '                                                         src0_ptr + src0_start
+      * nb01, src1_ptr,'
+    - '                                                         nrows - (nrows % 4),
+      ncols);'
+    - '    }'
+    - '    for (int iter = nrows - (nrows % 4); iter < nrows; iter++) {'
+    - '        gemv<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *) (dst_ptr
+      + (iter * nb1)) + src0_start,'
+    - '                                                         ne01, src0_ptr + src0_start
+      * nb01,'
+    - '                                                         src1_ptr + (src1_col_stride
+      * iter), 1 /* nrows */, ncols);'
+    - '    }'
+    - '}'
+    desc: 计算一个指定范围（chunk）的矩阵乘法前向传播，对批量行数大于3时调用gemm，对剩余行调用gemv。
+    line: 3434-3478
+    name: forward_mul_mat_one_chunk
+  - code:
+    - void forward_mul_mat(ggml_compute_params * params, ggml_tensor * op) {
+    - '    const ggml_tensor * src0 = op->src[0];'
+    - '    const ggml_tensor * src1 = op->src[1];'
+    - '    ggml_tensor *       dst  = op;'
+    - ''
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - ''
+    - '    const int ith = params->ith;'
+    - '    const int nth = params->nth;'
+    - ''
+    - '    GGML_ASSERT(ne0 == ne01);'
+    - '    GGML_ASSERT(ne1 == ne11);'
+    - '    GGML_ASSERT(ne2 == ne12);'
+    - '    GGML_ASSERT(ne3 == ne13);'
+    - ''
+    - '    GGML_ASSERT(nb0 == sizeof(float));'
+    - '    GGML_ASSERT(nb0 <= nb1);'
+    - '    GGML_ASSERT(nb1 <= nb2);'
+    - '    GGML_ASSERT(nb2 <= nb3);'
+    - ''
+    - '    GGML_ASSERT(ne03 == 1);'
+    - '    GGML_ASSERT(ne13 == 1);'
+    - '    GGML_ASSERT(ne23 == 1);'
+    - '    GGML_ASSERT(ne12 % ne02 == 0);'
+    - '    const int64_t r2 = ne12 / ne02;'
+    - ''
+    - '    for (int64_t i12 = ith; i12 < ne12; i12 += nth) {'
+    - '        const int64_t i02 = i12 / r2;'
+    - '        const int64_t i1 = i12 % ne1;'
+    - '        const int64_t i2 = i12 / ne1;'
+    - ''
+    - '        const char * src0_ptr = (const char *) src0->data + i02 * nb02;'
+    - '        const char * src1_ptr = (const char *) params->wdata + i12 * ne11 *
+      src1_col_stride;'
+    - '        char *       dst_ptr  = ((char *) dst->data + (i1 * nb1 + i2 * nb2));'
+    - ''
+    - '        const int64_t nrows = ne11;'
+    - ''
+    - '        GGML_ASSERT(src1_ptr + src1_col_stride * nrows <= (const char *) params->wdata
+      + params->wsize);'
+    - ''
+    - '        if (nrows > 3) {'
+    - '            gemm<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *)
+      dst_ptr, nb1 / nb0, src0_ptr, src1_ptr,'
+    - '                                                             nrows - (nrows
+      % 4), ne0);'
+    - '        }'
+    - '        for (int64_t iter = nrows - (nrows % 4); iter < nrows; iter++) {'
+    - '            gemv<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *)
+      (dst_ptr + (iter * nb1)), ne01, src0_ptr,'
+    - '                                                             src1_ptr + (src1_col_stride
+      * iter), 1, ne0);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 矩阵乘法前向传播入口，根据线程id分配计算范围，并调用forward_mul_mat_one_chunk执行具体计算。
+    line: 3479-3510
+    name: forward_mul_mat
+  - code:
+    - void forward_mul_mat_id(ggml_compute_params * params, ggml_tensor * op) {
+    - '    const ggml_tensor * src0 = op->src[0];'
+    - '    const ggml_tensor * src1 = op->src[1];'
+    - '    ggml_tensor *       dst  = op;'
+    - ''
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - ''
+    - '    const int ith = params->ith;'
+    - '    const int nth = params->nth;'
+    - ''
+    - '    GGML_ASSERT(ne0 == ne01);'
+    - '    GGML_ASSERT(ne1 == ne11);'
+    - '    GGML_ASSERT(ne2 == ne12);'
+    - '    GGML_ASSERT(ne3 == ne13);'
+    - ''
+    - '    GGML_ASSERT(nb0 == sizeof(float));'
+    - '    GGML_ASSERT(nb0 <= nb1);'
+    - '    GGML_ASSERT(nb1 <= nb2);'
+    - '    GGML_ASSERT(nb2 <= nb3);'
+    - ''
+    - '    GGML_ASSERT(ne03 == 1);'
+    - '    GGML_ASSERT(ne13 == 1);'
+    - '    GGML_ASSERT(ne23 == 1);'
+    - ''
+    - '    const int64_t n_as = ne02;'
+    - '    const int64_t n_tokens = ne12;'
+    - ''
+    - '    const size_t src1_col_stride = ggml_row_size(PARAM_TYPE, ne10);'
+    - ''
+    - '    int64_t * mmid_row_mapping = (int64_t *) params->wdata;'
+    - '    const char * src1_ptr_orig = (const char *) params->wdata + ggml_row_size(PARAM_TYPE,
+      ggml_nelements(src1));'
+    - ''
+    - '    const int64_t row_mapping_offset = GGML_PAD(ggml_row_size(PARAM_TYPE, ggml_nelements(src1)),
+      sizeof(int64_t));'
+    - ''
+    - '    const int64_t i13 = ith;'
+    - '    const int64_t i11 = 0;'
+    - ''
+    - '    for (int64_t i12 = 0; i12 < n_tokens; i12++) {'
+    - '        const int64_t mmid = mmid_row_mapping[i12];'
+    - '        const int64_t i02 = mmid / ne12;'
+    - '        const int64_t i12b = mmid % ne12;'
+    - ''
+    - '        const char * src0_ptr = (const char *) src0->data + i02 * nb02;'
+    - '        const char * src1_ptr = src1_ptr_orig + i12b * ne11 * src1_col_stride;'
+    - '        char *       dst_ptr  = ((char *) dst->data + (i12 * nb2 + i13 * nb3));'
+    - ''
+    - '        const int64_t nrows = ne11;'
+    - '        if (nrows > 3) {'
+    - '            gemm<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *)
+      dst_ptr, nb1 / nb0, src0_ptr, src1_ptr,'
+    - '                                                             nrows - (nrows
+      % 4), ne0);'
+    - '        }'
+    - '        for (int64_t iter = nrows - (nrows % 4); iter < nrows; iter++) {'
+    - '            gemv<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, (float *)
+      (dst_ptr + (iter * nb1)), ne01, src0_ptr,'
+    - '                                                             src1_ptr + (src1_col_stride
+      * iter), 1, ne0);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 针对带有专家（expert）ID的矩阵乘法前向传播实现，利用wdata中的mmid行映射来处理MUL_MAT_ID操作。
+    line: 3511-3554
+    name: forward_mul_mat_id
+  name: tensor_traits
+- desc: 一个模板类，用于定义特定量化类型和块大小配置下的重打包操作，包括矩阵乘法前向传播和 repack 接口的实现。
+  methods:
+  - code:
+    - void forward_mul_mat(ggml_compute_params * params, ggml_tensor * op) override
+      {
+    - '    const ggml_tensor * src0 = op->src[0];'
+    - '    const ggml_tensor * src1 = op->src[1];'
+    - '    ggml_tensor *       dst  = op;'
+    - ''
+    - '    GGML_TENSOR_BINARY_OP_LOCALS'
+    - ''
+    - '    const int ith = params->ith;'
+    - '    const int nth = params->nth;'
+    - ''
+    - '    GGML_ASSERT(src0->type == PARAM_TYPE);'
+    - ''
+    - '    // ... (完整实现包含张量形状校验、量化、分块和并行计算逻辑)'
+    - '}'
+    desc: 实现 MUL_MAT 运算的前向传播，包括对 src1 张量的量化、按线程分块处理，并调用 forward_mul_mat_one_chunk
+      完成核心矩阵乘法。支持 3D 张量批处理和一些边界对齐优化。
+    line: 4326-4470
+    name: forward_mul_mat
+  - code:
+    - void forward_mul_mat_id(ggml_compute_params * params, ggml_tensor * op) {
+    - '    const ggml_tensor * src0 = op->src[0];'
+    - '    const ggml_tensor * src1 = op->src[1];'
+    - '    const ggml_tensor * ids  = op->src[2];'
+    - '    ggml_tensor *       dst  = op;'
+    - ''
+    - '    // ... (完整实现包含专家ID映射、行分组和逐专家矩阵乘法)'
+    - '}'
+    desc: 实现 MUL_MAT_ID 运算的前向传播，支持专家混合（MoE）模型中的按 ID 选择矩阵乘法。处理 src1 的量化，按专家分组行映射，并对每个选中的专家执行
+      gemv 操作。
+    line: 4471-4620
+    name: forward_mul_mat_id
+  - code:
+    - int repack(struct ggml_tensor * t, const void * data, size_t data_size) override
+      {
+    - '    GGML_LOG_DEBUG("%s: repack tensor %s with %s_%dx%d\n", __func__, t->name,
+      ggml_type_name(t->type),'
+    - '                   (int) NB_COLS, (int) INTER_SIZE);'
+    - '    return ggml::cpu::repack::repack<BLOC_TYPE, INTER_SIZE, NB_COLS>(t, data,
+      data_size);'
+    - '}'
+    desc: 重打包接口的具体实现，调用 ggml::cpu::repack::repack 模板函数对给定张量进行重打包，并记录调试日志。
+    line: 4621-4625
+    name: repack
+  name: tensor_traits
+- desc: 一个内部类，继承 ggml::cpu::extra_buffer_type，用于判断特定运算是否支持重打包缓冲区，并提供获取张量特质的接口。
+  methods:
+  - code:
+    - bool supports_op(ggml_backend_dev_t, const struct ggml_tensor * op) override
+      {
+    - '    if (op->op == GGML_OP_MUL_MAT &&'
+    - '        op->src[0]->buffer &&'
+    - '        (ggml_n_dims(op->src[0]) == 2) &&'
+    - '        op->src[0]->buffer->buft == ggml_backend_cpu_repack_buffer_type() &&'
+    - '        ggml_repack_get_optimal_repack_type(op->src[0])) {'
+    - '        // ... (检查 src1 是否为宿主缓冲区且类型为 F32)'
+    - '    }'
+    - '    // ... (对 MUL_MAT_ID 做类似检查)'
+    - '    return false;'
+    - '}'
+    desc: 判断给定的运算（MUL_MAT 或 MUL_MAT_ID）是否支持在重打包缓冲区上执行，检查张量类型、维度和缓冲区类型等条件。
+    line: 4670-4687
+    name: supports_op
+  - code:
+    - ggml::cpu::tensor_traits * get_tensor_traits(const struct ggml_tensor * op)
+      override {
+    - '    if (op->op == GGML_OP_MUL_MAT || op->op == GGML_OP_MUL_MAT_ID) {'
+    - '        if (op->src[0]->buffer && op->src[0]->buffer->buft == ggml_backend_cpu_repack_buffer_type())
+      {'
+    - '            return (ggml::cpu::tensor_traits *) op->src[0]->extra;'
+    - '        }'
+    - '    }'
+    - '    return nullptr;'
+    - '}'
+    desc: 获取关联张量的特质对象，用于在运算执行时访问重打包配置和计算逻辑。
+    line: 4688-4696
+    name: get_tensor_traits
+  name: extra_buffer_type
+desc: 该文件实现 ggml CPU 后端中多种量化矩阵布局的标量通用路径，包括 Q8_0 和 Q8_K 数据的 4 路交错量化，以及 Q4、Q5、Q6 量化格式与
+  Q8 输入之间的 GEMV/GEMM 计算。代码通过模板参数控制块内交错宽度和列数，并针对不同量化格式解析低位量、高位量、缩放因子及最小值修正，从而生成矩阵乘法结果。给定代码在
+  ggml_gemv_q4_0_8x8_q8_0_generic 函数声明处被截断。该代码片段来自 ggml CPU 量化矩阵乘实现，主要提供多种量化格式和不同交错布局下的
+  GEMV/GEMM 通用标量内核，包括 Q4、Q5、Q6、Q8、Q2、IQ4_NL、MXFP4 以及 K-quant 类型。各函数将量化的左矩阵块与量化的右向量或矩阵块解码后进行整数点积，结合缩放因子、最小值修正项和
+  FP16/特殊浮点缩放系数，最终将结果写入输出缓冲区；部分 16 列实现仅在 RISC-V Zvfh 环境下启用。该文件实现了多种量化矩阵乘法（GEMM）的通用（非SIMD）实现，支持Q4_0、Q8_0、Q4_K、Q2_K、Q5_K、Q6_K、IQ4_NL、MXFP4等量化格式，通过多种4xN和8xN的块交错布局进行高效计算。该文件是
+  ggml CPU 后端的量化矩阵乘法与数据重排实现片段，主要包含多种 Q2、Q4、Q5、Q6、Q8 量化格式之间的块级交错重排函数，以及针对不同量化格式和矩阵布局的通用
+  GEMM 内核。代码通过按行列分块、解码量化缩放因子与最小值、计算整数点积并恢复浮点结果，实现面向 CPU 向量化和特定硬件布局的高效量化矩阵乘法。该文件实现了ggml库中针对量化张量的重打包（repack）功能，将各种量化块类型（如Q4_0,
+  Q4_K, Q2_K, Q5_K, Q6_K, Q8_0, IQ4_NL, MXFP4等）的数据排列方式转换为更利于SIMD（尤其是RISC-V向量指令集）高效计算的交错（interleaved）布局，并通过模板特化的gemv/gemm函数以及tensor_traits类集成到计算图中，以加速量化矩阵乘法运算。该文件实现了
+  ggml CPU 后端中用于量化张量的重打包（repack）逻辑。它定义了重打包张量特质（tensor traits），支持多种量化类型（如 Q4_0、Q4_K、Q5_K
+  等）和不同的内部线程块尺寸配置，以优化不同硬件架构（如 AVX2、NEON、RISC-V）上的矩阵乘法性能。文件还实现了针对 MUL_MAT 和 MUL_MAT_ID
+  运算的前向传播逻辑，包括张量量化、线程池分块并行处理等，并注册了名为 CPU_REPACK 的自定义后端缓冲区类型，用于管理重打包后的张量数据。
+file: ggml/src/ggml-cpu/repack.cpp
+funcs:
+- code:
+  - static inline int nearest_int(float fval) {
+  - '    assert(fabsf(fval) <= 4194303.f);'
+  - '    float val = fval + 12582912.f;'
+  - '    int i; memcpy(&i, &val, sizeof(int));'
+  - '    return (i & 0x007fffff) - 0x00400000;'
+  - '}'
+  desc: 使用浮点数位级技巧将有限范围内的浮点数快速转换为最近整数。
+  line: 17-23
+  name: nearest_int
+- code:
+  - void ggml_quantize_mat_q8_0_4x1_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK8_0 == 32);'
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    block_q8_0x4 * GGML_RESTRICT y = (block_q8_0x4 *) vy;'
+  - '    const int blck_size_interleave = 1;'
+  - '    float srcv[4][QK8_0];'
+  - '    float id[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            for (int j = 0; j < QK8_0; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK8_0 + j];'
+  - '                amax = MAX(amax, fabsf(srcv[row_iter][j]));'
+  - '            }'
+  - '            const float d = amax / ((1 << 7) - 1);'
+  - '            id[row_iter] = d ? 1.0f / d : 0.0f;'
+  - '            y[i].d[row_iter] = GGML_CPU_FP32_TO_FP16(d);'
+  - '        }'
+  - '        for (int j = 0; j < QK8_0 * 4; j++) {'
+  - '            int src_offset = (j / (4 * blck_size_interleave)) * blck_size_interleave;'
+  - '            int src_id = (j % (4 * blck_size_interleave)) / blck_size_interleave;'
+  - '            src_offset += (j % blck_size_interleave);'
+  - '            float x0 = srcv[src_id][src_offset] * id[src_id];'
+  - '            y[i].qs[j] = roundf(x0);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 在 RISC-V Zvfh 环境下，将四行 FP32 数据按 Q8_0 格式量化并以 4x1 交错布局写入输出。
+  line: 39-73
+  name: ggml_quantize_mat_q8_0_4x1_generic
+- code:
+  - void ggml_quantize_mat_q8_K_4x1_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK_K == 256);'
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    block_q8_Kx4 * GGML_RESTRICT y = (block_q8_Kx4 *) vy;'
+  - '    const int blck_size_interleave = 1;'
+  - '    float srcv[4][QK_K];'
+  - '    float iscale[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            float max = 0;'
+  - '            for (int j = 0; j < QK_K; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK_K + j];'
+  - '                if (amax < fabsf(srcv[row_iter][j])) {'
+  - '                    amax = fabsf(srcv[row_iter][j]);'
+  - '                    max = srcv[row_iter][j];'
+  - '                }'
+  - '            }'
+  - '            iscale[row_iter] = amax ? -127.f/max : 0;'
+  - '            y[i].d[row_iter] = amax ? 1/iscale[row_iter] : 0;'
+  - '        }'
+  - '        for (int j = 0; j < QK_K / 4; j++) y[i].bsums[j] = 0;'
+  - '        for (int j = 0; j < QK_K * 4; j++) {'
+  - '            int src_id = j % 4;'
+  - '            int src_offset = j / 4;'
+  - '            int index = ((j >> 6) << 2) + (j & 3);'
+  - '            float x0 = srcv[src_id][src_offset] * iscale[src_id];'
+  - '            y[i].qs[j] = nearest_int(x0);'
+  - '            y[i].bsums[index] += y[i].qs[j];'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 在 RISC-V Zvfh 环境下，将四行 FP32 数据按 Q8_K 格式量化，计算块和，并生成 4x1 交错布局。
+  line: 75-116
+  name: ggml_quantize_mat_q8_K_4x1_generic
+- code:
+  - void ggml_quantize_mat_q8_0_4x4_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK8_0 == 32);'
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    block_q8_0x4 * GGML_RESTRICT y = (block_q8_0x4 *) vy;'
+  - '    const int blck_size_interleave = 4;'
+  - '    float srcv[4][QK8_0];'
+  - '    float id[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            for (int j = 0; j < QK8_0; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK8_0 + j];'
+  - '                amax = MAX(amax, fabsf(srcv[row_iter][j]));'
+  - '            }'
+  - '            const float d = amax / ((1 << 7) - 1);'
+  - '            id[row_iter] = d ? 1.0f / d : 0.0f;'
+  - '            y[i].d[row_iter] = GGML_CPU_FP32_TO_FP16(d);'
+  - '        }'
+  - '        for (int j = 0; j < QK8_0 * 4; j++) {'
+  - '            int src_offset = (j / (4 * blck_size_interleave)) * blck_size_interleave;'
+  - '            int src_id = (j % (4 * blck_size_interleave)) / blck_size_interleave;'
+  - '            src_offset += (j % blck_size_interleave);'
+  - '            float x0 = srcv[src_id][src_offset] * id[src_id];'
+  - '            y[i].qs[j] = roundf(x0);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将四行 FP32 数据按 Q8_0 格式量化，并以每组四字节的 4x4 交错布局存储。
+  line: 118-151
+  name: ggml_quantize_mat_q8_0_4x4_generic
+- code:
+  - void ggml_quantize_mat_q8_0_4x8_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK8_0 == 32);'
+  - '    assert(k % QK8_0 == 0);'
+  - '    const int nb = k / QK8_0;'
+  - '    block_q8_0x4 * GGML_RESTRICT y = (block_q8_0x4 *) vy;'
+  - '    const int blck_size_interleave = 8;'
+  - '    float srcv[4][QK8_0];'
+  - '    float id[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            for (int j = 0; j < QK8_0; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK8_0 + j];'
+  - '                amax = MAX(amax, fabsf(srcv[row_iter][j]));'
+  - '            }'
+  - '            const float d = amax / ((1 << 7) - 1);'
+  - '            id[row_iter] = d ? 1.0f / d : 0.0f;'
+  - '            y[i].d[row_iter] = GGML_CPU_FP32_TO_FP16(d);'
+  - '        }'
+  - '        for (int j = 0; j < QK8_0 * 4; j++) {'
+  - '            int src_offset = (j / (4 * blck_size_interleave)) * blck_size_interleave;'
+  - '            int src_id = (j % (4 * blck_size_interleave)) / blck_size_interleave;'
+  - '            src_offset += (j % blck_size_interleave);'
+  - '            float x0 = srcv[src_id][src_offset] * id[src_id];'
+  - '            y[i].qs[j] = roundf(x0);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将四行 FP32 数据按 Q8_0 格式量化，并以每组八字节的 4x8 交错布局存储。
+  line: 153-186
+  name: ggml_quantize_mat_q8_0_4x8_generic
+- code:
+  - void ggml_quantize_mat_q8_K_4x4_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK_K == 256);'
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    block_q8_Kx4 * GGML_RESTRICT y = (block_q8_Kx4 *) vy;'
+  - '    const int blck_size_interleave = 4;'
+  - '    float srcv[4][QK_K];'
+  - '    float iscale[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            float max = 0;'
+  - '            for (int j = 0; j < QK_K; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK_K + j];'
+  - '                if (amax < fabsf(srcv[row_iter][j])) {'
+  - '                    amax = fabsf(srcv[row_iter][j]);'
+  - '                    max = srcv[row_iter][j];'
+  - '                }'
+  - '            }'
+  - '            iscale[row_iter] = amax ? -127.f/max : 0;'
+  - '            y[i].d[row_iter] = amax ? 1/iscale[row_iter] : 0;'
+  - '        }'
+  - '        for (int j = 0; j < QK_K / 4; j++) y[i].bsums[j] = 0;'
+  - '        for (int j = 0; j < QK_K * 4; j++) {'
+  - '            int src_offset = (j / (4 * blck_size_interleave)) * blck_size_interleave;'
+  - '            int src_id = (j % (4 * blck_size_interleave)) / blck_size_interleave;'
+  - '            src_offset += (j % blck_size_interleave);'
+  - '            int index = (((j & 15) >> 2) << 2) + ((j >> 8) << 4) + ((j >> 6)
+    & 3);'
+  - '            float x0 = srcv[src_id][src_offset] * iscale[src_id];'
+  - '            y[i].qs[j] = nearest_int(x0);'
+  - '            y[i].bsums[index] += y[i].qs[j];'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将四行 FP32 数据按 Q8_K 格式量化，生成 4x4 交错量化值及对应的分块和。
+  line: 188-230
+  name: ggml_quantize_mat_q8_K_4x4_generic
+- code:
+  - void ggml_quantize_mat_q8_K_4x8_generic(const float * GGML_RESTRICT x, void *
+    GGML_RESTRICT vy, int64_t k) {
+  - '    assert(QK_K == 256);'
+  - '    assert(k % QK_K == 0);'
+  - '    const int nb = k / QK_K;'
+  - '    block_q8_Kx4 * GGML_RESTRICT y = (block_q8_Kx4 *) vy;'
+  - '    const int blck_size_interleave = 8;'
+  - '    float srcv[4][QK_K];'
+  - '    float iscale[4];'
+  - '    for (int i = 0; i < nb; i++) {'
+  - '        for (int row_iter = 0; row_iter < 4; row_iter++) {'
+  - '            float amax = 0.0f;'
+  - '            float max = 0;'
+  - '            for (int j = 0; j < QK_K; j++) {'
+  - '                srcv[row_iter][j] = x[row_iter * k + i * QK_K + j];'
+  - '                if (amax < fabsf(srcv[row_iter][j])) {'
+  - '                    amax = fabsf(srcv[row_iter][j]);'
+  - '                    max = srcv[row_iter][j];'
+  - '                }'
+  - '            }'
+  - '            iscale[row_iter] = amax ? -127.f/max : 0;'
+  - '            y[i].d[row_iter] = amax ? 1/iscale[row_iter] : 0;'
+  - '        }'
+  - '        for (int j = 0; j < QK_K / 4; j++) y[i].bsums[j] = 0;'
+  - '        for (int j = 0; j < QK_K * 4; j++) {'
+  - '            int src_offset = (j / (4 * blck_size_interleave)) * blck_size_interleave;'
+  - '            int src_id = (j % (4 * blck_size_interleave)) / blck_size_interleave;'
+  - '            src_offset += (j % blck_size_interleave);'
+  - '            int index = (((j & 31) >> 3) << 2) + ((j >> 8) << 4) + ((j >> 6)
+    & 3);'
+  - '            float x0 = srcv[src_id][src_offset] * iscale[src_id];'
+  - '            y[i].qs[j] = nearest_int(x0);'
+  - '            y[i].bsums[index] += y[i].qs[j];'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 将四行 FP32 数据按 Q8_K 格式量化，生成 4x8 交错量化值及分块和。
+  line: 232-274
+  name: ggml_quantize_mat_q8_K_4x8_generic
+- code:
+  - template <int64_t INTER_SIZE, ggml_type PARAM_TYPE>
+  - void ggml_quantize_mat_t(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy,
+    int64_t nrow, int64_t n_per_row);
+  desc: 模板化的量化分发接口，根据交错宽度和量化类型选择具体量化实现。
+  line: 280-281
+  name: ggml_quantize_mat_t
+- code:
+  - template <> void ggml_quantize_mat_t<4, GGML_TYPE_Q8_0>(const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int64_t nrow, int64_t n_per_row) {
+  - '    assert(nrow == 4);'
+  - '    UNUSED(nrow);'
+  - '    ggml_quantize_mat_q8_0_4x4(x, vy, n_per_row);'
+  - '}'
+  desc: 将 4 行 Q8_0 输入量化请求分发到 4x4 实现。
+  line: 283-287
+  name: ggml_quantize_mat_t<4, GGML_TYPE_Q8_0>
+- code:
+  - template <> void ggml_quantize_mat_t<8, GGML_TYPE_Q8_0>(const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int64_t nrow, int64_t n_per_row) {
+  - '    assert(nrow == 4);'
+  - '    UNUSED(nrow);'
+  - '    ggml_quantize_mat_q8_0_4x8(x, vy, n_per_row);'
+  - '}'
+  desc: 将 4 行 Q8_0 输入量化请求分发到 4x8 实现。
+  line: 289-293
+  name: ggml_quantize_mat_t<8, GGML_TYPE_Q8_0>
+- code:
+  - template <> void ggml_quantize_mat_t<4, GGML_TYPE_Q8_K>(const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int64_t nrow, int64_t n_per_row) {
+  - '    assert(nrow == 4);'
+  - '    UNUSED(nrow);'
+  - '    ggml_quantize_mat_q8_K_4x4(x, vy, n_per_row);'
+  - '}'
+  desc: 将 4 行 Q8_K 输入量化请求分发到 4x4 实现。
+  line: 295-299
+  name: ggml_quantize_mat_t<4, GGML_TYPE_Q8_K>
+- code:
+  - template <> void ggml_quantize_mat_t<8, GGML_TYPE_Q8_K>(const float * GGML_RESTRICT
+    x, void * GGML_RESTRICT vy, int64_t nrow, int64_t n_per_row) {
+  - '    assert(nrow == 4);'
+  - '    UNUSED(nrow);'
+  - '    ggml_quantize_mat_q8_K_4x8(x, vy, n_per_row);'
+  - '}'
+  desc: 将 4 行 Q8_K 输入量化请求分发到 4x8 实现。
+  line: 301-305
+  name: ggml_quantize_mat_t<8, GGML_TYPE_Q8_K>
+- code:
+  - template <int M, int N>
+  - static void ggml_gemv_q6_K_NxM_q8_K_generic_impl(int n, float * GGML_RESTRICT
+    s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int
+    nr, int nc) {
+  - '    constexpr int blocklen = M;'
+  - '    constexpr int ncols_interleaved = N;'
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int blocks_per_half = 64 / blocklen;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(nr);'
+  - '    float sumf[8];'
+  - '    const block_q8_K * a_ptr = (const block_q8_K *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q6_Kx8 * b_ptr = (const block_q6_Kx8 *) vx + (x * nb);'
+  - '        for (int j = 0; j < ncols_interleaved; j++) sumf[j] = 0.0f;'
+  - '        for (int l = 0; l < nb; l++) {'
+  - '            /* 解码 Q6_K 的低位和高位量，并与 Q8_K 数据进行点积。 */'
+  - '        }'
+  - '        for (int j = 0; j < ncols_interleaved; j++) s[x * ncols_interleaved +
+    j] = sumf[j];'
+  - '    }'
+  - '}'
+  desc: 执行 Q6_K 权重与 Q8_K 向量之间的通用 GEMV，解析高低位量化值并应用缩放因子。
+  line: 329-404
+  name: ggml_gemv_q6_K_NxM_q8_K_generic_impl
+- code:
+  - template <int M, int N>
+  - static void ggml_gemm_q6_K_NxM_q8_K_generic_impl(int n, float * GGML_RESTRICT
+    s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int
+    nr, int nc) {
+  - '    constexpr int blocklen = M;'
+  - '    constexpr int ncols_interleaved = N;'
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(bs);'
+  - '    float sumf[4][8];'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        /* 遍历输入行、输出列及量化块，完成 Q6_K 与 Q8_K 的乘加。 */'
+  - '    }'
+  - '}'
+  desc: 执行 Q6_K 权重与 4 路 Q8_K 矩阵输入之间的通用 GEMM，并输出四行结果。
+  line: 406-502
+  name: ggml_gemm_q6_K_NxM_q8_K_generic_impl
+- code:
+  - template <int M, int N>
+  - static void ggml_gemv_q5_K_NxM_q8_K_generic_impl(int n, float * GGML_RESTRICT
+    s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int
+    nr, int nc) {
+  - '    constexpr int blocklen = M;'
+  - '    constexpr int ncols_interleaved = N;'
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(bs);'
+  - '    UNUSED(nr);'
+  - '    /* 解包 Q5_K 的尺度、低位量和高位量，并结合 Q8_K 的块和计算结果。 */'
+  - '}'
+  desc: 执行 Q5_K 权重与 Q8_K 向量之间的通用 GEMV，同时计算并扣除 Q5_K 最小值修正项。
+  line: 504-585
+  name: ggml_gemv_q5_K_NxM_q8_K_generic_impl
+- code:
+  - template <int M, int N>
+  - static void ggml_gemm_q5_K_NxM_q8_K_generic_impl(int n, float * GGML_RESTRICT
+    s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int
+    nr, int nc) {
+  - '    constexpr int blocklen = M;'
+  - '    constexpr int ncols_interleaved = N;'
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    UNUSED(bs);'
+  - '    float sumf[4][ncols_interleaved];'
+  - '    float sum_minf[4][ncols_interleaved];'
+  - '    /* 遍历四路输入、输出列和量化子块，累加点积并减去最小值项。 */'
+  - '}'
+  desc: 执行 Q5_K 权重与 4 路 Q8_K 矩阵输入之间的通用 GEMM，并处理最小值修正。
+  line: 587-691
+  name: ggml_gemm_q5_K_NxM_q8_K_generic_impl
+- code:
+  - void ggml_gemv_q4_0_4x4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert(nr == 1);'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx + (x * nb);'
+  - '        /* 解码 Q4_0 的两个四位量，与 Q8_0 数据进行整数点积并缩放。 */'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_0 4x4 交错权重与 Q8_0 向量之间的通用 GEMV。
+  line: 695-738
+  name: ggml_gemv_q4_0_4x4_q8_0_generic
+- code:
+  - void ggml_gemv_q4_0_4x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx + (x * nb);'
+  - '        /* 按 8 元素交错块解码 Q4_0，并完成缩放点积。 */'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_0 4x8 交错权重与 Q8_0 向量之间的通用 GEMV。
+  line: 740-782
+  name: ggml_gemv_q4_0_4x8_q8_0_generic
+- code:
+  - void ggml_gemv_q4_0_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int n
+  desc: 声明用于 Q4_0 8x8 交错权重与 Q8_0 输入计算的通用 GEMV 函数；代码在函数参数列表处被截断。
+  line: 784-784
+  name: ggml_gemv_q4_0_8x8_q8_0_generic
+- code:
+  - void ggml_gemv_q4_0_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[8];'
+  - '    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_0x8 * b_ptr = (const block_q4_0x8 *) vx + (x * nb);'
+  - '        for (int j = 0; j < ncols_interleaved; j++) sumf[j] = 0.0;'
+  - '        for (int l = 0; l < nb; l++) {'
+  - '            for (int k = 0; k < (qk / (2 * blocklen)); k++) {'
+  - '                for (int j = 0; j < ncols_interleaved; j++) {'
+  - '                    int sumi = 0;'
+  - '                    for (int i = 0; i < blocklen; ++i) {'
+  - '                        const int v0 = (int8_t) (b_ptr[l].qs[k * ncols_interleaved
+    * blocklen + j * blocklen + i] << 4);'
+  - '                        const int v1 = (int8_t) (b_ptr[l].qs[k * ncols_interleaved
+    * blocklen + j * blocklen + i] & 0xF0);'
+  - '                        sumi += ((v0 * a_ptr[l].qs[k * blocklen + i]) + (v1 *
+    a_ptr[l].qs[k * blocklen + i + qk / 2])) >> 4;'
+  - '                    }'
+  - '                    sumf[j] += sumi * GGML_CPU_FP16_TO_FP32(b_ptr[l].d[j]) *
+    GGML_CPU_FP16_TO_FP32(a_ptr[l].d);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        for (int j = 0; j < ncols_interleaved; j++) s[x * ncols_interleaved +
+    j] = sumf[j];'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_0×Q8_0 量化向量乘，采用 8 列交错和每次 8 个元素的块布局。
+  line: 843-884
+  name: ggml_gemv_q4_0_8x8_q8_0_generic
+- code:
+  - void ggml_gemv_q4_K_8x4_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 4;'
+  - '    static const uint32_t kmask1 = 0x3f3f3f3f;'
+  - '    static const uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    static const uint32_t kmask3 = 0x03030303;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[8];'
+  - '    float sum_minf[8];'
+  - '    uint32_t utmp[32];'
+  - '    const block_q8_K * a_ptr = (const block_q8_K *) vy;'
+  - '    for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '        const block_q4_Kx8 * b_ptr = (const block_q4_Kx8 *) vx + (x * nb);'
+  - '        for (int j = 0; j < ncols_interleaved; j++) { sumf[j] = 0.0; sum_minf[j]
+    = 0.0; }'
+  - '        for (int l = 0; l < nb; l++) {'
+  - '            for (int sb = 0; sb < 8; sb++) {'
+  - '                memcpy(utmp + sb * 4, b_ptr[l].scales + sb * 12, 12);'
+  - '                utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & kmask2) | (((utmp[sb
+    * 4 + 1] >> 6) & kmask3) << 4);'
+  - '                const uint32_t uaux_0 = utmp[sb * 4 + 1] & kmask1;'
+  - '                utmp[sb * 4 + 1] = (utmp[sb * 4 + 2] & kmask2) | (((utmp[sb *
+    4 + 0] >> 6) & kmask3) << 4);'
+  - '                utmp[sb * 4 + 2] = uaux_0;'
+  - '                utmp[sb * 4 + 0] &= kmask1;'
+  - '            }'
+  - '            for (int k = 0; k < (qk / (2 * blocklen)); k++) {'
+  - '                uint8_t * scales_0 = (uint8_t *) utmp + (k / 8) * 32;'
+  - '                uint8_t * scales_1 = (uint8_t *) utmp + (k / 8) * 32 + 16;'
+  - '                for (int j = 0; j < ncols_interleaved; j++) {'
+  - '                    int sumi = 0;'
+  - '                    for (int i = 0; i < blocklen; ++i) {'
+  - '                        const int v0 = b_ptr[l].qs[k * ncols_interleaved * blocklen
+    + j * blocklen + i] & 0xF;'
+  - '                        const int v1 = b_ptr[l].qs[k * ncols_interleaved * blocklen
+    + j * blocklen + i] >> 4;'
+  - '                        sumi += v0 * a_ptr[l].qs[(k / 8) * 64 + (k % 8) * blocklen
+    + i] * scales_0[j];'
+  - '                        sumi += v1 * a_ptr[l].qs[(k / 8) * 64 + (k % 8) * blocklen
+    + i + 32] * scales_1[j];'
+  - '                    }'
+  - '                    sumf[j] += sumi * GGML_CPU_FP16_TO_FP32(b_ptr[l].d[j]) *
+    a_ptr[l].d;'
+  - '                }'
+  - '            }'
+  - '            for (int sb = 0; sb < 8; sb++) {'
+  - '                uint8_t * mins = (uint8_t *) utmp + 8 + sb * 16;'
+  - '                for (int j = 0; j < ncols_interleaved; j++) sum_minf[j] += mins[j]
+    * (a_ptr[l].bsums[sb * 2] + a_ptr[l].bsums[sb * 2 + 1]) * GGML_CPU_FP16_TO_FP32(b_ptr[l].dmin[j])
+    * a_ptr[l].d;'
+  - '            }'
+  - '        }'
+  - '        for (int j = 0; j < ncols_interleaved; j++) s[x * ncols_interleaved +
+    j] = sumf[j] - sum_minf[j];'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_K×Q8_K 量化向量乘，使用 8 列交错、4 元素子块以及尺度和最小值修正。
+  line: 886-947
+  name: ggml_gemv_q4_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemv_q4_K_8x8_q8_K_generic(...) {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    /* 解码尺度和最小值，执行 Q4_K 与 Q8_K 的分块点积，并写入 sumf - sum_minf。 */'
+  - '}'
+  desc: 计算 Q4_K×Q8_K 量化向量乘，使用 8 列交错和 8 元素子块布局。
+  line: 949-1010
+  name: ggml_gemv_q4_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemv_q2_K_8x8_q8_K_generic(...) {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    /* 从每个字节提取四组 2-bit 值，与 Q8_K 数据进行点积并累加修正项。 */'
+  - '}'
+  desc: 计算 Q2_K×Q8_K 量化向量乘，解包 2-bit 四路量化值并应用尺度、最小值修正。
+  line: 1012-1077
+  name: ggml_gemv_q2_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemv_q5_K_8x4_q8_K_generic(...) {
+  - '    ggml_gemv_q5_K_NxM_q8_K_generic_impl<4, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 调用参数化通用模板实现 Q5_K×Q8_K 的 8x4 GEMV。
+  line: 1079-1081
+  name: ggml_gemv_q5_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemv_q5_K_8x8_q8_K_generic(...) {
+  - '    ggml_gemv_q5_K_NxM_q8_K_generic_impl<8, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 调用参数化通用模板实现 Q5_K×Q8_K 的 8x8 GEMV。
+  line: 1083-1085
+  name: ggml_gemv_q5_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemv_q6_K_8x4_q8_K_generic(...) {
+  - '    ggml_gemv_q6_K_NxM_q8_K_generic_impl<4, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 调用参数化通用模板实现 Q6_K×Q8_K 的 8x4 GEMV。
+  line: 1087-1089
+  name: ggml_gemv_q6_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemv_q6_K_8x8_q8_K_generic(...) {
+  - '    ggml_gemv_q6_K_NxM_q8_K_generic_impl<8, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 调用参数化通用模板实现 Q6_K×Q8_K 的 8x8 GEMV。
+  line: 1091-1093
+  name: ggml_gemv_q6_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemv_iq4_nl_4x4_q8_0_generic(...) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert(nr == 1);'
+  - '    /* 使用 kvalues_iq4nl 查表解码半字节并完成缩放点积。 */'
+  - '}'
+  desc: 计算 IQ4_NL×Q8_0 的 4x4 GEMV，使用非线性 IQ4_NL 查表值还原量化数据。
+  line: 1095-1137
+  name: ggml_gemv_iq4_nl_4x4_q8_0_generic
+- code:
+  - void ggml_gemv_iq4_nl_8x8_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    /* 解码 IQ4_NL 的高低半字节，结合 Q8_0 块尺度进行 8 路累加。 */'
+  - '}'
+  desc: 计算 IQ4_NL×Q8_0 的 8x8 GEMV。
+  line: 1139-1181
+  name: ggml_gemv_iq4_nl_8x8_q8_0_generic
+- code:
+  - void ggml_gemv_mxfp4_4x4_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    /* 使用 kvalues_mxfp4 解码，并通过 GGML_CPU_E8M0_TO_FP32_HALF 应用块级尺度。 */'
+  - '}'
+  desc: 计算 MXFP4×Q8_0 的 4x4 GEMV，使用 MXFP4 查表和 E8M0 缩放因子。
+  line: 1183-1225
+  name: ggml_gemv_mxfp4_4x4_q8_0_generic
+- code:
+  - void ggml_gemv_mxfp4_8x8_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    /* 解码 MXFP4 半字节并执行 8 路量化点积。 */'
+  - '}'
+  desc: 计算 MXFP4×Q8_0 的 8x8 GEMV。
+  line: 1227-1269
+  name: ggml_gemv_mxfp4_8x8_q8_0_generic
+- code:
+  - void ggml_gemv_q8_0_4x4_q8_0_generic(...) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert(nr == 1);'
+  - '    /* 读取 block_q8_0x4 和 block_q8_0，执行四列分块点积。 */'
+  - '}'
+  desc: 计算 Q8_0×Q8_0 的 4x4 GEMV，直接对量化整数执行分块点积并应用两个块尺度。
+  line: 1271-1321
+  name: ggml_gemv_q8_0_4x4_q8_0_generic
+- code:
+  - void ggml_gemv_q8_0_4x8_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 8;'
+  - '    /* 对四个交错列执行 Q8 整数点积和尺度还原。 */'
+  - '}'
+  desc: 计算 Q8_0×Q8_0 的 4x8 GEMV，采用 8 元素内层块。
+  line: 1323-1373
+  name: ggml_gemv_q8_0_4x8_q8_0_generic
+- code:
+  - void ggml_gemv_q4_0_16x1_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    /* 逐元素解包 Q4_0 半字节，与 Q8_0 数据点积并累加到 16 列。 */'
+  - '}'
+  desc: 在 RISC-V Zvfh 条件下计算 Q4_0×Q8_0 的 16x1 GEMV。
+  line: 1378-1421
+  name: ggml_gemv_q4_0_16x1_q8_0_generic
+- code:
+  - void ggml_gemv_q4_K_16x1_q8_K_generic(...) {
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    /* 解码 Q4_K 尺度与最小值，计算 16 列主点积和 min 修正项。 */'
+  - '}'
+  desc: 在 RISC-V Zvfh 条件下计算 Q4_K×Q8_K 的 16x1 GEMV，并处理尺度和最小值数组。
+  line: 1423-1491
+  name: ggml_gemv_q4_K_16x1_q8_K_generic
+- code:
+  - void ggml_gemv_iq4_nl_16x1_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    /* 使用 IQ4_NL 查表逐元素恢复值，并完成 16 列缩放点积。 */'
+  - '}'
+  desc: 在 RISC-V Zvfh 条件下计算 IQ4_NL×Q8_0 的 16x1 GEMV。
+  line: 1493-1535
+  name: ggml_gemv_iq4_nl_16x1_q8_0_generic
+- code:
+  - void ggml_gemv_q8_0_16x1_q8_0_generic(...) {
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    /* 对 16 列 Q8_0 数据执行逐元素整数点积和尺度还原。 */'
+  - '}'
+  desc: 在 RISC-V Zvfh 条件下计算 Q8_0×Q8_0 的 16x1 GEMV。
+  line: 1537-1581
+  name: ggml_gemv_q8_0_16x1_q8_0_generic
+- code:
+  - void ggml_gemv_q2_K_16x1_q8_K_generic(...) {
+  - '    assert(n % QK_K == 0);'
+  - '    assert(nr == 1);'
+  - '    assert(nc % 16 == 0);'
+  - '    const int nb = n / QK_K;'
+  - '    const block_q2_Kx16 * x = (const block_q2_Kx16 *)vx;'
+  - '    const block_q8_K * y = (const block_q8_K *)vy;'
+  - '    const int sb_perm[16] = { 0, 4, 1, 5, 2, 6, 3, 7, 8, 12, 9, 13, 10, 14, 11,
+    15 };'
+  - '    for (int col_tile = 0; col_tile < nc; col_tile += 16) {'
+  - '        /* 遍历 K 块和 16 个子块，累加 Q2 主点积与最小值修正。 */'
+  - '        for (int k_block = 0; k_block < nb; ++k_block) {'
+  - '            /* 解包 Q2 值、读取 Q8 值，并按尺度累加。 */'
+  - '        }'
+  - '        /* 使用左右矩阵尺度完成最终结果写回。 */'
+  - '    }'
+  - '}'
+  desc: 在 RISC-V Zvfh 条件下计算 Q2_K×Q8_K 的 16x1 GEMV，显式处理子块排列、尺度和最小值修正。
+  line: 1586-1660
+  name: ggml_gemv_q2_K_16x1_q8_K_generic
+- code:
+  - void ggml_gemm_q4_0_4x4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][4];'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx + (x * nb);'
+  - '            /* 初始化 4x4 累加器，遍历量化块并执行点积。 */'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_0×Q8_0 的 4x4 GEMM，支持多个行块并对每个输出块累加量化点积。
+  line: 1662-约1700
+  name: ggml_gemm_q4_0_4x4_q8_0_generic
+- code:
+  - '#if defined __riscv_zvfh'
+  - /* RISC-V Zvfh 专用 16x1 GEMV 函数 */
+  - '#endif'
+  - /* 后续定义 Q4_0 4x4 GEMM 通用内核 */
+  desc: 文件级全局代码；该片段主要包含条件编译边界和后续 GEMM 实现的函数定义，没有独立的可执行全局初始化逻辑。
+  line: 1376-约1700
+  name: __main__
+- code:
+  - void ggml_gemm_q4_0_4x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][4];'
+  - '    int sumi;'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q4_0x4 * b_ptr = (const block_q4_0x4 *) vx + (x * nb);'
+  - '            ...'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 实现Q4_0（4列交错）与Q8_0格式的通用矩阵乘法，块大小为8。
+  line: 1700-1765
+  name: ggml_gemm_q4_0_4x8_q8_0_generic
+- code:
+  - void ggml_gemm_q4_0_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][8];'
+  - '    int sumi;'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q4_0x8 * b_ptr = (const block_q4_0x8 *) vx + (x * nb);'
+  - '            ...'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 实现Q4_0（8列交错）与Q8_0格式的通用矩阵乘法，块大小为8。
+  line: 1767-1832
+  name: ggml_gemm_q4_0_8x8_q8_0_generic
+- code:
+  - void ggml_gemm_q4_K_8x4_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 4;'
+  - '    static const uint32_t kmask1 = 0x3f3f3f3f;'
+  - '    static const uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    static const uint32_t kmask3 = 0x03030303;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][8];'
+  - '    float sum_minf[4][8];'
+  - '    ...'
+  - '}'
+  desc: 实现Q4_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为4，包含缩放和最小值处理。
+  line: 1834-1925
+  name: ggml_gemm_q4_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemm_q4_K_8x8_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    static const uint32_t kmask1 = 0x3f3f3f3f;'
+  - '    static const uint32_t kmask2 = 0x0f0f0f0f;'
+  - '    static const uint32_t kmask3 = 0x03030303;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][8];'
+  - '    float sum_minf[4][8];'
+  - '    ...'
+  - '}'
+  desc: 实现Q4_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为8。
+  line: 1927-2030
+  name: ggml_gemm_q4_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemm_q2_K_8x8_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][8];'
+  - '    float sum_minf[4][8];'
+  - '    ...'
+  - '}'
+  desc: 实现Q2_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为8。
+  line: 2032-2123
+  name: ggml_gemm_q2_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemm_q5_K_8x4_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    ggml_gemm_q5_K_NxM_q8_K_generic_impl<4, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 实现Q5_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为4，实际调用模板函数。
+  line: 2125-2127
+  name: ggml_gemm_q5_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemm_q5_K_8x8_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    ggml_gemm_q5_K_NxM_q8_K_generic_impl<8, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 实现Q5_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为8，实际调用模板函数。
+  line: 2129-2131
+  name: ggml_gemm_q5_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemm_q6_K_8x4_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    ggml_gemm_q6_K_NxM_q8_K_generic_impl<4, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 实现Q6_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为4，实际调用模板函数。
+  line: 2133-2135
+  name: ggml_gemm_q6_K_8x4_q8_K_generic
+- code:
+  - void ggml_gemm_q6_K_8x8_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    ggml_gemm_q6_K_NxM_q8_K_generic_impl<8, 8>(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 实现Q6_K（8列交错）与Q8_K格式的通用矩阵乘法，块大小为8，实际调用模板函数。
+  line: 2137-2139
+  name: ggml_gemm_q6_K_8x8_q8_K_generic
+- code:
+  - void ggml_gemm_iq4_nl_4x4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t
+    bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int
+    nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    ...'
+  - '}'
+  desc: 实现IQ4_NL（4列交错）与Q8_0格式的通用矩阵乘法，块大小为4。
+  line: 2141-2210
+  name: ggml_gemm_iq4_nl_4x4_q8_0_generic
+- code:
+  - void ggml_gemm_iq4_nl_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t
+    bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int
+    nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    ...'
+  - '}'
+  desc: 实现IQ4_NL（8列交错）与Q8_0格式的通用矩阵乘法，块大小为8。
+  line: 2212-2276
+  name: ggml_gemm_iq4_nl_8x8_q8_0_generic
+- code:
+  - void ggml_gemm_mxfp4_4x4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen = 4;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    ...'
+  - '}'
+  desc: 实现MXFP4（4列交错）与Q8_0格式的通用矩阵乘法，块大小为4。
+  line: 2278-2338
+  name: ggml_gemm_mxfp4_4x4_q8_0_generic
+- code:
+  - void ggml_gemm_mxfp4_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 8;'
+  - '    const int blocklen = 8;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    ...'
+  - '}'
+  desc: 实现MXFP4（8列交错）与Q8_0格式的通用矩阵乘法，块大小为8。
+  line: 2340-2400
+  name: ggml_gemm_mxfp4_8x8_q8_0_generic
+- code:
+  - void ggml_gemm_q8_0_4x4_q8_0_generic(int                        n,
+  - '                                     float * GGML_RESTRICT      s,'
+  - '                                     size_t                     bs,'
+  - '                                     const void * GGML_RESTRICT vx,'
+  - '                                     const void * GGML_RESTRICT vy,'
+  - '                                     int                        nr,'
+  - '                                     int                        nc) {'
+  - '    const int qk                = QK8_0;'
+  - '    const int nb                = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen          = 4;'
+  - '    ...'
+  - '}'
+  desc: 实现Q8_0（4列交错）与Q8_0格式的通用矩阵乘法，块大小为4。
+  line: 2402-2464
+  name: ggml_gemm_q8_0_4x4_q8_0_generic
+- code:
+  - void ggml_gemm_q8_0_4x8_q8_0_generic(int                        n,
+  - '                                     float * GGML_RESTRICT      s,'
+  - '                                     size_t                     bs,'
+  - '                                     const void * GGML_RESTRICT vx,'
+  - '                                     const void * GGML_RESTRICT vy,'
+  - '                                     int                        nr,'
+  - '                                     int                        nc) {'
+  - '    const int qk                = QK8_0;'
+  - '    const int nb                = n / qk;'
+  - '    const int ncols_interleaved = 4;'
+  - '    const int blocklen          = 8;'
+  - '    ...'
+  - '}'
+  desc: 实现Q8_0（4列交错）与Q8_0格式的通用矩阵乘法，块大小为8。
+  line: 2466-2528
+  name: ggml_gemm_q8_0_4x8_q8_0_generic
+- code:
+  - void ggml_gemm_q4_0_16x1_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    ...'
+  - '}'
+  desc: 实现Q4_0（16列交错）与Q8_0格式的通用矩阵乘法，块大小为1，仅在RISC-V支持zvfh扩展时启用。
+  line: 2530-2590
+  name: ggml_gemm_q4_0_16x1_q8_0_generic
+- code:
+  - void ggml_gemm_q4_K_16x1_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK_K;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    assert (n % qk == 0);'
+  - '    assert (nr % 4 == 0);'
+  - '    assert (nc % ncols_interleaved == 0);'
+  - '    float sumf[4][16];'
+  - '    float sum_minf[4][16];'
+  - '    uint8_t scales[128];'
+  - '    uint8_t mins[128];'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_Kx4 * a_ptr = (const block_q8_Kx4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q4_Kx16 * b_ptr = (const block_q4_Kx16 *) vx + (x * nb);'
+  - '            /* 初始化累加器、解包量化参数并计算整数点积 */'
+  - '            /* 应用 d、dmin 缩放并将结果写入 s */'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 计算 Q4_K 乘 Q8_K 的 4 行乘 16 列分块量化矩阵乘法，并应用缩放因子及最小值修正。
+  line: 2465-2548
+  name: ggml_gemm_q4_K_16x1_q8_K_generic
+- code:
+  - void ggml_gemm_iq4_nl_16x1_q8_0_generic(int n, float * GGML_RESTRICT s, size_t
+    bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int
+    nc) {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_iq4_nlx16 * b_ptr = (const block_iq4_nlx16 *) vx + (x
+    * nb);'
+  - '            /* 使用 IQ4_NL 查表值和 Q8_0 量化值累加点积 */'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 执行 IQ4_NL 与 Q8_0 量化块之间的 4x16 通用矩阵乘法。
+  line: 2550-2596
+  name: ggml_gemm_iq4_nl_16x1_q8_0_generic
+- code:
+  - void ggml_gemm_q8_0_16x1_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    const int qk = QK8_0;'
+  - '    const int nb = n / qk;'
+  - '    const int ncols_interleaved = 16;'
+  - '    const int blocklen = 1;'
+  - '    assert(n % qk == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % ncols_interleaved == 0);'
+  - '    for (int y = 0; y < nr / 4; y++) {'
+  - '        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (y * nb);'
+  - '        for (int x = 0; x < nc / ncols_interleaved; x++) {'
+  - '            const block_q8_0x16 * b_ptr = (const block_q8_0x16 *) vx + (x * nb);'
+  - '            /* 遍历量化块，累加 Q8 值乘积并应用双方 scale */'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 执行两个 Q8_0 量化矩阵块之间的 4x16 通用整数点积和浮点缩放。
+  line: 2598-2640
+  name: ggml_gemm_q8_0_16x1_q8_0_generic
+- code:
+  - void ggml_gemm_q2_K_16x1_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc)
+    {
+  - '    assert(n % QK_K == 0);'
+  - '    assert(nr % 4 == 0);'
+  - '    assert(nc % 16 == 0);'
+  - '    const int nb = n / QK_K;'
+  - '    const block_q2_Kx16 * x = (const block_q2_Kx16 *)vx;'
+  - '    const block_q8_Kx4 * y = (const block_q8_Kx4 *)vy;'
+  - '    /* 按 4x16 tile 遍历矩阵 */'
+  - '    /* 解包 Q2_K scale/min，计算 Q2 与 Q8 整数点积 */'
+  - '    /* 应用 d 和 dmin 后写回输出 */'
+  - '}'
+  desc: 执行 Q2_K 与 Q8_K 之间的 4 行乘 16 列分块矩阵乘法，并处理 Q2_K 的 scale/min 修正项。
+  line: 2643-2737
+  name: ggml_gemm_q2_K_16x1_q8_K_generic
+- code:
+  - static block_q8_0x4 make_block_q8_0x4(block_q8_0 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q8_0x4 out;'
+  - '    for (int i = 0; i < 4; i++) out.d[i] = in[i].d;'
+  - '    const int end = QK8_0 * 4 / blck_size_interleave;'
+  - '    for (int i = 0; i < end; ++i) {'
+  - '        int src_id = i % 4;'
+  - '        int src_offset = (i / 4) * blck_size_interleave;'
+  - '        int dst_offset = i * blck_size_interleave;'
+  - '        memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], blck_size_interleave);'
+  - '    }'
+  - '    return out;'
+  - '}'
+  desc: 将 4 个 Q8_0 块的缩放因子和量化数据交错打包为一个 Q8_0x4 块。
+  line: 2741-2757
+  name: make_block_q8_0x4
+- code:
+  - static block_q4_0x4 make_block_q4_0x4(block_q4_0 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_0x4 out;'
+  - '    for (int i = 0; i < 4; i++) out.d[i] = in[i].d;'
+  - '    const int end = QK4_0 * 2 / blck_size_interleave;'
+  - '    if (blck_size_interleave == 8) {'
+  - '        /* 以 64 位块读取、异或 0x88 掩码并写入 */'
+  - '    } else if (blck_size_interleave == 4) {'
+  - '        /* 以 32 位块读取、异或 0x88 掩码并写入 */'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - '    return out;'
+  - '}'
+  desc: 将 4 个 Q4_0 块交错打包，并根据交错宽度对量化数据执行 XOR 重排。
+  line: 2759-2797
+  name: make_block_q4_0x4
+- code:
+  - static block_q4_0x8 make_block_q4_0x8(block_q4_0 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_0x8 out;'
+  - '    for (int i = 0; i < 8; i++) out.d[i] = in[i].d;'
+  - '    const int end = QK4_0 * 4 / blck_size_interleave;'
+  - '    for (int i = 0; i < end; ++i) {'
+  - '        int src_id = i % 8;'
+  - '        int src_offset = (i / 8) * blck_size_interleave;'
+  - '        int dst_offset = i * blck_size_interleave;'
+  - '        uint64_t elems;'
+  - '        memcpy(&elems, &in[src_id].qs[src_offset], sizeof(uint64_t));'
+  - '        elems ^= 0x8888888888888888ULL;'
+  - '        memcpy(&out.qs[dst_offset], &elems, sizeof(uint64_t));'
+  - '    }'
+  - '    return out;'
+  - '}'
+  desc: 将 8 个 Q4_0 块的 scale 和量化值按指定块大小交错打包为 Q4_0x8。
+  line: 2803-2823
+  name: make_block_q4_0x8
+- code:
+  - static block_q4_0x16 make_block_q4_0x16(block_q4_0 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_0x16 out;'
+  - '    for (int i = 0; i < 16; i++) out.d[i] = in[i].d;'
+  - '    const int end = QK4_0 * 8 / blck_size_interleave;'
+  - '    if (blck_size_interleave == 1) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 16;'
+  - '            int src_offset = i / 16;'
+  - '            out.qs[i] = in[src_id].qs[src_offset] ^ 0x88;'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - '    return out;'
+  - '}'
+  desc: 将 16 个 Q4_0 块按单字节交错方式组合为 Q4_0x16。
+  line: 2825-2847
+  name: make_block_q4_0x16
+- code:
+  - static block_q4_Kx8 make_block_q4_Kx8(block_q4_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_Kx8 out;'
+  - '    /* 复制 8 个块的 d 和 dmin */'
+  - '    /* 交错复制 Q4_K 量化值 */'
+  - '    /* 解包并重新组织 scales 与 mins */'
+  - '    return out;'
+  - '}'
+  desc: 将 8 个 Q4_K 块的量化数据、scale 和 min 参数重排为 Q4_Kx8 布局。
+  line: 2849-2925
+  name: make_block_q4_Kx8
+- code:
+  - static block_q4_Kx16 make_block_q4_Kx16(block_q4_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_Kx16 out;'
+  - '    /* 复制 d 和 dmin */'
+  - '    /* 交错量化值 */'
+  - '    /* 提取、重排并重新打包 128 个 scale/min 参数 */'
+  - '    return out;'
+  - '}'
+  desc: 将 16 个 Q4_K 块重排为 Q4_Kx16，并生成适用于 RVV 的 scale/min 布局。
+  line: 2927-2986
+  name: make_block_q4_Kx16
+- code:
+  - static block_q2_Kx8 make_block_q2_Kx8(block_q2_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q2_Kx8 out;'
+  - '    for (int i = 0; i < 8; i++) {'
+  - '        out.d[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.d;'
+  - '        out.dmin[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.dmin;'
+  - '    }'
+  - '    /* 交错 Q2_K 量化值 */'
+  - '    for (int i = 0; i < 128; i++) {'
+  - '        int src1 = (i % 16) / 2;'
+  - '        int src2 = ((i / 16) * 2) + (i % 2);'
+  - '        out.scales[i] = in[src1].scales[src2];'
+  - '    }'
+  - '    return out;'
+  - '}'
+  desc: 将 8 个 Q2_K 块交错组合，并重新排列其 scale 数据。
+  line: 2988-3027
+  name: make_block_q2_Kx8
+- code:
+  - static block_q5_Kx8 make_block_q5_Kx8(block_q5_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q5_Kx8 out;'
+  - '    /* 复制 d、dmin，并交错 qs 与 qh */'
+  - '    /* 按 Q4_K 相同规则解包并重排 scales 和 mins */'
+  - '    return out;'
+  - '}'
+  desc: 将 8 个 Q5_K 块的低位量化值、高位量化值、scale 和 min 交错重排为 Q5_Kx8。
+  line: 3029-3107
+  name: make_block_q5_Kx8
+- code:
+  - static block_q6_Kx8 make_block_q6_Kx8(block_q6_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q6_Kx8 out;'
+  - '    constexpr int n_blocks = 8;'
+  - '    for (int i = 0; i < n_blocks; i++) out.d[i] = in[i].d;'
+  - '    /* 交错 ql 和 qh 数据 */'
+  - '    /* 按子块顺序交错 16 个 scale */'
+  - '    return out;'
+  - '}'
+  desc: 将 8 个 Q6_K 块的低位、高位量化数据及 scale 交错打包为 Q6_Kx8。
+  line: 3109-3152
+  name: make_block_q6_Kx8
+- code:
+  - static block_q2_Kx16 make_block_q2_Kx16(const block_q2_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q2_Kx16 out;'
+  - '    constexpr int N_COLS = 16;'
+  - '    /* 复制 d 和 dmin */'
+  - '    /* 交错 16 列 Q2_K 数据 */'
+  - '    /* 按偶数低位、奇数低位、偶数高位、奇数高位分组重排 scales */'
+  - '    return out;'
+  - '}'
+  desc: 将 16 个 Q2_K 块重排为 Q2_Kx16，生成顺序并行的量化数据和 scale 布局。
+  line: 3154-3210
+  name: make_block_q2_Kx16
+- code:
+  - static int repack_q4_0_to_q4_0_4_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_0);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 4;'
+  - '    /* 校验输入尺寸和张量维度 */'
+  - '    /* 收集 4 行对应块并调用 make_block_q4_0x4 */'
+  - '    return 0;'
+  - '}'
+  desc: 将 Q4_0 张量按 4 行一组重排为 Q4_0x4 格式，并写入目标张量。
+  line: 3212-3242
+  name: repack_q4_0_to_q4_0_4_bl
+- code:
+  - static int repack_q4_K_to_q4_K_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);'
+  - '    GGML_ASSERT(interleave_block == 8 || interleave_block == 4);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - '    /* 验证数据大小和维度 */'
+  - '    /* 每 8 行收集块并调用 make_block_q4_Kx8 */'
+  - '    return 0;'
+  - '}'
+  desc: 将 Q4_K 张量按 8 行一组重排为 Q4_Kx8 格式。
+  line: 3244-3274
+  name: repack_q4_K_to_q4_K_8_bl
+- code:
+  - static int repack_q4_K_to_q4_K_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - '    /* 验证维度并收集 16 行输入块 */'
+  - '    /* 调用 make_block_q4_Kx16 生成目标块 */'
+  - '    return 0;'
+  - '}'
+  desc: 将 Q4_K 张量按 16 行一组重排为 Q4_Kx16 格式。
+  line: 3276-3305
+  name: repack_q4_K_to_q4_K_16_bl
+- code:
+  - static int repack_q2_K_to_q2_K_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q2_K);'
+  - '    GGML_ASSERT(interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - '    /* 验证输入数据和张量布局 */'
+  - '    /* 收集 8 行块并调用 make_block_q2_Kx8 */'
+  - '    return 0;'
+  - '}'
+  desc: 将 Q2_K 张量按 8 行一组重排为 Q2_Kx8 格式。
+  line: 3307-3337
+  name: repack_q2_K_to_q2_K_8_bl
+- code:
+  - static int repack_q2_K_to_q2_K_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q2_K);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - '    /* 验证输入尺寸和维度 */'
+  - '    /* 收集 16 行块并生成 Q2_Kx16 输出 */'
+  - '    return 0;'
+  - '}'
+  desc: 将 Q2_K 张量按 16 行一组重排为 Q2_Kx16 格式。
+  line: 3339-3373
+  name: repack_q2_K_to_q2_K_16_bl
+- code:
+  - static int repack_q2_K_to_q2_K_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q2_K);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - ''
+  - '    block_q2_Kx8 * dst = (block_q2_Kx8 *)t->data;'
+  - '    const block_q2_K * src = (const block_q2_K*) data;'
+  - '    block_q2_K dst_tmp[8];'
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q2_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q2_Kx8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q2_K量化块数据按照8行交错分组重新打包为block_q2_Kx8格式。
+  line: 3376-3400
+  name: repack_q2_K_to_q2_K_8_bl
+- code:
+  - static block_q2_Kx16 make_block_q2_Kx16(block_q2_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q2_Kx16 out;'
+  - ''
+  - '    for (int i = 0; i < 16; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK_K * 16 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 1) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 16;'
+  - '            int src_offset = i / 16;'
+  - '            int dst_offset = i;'
+  - '            out.scales[dst_offset] = in[src_id].scales[src_offset];'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将16个Q2_K块组合成一个block_q2_Kx16交错块。
+  line: 3401-3420
+  name: make_block_q2_Kx16
+- code:
+  - static int repack_q2_K_to_q2_K_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q2_K);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - ''
+  - '    block_q2_Kx16 * dst = (block_q2_Kx16*)t->data;'
+  - '    const block_q2_K * src = (const block_q2_K*) data;'
+  - ''
+  - '    block_q2_K dst_tmp[nrows_interleaved];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q2_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i  = 0; i < nrows_interleaved; i++ ) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q2_Kx16(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将Q2_K量化块数据按照16行交错分组重新打包为block_q2_Kx16格式。
+  line: 3421-3450
+  name: repack_q2_K_to_q2_K_16_bl
+- code:
+  - static int repack_q4_K_to_q4_K_8_bl(struct ggml_tensor *       t,
+  - '                                    int                        interleave_block,'
+  - '                                    const void * GGML_RESTRICT data,'
+  - '                                    size_t                     data_size) {'
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - ''
+  - '    block_q4_Kx8 *     dst = (block_q4_Kx8 *) t->data;'
+  - '    const block_q4_K * src = (const block_q4_K *) data;'
+  - '    block_q4_K         dst_tmp[8];'
+  - '    int                nrow    = ggml_nrows(t);'
+  - '    int                nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q4_Kx8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q4_K量化块数据按照8行交错分组重新打包为block_q4_Kx8格式。
+  line: 3451-3480
+  name: repack_q4_K_to_q4_K_8_bl
+- code:
+  - static block_q4_Kx16 make_block_q4_Kx16(block_q4_K * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q4_Kx16 out;'
+  - ''
+  - '    for (int i = 0; i < 16; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK_K * 16 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 1) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 16;'
+  - '            int src_offset = i / 16;'
+  - '            int dst_offset = i;'
+  - '            out.scales[dst_offset] = in[src_id].scales[src_offset];'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将16个Q4_K块组合成一个block_q4_Kx16交错块。
+  line: 3481-3500
+  name: make_block_q4_Kx16
+- code:
+  - static int repack_q4_K_to_q4_K_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - ''
+  - '    block_q4_Kx16 * dst = (block_q4_Kx16*)t->data;'
+  - '    const block_q4_K * src = (const block_q4_K*) data;'
+  - ''
+  - '    block_q4_K dst_tmp[nrows_interleaved];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i  = 0; i < nrows_interleaved; i++ ) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q4_Kx16(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将Q4_K量化块数据按照16行交错分组重新打包为block_q4_Kx16格式。
+  line: 3501-3530
+  name: repack_q4_K_to_q4_K_16_bl
+- code:
+  - static int repack_q4_0_to_q4_0_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_0);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - ''
+  - '    block_q4_0x16 * dst = (block_q4_0x16*)t->data;'
+  - '    const block_q4_0 * src = (const block_q4_0*) data;'
+  - '    block_q4_0 dst_tmp[16];'
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK4_0;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_0));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i  = 0; i < nrows_interleaved; i++ ) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q4_0x16(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将Q4_0量化块数据按照16行交错分组重新打包为block_q4_0x16格式。
+  line: 3531-3560
+  name: repack_q4_0_to_q4_0_16_bl
+- code:
+  - static int repack_q5_K_to_q5_K_8_bl(struct ggml_tensor *       t,
+  - '                                    int                        interleave_block,'
+  - '                                    const void * GGML_RESTRICT data,'
+  - '                                    size_t                     data_size) {'
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q5_K);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - ''
+  - '    block_q5_Kx8 *     dst = (block_q5_Kx8 *) t->data;'
+  - '    const block_q5_K * src = (const block_q5_K *) data;'
+  - '    block_q5_K         dst_tmp[8];'
+  - '    int                nrow    = ggml_nrows(t);'
+  - '    int                nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q5_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q5_Kx8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q5_K量化块数据按照8行交错分组重新打包为block_q5_Kx8格式。
+  line: 3561-3590
+  name: repack_q5_K_to_q5_K_8_bl
+- code:
+  - static int repack_q6_K_to_q6_K_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q6_K);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - ''
+  - '    block_q6_Kx8 * dst = (block_q6_Kx8 *)t->data;'
+  - '    const block_q6_K * src = (const block_q6_K *) data;'
+  - '    block_q6_K dst_tmp[8];'
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK_K;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q6_K));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q6_Kx8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q6_K量化块数据按照8行交错分组重新打包为block_q6_Kx8格式。
+  line: 3591-3620
+  name: repack_q6_K_to_q6_K_8_bl
+- code:
+  - static int repack_q4_0_to_q4_0_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q4_0);'
+  - '    GGML_ASSERT(interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 8;'
+  - ''
+  - '    block_q4_0x8 * dst = (block_q4_0x8*)t->data;'
+  - '    const block_q4_0 * src = (const block_q4_0*) data;'
+  - '    block_q4_0 dst_tmp[8];'
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nblocks = t->ne[0] / QK4_0;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_0));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i  = 0; i < nrows_interleaved; i++ ) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q4_0x8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将Q4_0量化块数据按照8行交错分组重新打包为block_q4_0x8格式。
+  line: 3621-3650
+  name: repack_q4_0_to_q4_0_8_bl
+- code:
+  - static int repack_q8_0_to_q8_0_4_bl(struct ggml_tensor *       t,
+  - '                                    int                        interleave_block,'
+  - '                                    const void * GGML_RESTRICT data,'
+  - '                                    size_t                     data_size) {'
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q8_0);'
+  - '    GGML_ASSERT(interleave_block == 4 || interleave_block == 8);'
+  - '    constexpr int nrows_interleaved = 4;'
+  - ''
+  - '    block_q8_0x4 *     dst = (block_q8_0x4 *) t->data;'
+  - '    const block_q8_0 * src = (const block_q8_0 *) data;'
+  - '    block_q8_0         dst_tmp[4];'
+  - '    int                nrow    = ggml_nrows(t);'
+  - '    int                nblocks = t->ne[0] / QK8_0;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q8_0));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q8_0x4(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q8_0量化块数据按照4行交错分组重新打包为block_q8_0x4格式。
+  line: 3651-3680
+  name: repack_q8_0_to_q8_0_4_bl
+- code:
+  - static block_q8_0x16 make_block_q8_0x16(block_q8_0 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_q8_0x16 out;'
+  - ''
+  - '    for (int i = 0; i < 16; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK8_0 * 16 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 1) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id     = i % 16;'
+  - '            int src_offset = i / 16;'
+  - '            int dst_offset = i;'
+  - '            out.qs[dst_offset] = in[src_id].qs[src_offset];'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将16个Q8_0块组合成一个block_q8_0x16交错块，仅支持交错大小为1。
+  line: 3681-3700
+  name: make_block_q8_0x16
+- code:
+  - static int repack_q8_0_to_q8_0_16_bl(struct ggml_tensor *       t,
+  - '                                    int                        interleave_block,'
+  - '                                    const void * GGML_RESTRICT data,'
+  - '                                    size_t                     data_size) {'
+  - '    GGML_ASSERT(t->type == GGML_TYPE_Q8_0);'
+  - '    constexpr int nrows_interleaved = 16;'
+  - ''
+  - '    block_q8_0x16 *     dst = (block_q8_0x16 *) t->data;'
+  - '    const block_q8_0 * src = (const block_q8_0 *) data;'
+  - '    block_q8_0         dst_tmp[16];'
+  - '    int                nrow    = ggml_nrows(t);'
+  - '    int                nblocks = t->ne[0] / QK8_0;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q8_0));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_q8_0x16(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 将Q8_0量化块数据按照16行交错分组重新打包为block_q8_0x16格式。
+  line: 3701-3730
+  name: repack_q8_0_to_q8_0_16_bl
+- code:
+  - static block_iq4_nlx4 make_block_iq4_nlx4(block_iq4_nl * in, unsigned int blck_size_interleave)
+    {
+  - '    block_iq4_nlx4 out;'
+  - ''
+  - '    for (int i = 0; i < 4; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK4_NL * 2 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 4) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 4;'
+  - '            int src_offset = (i / 4) * blck_size_interleave;'
+  - '            int dst_offset = i * blck_size_interleave;'
+  - ''
+  - '            memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], sizeof(uint32_t));'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将4个IQ4_NL块组合成一个block_iq4_nlx4交错块，仅支持交错大小为4。
+  line: 3731-3755
+  name: make_block_iq4_nlx4
+- code:
+  - static int repack_iq4_nl_to_iq4_nl_4_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_IQ4_NL);'
+  - '    GGML_ASSERT(interleave_block == 4);'
+  - ''
+  - '    const block_iq4_nl   * src = (const block_iq4_nl   *)data;'
+  - '          block_iq4_nlx4 * dst = (      block_iq4_nlx4 *)t->data;'
+  - ''
+  - '    block_iq4_nl dst_tmp[4];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nrows_interleaved = 4;'
+  - '    int nblocks = t->ne[0] / QK4_NL;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_iq4_nl));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_iq4_nlx4(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将IQ4_NL量化块数据按照4行交错分组重新打包为block_iq4_nlx4格式。
+  line: 3756-3785
+  name: repack_iq4_nl_to_iq4_nl_4_bl
+- code:
+  - static block_iq4_nlx8 make_block_iq4_nlx8(block_iq4_nl * in, unsigned int blck_size_interleave)
+    {
+  - '    block_iq4_nlx8 out;'
+  - ''
+  - '    for (int i = 0; i < 8; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK4_NL * 4 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 8) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 8;'
+  - '            int src_offset = (i / 8) * blck_size_interleave;'
+  - '            int dst_offset = i * blck_size_interleave;'
+  - ''
+  - '            memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], sizeof(uint64_t));'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将8个IQ4_NL块组合成一个block_iq4_nlx8交错块，仅支持交错大小为8。
+  line: 3786-3813
+  name: make_block_iq4_nlx8
+- code:
+  - static int repack_iq4_nl_to_iq4_nl_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_IQ4_NL);'
+  - '    GGML_ASSERT(interleave_block == 8);'
+  - ''
+  - '    const block_iq4_nl   * src = (const block_iq4_nl   *)data;'
+  - '          block_iq4_nlx8 * dst = (      block_iq4_nlx8 *)t->data;'
+  - ''
+  - '    block_iq4_nl dst_tmp[8];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nrows_interleaved = 8;'
+  - '    int nblocks = t->ne[0] / QK4_NL;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_iq4_nl));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_iq4_nlx8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将IQ4_NL量化块数据按照8行交错分组重新打包为block_iq4_nlx8格式。
+  line: 3814-3843
+  name: repack_iq4_nl_to_iq4_nl_8_bl
+- code:
+  - static block_iq4_nlx16 make_block_iq4_nlx16(block_iq4_nl * in, unsigned int blck_size_interleave)
+    {
+  - '    block_iq4_nlx16 out;'
+  - ''
+  - '    for (int i = 0; i < 16; i++) {'
+  - '        out.d[i] = in[i].d;'
+  - '    }'
+  - ''
+  - '    const int end = QK4_NL * 8 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 1) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 16;'
+  - '            int src_offset = i / 16;'
+  - '            int dst_offset = i;'
+  - ''
+  - '            out.qs[dst_offset] = in[src_id].qs[src_offset];'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将16个IQ4_NL块组合成一个block_iq4_nlx16交错块，仅支持交错大小为1。
+  line: 3844-3868
+  name: make_block_iq4_nlx16
+- code:
+  - static int repack_iq4_nl_to_iq4_nl_16_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_IQ4_NL);'
+  - '    GGML_ASSERT(interleave_block == 1);'
+  - ''
+  - '    const block_iq4_nl    * src = (const block_iq4_nl   *)data;'
+  - '          block_iq4_nlx16 * dst = (      block_iq4_nlx16 *)t->data;'
+  - ''
+  - '    block_iq4_nl dst_tmp[16];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nrows_interleaved = 16;'
+  - '    int nblocks = t->ne[0] / QK4_NL;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_iq4_nl));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_iq4_nlx16(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将IQ4_NL量化块数据按照16行交错分组重新打包为block_iq4_nlx16格式。
+  line: 3869-3898
+  name: repack_iq4_nl_to_iq4_nl_16_bl
+- code:
+  - static block_mxfp4x4 make_block_mxfp4x4(block_mxfp4 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_mxfp4x4 out;'
+  - ''
+  - '    for (int i = 0; i < 4; i++) {'
+  - '        out.e[i] = in[i].e;'
+  - '    }'
+  - ''
+  - '    const int end = QK_MXFP4 * 2 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 4) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 4;'
+  - '            int src_offset = (i / 4) * blck_size_interleave;'
+  - '            int dst_offset = i * blck_size_interleave;'
+  - ''
+  - '            memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], sizeof(uint32_t));'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将4个MXFP4块组合成一个block_mxfp4x4交错块，仅支持交错大小为4。
+  line: 3899-3923
+  name: make_block_mxfp4x4
+- code:
+  - static int repack_mxfp4_to_mxfp4_4_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_MXFP4);'
+  - '    GGML_ASSERT(interleave_block == 4);'
+  - ''
+  - '    const block_mxfp4   * src = (const block_mxfp4   *)data;'
+  - '          block_mxfp4x4 * dst = (      block_mxfp4x4 *)t->data;'
+  - ''
+  - '    block_mxfp4 dst_tmp[4];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nrows_interleaved = 4;'
+  - '    int nblocks = t->ne[0] / QK_MXFP4;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_mxfp4));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0 || t->ne[0] % 8 != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_mxfp4x4(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将MXFP4量化块数据按照4行交错分组重新打包为block_mxfp4x4格式。
+  line: 3924-3953
+  name: repack_mxfp4_to_mxfp4_4_bl
+- code:
+  - static block_mxfp4x8 make_block_mxfp4x8(block_mxfp4 * in, unsigned int blck_size_interleave)
+    {
+  - '    block_mxfp4x8 out;'
+  - ''
+  - '    for (int i = 0; i < 8; i++) {'
+  - '        out.e[i] = in[i].e;'
+  - '    }'
+  - ''
+  - '    const int end = QK_MXFP4 * 4 / blck_size_interleave;'
+  - ''
+  - '    if (blck_size_interleave == 8) {'
+  - '        for (int i = 0; i < end; ++i) {'
+  - '            int src_id = i % 8;'
+  - '            int src_offset = (i / 8) * blck_size_interleave;'
+  - '            int dst_offset = i * blck_size_interleave;'
+  - ''
+  - '            memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], sizeof(uint64_t));'
+  - '        }'
+  - '    } else {'
+  - '        GGML_ASSERT(false);'
+  - '    }'
+  - ''
+  - '    return out;'
+  - '}'
+  desc: 将8个MXFP4块组合成一个block_mxfp4x8交错块，仅支持交错大小为8。
+  line: 3954-3981
+  name: make_block_mxfp4x8
+- code:
+  - static int repack_mxfp4_to_mxfp4_8_bl(struct ggml_tensor * t, int interleave_block,
+    const void * GGML_RESTRICT data, size_t data_size) {
+  - '    GGML_ASSERT(t->type == GGML_TYPE_MXFP4);'
+  - '    GGML_ASSERT(interleave_block == 8);'
+  - ''
+  - '    const block_mxfp4   * src = (const block_mxfp4   *)data;'
+  - '          block_mxfp4x8 * dst = (      block_mxfp4x8 *)t->data;'
+  - ''
+  - '    block_mxfp4 dst_tmp[8];'
+  - ''
+  - '    int nrow = ggml_nrows(t);'
+  - '    int nrows_interleaved = 8;'
+  - '    int nblocks = t->ne[0] / QK_MXFP4;'
+  - ''
+  - '    GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_mxfp4));'
+  - ''
+  - '    if (t->ne[1] % nrows_interleaved != 0) {'
+  - '        return -1;'
+  - '    }'
+  - ''
+  - '    for (int b = 0; b < nrow; b += nrows_interleaved) {'
+  - '        for (int64_t x = 0; x < nblocks; x++) {'
+  - '            for (int i = 0; i < nrows_interleaved; i++) {'
+  - '                dst_tmp[i] = src[x + i * nblocks];'
+  - '            }'
+  - '            *dst++ = make_block_mxfp4x8(dst_tmp, interleave_block);'
+  - '        }'
+  - '        src += nrows_interleaved * nblocks;'
+  - '    }'
+  - '    return 0;'
+  - ''
+  - '    GGML_UNUSED(data_size);'
+  - '}'
+  desc: 将MXFP4量化块数据按照8行交错分组重新打包为block_mxfp4x8格式。
+  line: 3982-4011
+  name: repack_mxfp4_to_mxfp4_8_bl
+- code:
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS>
+  - int repack(struct ggml_tensor *, const void *, size_t);
+  - ''
+  - '// TODO: generalise.'
+  - template <> int repack<block_q4_0, 4, 4>(struct ggml_tensor * t, const void *
+    data, size_t data_size) {
+  - '    return repack_q4_0_to_q4_0_4_bl(t, 4, data, data_size);'
+  - '}'
+  desc: 模板函数声明和特化，用于将特定量化块类型的数据重打包为交错布局，并支持不同的交错大小和列数组合。
+  line: 4012-4020
+  name: repack
+- code:
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PARAM_TYPE>
+  - void gemv(int, float *, size_t, const void *, const void *, int, int);
+  - ''
+  - template <> void gemv<block_q4_0, 4, 4, GGML_TYPE_Q8_0>(int n, float * s, size_t
+    bs, const void * vx, const void * vy, int nr, int nc) {
+  - '    ggml_gemv_q4_0_4x4_q8_0(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 模板函数声明和特化，用于执行特定量化块类型的矩阵向量乘法（GEMV），针对不同的交错大小和列数调用底层实现。
+  line: 4065-4075
+  name: gemv
+- code:
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PARAM_TYPE>
+  - void gemm(int, float *, size_t, const void *, const void *, int, int);
+  - ''
+  - template <> void gemm<block_q4_0, 4, 4, GGML_TYPE_Q8_0>(int n, float * s, size_t
+    bs, const void * vx, const void * vy, int nr, int nc) {
+  - '    ggml_gemm_q4_0_4x4_q8_0(n, s, bs, vx, vy, nr, nc);'
+  - '}'
+  desc: 模板函数声明和特化，用于执行特定量化块类型的矩阵乘法（GEMM），针对不同的交错大小和列数调用底层实现。
+  line: 4115-4125
+  name: gemm
+- code:
+  - namespace ggml::cpu::repack {
+  - // repack
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS>
+  - int repack(struct ggml_tensor *, const void *, size_t);
+  - // gemv
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PARAM_TYPE>
+  - void gemv(int, float *, size_t, const void *, const void *, int, int);
+  - // gemm
+  - template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PARAM_TYPE>
+  - void gemm(int, float *, size_t, const void *, const void *, int, int);
+  - '}'
+  desc: 文件级全局代码，包括命名空间定义和模板特化声明。
+  line: 4012-4160
+  name: __main__
+- code:
+  - static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(const
+    struct ggml_tensor * cur) {
+  - '    // 定义各种量化类型的特质实例'
+  - '    static const ggml::cpu::repack::tensor_traits<block_q4_0, 4, 4, GGML_TYPE_Q8_0>
+    q4_0_4x4_q8_0;'
+  - '    // ... (其他实例定义)'
+  - '    if (cur->type == GGML_TYPE_Q4_0) {'
+  - '        // ... (根据 CPU 特性选择具体实例)'
+  - '    }'
+  - '    // ... (处理其他类型的逻辑)'
+  - '    return nullptr;'
+  - '}'
+  desc: 根据张量类型和当前 CPU 特性（如 AVX2、NEON、RISC-V）以及张量形状，选择合适的重打包特质实例，返回对应的 tensor_traits
+    指针。
+  line: 4626-4710
+  name: ggml_repack_get_optimal_repack_type
+- code:
+  - static enum ggml_status ggml_backend_cpu_repack_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, struct ggml_tensor * tensor) {
+  - '    tensor->extra = (void *) const_cast<ggml::cpu::tensor_traits *>(ggml_repack_get_optimal_repack_type(tensor));'
+  - '    GGML_UNUSED(buffer);'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 初始化重打包缓冲区中的张量，为张量分配相应的 tensor_traits 作为其 extra 指针，以支持后续的运算。
+  line: 4711-4715
+  name: ggml_backend_cpu_repack_buffer_init_tensor
+- code:
+  - static void ggml_backend_cpu_repack_buffer_set_tensor(ggml_backend_buffer_t buffer,
+    struct ggml_tensor * tensor,
+  - '                                                       const void * data, size_t
+    offset, size_t size) {'
+  - '    GGML_ASSERT(offset == 0);'
+  - '    GGML_ASSERT(size == ggml_nbytes(tensor));'
+  - '    auto tensor_traits = (ggml::cpu::repack::tensor_traits_base *) tensor->extra;'
+  - '    auto OK            = tensor_traits->repack(tensor, data, size);'
+  - '    GGML_ASSERT(OK == 0);'
+  - '    GGML_UNUSED(buffer);'
+  - '}'
+  desc: 在重打包缓冲区中设置张量数据，调用张量对应的 repack 方法，将原始数据转换为优化后的格式。
+  line: 4716-4724
+  name: ggml_backend_cpu_repack_buffer_set_tensor
+- code:
+  - static const char * ggml_backend_cpu_repack_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    return "CPU_REPACK";'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回重打包缓冲区类型的名称字符串，用于调试和日志输出。
+  line: 4725-4729
+  name: ggml_backend_cpu_repack_buffer_type_get_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_cpu_repack_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(),
+    size);'
+  - '    if (buffer == nullptr) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    buffer->buft              = buft;'
+  - '    buffer->iface.init_tensor = ggml_backend_cpu_repack_buffer_init_tensor;'
+  - '    buffer->iface.set_tensor  = ggml_backend_cpu_repack_buffer_set_tensor;'
+  - '    buffer->iface.get_tensor  = nullptr;'
+  - '    buffer->iface.cpy_tensor  = nullptr;'
+  - '    return buffer;'
+  - '}'
+  desc: 分配重打包缓冲区，基于 CPU 缓冲区类型进行内存分配，并配置缓冲区接口的回调函数，初始化张量时自动进行重打包。
+  line: 4730-4741
+  name: ggml_backend_cpu_repack_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_cpu_repack_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    return TENSOR_ALIGNMENT;'
+  - '    GGML_UNUSED(buft);'
+  - '}'
+  desc: 返回重打包缓冲区所需的内存对齐字节数。
+  line: 4742-4746
+  name: ggml_backend_cpu_repack_buffer_type_get_alignment
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_cpu_repack_buffer_type(void) {
+  - '    static struct ggml_backend_buffer_type ggml_backend_cpu_buffer_type_repack
+    = {'
+  - '        /* .iface    = */ {'
+  - '            /* .get_name         = */ ggml_backend_cpu_repack_buffer_type_get_name,'
+  - '            /* .alloc_buffer     = */ ggml_backend_cpu_repack_buffer_type_alloc_buffer,'
+  - '            /* .get_alignment    = */ ggml_backend_cpu_repack_buffer_type_get_alignment,'
+  - '            /* .get_max_size     = */ nullptr,'
+  - '            /* .get_alloc_size   = */ nullptr,'
+  - '            /* .is_host          = */ nullptr,'
+  - '        },'
+  - '        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),'
+  - '        /* .context = */ new ggml::cpu::repack::extra_buffer_type(),'
+  - '    };'
+  - '    return &ggml_backend_cpu_buffer_type_repack;'
+  - '}'
+  desc: 返回全局的单例重打包缓冲区类型对象，该对象配置了设备信息、接口回调和一个额外的缓冲区类型上下文实例。
+  line: 4747-4760
+  name: ggml_backend_cpu_repack_buffer_type

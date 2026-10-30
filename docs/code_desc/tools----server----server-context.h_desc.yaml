@@ -1,0 +1,132 @@
+classes:
+- desc: 一个只读元数据结构体，封装模型构建信息、模型名称与别名、标志位（MTMD/图像/音频输入）、聊天参数引用、分词器相关 token 以及词汇表参数等服务器暴露给上层或路由使用的静态配置快照。
+  methods: []
+  name: server_context_meta
+- desc: 核心服务上下文类，持有 unique_ptr 指向私有实现 server_context_impl，提供模型加载、主循环启动与终止、获取底层 llama_context
+    指针、创建响应读取器、查询元数据快照，以及注册睡眠状态变化回调等关键生命周期管理功能。
+  methods:
+  - code:
+    - server_context();
+    desc: 默认构造函数，初始化一个空的私有实现对象，但不加载任何模型。
+    line: '45'
+    name: server_context
+  - code:
+    - ~server_context();
+    desc: 析构函数，负责释放私有实现对象及所有关联资源。
+    line: '46'
+    name: ~server_context
+  - code:
+    - bool load_model(const common_params & params);
+    desc: 接收通用参数字典，加载模型并初始化 llama_context 实例，成功时返回 true。
+    line: '49'
+    name: load_model
+  - code:
+    - void start_loop();
+    desc: 启动主事件循环，该函数会阻塞当前线程直到 terminate() 被调用解除阻塞。
+    line: '52'
+    name: start_loop
+  - code:
+    - void terminate();
+    desc: 请求终止主循环，解除 start_loop 的阻塞状态（即停止服务器运行）。
+    line: '55'
+    name: terminate
+  - code:
+    - llama_context * get_llama_context() const;
+    desc: 获取底层 llama_context 指针（可能为空当处于睡眠状态），仅供主线程调用，非线程安全。
+    line: '58'
+    name: get_llama_context
+  - code:
+    - server_response_reader get_response_reader();
+    desc: 创建一个面向 CLI 应用的新响应读取器，用于从结果队列中消费响应。
+    line: '61'
+    name: get_response_reader
+  - code:
+    - server_context_meta get_meta() const;
+    desc: 返回当前服务器元数据的只读快照，必须在 load_model() 之后调用，仅主线程安全。
+    line: '64'
+    name: get_meta
+  - code:
+    - void on_sleeping_changed(std::function<void(bool)> callback);
+    desc: 注册一个回调函数，在睡眠状态改变时被触发，必须在 load_model() 之前设置。
+    line: '67'
+    name: on_sleeping_changed
+  name: server_context
+- desc: 路由管理类，负责初始化并持有所有 HTTP 路由处理器（如健康检查、指标、slots、模型列表、词元化、嵌入等），同时维护元数据快照和通过服务器上下文实现具体的任务分发（如补全、嵌入）。
+  methods:
+  - code:
+    - server_routes(const common_params & params, server_context & ctx_server);
+    desc: 构造函数，接收公共参数引用和服务上下文引用，并初始化成员变量但不激活路由。
+    line: '79'
+    name: server_routes
+  - code:
+    - void init_routes();
+    desc: 初始化所有路由处理器，将各 handler 成员绑定到具体的 lambda 实现，使其在 HTTP 上下文就绪后可以被调用。
+    line: '82'
+    name: init_routes
+  - code:
+    - void update_meta(const server_context & ctx_server) {
+    - '    this->meta = std::make_unique<server_context_meta>(ctx_server.get_meta());'
+    - '}'
+    desc: 更新内部元数据快照，通过调用 context 的 get_meta 获取新的元数据并替换现有指针，仅在 HTTP 上下文未就绪时线程安全。
+    line: 86-89
+    name: update_meta
+  - code:
+    - std::unique_ptr<server_res_generator> handle_completions_impl(
+    - '        const server_http_req & req,'
+    - '        server_task_type type,'
+    - '        const json & data,'
+    - '        const std::vector<raw_buffer> & files,'
+    - '        task_response_type res_type);'
+    desc: 私有方法，处理补全任务的通用实现，根据请求数据、任务类型和文件列表构造响应生成器并加入队列。
+    line: 104-108
+    name: handle_completions_impl
+  - code:
+    - std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req
+      & req, int id_slot);
+    desc: 私有方法，处理保存特定 slot 状态的请求，返回响应生成器对象。
+    line: '110'
+    name: handle_slots_save
+  - code:
+    - std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req
+      & req, int id_slot);
+    desc: 私有方法，处理恢复特定 slot 状态的请求，返回响应生成器对象。
+    line: '112'
+    name: handle_slots_restore
+  - code:
+    - std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req
+      &, int id_slot);
+    desc: 私有方法，处理删除特定 slot 状态的请求（即释放 slot），返回响应生成器对象。
+    line: '114'
+    name: handle_slots_erase
+  - code:
+    - std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req
+      & req, task_response_type res_type);
+    desc: 私有方法，处理嵌入任务的通用实现，根据请求数据生成嵌入结果并返回响应生成器。
+    line: '116'
+    name: handle_embeddings_impl
+  - code:
+    - std::unique_ptr<server_res_generator> create_response(bool bypass_sleep = false);
+    desc: 私有方法，创建一个新的响应生成器，可指定是否绕过睡眠状态（用于强制立即响应）。
+    line: '123'
+    name: create_response
+  name: server_routes
+desc: 该文件定义了两个核心结构体：server_context_meta 和 server_context，以及辅助结构体 server_routes，用于管理
+  llama.cpp 服务器实例的完整生命周期，包括模型加载、主循环调度、元数据查询、睡眠状态回调，以及路由处理器注册和统一响应生成器的创建。通过私有实现（pimpl）模式封装底层上下文，并提供
+  REST API 路由（如健康检查、完成、嵌入、模型列表等）的关联处理器，是整个服务器后端的中枢抽象层。
+file: tools/server/server-context.h
+funcs:
+- code:
+  - '#pragma once'
+  - '#include "server-http.h"'
+  - '#include "server-task.h"'
+  - '#include "server-queue.h"'
+  - '#include <nlohmann/json_fwd.hpp>'
+  - '#include <cstddef>'
+  - '#include <memory>'
+  - '#include <set>'
+  - struct server_context_impl; // private implementation
+  - // forward declarations
+  - struct server_res_generator;
+  desc: 全局作用域，包含文件前向声明、头文件包含以及所有结构体/类定义，不包含全局函数，但包含了 server_res_generator 的前向声明和多个类型别名/常量定义的上下文。
+  line: 1-13
+  name: __main__

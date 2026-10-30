@@ -1,0 +1,187 @@
+classes:
+- desc: 混合内存管理器，统筹注意力缓存和递归缓存，提供统一的接口以支持混合架构模型。
+  methods:
+  - code:
+    - llama_memory_hybrid_iswa(
+    - '    const llama_model & model,'
+    - '    ggml_type   type_k,'
+    - '    ggml_type   type_v,'
+    - '    bool   v_trans,'
+    - '    bool   swa_full,'
+    - '    uint32_t   kv_size,'
+    - '    uint32_t   n_ubatch,'
+    - '    uint32_t   n_pad,'
+    - '    ggml_type   type_r,'
+    - '    ggml_type   type_s,'
+    - '    uint32_t   rs_size,'
+    - '    uint32_t   n_seq_max,'
+    - '    bool   offload,'
+    - '    bool   unified,'
+    - '    const layer_filter_cb & filter_attn = nullptr,'
+    - '    const layer_filter_cb & filter_recr = nullptr);'
+    desc: 构造函数，分别创建注意力缓存（llama_kv_cache_iswa）和递归缓存（llama_memory_recurrent）实例，并接收层过滤器以分配不同层。
+    line: 20-35
+    name: llama_memory_hybrid_iswa
+  - code:
+    - ~llama_memory_hybrid_iswa() = default;
+    desc: 析构函数，默认实现，用于资源清理。
+    line: '37'
+    name: ~llama_memory_hybrid_iswa
+  - code:
+    - llama_memory_context_ptr init_batch(
+    - '    llama_batch_allocr & balloc,'
+    - '    uint32_t n_ubatch,'
+    - '    bool embd_all) override;'
+    desc: 初始化批处理上下文，根据模型需求分配批处理所需的缓存空间。
+    line: 43-46
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr init_full() override;
+    desc: 初始化完整内存上下文，用于序列长度较长的推理场景。
+    line: '48'
+    name: init_full
+  - code:
+    - llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
+    desc: 初始化用于状态更新的上下文，涉及模型上下文的传递与优化标志。
+    line: '50'
+    name: init_update
+  - code:
+    - bool get_can_shift() const override;
+    desc: 查询混合内存是否支持序列位置平移（shift）操作。
+    line: '52'
+    name: get_can_shift
+  - code:
+    - void clear(bool data) override;
+    desc: 清除缓存数据，可指定是否释放底层存储。
+    line: '54'
+    name: clear
+  - code:
+    - bool seq_rm  (llama_seq_id seq_id, llama_pos p0, llama_pos p1) override;
+    desc: 删除指定序列在指定位置范围内的数据。
+    line: '56'
+    name: seq_rm
+  - code:
+    - void seq_cp  (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0,
+      llama_pos p1) override;
+    desc: 将一个序列的指定范围复制到另一个序列。
+    line: '57'
+    name: seq_cp
+  - code:
+    - void seq_keep(llama_seq_id seq_id) override;
+    desc: 仅保留指定序列，删除其他所有序列的数据。
+    line: '58'
+    name: seq_keep
+  - code:
+    - void seq_add (llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift)
+      override;
+    desc: 将一个序列的指定范围数据移位（shift）指定的偏移量。
+    line: '59'
+    name: seq_add
+  - code:
+    - void seq_div (llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) override;
+    desc: 将一个序列的指定范围数据按整数 d 进行除法（逻辑分割）。
+    line: '60'
+    name: seq_div
+  - code:
+    - llama_pos seq_pos_min(llama_seq_id seq_id) const override;
+    desc: 获取指定序列中的最小位置。
+    line: '62'
+    name: seq_pos_min
+  - code:
+    - llama_pos seq_pos_max(llama_seq_id seq_id) const override;
+    desc: 获取指定序列中的最大位置。
+    line: '63'
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+    desc: 返回内存占用明细，以便调试和分析。
+    line: '65'
+    name: memory_breakdown
+  - code:
+    - void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0) const override;
+    desc: 将指定序列的内存状态序列化写入到 IO 流中。
+    line: '68'
+    name: state_write
+  - code:
+    - void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0)       override;
+    desc: 从 IO 流中读取内存状态并恢复指定序列。
+    line: '69'
+    name: state_read
+  - code:
+    - llama_kv_cache_iswa * get_mem_attn() const;
+    desc: 返回指向注意力缓存（llama_kv_cache_iswa）的指针，便于底层操作。
+    line: '73'
+    name: get_mem_attn
+  - code:
+    - llama_memory_recurrent * get_mem_recr() const;
+    desc: 返回指向递归缓存（llama_memory_recurrent）的指针，便于底层操作。
+    line: '74'
+    name: get_mem_recr
+  name: llama_memory_hybrid_iswa
+- desc: 混合内存的上下文类，负责管理批处理（ubatch）的迭代和应用，协调注意力与递归子上下文的生命周期。
+  methods:
+  - code:
+    - explicit llama_memory_hybrid_iswa_context(llama_memory_status status);
+    desc: 构造函数（状态失败）：用错误状态初始化上下文。
+    line: '94'
+    name: llama_memory_hybrid_iswa_context
+  - code:
+    - explicit llama_memory_hybrid_iswa_context(llama_memory_hybrid_iswa * mem);
+    desc: 构造函数（完整初始化）：根据混合内存管理器创建完整上下文。
+    line: '97'
+    name: llama_memory_hybrid_iswa_context
+  - code:
+    - explicit llama_memory_hybrid_iswa_context(
+    - '    llama_memory_hybrid_iswa * mem,'
+    - '    llama_context * lctx,'
+    - '    bool optimize);'
+    desc: 构造函数（更新初始化）：创建用于状态更新的上下文。
+    line: 100-103
+    name: llama_memory_hybrid_iswa_context
+  - code:
+    - llama_memory_hybrid_iswa_context(
+    - '    llama_memory_hybrid_iswa * mem,'
+    - '    slot_info_vec_t   sinfos_base,'
+    - '    slot_info_vec_t   sinfos_swa,'
+    - '    std::vector<llama_ubatch>   ubatches);'
+    desc: 构造函数（成功初始化）：使用基本/滑动窗口槽信息和批处理列表直接构造完整上下文。
+    line: 106-110
+    name: llama_memory_hybrid_iswa_context
+  - code:
+    - bool next()  override;
+    desc: 推进到下一个批处理（ubatch），若没有更多则返回 false。
+    line: '114'
+    name: next
+  - code:
+    - bool apply() override;
+    desc: 应用当前批处理，将内部缓存状态同步到外部。
+    line: '115'
+    name: apply
+  - code:
+    - llama_memory_status  get_status() const override;
+    desc: 返回当前上下文的状态（如成功、失败等）。
+    line: '117'
+    name: get_status
+  - code:
+    - const llama_ubatch & get_ubatch() const override;
+    desc: 获取当前的批处理对象引用。
+    line: '118'
+    name: get_ubatch
+  - code:
+    - const llama_kv_cache_iswa_context * get_attn() const;
+    desc: 返回指向注意力子上下文的常量指针。
+    line: '122'
+    name: get_attn
+  - code:
+    - const llama_memory_recurrent_context * get_recr() const;
+    desc: 返回指向递归子上下文的常量指针。
+    line: '123'
+    name: get_recr
+  name: llama_memory_hybrid_iswa_context
+desc: 该文件定义了混合内存实现类 llama_memory_hybrid_iswa 及其对应的上下文类 llama_memory_hybrid_iswa_context。该类整合了基于注意力的
+  KV 缓存（llama_kv_cache_iswa，支持滑动窗口注意力 SWA）和基于递归的内存（llama_memory_recurrent），使模型能够支持部分层使用注意力机制、部分层使用递归机制的混合架构。它实现了
+  llama_memory_i 和 llama_memory_context_i 接口，负责统一管理批处理初始化、状态更新、序列操作及内存状态持久化。
+file: src/llama-memory-hybrid-iswa.h
+funcs: []

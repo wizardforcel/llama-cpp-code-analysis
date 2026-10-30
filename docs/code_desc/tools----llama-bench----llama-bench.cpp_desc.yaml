@@ -1,0 +1,1802 @@
+classes:
+- desc: 结构体，存储所有命令行参数配置，包括模型路径、推理参数（如prompt/gen长度、批大小）、设备选择（GPU层数、设备列表）、量化类型、输出格式等，是基准测试配置的核心数据结构。
+  methods: []
+  name: cmd_params
+- desc: 表示一个具体的测试配置实例，包含模型路径、批处理大小、GPU 层数等参数，并提供转换为 llama 模型参数和上下文参数的方法。
+  methods:
+  - code:
+    - llama_model_params to_llama_mparams() const {
+    - '    llama_model_params mparams = llama_model_default_params();'
+    - '    mparams.n_gpu_layers = n_gpu_layers;'
+    - '    if (!devices.empty()) {'
+    - '        mparams.devices = const_cast<ggml_backend_dev_t *>(devices.data());'
+    - '    }'
+    - '    mparams.split_mode    = split_mode;'
+    - '    mparams.main_gpu      = main_gpu;'
+    - '    mparams.tensor_split  = tensor_split.data();'
+    - '    mparams.use_mmap      = use_mmap;'
+    - '    mparams.use_direct_io = use_direct_io;'
+    - '    mparams.no_host       = no_host;'
+    - '    if (n_cpu_moe <= 0) {'
+    - '        if (tensor_buft_overrides.empty()) {'
+    - '            mparams.tensor_buft_overrides = nullptr;'
+    - '        } else {'
+    - '            GGML_ASSERT(tensor_buft_overrides.back().pattern == nullptr &&'
+    - '                        "Tensor buffer overrides not terminated with empty
+      pattern");'
+    - '            mparams.tensor_buft_overrides = tensor_buft_overrides.data();'
+    - '        }'
+    - '    } else {'
+    - '        static std::vector<llama_model_tensor_buft_override> merged;'
+    - '        static std::vector<std::string> patterns;'
+    - '        merged.clear();'
+    - '        patterns.clear();'
+    - '        auto first = tensor_buft_overrides.begin();'
+    - '        auto last  = tensor_buft_overrides.end();'
+    - '        if (first != last && (last - 1)->pattern == nullptr) {'
+    - '            --last;'
+    - '        }'
+    - '        merged.insert(merged.end(), first, last);'
+    - '        patterns.reserve((size_t) n_cpu_moe);'
+    - '        merged.reserve(merged.size() + (size_t) n_cpu_moe + 1);'
+    - '        for (int i = 0; i < n_cpu_moe; ++i) {'
+    - '            patterns.push_back(llm_ffn_exps_block_regex(i));'
+    - '            merged.push_back({ patterns.back().c_str(),'
+    - '                            ggml_backend_cpu_buffer_type() });'
+    - '        }'
+    - '        merged.push_back({ nullptr, nullptr });'
+    - '        mparams.tensor_buft_overrides = merged.data();'
+    - '    }'
+    - '    return mparams;'
+    - '}'
+    desc: 将实例中的模型相关参数转换为 llama_model_params 结构体。
+    line: 1128-1178
+    name: to_llama_mparams
+  - code:
+    - bool equal_mparams(const cmd_params_instance & other) const {
+    - '    return model == other.model && n_gpu_layers == other.n_gpu_layers && n_cpu_moe
+      == other.n_cpu_moe &&'
+    - '           split_mode == other.split_mode &&'
+    - '           main_gpu == other.main_gpu && tensor_split == other.tensor_split
+      &&'
+    - '           use_mmap == other.use_mmap && use_direct_io == other.use_direct_io
+      &&'
+    - '           devices == other.devices &&'
+    - '           no_host == other.no_host &&'
+    - '           vec_tensor_buft_override_equal(tensor_buft_overrides, other.tensor_buft_overrides);'
+    - '}'
+    desc: 比较两个实例的模型参数是否相等。
+    line: 1180-1189
+    name: equal_mparams
+  - code:
+    - llama_context_params to_llama_cparams() const {
+    - '    llama_context_params cparams = llama_context_default_params();'
+    - '    cparams.n_ctx           = n_prompt + n_gen + n_depth;'
+    - '    cparams.n_batch         = n_batch;'
+    - '    cparams.n_ubatch        = n_ubatch;'
+    - '    cparams.type_k          = type_k;'
+    - '    cparams.type_v          = type_v;'
+    - '    cparams.offload_kqv     = !no_kv_offload;'
+    - '    cparams.flash_attn_type = flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED :
+      LLAMA_FLASH_ATTN_TYPE_DISABLED;'
+    - '    cparams.embeddings      = embeddings;'
+    - '    cparams.op_offload      = !no_op_offload;'
+    - '    cparams.swa_full        = false;'
+    - '    return cparams;'
+    - '}'
+    desc: 将实例中的上下文相关参数转换为 llama_context_params 结构体。
+    line: 1191-1204
+    name: to_llama_cparams
+  name: cmd_params_instance
+- desc: 表示一次基准测试的详细结果，包含硬件信息、模型信息、测试配置和测量样本数据，并提供统计分析功能。
+  methods:
+  - code:
+    - 'test(const cmd_params_instance & inst, const llama_model * lmodel, const llama_context
+      * ctx) :'
+    - '    cpu_info(get_cpu_info()),'
+    - '    gpu_info(get_gpu_info()) {'
+    - '    model_filename = inst.model;'
+    - '    char buf[128];'
+    - '    llama_model_desc(lmodel, buf, sizeof(buf));'
+    - '    model_type     = buf;'
+    - '    model_size     = llama_model_size(lmodel);'
+    - '    model_n_params = llama_model_n_params(lmodel);'
+    - '    n_batch        = inst.n_batch;'
+    - '    n_ubatch       = inst.n_ubatch;'
+    - '    n_threads      = inst.n_threads;'
+    - '    cpu_mask       = inst.cpu_mask;'
+    - '    cpu_strict     = inst.cpu_strict;'
+    - '    poll           = inst.poll;'
+    - '    type_k         = inst.type_k;'
+    - '    type_v         = inst.type_v;'
+    - '    n_gpu_layers   = inst.n_gpu_layers;'
+    - '    n_cpu_moe      = inst.n_cpu_moe;'
+    - '    split_mode     = inst.split_mode;'
+    - '    main_gpu       = inst.main_gpu;'
+    - '    no_kv_offload  = inst.no_kv_offload;'
+    - '    flash_attn     = inst.flash_attn;'
+    - '    devices        = inst.devices;'
+    - '    tensor_split   = inst.tensor_split;'
+    - '    tensor_buft_overrides = inst.tensor_buft_overrides;'
+    - '    use_mmap       = inst.use_mmap;'
+    - '    use_direct_io  = inst.use_direct_io;'
+    - '    embeddings     = inst.embeddings;'
+    - '    no_op_offload  = inst.no_op_offload;'
+    - '    no_host        = inst.no_host;'
+    - '    fit_target     = inst.fit_target;'
+    - '    fit_min_ctx    = inst.fit_min_ctx;'
+    - '    n_prompt       = inst.n_prompt;'
+    - '    n_gen          = inst.n_gen;'
+    - '    n_depth        = inst.n_depth;'
+    - '    time_t t       = time(NULL);'
+    - '    std::strftime(buf, sizeof(buf), "%FT%TZ", gmtime(&t));'
+    - '    test_time = buf;'
+    - '    (void) ctx;'
+    - '}'
+    desc: 构造函数，初始化测试对象，从 cmd_params_instance 和模型/上下文获取数据并记录测试时间。
+    line: 1520-1566
+    name: test
+  - code:
+    - uint64_t avg_ns() const { return ::avg(samples_ns); }
+    desc: 计算样本数据（纳秒）的平均值。
+    line: 1568-1568
+    name: avg_ns
+  - code:
+    - uint64_t stdev_ns() const { return ::stdev(samples_ns); }
+    desc: 计算样本数据（纳秒）的标准差。
+    line: 1570-1570
+    name: stdev_ns
+  - code:
+    - std::vector<double> get_ts() const {
+    - '    int                 n_tokens = n_prompt + n_gen;'
+    - '    std::vector<double> ts;'
+    - '    std::transform(samples_ns.begin(), samples_ns.end(), std::back_inserter(ts),'
+    - '                   [n_tokens](uint64_t t) { return 1e9 * n_tokens / t; });'
+    - '    return ts;'
+    - '}'
+    desc: 将样本的纳秒时间转换为吞吐量（每秒 token 数）的向量。
+    line: 1572-1579
+    name: get_ts
+  - code:
+    - double avg_ts() const { return ::avg(get_ts()); }
+    desc: 计算吞吐量的平均值。
+    line: 1581-1581
+    name: avg_ts
+  - code:
+    - double stdev_ts() const { return ::stdev(get_ts()); }
+    desc: 计算吞吐量的标准差。
+    line: 1583-1583
+    name: stdev_ts
+  - code:
+    - static std::string get_backend() {
+    - '    std::vector<std::string> backends;'
+    - '    bool                     rpc_used = false;'
+    - '    for (size_t i = 0; i < ggml_backend_reg_count(); i++) {'
+    - '        auto *      reg  = ggml_backend_reg_get(i);'
+    - '        std::string name = ggml_backend_reg_name(reg);'
+    - '        if (string_starts_with(name, "RPC")) {'
+    - '            if (ggml_backend_reg_dev_count(reg) > 0) {'
+    - '                rpc_used = true;'
+    - '            }'
+    - '        } else {'
+    - '            if (name != "CPU") {'
+    - '                backends.push_back(ggml_backend_reg_name(reg));'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (rpc_used) {'
+    - '        backends.push_back("RPC");'
+    - '    }'
+    - '    return backends.empty() ? "CPU" : join(backends, ",");'
+    - '}'
+    desc: 获取用于测试的后端名称列表，过滤 CPU 和 RPC 后端。
+    line: 1585-1602
+    name: get_backend
+  - code:
+    - static const std::vector<std::string> & get_fields() {
+    - '    static const std::vector<std::string> fields = {'
+    - '        "build_commit",   "build_number",   "cpu_info",      "gpu_info",       "backends",'
+    - '        "model_filename", "model_type",     "model_size",    "model_n_params",
+      "n_batch",'
+    - '        "n_ubatch",       "n_threads",      "cpu_mask",      "cpu_strict",     "poll",'
+    - '        "type_k",         "type_v",         "n_gpu_layers",  "n_cpu_moe",      "split_mode",'
+    - '        "main_gpu",       "no_kv_offload",  "flash_attn",    "devices",        "tensor_split",'
+    - '        "tensor_buft_overrides",            "use_mmap",      "use_direct_io",  "embeddings",'
+    - '        "no_op_offload",  "no_host",        "fit_target",     "fit_min_ctx",'
+    - '        "n_prompt",       "n_gen",          "n_depth",'
+    - '        "test_time",      "avg_ns",         "stddev_ns",     "avg_ts",         "stddev_ts"'
+    - '    };'
+    - '    return fields;'
+    - '}'
+    desc: 返回测试结果的所有字段名列表，用于输出。
+    line: 1604-1613
+    name: get_fields
+  - code:
+    - static field_type get_field_type(const std::string & field) {
+    - '    if (field == "build_number" || field == "n_batch" || field == "n_ubatch"
+      || field == "n_threads" ||'
+    - '        field == "poll" || field == "model_size" || field == "model_n_params"
+      || field == "n_gpu_layers" ||'
+    - '        field == "main_gpu" || field == "n_prompt" || field == "n_gen" || field
+      == "n_depth" || field == "avg_ns" ||'
+    - '        field == "stddev_ns" || field == "no_op_offload" || field == "n_cpu_moe"
+      ||'
+    - '        field == "fit_target" || field == "fit_min_ctx") {'
+    - '        return INT;'
+    - '    }'
+    - '    if (field == "f16_kv" || field == "no_kv_offload" || field == "cpu_strict"
+      || field == "flash_attn" ||'
+    - '        field == "use_mmap" || field == "use_direct_io" || field == "embeddings"
+      || field == "no_host") {'
+    - '        return BOOL;'
+    - '    }'
+    - '    if (field == "avg_ts" || field == "stddev_ts") {'
+    - '        return FLOAT;'
+    - '    }'
+    - '    return STRING;'
+    - '}'
+    desc: 返回指定字段的数据类型（STRING、BOOL、INT 或 FLOAT）。
+    line: 1615-1630
+    name: get_field_type
+  - code:
+    - std::vector<std::string> get_values() const {
+    - '    std::string tensor_split_str;'
+    - '    std::string tensor_buft_overrides_str;'
+    - '    int         max_nonzero = 0;'
+    - '    for (size_t i = 0; i < llama_max_devices(); i++) {'
+    - '        if (tensor_split[i] > 0) {'
+    - '            max_nonzero = i;'
+    - '        }'
+    - '    }'
+    - '    for (int i = 0; i <= max_nonzero; i++) {'
+    - '        char buf[32];'
+    - '        snprintf(buf, sizeof(buf), "%.2f", tensor_split[i]);'
+    - '        tensor_split_str += buf;'
+    - '        if (i < max_nonzero) {'
+    - '            tensor_split_str += "/";'
+    - '        }'
+    - '    }'
+    - '    if (tensor_buft_overrides.size() == 1) {'
+    - '        GGML_ASSERT(tensor_buft_overrides[0].pattern == nullptr);'
+    - '        tensor_buft_overrides_str += "none";'
+    - '    } else {'
+    - '        for (size_t i = 0; i < tensor_buft_overrides.size()-1; i++) {'
+    - '            if (tensor_buft_overrides[i].pattern == nullptr) {'
+    - '                tensor_buft_overrides_str += "none";'
+    - '            } else {'
+    - '                tensor_buft_overrides_str += tensor_buft_overrides[i].pattern;'
+    - '                tensor_buft_overrides_str += "=";'
+    - '                tensor_buft_overrides_str += ggml_backend_buft_name(tensor_buft_overrides[i].buft);'
+    - '            }'
+    - '            if (i + 2 < tensor_buft_overrides.size()) {'
+    - '                tensor_buft_overrides_str += ";";'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    std::vector<std::string> values = { build_commit,'
+    - '                                        std::to_string(build_number),'
+    - '                                        cpu_info,'
+    - '                                        gpu_info,'
+    - '                                        get_backend(),'
+    - '                                        model_filename,'
+    - '                                        model_type,'
+    - '                                        std::to_string(model_size),'
+    - '                                        std::to_string(model_n_params),'
+    - '                                        std::to_string(n_batch),'
+    - '                                        std::to_string(n_ubatch),'
+    - '                                        std::to_string(n_threads),'
+    - '                                        cpu_mask,'
+    - '                                        std::to_string(cpu_strict),'
+    - '                                        std::to_string(poll),'
+    - '                                        ggml_type_name(type_k),'
+    - '                                        ggml_type_name(type_v),'
+    - '                                        std::to_string(n_gpu_layers),'
+    - '                                        std::to_string(n_cpu_moe),'
+    - '                                        split_mode_str(split_mode),'
+    - '                                        std::to_string(main_gpu),'
+    - '                                        std::to_string(no_kv_offload),'
+    - '                                        std::to_string(flash_attn),'
+    - '                                        devices_to_string(devices),'
+    - '                                        tensor_split_str,'
+    - '                                        tensor_buft_overrides_str,'
+    - '                                        std::to_string(use_mmap),'
+    - '                                        std::to_string(use_direct_io),'
+    - '                                        std::to_string(embeddings),'
+    - '                                        std::to_string(no_op_offload),'
+    - '                                        std::to_string(no_host),'
+    - '                                        std::to_string(fit_target),'
+    - '                                        std::to_string(fit_min_ctx),'
+    - '                                        std::to_string(n_prompt),'
+    - '                                        std::to_string(n_gen),'
+    - '                                        std::to_string(n_depth),'
+    - '                                        test_time,'
+    - '                                        std::to_string(avg_ns()),'
+    - '                                        std::to_string(stdev_ns()),'
+    - '                                        std::to_string(avg_ts()),'
+    - '                                        std::to_string(stdev_ts()) };'
+    - '    return values;'
+    - '}'
+    desc: 生成所有字段的值列表，包括格式化 tensor_split 和 tensor_buft_overrides。
+    line: 1632-1698
+    name: get_values
+  - code:
+    - std::map<std::string, std::string> get_map() const {
+    - '    std::map<std::string, std::string> map;'
+    - '    auto                               fields = get_fields();'
+    - '    auto                               values = get_values();'
+    - '    std::transform(fields.begin(), fields.end(), values.begin(), std::inserter(map,
+      map.end()),'
+    - '                   std::make_pair<const std::string &, const std::string &>);'
+    - '    return map;'
+    - '}'
+    desc: 将字段名和值组合成键值对映射。
+    line: 1700-1707
+    name: get_map
+  name: test
+- desc: 抽象基类，定义了打印测试结果的接口，包括打印头部、测试结果和尾部。
+  methods:
+  - code:
+    - virtual ~printer() {}
+    desc: 析构函数（虚函数）。
+    line: 1717-1717
+    name: printer
+  - code:
+    - virtual void print_header(const cmd_params & params) { (void) params; }
+    desc: 虚函数，打印输出头部信息（默认空实现）。
+    line: 1721-1721
+    name: print_header
+  - code:
+    - virtual void print_test(const test & t) = 0;
+    desc: 纯虚函数，打印单个测试结果。
+    line: 1723-1723
+    name: print_test
+  - code:
+    - virtual void print_footer() {}
+    desc: 虚函数，打印输出尾部信息（默认空实现）。
+    line: 1725-1725
+    name: print_footer
+  name: printer
+- desc: 继承自 printer，负责将测试结果以 CSV 格式输出。
+  methods:
+  - code:
+    - static std::string escape_csv(const std::string & field) {
+    - '    std::string escaped = "\"";'
+    - '    for (auto c : field) {'
+    - '        if (c == ''"'') {'
+    - '            escaped += "\"";'
+    - '        }'
+    - '        escaped += c;'
+    - '    }'
+    - '    escaped += "\"";'
+    - '    return escaped;'
+    - '}'
+    desc: 静态方法，对 CSV 字段进行转义（用双引号包裹并转义内部引号）。
+    line: 1732-1743
+    name: escape_csv
+  - code:
+    - void print_header(const cmd_params & params) override {
+    - '    std::vector<std::string> fields = test::get_fields();'
+    - '    fprintf(fout, "%s\n", join(fields, ",").c_str());'
+    - '    (void) params;'
+    - '}'
+    desc: 打印 CSV 格式的头部行（字段名）。
+    line: 1745-1750
+    name: print_header
+  - code:
+    - void print_test(const test & t) override {
+    - '    std::vector<std::string> values = t.get_values();'
+    - '    std::transform(values.begin(), values.end(), values.be'
+    desc: 打印一行 CSV 格式的测试结果。
+    line: 1752-1755
+    name: print_test
+  name: csv_printer
+- desc: 继承自printer，专门用于将基准测试结果以CSV格式输出到文件。它重写了print_header和print_test方法，将测试字段和值转换为逗号分隔的格式，其中字符串字段会进行CSV转义。
+  methods:
+  - code:
+    - void print_header(const cmd_params & params) override {
+    - '    std::vector<std::string> fields = test::get_fields();'
+    - '    fprintf(fout, "%s\n", join(fields, ",").c_str());'
+    - '    (void) params;'
+    - '}'
+    desc: 重写基类方法，将测试的所有字段名以逗号分隔的CSV标题行格式输出到输出文件流。
+    line: 1667-1672
+    name: print_header
+  - code:
+    - void print_test(const test & t) override {
+    - '    std::vector<std::string> values = t.get_values();'
+    - '    std::transform(values.begin(), values.end(), values.begin(), escape_csv);'
+    - '    fprintf(fout, "%s\n", join(values, ",").c_str());'
+    - '}'
+    desc: 重写基类方法，将单个测试结果的所有值以逗号分隔的CSV行格式输出，字符串值会经过CSV转义处理。
+    line: 1674-1679
+    name: print_test
+  name: csv_printer
+- desc: 继承自printer，负责将基准测试结果以JSON数组格式输出。它管理JSON结构的开始和结束，输出测试字段和样本数据。
+  methods:
+  - code:
+    - void print_header(const cmd_params & params) override {
+    - '    fprintf(fout, "[\n");'
+    - '    (void) params;'
+    - '}'
+    desc: 重写基类方法，输出JSON数组的开始括号'['作为输出的开头。
+    line: 1710-1713
+    name: print_header
+  - code:
+    - void print_fields(const std::vector<std::string> & fields, const std::vector<std::string>
+      & values) {
+    - '    assert(fields.size() == values.size());'
+    - '    for (size_t i = 0; i < fields.size(); i++) {'
+    - '        fprintf(fout, "    \"%s\": %s,\n", fields.at(i).c_str(),'
+    - '                format_json_value(fields.at(i), values.at(i)).c_str());'
+    - '    }'
+    - '}'
+    desc: 辅助方法，将字段名和对应的值格式化为JSON对象中的键值对字符串，并输出到文件流。字段类型会影响值的格式化（如字符串加引号，布尔转成true/false）。
+    line: 1715-1721
+    name: print_fields
+  - code:
+    - void print_test(const test & t) override {
+    - '    if (first) {'
+    - '        first = false;'
+    - '    } else {'
+    - '        fprintf(fout, ",\n");'
+    - '    }'
+    - '    fprintf(fout, "  {\n");'
+    - '    print_fields(test::get_fields(), t.get_values());'
+    - '    fprintf(fout, "    \"samples_ns\": [ %s ],\n", join(t.samples_ns, ", ").c_str());'
+    - '    fprintf(fout, "    \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());'
+    - '    fprintf(fout, "  }");'
+    - '    fflush(fout);'
+    - '}'
+    desc: 重写基类方法，将单个测试结果输出为一个JSON对象，包含所有测试字段和样本时间数据（纳秒和秒）。
+    line: 1723-1733
+    name: print_test
+  - code:
+    - void print_footer() override { fprintf(fout, "\n]\n"); }
+    desc: 重写基类方法，输出JSON数组的结束括号']'以完成JSON输出。
+    line: 1735-1735
+    name: print_footer
+  name: json_printer
+- desc: 继承自printer，用于将每个测试结果输出为JSON行（JSON Lines）格式，每个测试结果是一行单独的JSON对象。
+  methods:
+  - code:
+    - void print_fields(const std::vector<std::string> & fields, const std::vector<std::string>
+      & values) {
+    - '    assert(fields.size() == values.size());'
+    - '    for (size_t i = 0; i < fields.size(); i++) {'
+    - '        fprintf(fout, "\"%s\": %s, ", fields.at(i).c_str(), format_json_value(fields.at(i),
+      values.at(i)).c_str());'
+    - '    }'
+    - '}'
+    desc: 辅助方法，将字段名和值格式化为JSON键值对的紧凑格式，以逗号和空格分隔，用于单行输出。
+    line: 1743-1748
+    name: print_fields
+  - code:
+    - void print_test(const test & t) override {
+    - '    fprintf(fout, "{");'
+    - '    print_fields(test::get_fields(), t.get_values());'
+    - '    fprintf(fout, "\"samples_ns\": [ %s ],", join(t.samples_ns, ", ").c_str());'
+    - '    fprintf(fout, "\"samples_ts\": [ %s ]", join(t.get_ts(), ", ").c_str());'
+    - '    fprintf(fout, "}\n");'
+    - '    fflush(fout);'
+    - '}'
+    desc: 重写基类方法，将一个测试结果作为一行JSON对象输出，包含所有字段和样本时间数组。
+    line: 1750-1758
+    name: print_test
+  name: jsonl_printer
+- desc: 继承自printer，负责将基准测试结果格式化为Markdown表格。它根据参数动态选择要显示的字段，并设置合适的列宽。
+  methods:
+  - code:
+    - static int get_field_width(const std::string & field) {
+    - '    if (field == "model") {'
+    - '        return -30;'
+    - '    }'
+    - '    if (field == "t/s") {'
+    - '        return 20;'
+    - '    }'
+    - '    if (field == "size" || field == "params") {'
+    - '        return 10;'
+    - '    }'
+    - '    if (field == "n_gpu_layers") {'
+    - '        return 3;'
+    - '    }'
+    - '    if (field == "n_threads") {'
+    - '        return 7;'
+    - '    }'
+    - '    if (field == "n_batch") {'
+    - '        return 7;'
+    - '    }'
+    - '    if (field == "n_ubatch") {'
+    - '        return 8;'
+    - '    }'
+    - '    if (field == "type_k" || field == "type_v") {'
+    - '        return 6;'
+    - '    }'
+    - '    if (field == "split_mode") {'
+    - '        return 5;'
+    - '    }'
+    - '    if (field == "flash_attn") {'
+    - '        return 2;'
+    - '    }'
+    - '    if (field == "devices") {'
+    - '        return -12;'
+    - '    }'
+    - '    if (field == "use_mmap") {'
+    - '        return 4;'
+    - '    }'
+    - '    if (field == "use_direct_io") {'
+    - '        return 3;'
+    - '    }'
+    - '    if (field == "test") {'
+    - '        return 15;'
+    - '    }'
+    - '    if (field == "no_op_offload") {'
+    - '        return 4;'
+    - '    }'
+    - '    if (field == "no_host") {'
+    - '        return 4;'
+    - '    }'
+    - '    int width = std::max((int) field.length(), 10);'
+    - '    if (test::get_field_type(field) == test::STRING) {'
+    - '        return -width;'
+    - '    }'
+    - '    return width;'
+    - '}'
+    desc: 静态方法，根据字段名返回其在Markdown表格中的显示宽度（整数或负数表示左对齐）。它针对特定字段设置了自定义宽度，否则根据字段长度和类型计算默认宽度。
+    line: 1772-1807
+    name: get_field_width
+  - code:
+    - static std::string get_field_display_name(const std::string & field) {
+    - '    if (field == "n_gpu_layers") {'
+    - '        return "ngl";'
+    - '    }'
+    - '    if (field == "split_mode") {'
+    - '        return "sm";'
+    - '    }'
+    - '    if (field == "n_threads") {'
+    - '        return "threads";'
+    - '    }'
+    - '    if (field == "no_kv_offload") {'
+    - '        return "nkvo";'
+    - '    }'
+    - '    if (field == "flash_attn") {'
+    - '        return "fa";'
+    - '    }'
+    - '    if (field == "use_mmap") {'
+    - '        return "mmap";'
+    - '    }'
+    - '    if (field == "use_direct_io") {'
+    - '        return "dio";'
+    - '    }'
+    - '    if (field == "embeddings") {'
+    - '        return "embd";'
+    - '    }'
+    - '    if (field == "no_op_offload") {'
+    - '        return "nopo";'
+    - '    }'
+    - '    if (field == "no_host") {'
+    - '        return "noh";'
+    - '    }'
+    - '    if (field == "devices") {'
+    - '        return "dev";'
+    - '    }'
+    - '    if (field == "tensor_split") {'
+    - '        return "ts";'
+    - '    }'
+    - '    if (field == "tensor_buft_overrides") {'
+    - '        return "ot";'
+    - '    }'
+    - '    if (field == "fit_target") {'
+    - '        return "fitt";'
+    - '    }'
+    - '    if (field == "fit_min_ctx") {'
+    - '        return "fitc";'
+    - '    }'
+    - '    return field;'
+    - '}'
+    desc: 静态方法，根据字段名返回其短显示名称，用于在Markdown表格表头中显示，以节省空间。
+    line: 1809-1846
+    name: get_field_display_name
+  - code:
+    - void print_header(const cmd_params & params) override {
+    - '    // select fields to print'
+    - '    fields.emplace_back("model");'
+    - '    fields.emplace_back("size");'
+    - '    fields.emplace_back("params");'
+    - '    fields.emplace_back("backend");'
+    - '    bool is_cpu_backend = test::get_backend().find("CPU") != std::string::npos
+      ||'
+    - '                          test::get_backend().find("BLAS") != std::string::npos
+      ||'
+    - '                          test::get_backend().find("ZenDNN") != std::string::npos;'
+    - '    if (!is_cpu_backend) {'
+    - '        fields.emplace_back("n_gpu_layers");'
+    - '    }'
+    - '    if (params.n_cpu_moe.size() > 1 || params.n_cpu_moe != cmd_params_defaults.n_cpu_moe)
+      {'
+    - '        fields.emplace_back("n_cpu_moe");'
+    - '    }'
+    - '    if (params.n_threads.size() > 1 || params.n_threads != cmd_params_defaults.n_threads
+      || is_cpu_backend) {'
+    - '        fields.emplace_back("n_threads");'
+    - '    }'
+    - '    if (params.cpu_mask.size() > 1 || params.cpu_mask != cmd_params_defaults.cpu_mask)
+      {'
+    - '        fields.emplace_back("cpu_mask");'
+    - '    }'
+    - '    if (params.cpu_strict.size() > 1 || params.cpu_strict != cmd_params_defaults.cpu_strict)
+      {'
+    - '        fields.emplace_back("cpu_strict");'
+    - '    }'
+    - '    if (params.poll.size() > 1 || params.poll != cmd_params_defaults.poll)
+      {'
+    - '        fields.emplace_back("poll");'
+    - '    }'
+    - '    if (params.n_batch.size() > 1 || params.n_batch != cmd_params_defaults.n_batch)
+      {'
+    - '        fields.emplace_back("n_batch");'
+    - '    }'
+    - '    if (params.n_ubatch.size() > 1 || params.n_ubatch != cmd_params_defaults.n_ubatch)
+      {'
+    - '        fields.emplace_back("n_ubatch");'
+    - '    }'
+    - '    if (params.type_k.size() > 1 || params.type_k != cmd_params_defaults.type_k)
+      {'
+    - '        fields.emplace_back("type_k");'
+    - '    }'
+    - '    if (params.type_v.size() > 1 || params.type_v != cmd_params_defaults.type_v)
+      {'
+    - '        fields.emplace_back("type_v");'
+    - '    }'
+    - '    if (params.main_gpu.size() > 1 || params.main_gpu != cmd_params_defaults.main_gpu)
+      {'
+    - '        fields.emplace_back("main_gpu");'
+    - '    }'
+    - '    if (params.split_mode.size() > 1 || params.split_mode != cmd_params_defaults.split_mode)
+      {'
+    - '        fields.emplace_back("split_mode");'
+    - '    }'
+    - '    if (params.no_kv_offload.size() > 1 || params.no_kv_offload != cmd_params_defaults.no_kv_offload)
+      {'
+    - '        fields.emplace_back("no_kv_offload");'
+    - '    }'
+    - '    if (params.flash_attn.size() > 1 || params.flash_attn != cmd_params_defaults.flash_attn)
+      {'
+    - '        fields.emplace_back("flash_attn");'
+    - '    }'
+    - '    if (params.devices.size() > 1 || params.devices != cmd_params_defaults.devices)
+      {'
+    - '        fields.emplace_back("devices");'
+    - '    }'
+    - '    if (params.tensor_split.size() > 1 || params.tensor_split != cmd_params_defaults.tensor_split)
+      {'
+    - '        fields.emplace_back("tensor_split");'
+    - '    }'
+    - '    if (params.tensor_buft_overrides.size() > 1 || !vec_vec_tensor_buft_override_equal(params.tensor_buft_overrides,
+      cmd_params_defaults.tensor_buft_overrides)) {'
+    - '        fields.emplace_back("tensor_buft_overrides");'
+    - '    }'
+    - '    if (params.use_mmap.size() > 1 || params.use_mmap != cmd_params_defaults.use_mmap)
+      {'
+    - '        fields.emplace_back("use_mmap");'
+    - '    }'
+    - '    if (params.use_direct_io.size() > 1 || params.use_direct_io != cmd_params_defaults.use_direct_io)
+      {'
+    - '        fields.emplace_back("use_direct_io");'
+    - '    }'
+    - '    if (params.embeddings.size() > 1 || params.embeddings != cmd_params_defaults.embeddings)
+      {'
+    - '        fields.emplace_back("embeddings");'
+    - '    }'
+    - '    if (params.no_op_offload.size() > 1 || params.no_op_offload != cmd_params_defaults.no_op_offload)
+      {'
+    - '        fields.emplace_back("no_op_offload");'
+    - '    }'
+    - '    if (params.no_host.size() > 1 || params.no_host != cmd_params_defaults.no_host)
+      {'
+    - '        fields.emplace_back("no_host");'
+    - '    }'
+    - '    if (params.fit_params_target.size() > 1 || params.fit_params_target !=
+      cmd_params_defaults.fit_params_target) {'
+    - '        fields.emplace_back("fit_target");'
+    - '    }'
+    - '    if (params.fit_params_min_ctx.size() > 1 || params.fit_params_min_ctx !=
+      cmd_params_defaults.fit_params_min_ctx) {'
+    - '        fields.emplace_back("fit_min_ctx");'
+    - '    }'
+    - '    fields.emplace_back("test");'
+    - '    fields.emplace_back("t/s");'
+    - '    fprintf(fout, "|");'
+    - '    for (const auto & field : fields) {'
+    - '        fprintf(fout, " %*s |", get_field_width(field), get_field_display_name(field).c_str());'
+    - '    }'
+    - '    fprintf(fout, "\n");'
+    - '    fprintf(fout, "|");'
+    - '    for (const auto & field : fields) {'
+    - '        int width = get_field_width(field);'
+    - '        fprintf(fout, " %s%s |", std::string(std::abs(width) - 1, ''-'').c_str(),
+      width > 0 ? ":" : "-");'
+    - '    }'
+    - '    fprintf(fout, "\n");'
+    - '}'
+    desc: 重写基类方法，生成Markdown表格的表头。它会根据给定参数与默认值的差异动态选择要显示的字段，并输出表头和分隔线。
+    line: 1848-1899
+    name: print_header
+  - code:
+    - void print_test(const test & t) override {
+    - '    std::map<std::string, std::string> vmap = t.get_map();'
+    - '    fprintf(fout, "|");'
+    - '    for (const auto & field : fields) {'
+    - '        std::string value;'
+    - '        char        buf[128];'
+    - '        if (field == "model") {'
+    - '            value = t.model_type;'
+    - '        } else if (field == "size") {'
+    - '            if (t.model_size < 1024 * 1024 * 1024) {'
+    - '                snprintf(buf, sizeof(buf), "%.2f MiB", t.model_size / 1024.0
+      / 1024.0);'
+    - '            } else {'
+    - '                snprintf(buf, sizeof(buf), "%.2f GiB", t.model_size / 1024.0
+      / 1024.0 / 1024.0);'
+    - '            }'
+    - '            value = buf;'
+    - '        } else if (field == "params") {'
+    - '            if (t.model_n_params < 1000 * 1000 * 1000) {'
+    - '                snprintf(buf, sizeof(buf), "%.2f M", t.model_n_params / 1e6);'
+    - '            } else {'
+    - '                snprintf(buf, sizeof(buf), "%.2f B", t.model_n_params / 1e9);'
+    - '            }'
+    - '            value = buf;'
+    - '        } else if (field == "backend") {'
+    - '            value = test::get_backend();'
+    - '        } else if (field == "test") {'
+    - '            if (t.n_prompt > 0 && t.n_gen == 0) {'
+    - '                snprintf(buf, sizeof(buf), "pp%d", t.n_prompt);'
+    - '            } else if (t.n_gen > 0 && t.n_prompt == 0) {'
+    - '                snprintf(buf, sizeof(buf), "tg%d", t.n_gen);'
+    - '            } else {'
+    - '                snprintf(buf, sizeof(buf), "pp%d+tg%d", t.n_prompt, t.n_gen);'
+    - '            }'
+    - '            if (t.n_depth > 0) {'
+    - '                int len = strlen(buf);'
+    - '                snprintf(buf + len, sizeof(buf) - len, " @ d%d", t.n_depth);'
+    - '            }'
+    - '            value = buf;'
+    - '        } else if (field == "t/s") {'
+    - '            snprintf(buf, sizeof(buf), "%.2f ± %.2f", t.avg_ts(), t.stdev_ts());'
+    - '            value = buf;'
+    - '        } else if (vmap.find(field) != vmap.end()) {'
+    - '            value = vmap.at(field);'
+    - '        } else {'
+    - '            assert(false);'
+    - '            exit(1);'
+    - '        }'
+    - '        int width = get_field_width(field);'
+    - '        if (field == "t/s") {'
+    - '            // HACK: the utf-8 character is 2 bytes'
+    - '            width += 1;'
+    - '        }'
+    - '        fprintf(fout, " %*s |", width, value.c_str());'
+    - '    }'
+    - '    fprintf(fout, "\n");'
+    - '}'
+    desc: 重写基类方法，将一个测试结果输出为Markdown表格的一行。它会根据字段类型格式化值，如将模型大小转换为MiB或GiB，并显示性能吞吐量。
+    line: 1901-1940
+    name: print_test
+  - code:
+    - void print_footer() override {
+    - '    fprintf(fout, "\nbuild: %s (%d)\n", test::build_commit.c_str(), test::build_number);'
+    - '}'
+    desc: 重写基类方法，输出构建信息和版本号作为表格后的脚注。
+    line: 1942-1945
+    name: print_footer
+  name: markdown_printer
+- desc: 继承自printer，负责生成SQL语句，用于创建表并插入测试结果，方便将结果存储到数据库中。
+  methods:
+  - code:
+    - static std::string get_sql_field_type(const std::string & field) {
+    - '    switch (test::get_field_type(field)) {'
+    - '        case test::STRING:'
+    - '            return "TEXT";'
+    - '        case test::BOOL:'
+    - '        case test::INT:'
+    - '            return "INTEGER";'
+    - '        case test::FLOAT:'
+    - '            return "REAL";'
+    - '        default:'
+    - '            assert(false);'
+    - '            exit(1);'
+    - '    }'
+    - '}'
+    desc: 静态方法，根据测试字段的类型返回对应的SQL数据类型（TEXT、INTEGER或REAL）。
+    line: 1951-1963
+    name: get_sql_field_type
+  - code:
+    - void print_header(const cmd_params & params) override {
+    - '    std::vector<std::string> fields = test::get_fields();'
+    - '    fprintf(fout, "CREATE TABLE IF NOT EXISTS llama_bench (\n");'
+    - '    for (size_t i = 0; i < fields.size(); i++) {'
+    - '        fprintf(fout, "  %s %s%s\n", fields.at(i).c_str(), get_sql_field_type(fields.at(i)).c_str(),'
+    - '                i < fields.size() - 1 ? "," : "");'
+    - '    }'
+    - '    fprintf(fout, ");\n");'
+    - '    fprintf(fout, "\n");'
+    - '    (void) params;'
+    - '}'
+    desc: 重写基类方法，生成CREATE TABLE IF NOT EXISTS语句，定义名为llama_bench的表及其字段类型。
+    line: 1965-1973
+    name: print_header
+  - code:
+    - void print_test(const test & t) override {
+    - '    fprintf(fout, "INSERT INTO llama_bench (%s) ", join(test::get_fields(),
+      ", ").c_str());'
+    - '    fprintf(fout, "VALUES (");'
+    - '    std::vector<std::string> values = t.get_values();'
+    - '    for (size_t i = 0; i < values.size(); i++) {'
+    - '        fprintf(fout, "''%s''%s", values.at(i).c_str(), i < values.size() -
+      1 ? ", " : "");'
+    - '    }'
+    - '    fprintf(fout, ");\n");'
+    - '}'
+    desc: 重写基类方法，生成INSERT INTO语句，将单个测试结果的所有值插入到表中。
+    line: 1975-1982
+    name: print_test
+  name: sql_printer
+- desc: 一个辅助结构体，用于保存llama_context的状态。它记录了当前缓存的深度（以token为单位）和对应的上下文状态缓冲区，以便在后续测试中重用。
+  methods: []
+  name: ctx_state
+desc: 该文件是llama-bench基准测试工具的实现，用于测量LLM模型在不同配置下的推理性能。它解析命令行参数，支持CPU/GPU设备选择、模型加载、批量大小调整、量化类型设置，并输出多种格式的性能测试结果，包括CSV、JSON、MARKDOWN等。该文件是
+  llama-bench 基准测试工具的命令行参数解析与测试结果处理代码，包含参数解析、参数实例生成和测试结果数据模型的定义。该文件是llama.cpp项目中llama-bench命令行工具的源码，用于对Llama模型进行性能基准测试。它解析命令行参数，配置模型加载和推理参数，执行提示词处理（prompt
+  processing）和文本生成（text generation）的多次重复测试，并支持多种输出格式（Markdown表格、CSV、JSON、JSONL、SQL）来展示测试结果。文件定义了抽象基类printer及其多个子类（csv_printer、json_printer等）用于格式化输出，还包含了处理测试执行的辅助函数，如test_prompt和test_gen，以及设置和管理Llama上下文与线程池的代码。
+file: tools/llama-bench/llama-bench.cpp
+funcs:
+- code:
+  - static uint64_t get_time_ns() {
+  - '    using clock = std::chrono::high_resolution_clock;'
+  - '    return std::chrono::nanoseconds(clock::now().time_since_epoch()).count();'
+  - '}'
+  desc: 获取当前时间戳（纳秒为单位），用于性能测量计时。
+  line: 25-28
+  name: get_time_ns
+- code:
+  - static bool tensor_buft_override_equal(const llama_model_tensor_buft_override&
+    a, const llama_model_tensor_buft_override& b) {
+  - '    if (a.pattern != b.pattern) {'
+  - '        // cString comparison that may be null'
+  - '        if (a.pattern == nullptr || b.pattern == nullptr) {'
+  - '            return false;'
+  - '        }'
+  - '        if (strcmp(a.pattern, b.pattern) != 0) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    if (a.buft != b.buft) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 比较两个张量缓冲区类型覆盖配置是否相等，处理空指针和字符串比较。
+  line: 30-43
+  name: tensor_buft_override_equal
+- code:
+  - static bool vec_tensor_buft_override_equal(const std::vector<llama_model_tensor_buft_override>&
+    a, const std::vector<llama_model_tensor_buft_override>& b) {
+  - '    if (a.size() != b.size()) {'
+  - '        return false;'
+  - '    }'
+  - '    for (size_t i = 0; i < a.size(); i++) {'
+  - '        if (!tensor_buft_override_equal(a[i], b[i])) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 比较两个张量缓冲区类型覆盖配置的向量是否相等，逐元素调用tensor_buft_override_equal。
+  line: 45-53
+  name: vec_tensor_buft_override_equal
+- code:
+  - static bool vec_vec_tensor_buft_override_equal(const std::vector<std::vector<llama_model_tensor_buft_override>>&
+    a, const std::vector<std::vector<llama_model_tensor_buft_override>>& b) {
+  - '    if (a.size() != b.size()) {'
+  - '        return false;'
+  - '    }'
+  - '    for (size_t i = 0; i < a.size(); i++) {'
+  - '        if (!vec_tensor_buft_override_equal(a[i], b[i])) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 比较两层嵌套的张量缓冲区类型覆盖配置向量是否相等，逐元素调用vec_tensor_buft_override_equal。
+  line: 55-63
+  name: vec_vec_tensor_buft_override_equal
+- code:
+  - template <class T> static std::string join(const std::vector<T> & values, const
+    std::string & delim) {
+  - '    std::ostringstream str;'
+  - '    for (size_t i = 0; i < values.size(); i++) {'
+  - '        str << values[i];'
+  - '        if (i < values.size() - 1) {'
+  - '            str << delim;'
+  - '        }'
+  - '    }'
+  - '    return str.str();'
+  - '}'
+  desc: 模板函数，将向量元素连接成字符串，使用指定的分隔符。
+  line: 65-73
+  name: join
+- code:
+  - template <typename T, typename F> static std::vector<std::string> transform_to_str(const
+    std::vector<T> & values, F f) {
+  - '    std::vector<std::string> str_values;'
+  - '    std::transform(values.begin(), values.end(), std::back_inserter(str_values),
+    f);'
+  - '    return str_values;'
+  - '}'
+  desc: 模板函数，使用指定转换函数将向量元素转换为字符串向量。
+  line: 75-80
+  name: transform_to_str
+- code:
+  - template <typename T> static T avg(const std::vector<T> & v) {
+  - '    if (v.empty()) {'
+  - '        return 0;'
+  - '    }'
+  - '    T sum = std::accumulate(v.begin(), v.end(), T(0));'
+  - '    return sum / (T) v.size();'
+  - '}'
+  desc: 模板函数，计算向量元素的平均值，空向量返回0。
+  line: 82-88
+  name: avg
+- code:
+  - template <typename T> static T stdev(const std::vector<T> & v) {
+  - '    if (v.size() <= 1) {'
+  - '        return 0;'
+  - '    }'
+  - '    T mean   = avg(v);'
+  - '    T sq_sum = std::inner_product(v.begin(), v.end(), v.begin(), T(0));'
+  - '    T stdev  = std::sqrt(sq_sum / (T) (v.size() - 1) - mean * mean * (T) v.size()
+    / (T) (v.size() - 1));'
+  - '    return stdev;'
+  - '}'
+  desc: 模板函数，计算向量元素的标准差，用于统计性能测试结果的波动幅度。
+  line: 90-98
+  name: stdev
+- code:
+  - static std::string get_cpu_info() {
+  - '    std::vector<std::string> cpu_list;'
+  - '    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {'
+  - '        auto * dev      = ggml_backend_dev_get(i);'
+  - '        auto   dev_type = ggml_backend_dev_type(dev);'
+  - '        if (dev_type == GGML_BACKEND_DEVICE_TYPE_CPU || dev_type == GGML_BACKEND_DEVICE_TYPE_ACCEL)
+    {'
+  - '            cpu_list.push_back(ggml_backend_dev_description(dev));'
+  - '        }'
+  - '    }'
+  - '    return join(cpu_list, ", ");'
+  - '}'
+  desc: 获取系统中所有CPU和加速器的描述信息，并连接成字符串。
+  line: 100-109
+  name: get_cpu_info
+- code:
+  - static std::string get_gpu_info() {
+  - '    std::vector<std::string> gpu_list;'
+  - '    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {'
+  - '        auto * dev      = ggml_backend_dev_get(i);'
+  - '        auto   dev_type = ggml_backend_dev_type(dev);'
+  - '        if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU)
+    {'
+  - '            gpu_list.push_back(ggml_backend_dev_description(dev));'
+  - '        }'
+  - '    }'
+  - '    return join(gpu_list, ", ");'
+  - '}'
+  desc: 获取系统中所有GPU和集成GPU的描述信息，并连接成字符串。
+  line: 111-120
+  name: get_gpu_info
+- code:
+  - static std::vector<ggml_backend_dev_t> parse_devices_arg(const std::string & value)
+    {
+  - '    std::vector<ggml_backend_dev_t> devices;'
+  - '    std::string                     trimmed = string_strip(value);'
+  - '    if (trimmed.empty()) {'
+  - '        throw std::invalid_argument("no devices specified");'
+  - '    }'
+  - '    if (trimmed == "auto") {'
+  - '        return devices;'
+  - '    }'
+  - '    '
+  - '    auto dev_names = string_split<std::string>(trimmed, ''/'');'
+  - '    if (dev_names.size() == 1 && string_strip(dev_names[0]) == "none") {'
+  - '        devices.push_back(nullptr);'
+  - '        return devices;'
+  - '    }'
+  - '    '
+  - '    for (auto & name : dev_names) {'
+  - '        std::string dev_name = string_strip(name);'
+  - '        if (dev_name.empty()) {'
+  - '            throw std::invalid_argument("invalid device specification");'
+  - '        }'
+  - '        auto * dev = ggml_backend_dev_by_name(dev_name.c_str());'
+  - '        if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU)
+    {'
+  - '            throw std::invalid_argument(string_format("invalid device: %s", dev_name.c_str()));'
+  - '        }'
+  - '        devices.push_back(dev);'
+  - '    }'
+  - '    '
+  - '    devices.push_back(nullptr);'
+  - '    return devices;'
+  - '}'
+  desc: 解析设备参数字符串，支持auto、none和指定设备列表，返回设备句柄向量。
+  line: 122-150
+  name: parse_devices_arg
+- code:
+  - static void register_rpc_server_list(const std::string & servers) {
+  - '    auto rpc_servers = string_split<std::string>(servers, '','');'
+  - '    if (rpc_servers.empty()) {'
+  - '        throw std::invalid_argument("no RPC servers specified");'
+  - '    }'
+  - ''
+  - '    auto * rpc_reg = ggml_backend_reg_by_name("RPC");'
+  - '    if (!rpc_reg) {'
+  - '        throw std::invalid_argument("failed to find RPC backend");'
+  - '    }'
+  - ''
+  - '    using add_rpc_server_fn = ggml_backend_reg_t (*)(const char * endpoint);'
+  - '    auto * ggml_backend_rpc_add_server_fn = (add_rpc_server_fn) ggml_backend_reg_get_proc_address(rpc_reg,
+    "ggml_backend_rpc_add_server");'
+  - '    if (!ggml_backend_rpc_add_server_fn) {'
+  - '        throw std::invalid_argument("failed to find RPC add server function");'
+  - '    }'
+  - '    for (const auto & server : rpc_servers) {'
+  - '        auto reg = ggml_backend_rpc_add_server_fn(server.c_str());'
+  - '        ggml_backend_register(reg);'
+  - '    }'
+  - '}'
+  desc: 注册RPC服务器列表，通过RPC后端注册函数将远程服务器添加到系统中。
+  line: 152-171
+  name: register_rpc_server_list
+- code:
+  - static std::string devices_to_string(const std::vector<ggml_backend_dev_t> & devices)
+    {
+  - '    if (devices.empty()) {'
+  - '        return "auto";'
+  - '    }'
+  - ''
+  - '    if (devices.size() == 1 && devices[0] == nullptr) {'
+  - '        return "none";'
+  - '    }'
+  - ''
+  - '    std::vector<std::string> names;'
+  - '    for (auto * dev : devices) {'
+  - '        if (dev == nullptr) {'
+  - '            break;'
+  - '        }'
+  - '        names.push_back(ggml_backend_dev_name(dev));'
+  - '    }'
+  - ''
+  - '    return join(names, "/");'
+  - '}'
+  desc: 将设备句柄向量转换为字符串表示，auto和none有特殊处理。
+  line: 173-191
+  name: devices_to_string
+- code:
+  - static const char * output_format_str(output_formats format) {
+  - '    switch (format) {'
+  - '        case NONE:'
+  - '            return "none";'
+  - '        case CSV:'
+  - '            return "csv";'
+  - '        case JSON:'
+  - '            return "json";'
+  - '        case JSONL:'
+  - '            return "jsonl";'
+  - '        case MARKDOWN:'
+  - '            return "md";'
+  - '        case SQL:'
+  - '            return "sql";'
+  - '        default:'
+  - '            GGML_ABORT("invalid output format");'
+  - '    }'
+  - '}'
+  desc: 将输出格式枚举值转换为对应的字符串表示。
+  line: 197-212
+  name: output_format_str
+- code:
+  - static bool output_format_from_str(const std::string & s, output_formats & format)
+    {
+  - '    if (s == "none") {'
+  - '        format = NONE;'
+  - '    } else if (s == "csv") {'
+  - '        format = CSV;'
+  - '    } else if (s == "json") {'
+  - '        format = JSON;'
+  - '    } else if (s == "jsonl") {'
+  - '        format = JSONL;'
+  - '    } else if (s == "md") {'
+  - '        format = MARKDOWN;'
+  - '    } else if (s == "sql") {'
+  - '        format = SQL;'
+  - '    } else {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 将输出格式字符串转换为枚举值，返回是否转换成功。
+  line: 214-230
+  name: output_format_from_str
+- code:
+  - static const char * split_mode_str(llama_split_mode mode) {
+  - '    switch (mode) {'
+  - '        case LLAMA_SPLIT_MODE_NONE:'
+  - '            return "none";'
+  - '        case LLAMA_SPLIT_MODE_LAYER:'
+  - '            return "layer";'
+  - '        case LLAMA_SPLIT_MODE_ROW:'
+  - '            return "row";'
+  - '        default:'
+  - '            GGML_ABORT("invalid split mode");'
+  - '    }'
+  - '}'
+  desc: 将模型分割模式枚举值转换为对应的字符串表示。
+  line: 232-241
+  name: split_mode_str
+- code:
+  - static std::string pair_str(const std::pair<int, int> & p) {
+  - '    static char buf[32];'
+  - '    snprintf(buf, sizeof(buf), "%d,%d", p.first, p.second);'
+  - '    return buf;'
+  - '}'
+  desc: 将整数对转换为逗号分隔的字符串，用于表示prefill和generation长度组合。
+  line: 243-247
+  name: pair_str
+- code:
+  - static std::vector<int> parse_int_range(const std::string & s) {
+  - '    // first[-last[(+|*)step]]'
+  - '    std::regex range_regex(R"(^(\d+)(?:(\d+)(?:([\+|\*])(\d+))?)?(?:,|$))");'
+  - ''
+  - '    std::smatch match;'
+  - '    std::string::const_iterator search_start(s.cbegin());'
+  - '    std::vector<int> result;'
+  - '    while (std::regex_search(search_start, s.cend(), match, range_regex)) {'
+  - '        int  first = std::stoi(match[1]);'
+  - '        int  last  = match[2].matched ? std::stoi(match[2]) : first;'
+  - '        char op    = match[3].matched ? match[3].str()[0] : ''+'';'
+  - '        int  step  = match[4].matched ? std::stoi(match[4]) : 1;'
+  - ''
+  - '        for (int i = first; i <= last;) {'
+  - '            result.push_back(i);'
+  - ''
+  - '            int prev_i = i;'
+  - ''
+  - '            if (op == ''+'') {'
+  - '                i += step;'
+  - '            } else if (op == ''*'') {'
+  - '                i *= step;'
+  - '            } else {'
+  - '                throw std::invalid_argument("invalid range format");'
+  - '            }'
+  - ''
+  - '            if (i <= prev_i) {'
+  - '                throw std::invalid_argument("invalid range");'
+  - '            }'
+  - '        }'
+  - '        search_start = match.suffix().first;'
+  - '    }'
+  - ''
+  - '    if (search_start != s.cend()) {'
+  - '        throw std::invalid_argument("invalid range format");'
+  - '    }'
+  - ''
+  - '    return result;'
+  - '}'
+  desc: 解析整数范围表达式，支持first-last、first-last+step和first-last*mult格式，返回生成的整数向量。
+  line: 253-285
+  name: parse_int_range
+- code:
+  - static void print_usage(int /* argc */, char ** argv) {
+  - '    printf("usage: %s [options]\n", argv[0]);'
+  - '    printf("\n");'
+  - '    printf("options:\n");'
+  - '    printf("  -h, --help\n");'
+  - '    printf("  --numa <distribute|isolate|numactl>         numa mode (default:
+    disabled)\n");'
+  - '    printf("  -r, --repetitions <n>                       number of times to
+    repeat each test (default: %d)\n", cmd_params_defaults.reps);'
+  - '    printf("  --prio <-1|0|1|2|3>                         process/thread priority
+    (default: %d)\n", cmd_params_defaults.prio);'
+  - '    printf("  --delay <0...N> (seconds)                   delay between each
+    test (default: %d)\n", cmd_params_defaults.delay);'
+  - '    printf("  -o, --output <csv|json|jsonl|md|sql>        output format printed
+    to stdout (default: %s)\n", output_format_str(cmd_params_defaults.output_format));'
+  - '    printf("  -oe, --output-err <csv|json|jsonl|md|sql>   output format printed
+    to stderr (default: %s)\n", output_format_str(cmd_params_defaults.output_format_stderr));'
+  - '    printf("  --list-devices                              list available devices
+    and exit\n");'
+  - '    printf("  -v, --verbose                               verbose output\n");'
+  - '    printf("  --progress                                  print test progress
+    indicators\n");'
+  - '    printf("  --no-warmup                                 skip warmup runs before
+    benchmarking\n");'
+  - '    printf("  -fitt, --fit-target <MiB>                   fit model to device
+    memory with this margin per device in MiB (default: off)\n");'
+  - '    printf("  -fitc, --fit-ctx <n>                        minimum ctx size for
+    --fit-target (default: 4096)\n");'
+  - '    if (llama_supports_rpc()) {'
+  - '        printf("  -rpc, --rpc <rpc_servers>                   register RPC devices
+    (comma separated)\n");'
+  - '    }'
+  - '    printf("\n");'
+  - '    printf("test parameters:\n");'
+  - '    printf("  -m, --model <filename>                      (default: %s)\n", join(cmd_params_defaults.model,
+    ",").c_str());'
+  - '    printf("  -hf, -hfr, --hf-repo <user>/<model>[:quant] Hugging Face model
+    repository; quant is optional, case-insensitive\n");'
+  - '    printf("                                              default to Q4_K_M,
+    or falls back to the first file in the repo if Q4_K_M doesn''t exist.\n");'
+  - '    printf("                                              example: ggml-org/GLM-4.7-Flash-GGUF:Q4_K_M\n");'
+  - '    printf("                                              (default: unused)\n");'
+  - '    printf("  -hff, --hf-file <file>                      Hugging Face model
+    file. If specified, it will override the quant in --hf-repo\n");'
+  - '    printf("                                              (default: unused)\n");'
+  - '    printf("  -hft, --hf-token <token>                    Hugging Face access
+    token\n");'
+  - '    printf("                                              (default: value from
+    HF_TOKEN environment variable)\n");'
+  - '    printf("  -p, --n-prompt <n>                          (default: %s)\n", join(cmd_params_defaults.n_prompt,
+    ",").c_str());'
+  - '    printf("  -n, --n-gen <n>                             (default: %s)\n", join(cmd_params_defaults.n_gen,
+    ",").c_str());'
+  - '    printf("  -pg <pp,tg>                                 (default: %s)\n", join(transform_to_str(cmd_params_defaults.n_pg,
+    pair_str), ",").c_str());'
+  - '    printf("  -d, --n-depth <n>                           (default: %s)\n", join(cmd_params_defaults.n_depth,
+    ",").c_str());'
+  - '    printf("  -b, --batch-size <n>                        (default: %s)\n", join(cmd_params_defaults.n_batch,
+    ",").c_str());'
+  - '    printf("  -ub, --ubatch-size <n>                      (default: %s)\n", join(cmd_params_defaults.n_ubatch,
+    ",").c_str());'
+  - '    printf("  -ctk, --cache-type-k <t>                    (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_k,
+    ggml_type_name), ",").c_str());'
+  - '    printf("  -ctv, --cache-type-v <t>                    (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_v,
+    ggml_type_name), ",").c_str());'
+  - '    printf("  -t, --threads <n>                           (default: %s)\n", join(cmd_params_defaults.n_threads,
+    ",").c_str());'
+  - '    printf("  -C, --cpu-mask <hex,hex>                    (default: %s)\n", join(cmd_params_defaults.cpu_mask,
+    ",").c_str());'
+  - '    printf("  --cpu-strict <0|1>                          (default: %s)\n", join(cmd_params_defaults.cpu_strict,
+    ",").c_str());'
+  - '    printf("  --poll <0...100>                            (default: %s)\n", join(cmd_params_defaults.poll,
+    ",").c_str());'
+  - '    printf("  -ngl, --n-gpu-layers <n>                    (default: %s)\n", join(cmd_params_defaults.n_gpu_layers,
+    ",").c_str());'
+  - '    printf("  -ncmoe, --n-cpu-moe <n>                     (default: %s)\n", join(cmd_params_defaults.n_cpu_moe,
+    ",").c_str());'
+  - '    printf("  -sm, --split-mode <none|layer|row>          (default: %s)\n", join(transform_to_str(cmd_params_defaults.split_mode,
+    split_mode_str), ",").c_str());'
+  - '    printf("  -mg, --main-gpu <i>                         (default: %s)\n", join(cmd_params_defaults.main_gpu,
+    ",").c_str());'
+  - '    printf("  -nkvo, --no-kv-offload <0|1>                (default: %s)\n", join(cmd_params_defaults.no_kv_offload,
+    ",").c_str());'
+  - '    printf("  -fa, --flash-attn <0|1>                     (default: %s)\n", join(cmd_params_defaults.flash_attn,
+    ",").c_str());'
+  - '    printf("  -dev, --device <dev0/dev1/...>              (default: auto)\n");'
+  - '    printf("  -mmp, --mmap <0|1>                          (default: %s)\n", join(cmd_params_defaults.use_mmap,
+    ",").c_str());'
+  - '    printf("  -dio, --direct-io <0|1>                     (default: %s)\n", join(cmd_params_defaults.use_direct_io,
+    ",").c_str());'
+  - '    printf("  -embd, --embeddings <0|1>                   (default: %s)\n", join(cmd_params_defaults.embeddings,
+    ",").c_str());'
+  - '    printf("  -ts, --tensor-split <ts0/ts1/..>            (default: 0)\n");'
+  - '    printf("  -ot --override-tensor <tensor name pattern>=<buffer type>;...\n");'
+  - '    printf("                                              (default: disabled)\n");'
+  - '    printf("  -nopo, --no-op-offload <0|1>                (default: 0)\n");'
+  - '    printf("  --no-host <0|1>                             (default: %s)\n", join(cmd_params_defaults.no_host,
+    ",").c_str());'
+  - '    printf("\n");'
+  - '    printf('
+  - '        "Multiple values can be given for each parameter by separating them with
+    '',''\n"'
+  - '        "or by specifying the parameter multiple times. Ranges can be given as\n"'
+  - '        "''first-last'' or ''first-last+step'' or ''first-last*mult''.\n");'
+  - '}'
+  desc: 打印命令行工具的帮助信息，显示所有可用参数及其默认值。
+  line: 643-700
+  name: print_usage
+- code:
+  - static ggml_type ggml_type_from_name(const std::string & s) {
+  - '    if (s == "f16") {'
+  - '        return GGML_TYPE_F16;'
+  - '    }'
+  - '    if (s == "bf16") {'
+  - '        return GGML_TYPE_BF16;'
+  - '    }'
+  - '    if (s == "q8_0") {'
+  - '        return GGML_TYPE_Q8_0;'
+  - '    }'
+  - '    if (s == "q4_0") {'
+  - '        return GGML_TYPE_Q4_0;'
+  - '    }'
+  - '    if (s == "q4_1") {'
+  - '        return GGML_TYPE_Q4_1;'
+  - '    }'
+  - '    if (s == "q5_0") {'
+  - '        return GGML_TYPE_Q5_0;'
+  - '    }'
+  - '    if (s == "q5_1") {'
+  - '        return GGML_TYPE_Q5_1;'
+  - '    }'
+  - '    if (s == "iq4_nl") {'
+  - '        return GGML_TYPE_IQ4_NL;'
+  - '    }'
+  - ''
+  - '    return GGML_TYPE_COUNT;'
+  - '}'
+  desc: 将量化类型字符串转换为ggml_type枚举值，不支持的类型返回GGML_TYPE_COUNT。
+  line: 702-725
+  name: ggml_type_from_name
+- code:
+  - static cmd_params parse_cmd_params(int argc, char ** argv) {
+  - '    cmd_params        params;'
+  - '    std::string       arg;'
+  - '    bool              invalid_param = false;'
+  - '    const std::string arg_prefix    = "--";'
+  - '    const char        split_delim   = '','';'
+  - ''
+  - '    params.verbose              = cmd_params_defaults.verbose;'
+  - '    params.output_format        = cmd_params_defaults.output_format;'
+  - '    params.output_format_stderr = cmd_params_defaults.output_format_stderr;'
+  - '    params.reps                 = cmd_params_defaults.reps;'
+  - '    params.numa                 = cmd_params_defaults.numa;'
+  - '    params.prio                 = cmd_params_defaults.prio;'
+  - '    params.delay                = cmd_params_defaults.delay;'
+  - '    params.progress             = cmd_params_defaults.progress;'
+  - '    params.no_warmup            = cmd_params_defaults.no_warmup;'
+  - ''
+  - '    if (const char * env = getenv("HF_TOKEN")) {'
+  - '        params.hf_token = env;'
+  - '    }'
+  - ''
+  - '    for (int i = 1; i < argc; i++) {'
+  - '        arg = argv[i];'
+  - '        if (arg.compare(0, arg_prefix.size(), arg_prefix) == 0) {'
+  - '            std::replace(arg.begin(), arg.end(), ''_'', ''-'');'
+  - '        }'
+  - ''
+  - '        try {'
+  - '            if (arg == "-h" || arg == "--help") {'
+  - '                print_usage(argc, argv);'
+  - '                exit(0);'
+  - '            } else if (arg == "-m" || arg == "--model") {'
+  - '                // ... (参数解析逻辑)'
+  - '            }'
+  - '            // ... 其他参数处理'
+  - '        } catch (const std::exception & e) {'
+  - '            fprintf(stderr, "error: %s\n", e.what());'
+  - '        }'
+  - '    }'
+  - '    return params;'
+  - '}'
+  desc: 解析命令行参数，将用户输入写入cmd_params结构体，支持多种参数格式（逗号分隔、范围等），并处理异常情况。
+  line: 727-1012
+  name: parse_cmd_params
+- code:
+  - // 参数解析逻辑（从命令行读取并填充 cmd_params 结构体）
+  - // 包括对各种参数选项的处理，如 -m/--model、-p/--prompt、-n/--n-gen 等
+  - // 下载 HuggingFace 模型并更新 params.model
+  - // 设置默认参数值（如 n_prompt, n_gen, n_batch 等）
+  - // 调用 get_cmd_params_instances 生成测试实例向量
+  desc: 包含命令行参数解析逻辑、HuggingFace 模型下载处理、默认参数设置和测试实例生成的全局代码。
+  line: 835-1126
+  name: __main__
+- code:
+  - static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_params
+    & params) {
+  - '    std::vector<cmd_params_instance> instances;'
+  - '    // 嵌套循环遍历所有参数组合（model, fit_params_target, fit_params_min_ctx, n_gpu_layers,
+    等）'
+  - '    // 对于每个组合，支持三种类型：'
+  - '    // 1. 仅 prompt 测试（n_prompt > 0, n_gen = 0）'
+  - '    // 2. 仅生成测试（n_gen > 0, n_prompt = 0）'
+  - '    // 3. prompt 和生成同时测试（n_pg 提供两个值）'
+  - '    // 每个实例都被初始化并推入 instances 向量'
+  - '    return instances;'
+  - '}'
+  desc: 根据 cmd_params 生成所有可能的 cmd_params_instance 组合，排列嵌套循环以最小化模型重载次数。
+  line: 1206-1507
+  name: get_cmd_params_instances
+- code:
+  - static std::string escape_csv(const std::string & field) {
+  - '    bool need_quote = field.find('','') != std::string::npos ||'
+  - '                       field.find(''\n'') != std::string::npos ||'
+  - '                       field.find(''"'') != std::string::npos;'
+  - '    if (!need_quote) {'
+  - '        return field;'
+  - '    }'
+  - '    std::string escaped = "\"";'
+  - '    for (char c : field) {'
+  - '        if (c == ''"'') {'
+  - '            escaped += "\"";'
+  - '        }'
+  - '        escaped += c;'
+  - '    }'
+  - '    escaped += "\"";'
+  - '    return escaped;'
+  - '}'
+  desc: 静态辅助函数，用于CSV转义。如果字符串包含逗号、换行符或双引号，它会用双引号将整个字符串包裹起来，并将内部的双引号替换为两个双引号。
+  line: 1653-1666
+  name: escape_csv
+- code:
+  - static std::string escape_json(const std::string & value) {
+  - '    std::string escaped;'
+  - '    for (auto c : value) {'
+  - '        if (c == ''"'') {'
+  - '            escaped += "\\\"";'
+  - '        } else if (c == ''\\'') {'
+  - '            escaped += "\\\\";'
+  - '        } else if (c <= 0x1f) {'
+  - '            char buf[8];'
+  - '            snprintf(buf, sizeof(buf), "\\u%04x", c);'
+  - '            escaped += buf;'
+  - '        } else {'
+  - '            escaped += c;'
+  - '        }'
+  - '    }'
+  - '    return escaped;'
+  - '}'
+  desc: 静态函数，用于JSON字符串转义。它处理双引号、反斜杠和小于0x1f的控制字符，将其转换为合适的JSON转义序列。
+  line: 1687-1701
+  name: escape_json
+- code:
+  - static std::string format_json_value(const std::string & field, const std::string
+    & value) {
+  - '    switch (test::get_field_type(field)) {'
+  - '        case test::STRING:'
+  - '            return "\"" + escape_json(value) + "\"";'
+  - '        case test::BOOL:'
+  - '            return value == "0" ? "false" : "true";'
+  - '        default:'
+  - '            return value;'
+  - '    }'
+  - '}'
+  desc: 静态函数，根据测试字段的类型格式化JSON输出的值。字符串类型会被加引号并转义，布尔类型转换为true或false，其他类型直接输出值。
+  line: 1703-1709
+  name: format_json_value
+- code:
+  - static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_threads)
+    {
+  - '    llama_set_n_threads(ctx, n_threads, n_threads);'
+  - '    const llama_model * model   = llama_get_model(ctx);'
+  - '    const llama_vocab * vocab   = llama_model_get_vocab(model);'
+  - '    const int32_t       n_vocab = llama_vocab_n_tokens(vocab);'
+  - '    std::vector<llama_token> tokens(n_batch);'
+  - '    int n_processed = 0;'
+  - '    while (n_processed < n_prompt) {'
+  - '        int n_tokens = std::min(n_prompt - n_processed, n_batch);'
+  - '        tokens[0]    = n_processed == 0 && llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab)
+    : std::rand() % n_vocab;'
+  - '        for (int i = 1; i < n_tokens; i++) {'
+  - '            tokens[i] = std::rand() % n_vocab;'
+  - '        }'
+  - '        int res = llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens));'
+  - '        if (res != 0) {'
+  - '            fprintf(stderr, "%s: failed to decode prompt batch, res = %d\n",
+    __func__, res);'
+  - '            return false;'
+  - '        }'
+  - '        n_processed += n_tokens;'
+  - '    }'
+  - '    llama_synchronize(ctx);'
+  - '    return true;'
+  - '}'
+  desc: 静态函数，用于执行提示词处理基准测试。它使用随机生成的token填充一个批次，调用llama_decode处理直到处理完指定数量的token，并在结束时同步llama_context。
+  line: 1999-2022
+  name: test_prompt
+- code:
+  - static bool test_gen(llama_context * ctx, int n_gen, int n_threads) {
+  - '    llama_set_n_threads(ctx, n_threads, n_threads);'
+  - '    const llama_model * model   = llama_get_model(ctx);'
+  - '    const llama_vocab * vocab   = llama_model_get_vocab(model);'
+  - '    const int32_t       n_vocab = llama_vocab_n_tokens(vocab);'
+  - '    llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab)
+    : std::rand() % n_vocab;'
+  - '    for (int i = 0; i < n_gen; i++) {'
+  - '        int res = llama_decode(ctx, llama_batch_get_one(&token, 1));'
+  - '        if (res != 0) {'
+  - '            fprintf(stderr, "%s: failed to decode generation batch, res = %d\n",
+    __func__, res);'
+  - '            return false;'
+  - '        }'
+  - '        llama_synchronize(ctx);'
+  - '        token = std::rand() % n_vocab;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 静态函数，用于执行文本生成基准测试。它生成一个随机的起始token，然后循环调用llama_decode来生成指定数量的token，每次生成后同步并更新token。
+  line: 2025-2041
+  name: test_gen
+- code:
+  - static void llama_null_log_callback(enum ggml_log_level level, const char * text,
+    void * user_data) {
+  - '    (void) level;'
+  - '    (void) text;'
+  - '    (void) user_data;'
+  - '}'
+  desc: 静态函数，一个空的日志回调函数，用于忽略llama.cpp内部日志输出，在非详细模式下使用。
+  line: 2043-2048
+  name: llama_null_log_callback
+- code:
+  - static std::unique_ptr<printer> create_printer(output_formats format) {
+  - '    switch (format) {'
+  - '        case NONE:'
+  - '            return nullptr;'
+  - '        case CSV:'
+  - '            return std::unique_ptr<printer>(new csv_printer());'
+  - '        case JSON:'
+  - '            return std::unique_ptr<printer>(new json_printer());'
+  - '        case JSONL:'
+  - '            return std::unique_ptr<printer>(new jsonl_printer());'
+  - '        case MARKDOWN:'
+  - '            return std::unique_ptr<printer>(new markdown_printer());'
+  - '        case SQL:'
+  - '            return std::unique_ptr<printer>(new sql_printer());'
+  - '    }'
+  - '    GGML_ABORT("fatal error");'
+  - '}'
+  desc: 静态函数，根据指定的输出格式（NONE、CSV、JSON等）创建并返回对应的printer子类实例。如果格式为NONE，则返回nullptr。
+  line: 2050-2064
+  name: create_printer
+- code:
+  - int main(int argc, char ** argv) {
+  - '    std::setlocale(LC_NUMERIC, "C");'
+  - '    // try to set locale for unicode characters in markdown'
+  - '    std::setlocale(LC_CTYPE, ".UTF-8");'
+  - '    #if !defined(NDEBUG)'
+  - '    fprintf(stderr, "warning: asserts enabled, performance may be affected\n");'
+  - '    #endif'
+  - '    #if (defined(_MSC_VER) && defined(_DEBUG)) || (!defined(_MSC_VER) && !defined(__OPTIMIZE__))'
+  - '    fprintf(stderr, "warning: debug build, performance may be affected\n");'
+  - '    #endif'
+  - '    #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)'
+  - '    fprintf(stderr, "warning: sanitizer enabled, performance may be affected\n");'
+  - '    #endif'
+  - '    // initialize backends'
+  - '    ggml_backend_load_all();'
+  - '    cmd_params params = parse_cmd_params(argc, argv);'
+  - '    auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);'
+  - '    if (!cpu_dev) {'
+  - '        fprintf(stderr, "%s: error: CPU backend is not loaded\n", __func__);'
+  - '        return 1;'
+  - '    }'
+  - '    auto * cpu_reg = ggml_backend_dev_backend_reg(cpu_dev);'
+  - '    auto * ggml_threadpool_new_fn = (decltype(ggml_threadpool_new) *) ggml_backend_reg_get_proc_address(cpu_reg,
+    "ggml_threadpool_new");'
+  - '    auto * ggml_threadpool_free_fn = (decltype(ggml_threadpool_free) *) ggml_backend_reg_get_proc_address(cpu_reg,
+    "ggml_threadpool_free");'
+  - '    // initialize llama.cpp'
+  - '    if (!params.verbose) {'
+  - '        llama_log_set(llama_null_log_callback, NULL);'
+  - '    }'
+  - '    llama_backend_init();'
+  - '    llama_numa_init(params.numa);'
+  - '    if (!set_process_priority(params.prio)) {'
+  - '        fprintf(stderr, "%s: error: failed to set process priority\n", __func__);'
+  - '        return 1;'
+  - '    }'
+  - '    // initialize printer'
+  - '    std::unique_ptr<printer> p     = create_printer(params.output_format);'
+  - '    std::unique_ptr<printer> p_err = create_printer(params.output_format_stderr);'
+  - '    if (p) {'
+  - '        p->fout = stdout;'
+  - '        p->print_header(params);'
+  - '    }'
+  - '    if (p_err) {'
+  - '        p_err->fout = stderr;'
+  - '        p_err->print_header(params);'
+  - '    }'
+  - '    std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);'
+  - '    llama_model *               lmodel    = nullptr;'
+  - '    const cmd_params_instance * prev_inst = nullptr;'
+  - '    ctx_state cstate;'
+  - '    int  params_idx   = 0;'
+  - '    auto params_count = params_instances.size();'
+  - '    for (const auto & inst : params_instances) {'
+  - '        params_idx++;'
+  - '        if (params.progress) {'
+  - '            fprintf(stderr, "llama-bench: benchmark %d/%zu: starting\n", params_idx,
+    params_count);'
+  - '        }'
+  - '        auto mparams = inst.to_llama_mparams();'
+  - '        auto cparams = inst.to_llama_cparams();'
+  - '        bool do_fit = inst.fit_target != cmd_params_defaults.fit_params_target[0]
+    ||'
+  - '                      inst.fit_min_ctx != cmd_params_defaults.fit_params_min_ctx[0];'
+  - '        std::vector<float> fit_tensor_split(llama_max_devices(), 0.0f);'
+  - '        std::vector<llama_model_tensor_buft_override> fit_overrides(llama_max_tensor_buft_overrides(),
+    {nullptr, nullptr});'
+  - '        if (do_fit) {'
+  - '            if (lmodel) {'
+  - '                llama_model_free(lmodel);'
+  - '                lmodel    = nullptr;'
+  - '                prev_inst = nullptr;'
+  - '            }'
+  - '            mparams.n_gpu_layers          = llama_model_default_params().n_gpu_layers;'
+  - '            mparams.tensor_split          = fit_tensor_split.data();'
+  - '            mparams.tensor_buft_overrides = fit_overrides.data();'
+  - '            cparams.n_ctx                 = 0;'
+  - '            std::vector<size_t> margins(llama_max_devices(), inst.fit_target
+    * 1024 * 1024);'
+  - '            uint32_t n_ctx_needed = inst.n_prompt + inst.n_gen + inst.n_depth;'
+  - '            cparams.n_ctx = std::max(cparams.n_ctx, n_ctx_needed);'
+  - '            llama_params_fit(inst.model.c_str(), &mparams, &cparams,'
+  - '                fit_tensor_split.data(),'
+  - '                fit_overrides.data(),'
+  - '                margins.data(),'
+  - '                inst.fit_min_ctx,'
+  - '                params.verbose ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);'
+  - '        }'
+  - '        if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {'
+  - '            if (lmodel) {'
+  - '                llama_model_free(lmodel);'
+  - '            }'
+  - '            lmodel = llama_model_load_from_file(inst.model.c_str(), mparams);'
+  - '            if (lmodel == NULL) {'
+  - '                fprintf(stderr, "%s: error: failed to load model ''%s''\n", __func__,
+    inst.model.c_str());'
+  - '                return 1;'
+  - '            }'
+  - '            prev_inst = &inst;'
+  - '        }'
+  - '        llama_context * ctx = llama_init_from_model(lmodel, cparams);'
+  - '        if (ctx == NULL) {'
+  - '            fprintf(stderr, "%s: error: failed to create context with model ''%s''\n",
+    __func__, inst.model.c_str());'
+  - '            llama_model_free(lmodel);'
+  - '            return 1;'
+  - '        }'
+  - '        test t(inst, lmodel, ctx);'
+  - '        llama_memory_clear(llama_get_memory(ctx), false);'
+  - '        if (params.delay) {'
+  - '            std::this_thread::sleep_for(std::chrono::seconds(params.delay));'
+  - '        }'
+  - '        struct ggml_threadpool_params tpp = ggml_threadpool_params_default(t.n_threads);'
+  - '        if (!parse_cpu_mask(t.cpu_mask, tpp.cpumask)) {'
+  - '            fprintf(stderr, "%s: failed to parse cpu-mask: %s\n", __func__, t.cpu_mask.c_str());'
+  - '            llama_free(ctx);'
+  - '            llama_model_free(lmodel);'
+  - '            exit(1);'
+  - '        }'
+  - '        tpp.strict_cpu = t.cpu_strict;'
+  - '        tpp.poll       = t.poll;'
+  - '        tpp.prio       = params.prio;'
+  - '        struct ggml_threadpool * threadpool = ggml_threadpool_new_fn(&tpp);'
+  - '        if (!threadpool) {'
+  - '            fprintf(stderr, "%s: threadpool create failed : n_threads %d\n",
+    __func__, tpp.n_threads);'
+  - '            llama_free(ctx);'
+  - '            llama_model_free(lmodel);'
+  - '            exit(1);'
+  - '        }'
+  - '        llama_attach_threadpool(ctx, threadpool, NULL);'
+  - '        // warmup run'
+  - '        if (!params.no_warmup) {'
+  - '            if (t.n_prompt > 0) {'
+  - '                if (params.progress) {'
+  - '                    fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup prompt
+    run\n", params_idx, params_count);'
+  - '                }'
+  - '                bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);'
+  - '                if (!res) {'
+  - '                    fprintf(stderr, "%s: error: failed to run prompt warmup\n",
+    __func__);'
+  - '                    llama_free(ctx);'
+  - '                    llama_model_free(lmodel);'
+  - '                    exit(1);'
+  - '                }'
+  - '            }'
+  - '            if (t.n_gen > 0) {'
+  - '                if (params.progress) {'
+  - '                    fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup generation
+    run\n", params_idx, params_count);'
+  - '                }'
+  - '                bool res = test_gen(ctx, 1, t.n_threads);'
+  - '                if (!res) {'
+  - '                    fprintf(stderr, "%s: error: failed to run gen warmup\n",
+    __func__);'
+  - '                    llama_free(ctx);'
+  - '                    llama_model_free(lmodel);'
+  - '                    exit(1);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '        for (int i = 0; i < params.reps; i++) {'
+  - '            llama_memory_clear(llama_get_memory(ctx), false);'
+  - '            if (t.n_depth > 0) {'
+  - '                bool is_cached = t.n_depth == cstate.depth;'
+  - '                if (is_cached) {'
+  - '                    const size_t ret = llama_state_seq_set_data(ctx, cstate.buf.data(),
+    cstate.buf.size(), 0);'
+  - '                    if (ret == 0) {'
+  - '                        is_cached = false;'
+  - '                    }'
+  - '                }'
+  - '                if (!is_cached) {'
+  - '                    if (params.progress) {'
+  - '                        fprintf(stderr, "llama-bench: benchmark %d/%zu: depth
+    run %d/%d\n", params_idx, params_count,'
+  - '                                i + 1, params.reps);'
+  - '                    }'
+  - '                    bool res = test_prompt(ctx, t.n_depth, t.n_batch, t.n_threads);'
+  - '                    if (!res) {'
+  - '                        fprintf(stderr, "%s: error: failed to run depth\n", __func__);'
+  - '                        llama_free(ctx);'
+  - '                        llama_model_free(lmodel);'
+  - '                        exit(1);'
+  - '                    }'
+  - '                    cstate.depth = t.n_depth;'
+  - '                    cstate.buf.resize(llama_state_seq_get_size(ctx, 0));'
+  - '                    llama_state_seq_get_data(ctx, cstate.buf.data(), cstate.buf.size(),
+    0);'
+  - '                } else {'
+  - '                    if (params.progress) {'
+  - '                        fprintf(stderr, "llama-bench: benchmark %d/%zu: depth
+    run %d/%d (cached)\n", params_idx, params_count,'
+  - '                                i + 1, params.reps);'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '            uint64_t t_start = get_time_ns();'
+  - '            if (t.n_prompt > 0) {'
+  - '                if (params.progress) {'
+  - '                    fprintf(stderr, "llama-bench: benchmark %d/%zu: prompt run
+    %d/%d\n", params_idx, params_count,'
+  - '                            i + 1, params.reps);'
+  - '                }'
+  - '                bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);'
+  - '                if (!res) {'
+  - '                    fprintf(stderr, "%s: error: failed to run prompt\n", __func__);'
+  - '                    llama_free(ctx);'
+  - '                    llama_model_free(lmodel);'
+  - '                    exit(1);'
+  - '                }'
+  - '            }'
+  - '            if (t.n_gen > 0) {'
+  - '                if (params.progress) {'
+  - '                    fprintf(stderr, "llama-bench: benchmark %d/%zu: generation
+    run %d/%d\n", params_idx, params_count,'
+  - '                            i + 1, params.reps);'
+  - '                }'
+  - '                bool res = test_gen(ctx, t.n_gen, t.n_threads);'
+  - '                if (!res) {'
+  - '                    fprintf(stderr, "%s: error: failed to run gen\n", __func__);'
+  - '                    llama_free(ctx);'
+  - '                    llama_model_free(lmodel);'
+  - '                    exit(1);'
+  - '                }'
+  - '            }'
+  - '            uint64_t t_ns = get_time_ns() - t_start;'
+  - '            t.samples_ns.push_back(t_ns);'
+  - '        }'
+  - '        if (p) {'
+  - '            p->print_test(t);'
+  - '            fflush(p->fout);'
+  - '        }'
+  - '        if (p_err) {'
+  - '            p_err->print_test(t);'
+  - '            fflush(p_err->fout);'
+  - '        }'
+  - '        llama_perf_context_print(ctx);'
+  - '        llama_free(ctx);'
+  - '        ggml_threadpool_free_fn(threadpool);'
+  - '    }'
+  - '    llama_model_free(lmodel);'
+  - '    if (p) {'
+  - '        p->print_footer();'
+  - '    }'
+  - '    if (p_err) {'
+  - '        p_err->print_footer();'
+  - '    }'
+  - '    llama_backend_free();'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口函数。它负责初始化llama后端和CPU线程池，解析命令行参数，创建输出打印机，加载模型并创建上下文，然后根据参数实例化列表循环执行基准测试（提示词或生成），收集时间样本，并通过打印机输出结果。最后释放资源并返回0。
+  line: 2068-2233
+  name: main

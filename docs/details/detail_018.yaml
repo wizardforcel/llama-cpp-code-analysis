@@ -1,0 +1,978 @@
+code_map:
+- src/llama-memory.h
+- '├── struct llama_memory_params            # 内存构造参数：type_k / type_v / swa_full'
+- '├── enum llama_memory_status              # 状态机：SUCCESS / NO_UPDATE / FAILED_PREPARE
+  / FAILED_COMPUTE'
+- '├── struct llama_memory_context_i         # 记忆会话接口：next() / apply() / get_ubatch()
+  / get_status()'
+- '├── struct llama_memory_i                 # 通用记忆抽象：init_batch / init_full / init_update
+  / seq_* / state_*'
+- │   └── using layer_filter_cb / layer_reuse_cb
+- └── using llama_memory_ptr / llama_memory_context_ptr
+- src/llama-memory.cpp
+- '├── llama_memory_status_combine()         # 多模块状态合并（ISWA、Hybrid 用）：FAILED 直接返回，否则
+  OR 是否有 update'
+- '└── llama_memory_status_is_fail()         # 失败状态判定：FAILED_PREPARE / FAILED_COMPUTE
+  返回 true'
+- src/llama-kv-cells.h
+- '├── struct llama_kv_cell_ext              # 2D 位置扩展（M-RoPE 专用）：x / y + is_2d_gt()
+  / reset()'
+- '└── class llama_kv_cells                  # 原子细胞：pos / ext / shift / seq + used
+  集合 + seq_pos 索引'
+- '    ├── reset() / reset_shift() / resize()'
+- '    ├── is_empty() / get_used() / used_min() / used_max_p1() / get_has_shift()'
+- '    ├── cp(uint32_t,uint32_t) / cp(vector) # 批量状态复制'
+- '    ├── set() / rm()                      # 状态恢复 / 单 cell 清除'
+- '    ├── seq_rm / seq_keep / seq_add / seq_has / seq_count / seq_get'
+- '    ├── pos_set / pos_add / pos_div       # 位置修改与 shift 累积'
+- '    ├── seq_pos_min / seq_pos_max / pos_get / ext_get / ext_set / get_shift / pos_in'
+- '    └── seq_pos_inc / seq_pos_dec / seq_pos_rm / seq_pos_add # 内部辅助函数'
+- src/llama-kv-cache.h
+- ├── static ggml_is_power_of_2() / ggml_gen_hadamard() / ggml_mul_mat_aux()
+- '├── class llama_kv_cache                  # 标准 KV Cache（Transformer 用）'
+- '│   ├── struct slot_info / slot_info_vec_t   # ubatch → cells 映射描述（多 stream 布局）'
+- '│   ├── struct stream_copy_info              # 跨 stream buffer 复制请求'
+- '│   ├── struct kv_layer                      # 每层 K/V 张量 + 多 stream 视图'
+- '│   ├── constructor                       # 多 buft 分组 + 层创建 + map_layer_ids + Hadamard
+  预计算'
+- │   ├── init_batch() / init_full() / init_update()
+- '│   ├── find_slot()                       # 环形搜索 + SWA 掩码 + cont/non-cont 模式'
+- '│   ├── apply_ubatch()                    # 写入 cells + seq_pos_max_rm 不变量维护'
+- '│   ├── prepare()                         # 试运行 find_slot + state_t 完整回滚'
+- '│   ├── update()                          # 执行跨 stream copy + K-Shove 图 + reset_shift'
+- '│   ├── clear()                           # 重置 cells 与 head，可选清零 buffer'
+- │   ├── seq_rm / seq_cp / seq_keep / seq_add / seq_div
+- │   ├── seq_pos_min / seq_pos_max / memory_breakdown()
+- '│   ├── get_k / get_v / cpy_k / cpy_v     # 图构建接口'
+- │   ├── build_input_k_idxs / build_input_v_idxs / build_input_k_rot / build_input_v_rot
+- │   ├── set_input_k_idxs / set_input_v_idxs / set_input_k_shift / set_input_kq_mask
+- │   ├── set_input_pos_bucket / set_input_k_rot / set_input_v_rot
+- '│   ├── set_input_kq_mask_impl 模板特化  # 4 层 (causal × swa × is_2d × alibi)'
+- '│   ├── build_rope_shift                  # 反向 RoPE × mul_mat_aux → rope_ext →
+  正向 RoPE × mul_mat_aux'
+- '│   ├── build_graph_shift                 # 构建 llm_graph_input_k_shift 子图（k_shift
+  + k_rot）'
+- '│   ├── state_write / state_read          # 序列化（含 M-RoPE ext、contiguous fast path）'
+- │   ├── state_write_meta / state_write_data / state_read_meta / state_read_data
+- │   ├── get_can_shift / get_has_shift / get_size / get_n_stream / type_k / type_v
+- │   └── size_k_bytes / size_v_bytes / total_size
+- '├── class llama_kv_cache_context          # KV cache 上下文：4 种构造（error/full/update/batch）'
+- '    ├── next() / apply() / get_status() / get_ubatch() / get_n_kv()'
+- '    ├── type_k() / type_v()'
+- '    ├── get_k / get_v / cpy_k / cpy_v'
+- '    └── build_input_* / set_input_* 系列（透传到 kv）'
+- src/llama-kv-cache-iswa.h / .cpp
+- '├── class llama_kv_cache_iswa             # ISWA 双缓存（kv_base + kv_swa）'
+- '│   ├── filter_base / filter_swa         # chain filter：上层过滤 + is_swa 判定'
+- '│   ├── constructor                       # size_base / size_swa 计算（PAD 256 + swa_full）'
+- │   ├── init_batch() / init_full() / init_update()
+- '│   ├── get_can_shift                     # 要求 base 与 swa 大小一致'
+- │   ├── clear / seq_rm / seq_cp / seq_keep / seq_add / seq_div
+- │   ├── seq_pos_min / seq_pos_max / memory_breakdown
+- '│   ├── state_write / state_read          # 支持 PARTIAL_ONLY 标志'
+- '│   └── get_base() / get_swa()            # 暴露子缓存供 Hybrid 使用'
+- '└── class llama_kv_cache_iswa_context     # 包装 base + swa 两套 ctx 并合并状态'
+- '    ├── next() / apply() / get_status() / get_ubatch()'
+- '    └── get_base() / get_swa()            # 返回 llama_kv_cache_context 视图'
+- src/llama-memory-recurrent.h / .cpp
+- '├── class llama_memory_recurrent          # 循环式记忆（Mamba/RWKV）'
+- '│   ├── struct mem_cell                   # pos / src / src0 / tail / seq_id 集合'
+- '│   ├── head / size / used / n / rs_z    # 环形搜索位置 + 零状态 cell 索引'
+- '│   ├── r_l / s_l                         # 每层 R / S 张量'
+- '│   ├── constructor                       # 按 buft 分组 + R/S 张量创建 + 分配清零'
+- │   ├── init_batch() / init_full() / init_update()
+- '│   ├── prepare()                         # 完整保存 cells/used/head 以支持回滚'
+- '│   ├── find_slot()                       # 连续性约束 + gather-and-reorder + rs_z 计算'
+- │   ├── seq_rm / seq_cp / seq_keep / seq_add / seq_div
+- │   ├── seq_pos_min / seq_pos_max / memory_breakdown()
+- │   ├── clear()
+- '│   ├── get_can_shift                     # 循环记忆 shift 天然支持'
+- '│   ├── state_write / state_read          # 序列化 R/S 张量（连续 + 离散两种）'
+- │   ├── state_write_meta / state_write_data / state_read_meta / state_read_data
+- │   └── size_r_bytes / size_s_bytes / total_size
+- '└── class llama_memory_recurrent_context  # 提供 s_copy(i) 返回 src0 用于图状态链'
+- '    ├── next() / apply() / get_status() / get_ubatch()'
+- '    ├── get_n_rs / get_head / get_rs_z / get_size'
+- '    └── get_r_l / get_s_l / s_copy'
+- src/llama-memory-hybrid.h / .cpp
+- '├── class llama_memory_hybrid             # Transformer + RNN 混合'
+- '│   ├── mem_attn (llama_kv_cache)         # 处理注意力层（filter: !is_recurrent）'
+- '│   ├── mem_recr (llama_memory_recurrent) # 处理循环层（filter: is_recurrent）'
+- │   ├── constructor
+- │   ├── init_batch() / init_full() / init_update()
+- '│   ├── get_can_shift                     # 委托给 mem_attn'
+- │   ├── clear / seq_rm / seq_cp / seq_keep / seq_add / seq_div
+- │   ├── seq_pos_min / seq_pos_max / memory_breakdown()
+- '│   ├── seq_pos 取交集（max/min）        # attn/recr 公共覆盖区间'
+- '│   ├── state_write / state_read          # 支持 PARTIAL_ONLY'
+- │   └── get_mem_attn() / get_mem_recr()
+- '└── class llama_memory_hybrid_context     # 同时包装 attn + recr 两个子 ctx'
+- '    ├── constructor (status/full/update/success)'
+- '    ├── next() / apply() / get_status() / get_ubatch()'
+- '    └── get_attn() / get_recr()'
+- src/llama-memory-hybrid-iswa.h / .cpp
+- '├── class llama_memory_hybrid_iswa        # ISWA + RNN 三模块混合（Jamba / Falcon-H1）'
+- '│   ├── mem_attn (llama_kv_cache_iswa)   # base + swa 双缓存'
+- '│   ├── mem_recr (llama_memory_recurrent) # 循环部分'
+- │   ├── constructor
+- │   ├── init_batch() / init_full() / init_update()
+- '│   ├── get_can_shift                     # 委托给 mem_attn'
+- │   ├── clear / seq_rm / seq_cp / seq_keep / seq_add / seq_div
+- │   ├── seq_pos_min / seq_pos_max / memory_breakdown()
+- '│   ├── state_write / state_read          # 不支持 PARTIAL_ONLY（必须完整序列化）'
+- │   └── get_mem_attn() / get_mem_recr()
+- └── class llama_memory_hybrid_iswa_context
+- '    ├── constructor (status/full/update/success)'
+- '    ├── next() / apply() / get_status() / get_ubatch()'
+- '    └── get_attn() / get_recr()'
+exercises:
+- contents:
+  - 阅读 `src/llama-memory.h` 完整文件，结合 `src/llama-memory.cpp` 第 1-75 行的辅助函数，回答问题：
+  - 1. `llama_memory_i` 定义了哪三类核心方法？它们分别起什么作用？
+  - 2. `llama_memory_status_combine` 如何处理 `FAILED_PREPARE` / `FAILED_COMPUTE`？两个状态同时为
+    SUCCESS/NO_UPDATE 时如何合并？
+  - 3. `init_full` 与 `init_update` 在用途上有何区别？为什么需要分开？
+  - 4. 为什么 `seq_*` 系列方法中只有 `seq_rm` 返回 `bool` 而其他返回 `void`？
+  - 5. `layer_filter_cb` 和 `layer_reuse_cb` 的使用场景有何差异？
+  - 6. `llama_memory_params` 的三个字段（type_k / type_v / swa_full）分别控制什么？
+  'no': 1
+  title: 阅读内存抽象接口源码
+- contents:
+  - 阅读 `src/llama-kv-cells.h` 完整文件，理解 `llama_kv_cells` 与 `llama_kv_cell_ext` 的设计，回答问题：
+  - 1. `pos` / `ext` / `shift` / `seq` 四个数组各自承担什么职责？
+  - 2. `used` 集合（`std::set<uint32_t>`）相比直接扫描所有 cells 有什么性能优势？
+  - 3. `seq_pos[s][p]` 使用 ` `std::map<llama_pos, int>` 而不是 ` `std::set<llama_pos>`
+    的原因是什么？
+  - 4. `pos_add(i, d)` 在 `pos[i] + d < 0` 时为什么要把 cell 标记为空？
+  - 5. `cp(uint32_t i, uint32_t n)` 与 `cp(const std::vector<uint32_t>& idxs)` 两种重载分别用于什么场景？
+  - 6. `llama_kv_cell_ext::is_2d_gt` 的语义是什么？它如何支持 M-RoPE 因果掩码？
+  - 7. `seq_pos_inc` / `seq_pos_dec` / `seq_pos_rm` / `seq_pos_add` 这四个辅助函数是如何被自动调用的？
+  'no': 2
+  title: 剖析 KV Cells 元数据管理
+- contents:
+  - 阅读 `src/llama-kv-cache.cpp` 中 `find_slot()` 与 `prepare()` 的实现，回答问题：
+  - 1. `find_slot` 中 `head_cur` 在什么条件下会被重置为 0？这一优化有什么意义？
+  - 2. SWA 掩码判定 `is_masked_swa(n_swa, swa_type, pos_cell, ...)` 允许 cell 被复用的条件是什么？
+  - 3. `prepare()` 如何通过 `state_t` 结构实现试运行 + 回滚？为何必须反向遍历恢复？
+  - 4. `find_slot` 中 `n_tested >= cells.size()` 时的返回语义是什么？上层如何处理空结果？
+  - 5. `apply_ubatch` 中 `seq_pos_max_rm[seq_id]` 数组的作用是什么？它如何维护位置连续性不变量？
+  - 6. `apply_ubatch` 末尾的 `seq_rm(s, cells.seq_pos_min(s), seq_pos_max_rm[s] + 1)`
+    在什么条件下会真正执行？
+  'no': 3
+  title: 追踪 find_slot 与 prepare 的回滚逻辑
+- contents:
+  - 阅读 `src/llama-kv-cache.cpp` 中 `update()`、`build_graph_shift()` 与 `build_rope_shift()`
+    函数，回答问题：
+  - 1. `update()` 中 `do_shift` 与 `sc_info` 分别对应什么场景？
+  - 2. `build_rope_shift` 为什么需要先乘 `rot`（反向旋转）再做 `ggml_rope_ext`，再乘 `rot`（正向旋转）？
+  - 3. `ggml_mul_mat_aux` 在这里扮演什么功能？为什么需要将 K reshape 为 `[n, N/n]`？
+  - 4. `attn_rot_hadamard` 预计算的目标是什么？为何 `n_rot` 必须是 2 的幂？
+  - 5. `update()` 最后调用 `reset_shift()` 的作用是什么？它如何与下一次 `seq_add` 协作？
+  - 6. `build_input_k_rot` 和 `build_input_v_rot` 选择的旋转矩阵大小策略有何不同？
+  'no': 4
+  title: 理解 K-Shove 与 RoPE 反向-正向旋转
+- contents:
+  - 阅读 `src/llama-kv-cache-iswa.cpp` 完整文件与 `src/llama-memory-hybrid.cpp`，对比分析：
+  - 1. `llama_kv_cache_iswa` 内部维护的两个 `llama_kv_cache` 通过什么机制分发层？
+  - '2. ISWA 的 `size_swa` 计算公式 `GGML_PAD(std::min(size_base, hparams.n_swa*(unified
+    ? n_seq_max : 1) + n_ubatch), 256)` 中各参数含义？为何要 padding 到 256？'
+  - 3. `get_can_shift` 为什么要求 `kv_base->get_size() == kv_swa->get_size()`？
+  - 4. `llama_memory_hybrid::init_batch` 为何要先 prepare `mem_recr` 再 prepare `mem_attn`？颠倒顺序会产生什么问题？
+  - 5. `seq_pos_min` 在 hybrid 中取 `max(attn, recr)`、`seq_pos_max` 取 `min(attn, recr)`
+    的语义解释。
+  - 6. ISWA 与 Hybrid_ISWA 在 state_write 的 PARTIAL_ONLY 支持上有何差异？为什么？
+  'no': 5
+  title: 对比 ISWA 双缓存与 Hybrid 混合内存
+- contents:
+  - 阅读 `src/llama-memory-recurrent.cpp` 中 `find_slot()` 与 `s_copy()` 的实现，回答问题：
+  - 1. 循环记忆的 `find_slot` 为何不支持 `split_simple`，只能 `split_equal(seq=true)` 与 `split_seq`？
+  - 2. `gather and re-order` 阶段为何需要把分散 tail 排到 `[min, max]` 连续区间？
+  - 3. `rs_z`（零状态 cell）是如何选取的？它对图构建有什么作用？
+  - 4. `seq_rm` 拒绝部分擦除末尾的判定逻辑是什么？为什么循环模型不能像 Transformer 那样擦除任意区间？
+  - 5. `s_copy(i)` 返回 `cells[i + head].src0`，结合图构建过程，它如何实现循环状态从 `src0 → i` 的链式复制？
+  - 6. `get_n_rs()` 在 full 模式与 batch 模式下的返回值差异，以及为什么这样设计？
+  'no': 6
+  title: 追踪循环记忆的 find_slot 与 s_copy 链路
+- contents:
+  - 阅读 `src/llama-kv-cache.cpp` 中 `set_input_kq_mask_impl` 的 4 层模板（causal × swa ×
+    is_2d × alibi），结合 `llama_hparams::is_masked_swa`，回答问题：
+  - 1. 4 层模板各自特化了哪些组合？最终编译出多少个实例？
+  - 2. 同序列 cell 间的 mask 复制优化通过 `seq_srct` / `seq_idxs` 实现的原理是什么？
+  - 3. Alibi 模式下为何要禁用复制优化？
+  - 4. `seq_pos_min[seq_id]` 在循环开头的作用是什么？
+  - 5. M-RoPE 因果掩码与普通 causal 掩码相比有何差异？
+  - 6. `data[idst + j] = -INFINITY` 与 `data[idst + j] = 0.0f` 的语义区别？
+  'no': 7
+  title: 剖析 KQ 掩码的 4 层模板特化
+learning_targets:
+- 理解 llama_memory_i / llama_memory_context_i 统一抽象接口的设计哲学与 apply() / next() 状态机
+- 掌握 llama_kv_cells 元数据（pos / ext / shift / seq）与 used 集合的高效管理
+- 深入 llama_kv_cache 的 find_slot 环形搜索、SWA 掩码复用、K-Shove 与 RoPE 旋转
+- 理解 llama_kv_cache_iswa 双缓存协作与 ISWA init_batch 双路降级调度
+- 掌握 llama_memory_recurrent 的连续性约束、gather-and-reorder 与 s_copy 状态传递链
+- 理解 llama_memory_hybrid 的失败优先策略与 seq_pos 取交集语义
+- 掌握 llama_memory_hybrid_iswa 三模块组合与状态序列化的 PARTIAL_ONLY 标志
+- 能阅读并修改自定义记忆架构或新增序列操作语义
+life_analogy:
+- 想象 llama.cpp 的内存系统是一座**智能图书馆的记忆管理部**：
+- '- **抽象接口（llama_memory_i）** = 图书馆的**通用借阅规则**：'
+- '  - **init_batch** = 图书管理员把大订单（batch）拆分成多个微订单（ubatch）'
+- '  - **init_full** = 按最大需求预留仓库货架空间'
+- '  - **init_update** = 处理待办事务（借还、搬运、贴标签）'
+- '- **llama_memory_context_i** = 一次具体的借阅会话，apply() 是唯一允许改动库存的窗口'
+- '- **标准 KV Cache（llama_kv_cache）** = 阅览室的**开放书架**：'
+- '  - 每个**格子（cell）** = 书架上的一个位置，记录书名（pos）、借书证编号（seq）、是否被借走（pos==-1）'
+- '  - **环形搜索（find_slot）** = 图书管理员从当前指针（head）顺时针找空位'
+- '  - **SWA 掩码复用** = 老书（超过借阅期限 n_swa）即使被借走也能被新读者占用'
+- '  - **K-Shove（seq_add + update）** = 给所有存书加一个"未来日期"贴纸，并通过反向-正向 RoPE 旋转让旧书名适应新时间'
+- '  - **Hadamard 矩阵** = 量化加速魔法：把 K/V 张量先做正交旋转再量化，提升精度'
+- '- **ISWA KV Cache（llama_kv_cache_iswa）** = **双层阅览室**：'
+- '  - **base 书架** = 主阅览室（长期存放全部书籍）'
+- '  - **swa 书架** = 快速阅览室（只放最近 n_swa 本热门书）'
+- '  - 每个读者（layer）根据类型被分配到对应阅览室（filter 回调）'
+- '  - **双路调度** = 先尝试统一拆分（unified），失败再降级为非统一拆分'
+- '- **循环式记忆（llama_memory_recurrent）** = **持续录音机**：'
+- '  - **每个 cell** = 录音机的某个声道，记录整个序列的当前状态（R/S）'
+- '  - **tail 索引** = 每首歌（seq_id）的当前播放位置'
+- '  - **连续性约束** = 录音机只能从当前位置往后录，不能跳回去（否则上下文断裂）'
+- '  - **gather and re-order** = 把分散在不同磁道上的歌曲重新整理到连续磁道区间'
+- '  - **rs_z 零状态** = 录音机的空白磁带，供新歌的起始段使用'
+- '  - **拒绝部分擦除末尾** = 不能删除"这首歌的高潮部分"，否则整首歌就没意义了'
+- '- **混合内存（llama_memory_hybrid）** = **双系统协作的图书馆**：'
+- '  - **KV 部分** = 负责"理解上下文关联"（像图书管理员记得谁借过什么）'
+- '  - **Recurrent 部分** = 负责"持续状态记忆"（像录音机保留氛围）'
+- '  - **先 RNN 后 Attention** = 先准备录音机，再分配书架（如果录音机都排不出顺序，书架也不要动了）'
+- '  - **seq_pos 取交集** = 两种记忆都覆盖的公共范围，确保不会因某一方缺失导致数据不一致'
+- '- **ISWA 混合内存** = **双层阅览室 + 录音机的三体组合**：Jamba、Falcon-H1 等模型的旗舰解决方案'
+- 就像图书馆需要协调书架与录音机两套系统以服务不同读者（layer 类型），llama.cpp 的内存系统也需要在同一接口下协调 KV Cache 与循环记忆，确保推理状态的完整性与一致性。
+'no': 17
+summary:
+- concept: '`llama_memory_i`'
+  desc: 统一记忆抽象接口，Transformer / Mamba / Hybrid 都通过它暴露给上层
+- concept: '`llama_memory_context_i`'
+  desc: 记忆会话对象，唯一允许修改状态的是 apply() 方法
+- concept: '`llama_memory_status`'
+  desc: SUCCESS / NO_UPDATE / FAILED_PREPARE / FAILED_COMPUTE 四态状态机
+- concept: '`llama_memory_status_combine`'
+  desc: 两模块状态合并器（ISWA / Hybrid 用）
+- concept: '`llama_memory_status_is_fail`'
+  desc: 失败状态判定函数
+- concept: '`llama_memory_params`'
+  desc: 构造参数：type_k / type_v / swa_full
+- concept: '`llama_kv_cells`'
+  desc: KV cache 原子元数据：pos / ext / shift / seq + used 集合 + seq_pos 索引
+- concept: '`llama_kv_cell_ext`'
+  desc: 2D 位置（M-RoPE）扩展，含 x/y 与 is_2d_gt 比较
+- concept: '`llama_kv_cache`'
+  desc: Transformer 标准 KV Cache，支持多 stream、layer reuse、Hadamard 量化反量化加速
+- concept: '`slot_info / slot_info_vec_t`'
+  desc: 描述每个 ubatch 的目标 cells 索引（按 stream 组织）
+- concept: '`stream_copy_info`'
+  desc: 跨 stream buffer 复制请求队列，在 update 时执行
+- concept: '`llama_kv_cache::find_slot`'
+  desc: 环形搜索空位，支持 SWA 掩码复用与 cont/non-cont 两种分配模式
+- concept: '`llama_kv_cache::prepare`'
+  desc: 试运行 find_slot 并通过 state_t 完整回滚 cells 状态以保证原子性
+- concept: '`llama_kv_cache::apply_ubatch`'
+  desc: 写入新 cells 并维护 [pos_min, pos_max] 连续性不变量（通过 seq_pos_max_rm）
+- concept: '`llama_kv_cache::update`'
+  desc: 执行跨 stream 复制 + K-Shove 图构建 + reset_shift
+- concept: '`llama_kv_cache::set_input_kq_mask`'
+  desc: 4 层模板特化生成注意力掩码（causal × swa × is_2d × alibi）
+- concept: '`llama_kv_cache::build_graph_shift`'
+  desc: 构建 llm_graph_input_k_shift 子图，应用 RoPE 反向-正向旋转
+- concept: '`llama_kv_cache::build_rope_shift`'
+  desc: 先 mul_mat_aux 反向旋转 → ggml_rope_ext → 再 mul_mat_aux 正向旋转
+- concept: '`llama_kv_cache::Hadamard`'
+  desc: 预计算的 Walsh-Hadamard 矩阵，用于 K/V 量化加速
+- concept: '`K-Shove（seq_add + update）`'
+  desc: 物理位置累加 shift 后通过 RoPE 旋转归一化，实现 KV cache 位移
+- concept: '`llama_kv_cache_context`'
+  desc: KV cache 上下文，4 种构造（error/full/update/batch）
+- concept: '`llama_kv_cache_iswa`'
+  desc: ISWA 双缓存（kv_base + kv_swa），按 layer is_swa 过滤
+- concept: '`ISWA init_batch`'
+  desc: 先尝试 split_simple 再降级为 split_equal 的双路调度
+- concept: '`PARTIAL_ONLY`'
+  desc: 状态序列化标志：只写/读 SWA 部分，跳过 base
+- concept: '`llama_memory_recurrent`'
+  desc: Mamba/RWKV 循环记忆，内存与上下文长度无关
+- concept: '`mem_cell::src / src0 / tail`'
+  desc: 状态来源与序列尾巴索引，用于构建图复制链
+- concept: '`find_slot` gather-and-reorder'
+  desc: 循环记忆的连续性重排，将分散 tail 排到 [min, max] 连续段
+- concept: '`rs_z`'
+  desc: 零状态 cell 索引，供新序列初始化与图 src0 起点
+- concept: '`s_copy(i)`'
+  desc: 返回 cell i+head 的 src0，用于构建 ggml_cpy 状态传递节点
+- concept: '`llama_memory_recurrent_context`'
+  desc: 提供 get_n_rs / get_head / get_rs_z / get_size / s_copy
+- concept: '`llama_memory_hybrid`'
+  desc: Transformer + RNN 混合内存，失败优先策略保证原子性
+- concept: '`seq_pos_max/min` 取交集'
+  desc: Hybrid 返回两种记忆公共覆盖区间的 max/min
+- concept: '`llama_memory_hybrid_iswa`'
+  desc: 三模块混合：ISWA（base+swa）+ Recurrent，专为 Jamba / Falcon-H1
+- concept: '`seq_rm` 拒绝部分擦除'
+  desc: 循环记忆不能擦除末尾状态，否则破坏状态连续性
+- concept: '`state_write / state_read`'
+  desc: 完整状态序列化，支持 M-RoPE 扩展、连续/离散 cells 优化路径
+- concept: '`layer_filter_cb / layer_reuse_cb`'
+  desc: 层过滤与层复用回调，决定哪些层使用 KV cache 或与其他层共享
+units:
+- codes:
+  - file: src/llama-memory.h
+    line: 40-115
+    method_or_func: llama_memory_i
+  - file: src/llama-memory.h
+    line: 20-40
+    method_or_func: llama_memory_context_i
+  - file: src/llama-memory.h
+    line: 10-18
+    method_or_func: llama_memory_params
+  - file: src/llama-memory.cpp
+    line: 3-50
+    method_or_func: llama_memory_status_combine()
+  - file: src/llama-memory.cpp
+    line: 52-75
+    method_or_func: llama_memory_status_is_fail()
+  name: 内存抽象接口 —— 推理引擎的"通用记忆契约"
+  'no': 1
+  points:
+  - '**为什么需要 `llama_memory_i` 抽象接口？**'
+  - '- 不同模型使用不同类型的"记忆"：Transformer 用 KV Cache、Mamba/RWKV 用循环 R/S 状态、混合模型需要同时管理两者'
+  - '- 通过统一接口 `init_batch` / `init_full` / `init_update`，上层 `llama_context` 无需关心底层是哪种记忆'
+  - '- `init_batch` 负责将 `llama_batch` 拆分为微批次 `llama_ubatch` 并验证能否装入缓存'
+  - '- `init_full` 用于分配最坏情况下的计算缓冲区（预分配所有 cache slots）'
+  - '- `init_update` 处理待处理的内存更新（如 shifts、copies）'
+  - '**`llama_memory_context_i` 的角色**'
+  - '- 是与具体内存类型绑定的"会话对象"，实现 `next()` / `apply()` / `get_ubatch()` / `get_status()`
+    四件套'
+  - '- `next()` 推进到下一个 ubatch，返回 false 表示批次结束'
+  - '- `apply()` 是唯一允许修改内存状态和上下文状态的方法'
+  - '- 多个 memory context 的状态通过 `llama_memory_status_combine` 组合（ISWA、Hybrid 都依赖此机制）'
+  - '**`llama_memory_status` 状态机**'
+  - '- `SUCCESS`：有更新且成功'
+  - '- `NO_UPDATE`：无任何更新（用于优化跳过 K-Shove）'
+  - '- `FAILED_PREPARE` / `FAILED_COMPUTE`：准备或计算阶段失败'
+  - '**`llama_memory_status_combine` 的合并语义**'
+  - '- 任何一个为 `FAILED_*` 直接返回该失败状态（短路）'
+  - '- 否则检查两侧是否至少有一个 `SUCCESS`，有则返回 ` SUCCESS`，否则 `NO_UPDATE`'
+  - '**`llama_memory_params` 构造参数**'
+  - '- `type_k` / `type_v`：K/V 张量的量化类型'
+  - '- `swa_full`：是否使用与 base 等大的 SWA 缓存（占用更多内存但管理更简单）'
+  - '**层过滤与复用回调**'
+  - '- `layer_filter_cb(il)` 返回 bool：决定 il 层是否纳入缓存'
+  - '- `layer_reuse_cb(il)` 返回 int32：决定 il 层复用哪个其他层的 KV（< 0 表示不复用）'
+- codes:
+  - file: src/llama-kv-cells.h
+    line: 10-25
+    method_or_func: llama_kv_cell_ext.*
+  - file: src/llama-kv-cells.h
+    line: 30-90
+    method_or_func: llama_kv_cells.reset() / reset_shift() / resize() / is_empty()
+      / size()
+  - file: src/llama-kv-cells.h
+    line: 92-115
+    method_or_func: llama_kv_cells.used_min() / used_max_p1() / get_used() / get_has_shift()
+  - file: src/llama-kv-cells.h
+    line: 130-235
+    method_or_func: llama_kv_cells.cp() / set() / rm()
+  - file: src/llama-kv-cells.h
+    line: 237-320
+    method_or_func: llama_kv_cells.seq_rm() / seq_keep() / seq_add() / seq_has() /
+      seq_count() / seq_get()
+  - file: src/llama-kv-cells.h
+    line: 322-420
+    method_or_func: llama_kv_cells.pos_set() / pos_add() / pos_div() / pos_get() /
+      ext_get() / ext_set() / get_shift() / pos_in()
+  - file: src/llama-kv-cells.h
+    line: 350-380
+    method_or_func: llama_kv_cells.seq_pos_min() / seq_pos_max()
+  - file: src/llama-kv-cells.h
+    line: 450-490
+    method_or_func: llama_kv_cells.seq_pos_inc() / seq_pos_dec() / seq_pos_rm() /
+      seq_pos_add()
+  name: KV 单元管理 —— Transformer 记忆的"原子细胞"
+  'no': 2
+  points:
+  - '**`llama_kv_cells` 的核心职责**'
+  - '- 维护 KV cache 中每个 cell 的元信息：位置 `pos`、扩展 2D 位置（M-RoPE）`ext`、累积偏移 `shift`、关联序列
+    `seq`'
+  - '- 支持一个 cell 被多个序列共享（如 beam search 中的复用）'
+  - '- 通过 `used` 集合追踪当前正在使用的 cell 索引，加速 `find_slot` 时的空位查找'
+  - '**关键操作解析**'
+  - '- `pos_set` / pos_add / pos_div`：修改 cell 的位置并通过 `seq_pos` 索引维护序列位置范围'
+  - '- `pos_add` 在 `pos + shift < 0` 时自动将 cell 标记为空（pos = -1）'
+  - '- `pos_div` 修改 pos 并累积 shift，配合 K-Shove 批处理'
+  - '- `seq_add` / `seq_rm` / `seq_keep`：管理 cell 与序列的关联，引用计数自动维护'
+  - '- `cp` / `set`：批量复制/恢复 cells 状态，用于状态保存与恢复（state save/restore）'
+  - '- `reset_shift` / `get_has_shift`：管理累积 shift，配合 K-Shove 批处理'
+  - '- `used_min` / `used_max_p1` / `get_used` / `size` / `is_empty`：返回当前 cells 的统计信息'
+  - '**2D 位置扩展（`llama_kv_cell_ext`）**'
+  - '- 存储 x/y 两个空间坐标，专为 M-RoPE（如 Qwen2-VL）设计'
+  - '- `is_2d_gt` 用于在 M-RoPE 因果掩码中正确比较 2D 位置'
+  - '- `reset` 用 memset 清零，保证 trivially_copyable'
+  - '**`seq_pos` 的数据结构选择**'
+  - '- 使用 `std::map<llama_pos, int>` 而非 `std::set`：因为同一位置可能被多个 cell 占用（cache reuse、vision
+    重复 pos）'
+  - '- 通过计数实现 O(log n) 的 seq_pos_min/max 查询'
+  - '- `seq_pos_dec/inc/rm/add` 辅助函数保证 seq_pos 与 cells.seq 严格同步'
+  - '**查询接口**'
+  - '- `pos_get(i)` / `ext_get(i)` / `ext_set(i,p)` / `get_shift(i)` / `pos_in(i,p0,p1)`：安全访问
+    cell 状态'
+  - '- `seq_pos_min(seq_id)` / `seq_pos_max(seq_id)`：获取序列在 cache 中的位置范围'
+- codes:
+  - file: src/llama-kv-cache.cpp
+    line: 1-58
+    method_or_func: ggml_is_power_of_2() / ggml_gen_hadamard() / ggml_mul_mat_aux()
+  - file: src/llama-kv-cache.cpp
+    line: 60-260
+    method_or_func: llama_kv_cache::llama_kv_cache()
+  - file: src/llama-kv-cache.cpp
+    line: 262-275
+    method_or_func: llama_kv_cache::clear()
+  - file: src/llama-kv-cache.cpp
+    line: 277-465
+    method_or_func: llama_kv_cache::seq_rm() / seq_cp() / seq_keep() / seq_add() /
+      seq_div()
+  - file: src/llama-kv-cache.cpp
+    line: 467-495
+    method_or_func: llama_kv_cache::seq_pos_min() / seq_pos_max() / memory_breakdown()
+  - file: src/llama-kv-cache.cpp
+    line: 600-635
+    method_or_func: llama_kv_cache::init_batch()
+  - file: src/llama-kv-cache.cpp
+    line: 635-655
+    method_or_func: llama_kv_cache::init_full() / init_update()
+  - file: src/llama-kv-cache.cpp
+    line: 655-735
+    method_or_func: llama_kv_cache::prepare()
+  - file: src/llama-kv-cache.cpp
+    line: 730-810
+    method_or_func: llama_kv_cache::update()
+  - file: src/llama-kv-cache.cpp
+    line: 835-970
+    method_or_func: llama_kv_cache::find_slot()
+  - file: src/llama-kv-cache.cpp
+    line: 975-1050
+    method_or_func: llama_kv_cache::apply_ubatch()
+  - file: src/llama-kv-cache.cpp
+    line: 1055-1225
+    method_or_func: llama_kv_cache::get_k() / get_v() / cpy_k() / cpy_v() / get_n_kv()
+  - file: src/llama-kv-cache.cpp
+    line: 1225-1260
+    method_or_func: llama_kv_cache::build_input_k_idxs() / build_input_v_idxs()
+  - file: src/llama-kv-cache.cpp
+    line: 1262-1300
+    method_or_func: llama_kv_cache::build_input_k_rot() / build_input_v_rot()
+  - file: src/llama-kv-cache.cpp
+    line: 1302-1390
+    method_or_func: llama_kv_cache::set_input_k_idxs() / set_input_v_idxs() / set_input_k_shift()
+  - file: src/llama-kv-cache.cpp
+    line: 1395-1530
+    method_or_func: set_input_kq_mask_impl
+  - file: src/llama-kv-cache.cpp
+    line: 1530-1585
+    method_or_func: llama_kv_cache::set_input_kq_mask()
+  - file: src/llama-kv-cache.cpp
+    line: 1587-1615
+    method_or_func: llama_kv_cache::set_input_pos_bucket()
+  - file: src/llama-kv-cache.cpp
+    line: 1617-1640
+    method_or_func: llama_kv_cache::set_input_k_rot() / set_input_v_rot()
+  - file: src/llama-kv-cache.cpp
+    line: 1640-1680
+    method_or_func: llama_kv_cache::size_k_bytes() / size_v_bytes() / total_size()
+  - file: src/llama-kv-cache.cpp
+    line: 1720-1790
+    method_or_func: llama_kv_cache::build_rope_shift()
+  - file: src/llama-kv-cache.cpp
+    line: 1815-1880
+    method_or_func: llama_kv_cache::build_graph_shift() / llm_graph_input_k_shift::set_input()
+  - file: src/llama-kv-cache.cpp
+    line: 1880-1940
+    method_or_func: llama_kv_cache::state_write() / state_read()
+  - file: src/llama-kv-cache.cpp
+    line: 1940-2050
+    method_or_func: llama_kv_cache::state_write_meta() / state_write_data()
+  - file: src/llama-kv-cache.cpp
+    line: 2050-2230
+    method_or_func: llama_kv_cache::state_read_meta() / state_read_data()
+  - file: src/llama-kv-cache.cpp
+    line: 1080-1095
+    method_or_func: llama_kv_cache::get_can_shift() / get_has_shift() / get_size()
+      / get_n_stream() / type_k() / type_v()
+  name: 标准 KV Cache 实现 —— Transformer 的"记忆仓库"
+  'no': 3
+  points:
+  - '**`llama_kv_cache` 的核心数据结构**'
+  - '- `slot_info` 与 `slot_info_vec_t`：描述每个 ubatch 的目标 cell 位置（按 stream 组织）'
+  - '- `stream_copy_info`：跨 stream 的 KV buffer 复制请求（`seq_cp` 时使用）'
+  - '- `kv_layer` 结构体：记录每层的 layer index、k/v 张量指针、k_stream/v_stream 视图'
+  - '- `map_layer_ids`：模型层索引到 KV cache 层索引的映射，支持层复用（layer reuse / SWA 共享）'
+  - '- `v_cells`：`n_stream` 套独立的 cells（多 stream 模式下每个 stream 一套）'
+  - '- `seq_to_stream`：序列 ID → 流 ID 的映射表'
+  - '- `attn_rot_hadamard`：预计算的 Walsh-Hadamard 矩阵，用于 K/V 量化加速'
+  - '**构造函数的多 buft 分配**'
+  - '- 按 `ggml_backend_buft` 分组创建 ggml context，每个 buffer 类型独立分配'
+  - '- `dev_layer(il)` 选择每层的物理设备（CPU/GPU offload）'
+  - '- 通过 `filter` 回调决定哪些层加入缓存（ISWA、Hybrid 用）'
+  - '- 通过 `reuse` 回调决定哪些层共享其他层的 KV（SWA 共享层）'
+  - '- 检测 `LLAMA_ATTN_ROT_DISABLE` 环境变量决定是否启用 Hadamard 旋转加速'
+  - '- 预计算 64/128/256... 的 Hadamard 矩阵缓存（直到 head 维度）'
+  - '**静态辅助函数**'
+  - '- `ggml_is_power_of_2(n)`：检测是否为 2 的幂'
+  - '- `ggml_gen_hadamard(tensor)`：原地生成 Walsh-Hadamard 正交矩阵'
+  - '- `ggml_mul_mat_aux(ctx, cur, rot)`：将 cur reshape 为 [n, N/n] 后乘 rot 再 reshape
+    回原形状'
+  - '**`init_batch` 流程（微批次调度）**'
+  - '- 调用 `balloc.split_simple` 或 `split_equal` 将 batch 拆分为 ubatch 序列'
+  - '- 通过 `prepare` 试运行每个 ubatch 寻找合适 slot，最后回滚 cells 到原始状态'
+  - '- 若 `find_slot` 失败则返回 `LLAMA_MEMORY_STATUS_FAILED_PREPARE`'
+  - '**`find_slot` 的智能搜索**'
+  - '- 优先从当前 `head` 开始环形搜索，找到连续或分散的空位'
+  - '- `head > used + 2*n_tokens` 时重置为 0：避免在尾部空转'
+  - '- 支持 SWA 掩码：若 cell 超过 `n_swa` 窗口，即使被占用也可被复用'
+  - '- 支持连续与非连续两种分配模式（`cont` 参数）'
+  - '- `n_tested >= cells.size()` 时返回空 slot（无解）'
+  - '**`apply_ubatch` 的位置一致性保证**'
+  - '- 写入新 cell 前若发现位置冲突，触发 `rm` 清理旧 cell'
+  - '- 通过 `seq_pos_max_rm[seq_id]` 追踪要覆盖的最大位置'
+  - '- 若要写入的范围 < `seq_pos_min(seq_id)`，清理掉 seq_pos_min 到覆盖位置的旧 cell，保证 [min, max]
+    连续性不变量'
+  - '- 最后将 head 移动到 slot 末尾'
+  - '**`prepare` 的原子性保证**'
+  - '- 用 `state_t{sinfo, v_heads_old, v_cells_copy}` 在试运行前保存状态'
+  - '- `apply_ubatch` 后反向遍历恢复所有 cells 与 head'
+  - '- 任何失败都会彻底回滚，不污染 cache'
+  - '**`update` 与 K-Shove**'
+  - '- 先执行 `stream_copy_info` 中的跨 stream buffer 复制（仅 `n_stream > 1` 时有效）'
+  - '- 当存在 `has_shift` 时构建 `llm_graph_input_k_shift` 计算图，应用 RoPE 反向-正向旋转'
+  - '- `build_rope_shift`：先 `ggml_mul_mat_aux(K, rot)` 反向旋转 → `ggml_rope_ext` → 再
+    `ggml_mul_mat_aux(K, rot)` 正向旋转'
+  - '- 最后调用 `reset_shift()` 清除累积偏移'
+  - '**`init_full` 与 `init_update`**'
+  - '- `init_full()`：返回完整 cache 大小的 dummy context，用于最坏情况下的图构建'
+  - '- `init_update()`：包装 `has_shift` 与 `sc_info` 到 update context'
+  - '**`seq_*` 操作家族**'
+  - '- `seq_rm` / `seq_cp` / `seq_keep` / `seq_add` / `seq_div`：分别处理序列擦除、复制、保留、位移、缩放'
+  - '- `seq_cp` 跨 stream 时通过 stream_copy_info 延迟到 update 时执行'
+  - '- `seq_pos_min` / `seq_pos_max`：返回序列在 cache 中的位置范围'
+  - '- `memory_breakdown`：按 buffer 类型返回内存占用统计'
+  - '**`build_input_*` 与 `set_input_*` 接口**'
+  - '- `build_input_k_idxs` / `build_input_v_idxs`：创建索引输入张量'
+  - '- `build_input_k_rot` / `build_input_v_rot`：创建旋转矩阵输入张量'
+  - '- `set_input_k_idxs` / `set_input_v_idxs`：填充全局 cell 索引'
+  - '- `set_input_k_shift`：填充累积 shift'
+  - '- `set_input_pos_bucket`：T5 相对位置桶编码'
+  - '- `set_input_k_rot` / `set_input_v_rot`：填充 Hadamard 矩阵数据'
+  - '**`set_input_kq_mask` 的模板化实现**'
+  - '- 通过 4 层模板特化 `causal` × `swa` × `is_2d` × `alibi` 覆盖所有组合'
+  - '- 优化同序列 cell 间的 mask 复制：seq_idxs 追踪可能变化的 cell 子集'
+  - '- Alibi 模式写入距离的绝对值，其他模式其他维度写入 0/-INFINITY'
+  - '**`build_input_k_rot / v_rot` 与 Hadamard 旋转**'
+  - '- 选择最接近 head 维度的 2 的幂作为旋转矩阵大小'
+  - '- K 用较大矩阵、V 用固定 64x64（参见 issue #21038）'
+  - '**`state_write / state_read` 的高效序列化**'
+  - '- 先用 range 形式收集活跃 cells（cell_ranges_t）'
+  - '- 对 V 转置的 buffer 按行写：每行对应一个 embedding 维度'
+  - '- 读回时利用 `sinfo.is_contiguous()` 走 fast path（单 memcpy），否则 scatter 写入'
+  - '- 支持 M-RoPE 扩展坐标的 read/write（`n_pos_per_embd > 1`）'
+  - '**`size_*_bytes / total_size` 内存统计**'
+  - '- `size_k_bytes`：累加所有层的 K 张量大小'
+  - '- `size_v_bytes`：累加所有层的 V 张量大小'
+  - '- `total_size`：累加所有 buffer 大小'
+- codes:
+  - file: src/llama-kv-cache.cpp
+    line: 2230-2270
+    method_or_func: llama_kv_cache_context::llama_kv_cache_context()
+  - file: src/llama-kv-cache.cpp
+    line: 2280-2330
+    method_or_func: llama_kv_cache_context::next() / apply() / get_status() / get_ubatch()
+  - file: src/llama-kv-cache.cpp
+    line: 2330-2360
+    method_or_func: llama_kv_cache_context::get_n_kv() / type_k() / type_v()
+  - file: src/llama-kv-cache.cpp
+    line: 2360-2390
+    method_or_func: llama_kv_cache_context::get_k() / get_v() / cpy_k() / cpy_v()
+  - file: src/llama-kv-cache.cpp
+    line: 2390-2410
+    method_or_func: llama_kv_cache_context::build_input_k_idxs() / build_input_v_idxs()
+  - file: src/llama-kv-cache.cpp
+    line: 2410-2430
+    method_or_func: llama_kv_cache_context::build_input_k_rot() / build_input_v_rot()
+  - file: src/llama-kv-cache.cpp
+    line: 2430-2455
+    method_or_func: llama_kv_cache_context::set_input_k_idxs() / set_input_v_idxs()
+  - file: src/llama-kv-cache.cpp
+    line: 2455-2480
+    method_or_func: llama_kv_cache_context::set_input_k_shift() / set_input_kq_mask()
+  - file: src/llama-kv-cache.cpp
+    line: 2480-2510
+    method_or_func: llama_kv_cache_context::set_input_pos_bucket() / set_input_k_rot()
+      / set_input_v_rot()
+  name: KV Cache 上下文 —— 一次推理的"借阅会话"
+  'no': 4
+  points:
+  - '**`llama_kv_cache_context` 的 4 种构造方式**'
+  - '- `llama_kv_cache_context(status)`：用于错误状态，ubatches 为空'
+  - '- `llama_kv_cache_context(kv)`：full 模式，构造 dummy slot_info 容纳全部 stream'
+  - '- `llama_kv_cache_context(kv, lctx, do_shift, sc_info)`：update 模式'
+  - '- `llama_kv_cache_context(kv, sinfos, ubatches)`：batch 模式，正常推理流程'
+  - '**`next()` / `apply()` / `get_status()` / `get_ubatch()` 状态机**'
+  - '- `next()`：推进 `i_cur` 到下一个 ubatch，返回是否还有'
+  - '- `apply()`：若 ubatches 为空，调用 `kv->update()` 执行 K-Shove；否则调用 `kv->apply_ubatch()`
+    写入 cells'
+  - '- `get_status()`：返回构造时设置的 status'
+  - '- `get_ubatch()`：返回当前 ubatch 引用'
+  - '**`get_n_kv()` 的动态填充计算**'
+  - '- 计算每 stream 的最大已用 cell 索引 + padding'
+  - '- padding 取 `max(n_pad, 256)`：保证图节点形状稳定以支持图复用'
+  - '- 返回所有 stream 的最大值'
+  - '**`type_k()` / `type_v()`**'
+  - '- 透传到 kv->type_k()/type_v()'
+  - '**`get_k` / `get_v` / `cpy_k` / `cpy_v` 的图构建接口**'
+  - '- 透传到 `kv->get_k/get_v/cpy_k/cpy_v`，使用当前 sinfo 与 n_kv'
+  - '- `cpy_k/v` 根据 V 转置模式走不同的 set_rows 路径'
+  - '**`build_input_*` 与 `set_input_*` 透传家族**'
+  - '- `build_input_k_idxs` / `build_input_v_idxs` / `build_input_k_rot` / `build_input_v_rot`：透传到
+    kv'
+  - '- `set_input_k_idxs` / `set_input_v_idxs` / `set_input_k_shift`：透传当前 sinfo'
+  - '- `set_input_kq_mask` / `set_input_pos_bucket` / `set_input_k_rot` / `set_input_v_rot`：透传到
+    kv'
+- codes:
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 20-80
+    method_or_func: llama_kv_cache_iswa::llama_kv_cache_iswa()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 82-86
+    method_or_func: llama_kv_cache_iswa::clear()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 88-115
+    method_or_func: llama_kv_cache_iswa::seq_rm() / seq_cp() / seq_keep() / seq_add()
+      / seq_div()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 117-135
+    method_or_func: llama_kv_cache_iswa::seq_pos_min() / seq_pos_max() / memory_breakdown()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 115-175
+    method_or_func: llama_kv_cache_iswa::init_batch()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 177-190
+    method_or_func: llama_kv_cache_iswa::init_full() / init_update()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 192-198
+    method_or_func: llama_kv_cache_iswa::get_can_shift()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 200-220
+    method_or_func: llama_kv_cache_iswa::state_write() / state_read()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 222-232
+    method_or_func: llama_kv_cache_iswa::get_base() / get_swa()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 245-285
+    method_or_func: llama_kv_cache_iswa_context::llama_kv_cache_iswa_context()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 287-330
+    method_or_func: llama_kv_cache_iswa_context::next() / apply() / get_status() /
+      get_ubatch()
+  - file: src/llama-kv-cache-iswa.cpp
+    line: 332-345
+    method_or_func: llama_kv_cache_iswa_context::get_base() / get_swa()
+  name: 滑动窗口 KV Cache —— 长上下文的"瘦身方案"
+  'no': 5
+  points:
+  - '**`llama_kv_cache_iswa` 的双缓存设计**'
+  - '- 内部维护两个独立的 `llama_kv_cache`：`kv_base`（非 SWA 层）+ `kv_swa`（SWA 层）'
+  - '- 通过 `filter_base` / `filter_swa` 回调链式过滤：先应用上层 filter，再按 `hparams.is_swa(il)`
+    分流'
+  - '- SWA cache 大小由 `n_swa * (unified ? n_seq_max : 1) + n_ubatch` 计算，并 padding 到
+    256 提升性能（参见 issue #17037）'
+  - '- `swa_full` 选项强制 SWA cache 与 base cache 等大（仅推荐小 SWA 场景）'
+  - '**`init_batch` 的双路尝试策略**'
+  - '- 先用 `split_simple`（unified 模式）+ 同步两个缓存的 `prepare`'
+  - '- 失败则降级为 `split_equal(!unified)`，支持非统一划分'
+  - '- 两路都失败才返回 `FAILED_PREPARE`'
+  - '- 两个子缓存的 `prepare` 都必须成功才推进'
+  - '**`init_full` 与 `init_update`**'
+  - '- `init_full()`：分别调用两个子缓存的 init_full'
+  - '- `init_update()`：分别调用两个子缓存的 init_update'
+  - '**`get_can_shift` 的严格约束**'
+  - '- 需要 base 与 SWA 缓存大小完全相同才能支持 K-Shove（保证索引一致）'
+  - '- 内部两个子缓存的 `get_can_shift` 都为 true 才返回 true'
+  - '**`clear` 与 `seq_*` 透传**'
+  - '- 所有 `clear/seq_rm/seq_cp/seq_keep/seq_add/seq_div` 都同时作用于两个子缓存'
+  - '- 任何子缓存失败立即返回（仅 seq_rm 返回 bool）'
+  - '**`seq_pos_min/max` 的 ISWA 特殊语义**'
+  - '- `seq_pos_min`/`seq_pos_max` 委托给 `kv_swa`（base 是 superset，受 SWA 约束）'
+  - '**`memory_breakdown` 的累加**'
+  - '- 合并两个子缓存的 breakdown 映射'
+  - '**`state_write/read` 的 PARTIAL_ONLY 标志**'
+  - '- `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`：只写/读 SWA 部分，跳过 base（用于部分状态保存）'
+  - '- 这是实现"仅保存 SWA 滑动窗口状态"等高级特性的基础'
+  - '**`get_base()` / `get_swa()` 暴露子缓存**'
+  - '- 返回内部子缓存的 raw pointer，供 Hybrid 架构使用'
+  - '**`llama_kv_cache_iswa_context` 的协同**'
+  - '- 包装两套独立的 `llama_kv_cache_context`（ctx_base / ctx_swa）'
+  - '- 状态用 `llama_memory_status_combine` 合并'
+  - '- `apply()` 时两个子 ctx 顺序执行，任何一个失败整体失败'
+  - '- `get_base()` / `get_swa()` 返回底层 `llama_kv_cache_context*` 视图'
+  - '- `next()` 同时推进两个子 ctx 的 ubatch 指针'
+- codes:
+  - file: src/llama-memory-recurrent.cpp
+    line: 25-105
+    method_or_func: llama_memory_recurrent::llama_memory_recurrent()
+  - file: src/llama-memory-recurrent.cpp
+    line: 107-125
+    method_or_func: llama_memory_recurrent::clear()
+  - file: src/llama-memory-recurrent.cpp
+    line: 125-285
+    method_or_func: llama_memory_recurrent::seq_rm() / seq_cp() / seq_keep() / seq_add()
+      / seq_div()
+  - file: src/llama-memory-recurrent.cpp
+    line: 287-310
+    method_or_func: llama_memory_recurrent::seq_pos_min() / seq_pos_max() / memory_breakdown()
+  - file: src/llama-memory-recurrent.cpp
+    line: 312-385
+    method_or_func: llama_memory_recurrent::init_batch() / init_full() / init_update()
+  - file: src/llama-memory-recurrent.cpp
+    line: 385-420
+    method_or_func: llama_memory_recurrent::prepare()
+  - file: src/llama-memory-recurrent.cpp
+    line: 420-510
+    method_or_func: llama_memory_recurrent::find_slot()
+  - file: src/llama-memory-recurrent.cpp
+    line: 510-525
+    method_or_func: llama_memory_recurrent::get_can_shift() / size_r_bytes() / size_s_bytes()
+      / total_size()
+  - file: src/llama-memory-recurrent.cpp
+    line: 525-560
+    method_or_func: llama_memory_recurrent::state_write() / state_read()
+  - file: src/llama-memory-recurrent.cpp
+    line: 562-650
+    method_or_func: llama_memory_recurrent::state_write_meta() / state_write_data()
+  - file: src/llama-memory-recurrent.cpp
+    line: 650-790
+    method_or_func: llama_memory_recurrent::state_read_meta() / state_read_data()
+  - file: src/llama-memory-recurrent.cpp
+    line: 800-820
+    method_or_func: llama_memory_recurrent_context::llama_memory_recurrent_context()
+  - file: src/llama-memory-recurrent.cpp
+    line: 820-870
+    method_or_func: llama_memory_recurrent_context::next() / apply() / get_status()
+      / get_ubatch()
+  - file: src/llama-memory-recurrent.cpp
+    line: 870-895
+    method_or_func: llama_memory_recurrent_context::get_n_rs() / get_head() / get_rs_z()
+      / get_size()
+  - file: src/llama-memory-recurrent.cpp
+    line: 895-915
+    method_or_func: llama_memory_recurrent_context::get_r_l() / get_s_l() / s_copy()
+  name: 循环式记忆 —— Mamba/RWKV 的"持续状态"
+  'no': 6
+  points:
+  - '**为什么 Mamba/RWKV 不需要 KV Cache？**'
+  - '- 这类模型没有注意力机制，状态以循环形式（R/S tensor）保存'
+  - '- 每个 cell 存储整个序列的状态，而非每个 token 的 KV 对'
+  - '- 内存占用与上下文长度无关，只与 `n_embd_r * n_embd_s` 有关'
+  - '**`llama_memory_recurrent` 的 mem_cell 结构**'
+  - '- `pos`：该 cell 对应的最末位置'
+  - '- `src` / `src0`：状态来源 cell 索引，用于构建 cp 图节点'
+  - '- `tail`：序列 seq_id 在 cells 中的"尾巴位置"索引'
+  - '- `seq_id` 集合：当前 cell 被哪些序列共享'
+  - '**构造与张量分配**'
+  - '- 按 buft 分组，每层创建 `r_l[il]` / `s_l[il]` 张量'
+  - '- `clear(buf, 0)` 初始化 buffer 内容，避免 NaN'
+  - '**`find_slot` 的连续性约束**'
+  - '- 每个序列的状态必须存放在连续 cell 中（与 KV cache 分散存储不同）'
+  - '- 通过 `gather and re-order` 阶段把分散的 tail 重排到 `[min, max]` 连续区间'
+  - '- 维护 `rs_z`（零状态 cell）供新序列初始化使用'
+  - '- `ubatch.equal_seqs()` 必须为 true（每个序列 token 数相同）'
+  - '- 调试模式下用 `tails_verif` 校验 tail 一致性'
+  - '**`seq_rm` 的特殊限制**'
+  - '- Mamba/RWKV 不允许部分擦除序列末尾的状态（状态无法向后传播）'
+  - '- `seq_id >= size` 直接返回 false（seq_id 越界）'
+  - '- 若 range 包含 tail 的 pos 则直接返回 false，避免破坏状态连续性'
+  - '- `seq_id < 0`（匹配所有序列）时只接受全范围或空范围'
+  - '**`seq_cp` / `seq_keep` / `seq_add` / `seq_div` 的细节**'
+  - '- `seq_cp` 直接把 tail 的 seq_id 集合复制（不需要 buffer copy）'
+  - '- `seq_keep` 清理非目标 seq_id，更新 used/tail'
+  - '- `seq_add / seq_div` 只修改 tail cell 的 pos，不涉及 shift 累积'
+  - '**`init_batch` 与 KV cache 的差异**'
+  - '- 不支持 `split_simple`，只支持 `split_equal(seq=true)` 与 `split_seq`'
+  - '- `embd_all` 模式用 `split_seq`（按序列切分），否则用 `split_equal(seq=true)`'
+  - '- 准备阶段 `prepare` 通过完整保存 `cells/used/head` 来支持回滚'
+  - '**`init_full` 与 `init_update`**'
+  - '- `init_full()`：返回 is_full=true 的 context'
+  - '- `init_update()`：直接返回 NO_UPDATE（循环记忆不需要 K-Shove）'
+  - '**`s_copy(i)` 的妙用**'
+  - '- 返回 cell `i + head` 的 src0，用于构建 `ggml_cpy` 节点实现状态复制链'
+  - '- 在图中按 src0 → i 的顺序串行复制，形成正确的状态传递路径'
+  - '- rs_z 在 src0 中充当"零源"，让首段状态直接初始化'
+  - '**`get_n_rs / get_head / get_rs_z / get_size`**'
+  - '- 区分 full 模式（n=size, head=0, rs_z=0）和 batch 模式（动态计算）'
+  - '- 这些数据用于构建图输入：n_rs 决定张量大小，head 决定状态起点'
+  - '**`state_write/read` 的 R/S 张量序列化**'
+  - '- R 和 S 都支持连续（每行一个 cell）和离散（按 cell 元素）两种布局'
+  - '- 写入按 cell ranges 合并，读取通过 `ggml_backend_tensor_set` 批量恢复'
+  - '- `state_write_meta` / `state_write_data` / `state_read_meta` / `state_read_data`
+    分别负责元信息与数据'
+  - '**`size_*_bytes` 内存统计**'
+  - '- `size_r_bytes` / `size_s_bytes`：累加每层 R/S 张量大小'
+  - '- `total_size`：累加 buffer 大小'
+- codes:
+  - file: src/llama-memory-hybrid.cpp
+    line: 20-75
+    method_or_func: llama_memory_hybrid::llama_memory_hybrid()
+  - file: src/llama-memory-hybrid.cpp
+    line: 80-120
+    method_or_func: llama_memory_hybrid::init_batch()
+  - file: src/llama-memory-hybrid.cpp
+    line: 122-138
+    method_or_func: llama_memory_hybrid::init_full() / init_update()
+  - file: src/llama-memory-hybrid.cpp
+    line: 140-145
+    method_or_func: llama_memory_hybrid::get_can_shift()
+  - file: src/llama-memory-hybrid.cpp
+    line: 147-195
+    method_or_func: llama_memory_hybrid::clear() / seq_rm() / seq_cp() / seq_keep()
+      / seq_add() / seq_div()
+  - file: src/llama-memory-hybrid.cpp
+    line: 197-220
+    method_or_func: llama_memory_hybrid::seq_pos_min() / seq_pos_max() / memory_breakdown()
+  - file: src/llama-memory-hybrid.cpp
+    line: 222-235
+    method_or_func: llama_memory_hybrid::state_write() / state_read()
+  - file: src/llama-memory-hybrid.cpp
+    line: 237-247
+    method_or_func: llama_memory_hybrid::get_mem_attn() / get_mem_recr()
+  - file: src/llama-memory-hybrid.cpp
+    line: 255-295
+    method_or_func: llama_memory_hybrid_context::llama_memory_hybrid_context()
+  - file: src/llama-memory-hybrid.cpp
+    line: 297-340
+    method_or_func: llama_memory_hybrid_context::next() / apply() / get_status() /
+      get_ubatch()
+  - file: src/llama-memory-hybrid.cpp
+    line: 342-352
+    method_or_func: llama_memory_hybrid_context::get_attn() / get_recr()
+  name: 混合内存 —— Transformer + RNN 的"双脑架构"
+  'no': 7
+  points:
+  - '**`llama_memory_hybrid` 的双模块协作**'
+  - '- 内部组合 `llama_kv_cache`（处理 attention 层）+ `llama_memory_recurrent`（处理 RNN 层）'
+  - '- 通过 `filter_attn` / `filter_recr` 回调按层分发到对应模块'
+  - '- 默认过滤规则：`!hparams.is_recurrent(il)` 分配到 KV，`hparams.is_recurrent(il)` 分配到 RNN'
+  - '**构造与初始化**'
+  - '- 构造时同时创建两个子模块，attn 默认 filter 为 `!is_recurrent`，recr 默认 filter 为 `is_recurrent`'
+  - '**`init_batch` 的先 RNN 后 Attention 策略**'
+  - '- 先调用 `mem_recr->prepare`：若失败立即返回 `FAILED_PREPARE`'
+  - '- 再调用 `mem_attn->prepare`：失败同样立即返回'
+  - '- 这样保证若 RNN 拒绝批内存的，KV cache 不会被部分修改'
+  - '- `embd_all` 模式按序列切分，否则按 `unified` 决定是否使用非顺序等分'
+  - '**`init_full` 与 `init_update`**'
+  - '- 分别包装 attn 和 recr 的 init_full / init_update'
+  - '- `get_can_shift` 直接委托给 mem_attn（RNN 天然支持 shift）'
+  - '**`seq_rm` 的失败优先策略**'
+  - '- 先尝试 `mem_recr->seq_rm`：若失败直接返回 false，KV cache 不被修改'
+  - '- 若 RNN 成功，再调用 `mem_attn->seq_rm`'
+  - '- 保证两个缓存的状态修改是原子的'
+  - '**`seq_cp` / `seq_keep` / `seq_add` / `seq_div` 透传**'
+  - '- 分别透传到 attn 和 recr 两个子模块'
+  - '**`seq_pos_min/max` 的 max/min 取法**'
+  - '- `seq_pos_min` 取 `max(attn_min, recr_min)`：RNN 起点晚于 KV 时受 RNN 约束'
+  - '- `seq_pos_max` 取 `min(attn_max, recr_max)`：RNN 终点早于 KV 时受 RNN 约束'
+  - '- 保证返回的区间是两种记忆都覆盖的公共部分'
+  - '**`memory_breakdown` 的累加**'
+  - '- 合并 attn 和 recr 的 breakdown 映射'
+  - '**`state_write/read` 的 PARTIAL_ONLY 标志**'
+  - '- PARTIAL_ONLY 时跳过 attn 模块（典型场景：纯 RNN 层状态保存）'
+  - '- 默认情况先写 attn 再写 recr，反序列化时顺序对应'
+  - '- 读失败时通过 `seq_rm` 或 `clear` 进行恢复'
+  - '**`get_mem_attn()` / `get_mem_recr()` 暴露子模块**'
+  - '- 返回 attn 和 recr 的 raw pointer'
+  - '**`llama_memory_hybrid_context` 的构造与协同**'
+  - '- 4 种构造：status（错误）/ full / update / success'
+  - '- 状态用 `llama_memory_status_combine` 合并'
+  - '- `next()` 同时推进两个子 ctx'
+  - '- `apply()` 顺序执行两个子 ctx 的 apply'
+  - '- `get_attn()` / `get_recr()` 返回底层 ctx 视图（kv_cache_context / recurrent_context）'
+- codes:
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 20-70
+    method_or_func: llama_memory_hybrid_iswa::llama_memory_hybrid_iswa()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 80-130
+    method_or_func: llama_memory_hybrid_iswa::init_batch()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 132-150
+    method_or_func: llama_memory_hybrid_iswa::init_full() / init_update()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 152-157
+    method_or_func: llama_memory_hybrid_iswa::get_can_shift()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 159-210
+    method_or_func: llama_memory_hybrid_iswa::clear() / seq_rm() / seq_cp() / seq_keep()
+      / seq_add() / seq_div()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 212-235
+    method_or_func: llama_memory_hybrid_iswa::seq_pos_min() / seq_pos_max() / memory_breakdown()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 237-248
+    method_or_func: llama_memory_hybrid_iswa::state_write() / state_read()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 250-260
+    method_or_func: llama_memory_hybrid_iswa::get_mem_attn() / get_mem_recr()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 270-315
+    method_or_func: llama_memory_hybrid_iswa_context::llama_memory_hybrid_iswa_context()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 317-360
+    method_or_func: llama_memory_hybrid_iswa_context::next() / apply() / get_status()
+      / get_ubatch()
+  - file: src/llama-memory-hybrid-iswa.cpp
+    line: 362-372
+    method_or_func: llama_memory_hybrid_iswa_context::get_attn() / get_recr()
+  name: ISWA 混合内存 —— 滑动窗口 + RNN 的"终极组合"
+  'no': 8
+  points:
+  - '**`llama_memory_hybrid_iswa` 的三模块架构**'
+  - '- 内部包含 `llama_kv_cache_iswa`（双 base+swa cache）+ `llama_memory_recurrent`'
+  - '- 是混合架构 + SWA 的终极组合，专为 Jamba、Falcon-H1 等模型设计'
+  - '- `mem_attn->get_base()` 暴露非 SWA 部分，`mem_attn->get_swa()` 暴露 SWA 部分'
+  - '**构造与初始化**'
+  - '- 构造时同时创建 ISWA 与 Recurrent 两个子模块'
+  - '- 默认 filter 与 hybrid 一致：`!is_recurrent` 与 `is_recurrent`'
+  - '**`init_batch` 的三层 try-catch 链**'
+  - '- 调用 `mem_recr->prepare` 先尝试 RNN 部分'
+  - '- 再分别 `mem_attn->get_base()->prepare()` 与 `mem_attn->get_swa()->prepare()` 准备两份
+    slot info'
+  - '- 任一失败立即返回，三层失败才彻底放弃'
+  - '- 构造的 context 同时持有 `llama_kv_cache_iswa_context` + `llama_memory_recurrent_context`'
+  - '**`init_full` 与 `init_update`**'
+  - '- attn 用 ISWA 的同名方法构造 ctx_attn'
+  - '- recr 用 `llama_memory_recurrent::init_full/init_update` 构造 ctx_recr'
+  - '- 状态用 `llama_memory_status_combine` 组合'
+  - '**`seq_rm` 的失败优先策略**'
+  - '- 先尝试 `mem_recr->seq_rm`：若失败直接返回 false，attn 不被修改'
+  - '- 若成功，再调用 `mem_attn->seq_rm`'
+  - '**`seq_cp` / `seq_keep` / `seq_add` / `seq_div` 透传**'
+  - '- 分别透传到 ISWA 与 Recurrent'
+  - '**`state_write/read` 的完整序列化**'
+  - '- 与 hybrid 不同，hybrid_iswa 不支持 PARTIAL_ONLY 标志'
+  - '- 必须完整序列化 ISWA（含 base+swa）与 recurrent 两部分'
+  - '- 因为 ISWA 的 base 部分也需要跨调用保持一致'
+  - '**`seq_pos_min/max` 与 hybrid 一致**'
+  - '- `seq_pos_min` 取 `max(attn_min, recr_min)`'
+  - '- `seq_pos_max` 取 `min(attn_max, recr_max)`'
+  - '- ISWA 的 seq_pos 实际上等于 swa 的 seq_pos（base 是 superset）'
+  - '**`get_mem_attn()` / `get_mem_recr()` 暴露子模块**'
+  - '- 返回 ISWA 与 Recurrent 的 raw pointer'
+  - '**`llama_memory_hybrid_iswa_context` 的构造与协同**'
+  - '- 4 种构造：status（错误）/ full / update / success'
+  - '- `next()` 同时推进两个子 ctx'
+  - '- `apply()` 顺序执行两个子 ctx 的 apply'
+  - '- `get_attn()` 返回 `llama_kv_cache_iswa_context*`（可进一步获取 base/swa ctx）'
+  - '- `get_recr()` 返回 `llama_memory_recurrent_context*`'
+  - '- 这三层嵌套 ctx 完整表达了 iswa+hybrid 的全部状态'

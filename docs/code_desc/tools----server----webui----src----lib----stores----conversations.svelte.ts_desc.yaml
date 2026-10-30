@@ -1,0 +1,740 @@
+classes:
+- desc: 会话管理核心 Store 类，封装会话 CRUD、消息树导航、MCP 服务器覆盖配置、标题管理和导入导出等全部业务逻辑，使用 Svelte 5 响应式原语维护状态。
+  methods:
+  - code:
+    - 'private static loadMcpDefaults(): McpServerOverride[] {'
+    - "\tif (typeof globalThis.localStorage === 'undefined') return [];"
+    - "\ttry {"
+    - "\t\tconst raw = localStorage.getItem(MCP_DEFAULT_ENABLED_LOCALSTORAGE_KEY);"
+    - "\t\tif (!raw) return [];"
+    - "\t\tconst parsed = JSON.parse(raw);"
+    - "\t\tif (!Array.isArray(parsed)) return [];"
+    - "\t\treturn parsed.filter("
+    - "\t\t\t(o: unknown) => typeof o === 'object' && o !== null && 'serverId' in\
+      \ o && 'enabled' in o"
+    - "\t\t) as McpServerOverride[];"
+    - "\t} catch {"
+    - "\t\treturn [];"
+    - "\t}"
+    - '}'
+    desc: 私有静态方法，从 localStorage 加载并校验 MCP 默认服务器覆盖配置，非法数据时返回空数组。
+    line: 73-86
+    name: loadMcpDefaults
+  - code:
+    - 'private saveMcpDefaults(): void {'
+    - "\tif (typeof globalThis.localStorage === 'undefined') return;"
+    - "\tconst plain = this.pendingMcpServerOverrides.map((o) => ({"
+    - "\t\tserverId: o.serverId,"
+    - "\t\tenabled: o.enabled"
+    - "\t}));"
+    - "\tif (plain.length > 0) {"
+    - "\t\tlocalStorage.setItem(MCP_DEFAULT_ENABLED_LOCALSTORAGE_KEY, JSON.stringify(plain));"
+    - "\t} else {"
+    - "\t\tlocalStorage.removeItem(MCP_DEFAULT_ENABLED_LOCALSTORAGE_KEY);"
+    - "\t}"
+    - '}'
+    desc: 私有方法，将当前待生效的 MCP 覆盖配置序列化为纯对象并持久化到 localStorage，空配置时移除对应键。
+    line: 89-99
+    name: saveMcpDefaults
+  - code:
+    - 'async init(): Promise<void> {'
+    - "\tif (!browser) return;"
+    - "\tif (this.isInitialized) return;"
+    - "\ttry {"
+    - "\t\t// @deprecated Legacy migration for old marker-based messages."
+    - "\t\t// Remove once all users have migrated to the structured format."
+    - "\t\tawait runLegacyMigration();"
+    - "\t\tawait this.loadConversations();"
+    - "\t\tthis.isInitialized = true;"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to initialize conversations:', error);"
+    - "\t}"
+    - '}'
+    desc: 初始化 Store：仅在浏览器环境执行一次，先运行旧版消息格式迁移，再从数据库加载全部会话并标记初始化完成。
+    line: 129-143
+    name: init
+  - code:
+    - 'async initialize(): Promise<void> {'
+    - "\treturn this.init();"
+    - '}'
+    desc: init() 的别名方法，用于向后兼容旧调用方。
+    line: 148-150
+    name: initialize
+  - code:
+    - registerMessageUpdateCallback(
+    - "\tcallback: (messageId: string, updates: Partial<DatabaseMessage>) => void"
+    - '): void {'
+    - "\tthis.messageUpdateCallback = callback;"
+    - '}'
+    desc: 注册来自其他 Store（chatStore）的消息更新回调，实现跨 Store 更新且避免循环依赖。
+    line: 156-160
+    name: registerMessageUpdateCallback
+  - code:
+    - 'addMessageToActive(message: DatabaseMessage): void {'
+    - "\tthis.activeMessages.push(message);"
+    - '}'
+    desc: 将一条消息追加到当前激活消息数组末尾。
+    line: 173-175
+    name: addMessageToActive
+  - code:
+    - 'updateMessageAtIndex(index: number, updates: Partial<DatabaseMessage>): void
+      {'
+    - "\tif (index !== -1 && this.activeMessages[index]) {"
+    - "\t\tthis.activeMessages[index] = { ...this.activeMessages[index], ...updates\
+      \ };"
+    - "\t}"
+    - '}'
+    desc: 按索引浅合并更新激活消息数组中的指定消息。
+    line: 180-184
+    name: updateMessageAtIndex
+  - code:
+    - 'findMessageIndex(messageId: string): number {'
+    - "\treturn this.activeMessages.findIndex((m) => m.id === messageId);"
+    - '}'
+    desc: 根据消息 ID 查找其在激活消息数组中的索引。
+    line: 189-191
+    name: findMessageIndex
+  - code:
+    - 'sliceActiveMessages(startIndex: number): void {'
+    - "\tthis.activeMessages = this.activeMessages.slice(0, startIndex);"
+    - '}'
+    desc: 将激活消息数组截断到指定起始索引（常用于回滚到某个历史节点重新生成）。
+    line: 196-198
+    name: sliceActiveMessages
+  - code:
+    - 'removeMessageAtIndex(index: number): DatabaseMessage | undefined {'
+    - "\tif (index !== -1) {"
+    - "\t\treturn this.activeMessages.splice(index, 1)[0];"
+    - "\t}"
+    - "\treturn undefined;"
+    - '}'
+    desc: 按索引从激活消息数组中移除一条消息并返回该消息。
+    line: 203-208
+    name: removeMessageAtIndex
+  - code:
+    - setTitleUpdateConfirmationCallback(
+    - "\tcallback: (currentTitle: string, newTitle: string) => Promise<boolean>"
+    - '): void {'
+    - "\tthis.titleUpdateConfirmationCallback = callback;"
+    - '}'
+    desc: 设置标题更新前的确认对话框回调函数。
+    line: 213-217
+    name: setTitleUpdateConfirmationCallback
+  - code:
+    - 'async loadConversations(): Promise<void> {'
+    - "\tconst conversations = await DatabaseService.getAllConversations();"
+    - "\tthis.conversations = conversations;"
+    - '}'
+    desc: 从数据库加载全部会话并刷新响应式会话列表。
+    line: 230-233
+    name: loadConversations
+  - code:
+    - 'async createConversation(name?: string): Promise<string> {'
+    - "\tconst conversationName = name || `Chat ${new Date().toLocaleString()}`;"
+    - "\tconst conversation = await DatabaseService.createConversation(conversationName);"
+    - "\tif (this.pendingMcpServerOverrides.length > 0) {"
+    - "\t\t// Deep clone to plain objects (Svelte 5 $state uses Proxies which can't\
+      \ be cloned to IndexedDB)"
+    - "\t\tconst plainOverrides = this.pendingMcpServerOverrides.map((o) => ({"
+    - "\t\t\tserverId: o.serverId,"
+    - "\t\t\tenabled: o.enabled"
+    - "\t\t}));"
+    - "\t\tconversation.mcpServerOverrides = plainOverrides;"
+    - "\t\tawait DatabaseService.updateConversation(conversation.id, {"
+    - "\t\t\tmcpServerOverrides: plainOverrides"
+    - "\t\t});"
+    - "\t\tthis.pendingMcpServerOverrides = [];"
+    - "\t}"
+    - "\tthis.conversations = [conversation, ...this.conversations];"
+    - "\tthis.activeConversation = conversation;"
+    - "\tthis.activeMessages = [];"
+    - "\tawait goto(`#/chat/${conversation.id}`);"
+    - "\treturn conversation.id;"
+    - '}'
+    desc: 创建新会话（可选命名），应用待生效的 MCP 覆盖配置（深拷贝为纯对象避免 Proxy 序列化问题），将会话置顶、设为激活状态并路由跳转到新会话。
+    line: 240-261
+    name: createConversation
+  - code:
+    - 'async loadConversation(convId: string): Promise<boolean> {'
+    - "\ttry {"
+    - "\t\tconst conversation = await DatabaseService.getConversation(convId);"
+    - "\t\tif (!conversation) {"
+    - "\t\t\treturn false;"
+    - "\t\t}"
+    - "\t\tthis.pendingMcpServerOverrides = [];"
+    - "\t\tthis.activeConversation = conversation;"
+    - "\t\tif (conversation.currNode) {"
+    - "\t\t\tconst allMessages = await DatabaseService.getConversationMessages(convId);"
+    - "\t\t\tconst filteredMessages = filterByLeafNodeId("
+    - "\t\t\t\tallMessages,"
+    - "\t\t\t\tconversation.currNode,"
+    - "\t\t\t\tfalse"
+    - "\t\t\t) as DatabaseMessage[];"
+    - "\t\t\tthis.activeMessages = filteredMessages;"
+    - "\t\t} else {"
+    - "\t\t\tconst messages = await DatabaseService.getConversationMessages(convId);"
+    - "\t\t\tthis.activeMessages = messages;"
+    - "\t\t}"
+    - "\t\treturn true;"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to load conversation:', error);"
+    - "\t\treturn false;"
+    - "\t}"
+    - '}'
+    desc: 加载指定会话及其消息：清空待生效 MCP 覆盖，若会话存在 currNode 则按叶节点过滤出当前分支路径消息，否则加载全部消息。
+    line: 268-294
+    name: loadConversation
+  - code:
+    - 'clearActiveConversation(): void {'
+    - "\tthis.activeConversation = null;"
+    - "\tthis.activeMessages = [];"
+    - "\t// reload MCP defaults so new chats inherit persisted state"
+    - "\tthis.pendingMcpServerOverrides = ConversationsStore.loadMcpDefaults();"
+    - '}'
+    desc: 清空当前激活会话与消息数组，并重新从 localStorage 加载 MCP 默认覆盖配置，使新会话继承持久化状态。
+    line: 299-304
+    name: clearActiveConversation
+  - code:
+    - 'async deleteConversation(convId: string, options?: { deleteWithForks?: boolean
+      }): Promise<void> {'
+    - "\ttry {"
+    - "\t\tawait DatabaseService.deleteConversation(convId, options);"
+    - "\t\tif (options?.deleteWithForks) {"
+    - "\t\t\t// Collect all descendants recursively"
+    - "\t\t\tconst idsToRemove = new SvelteSet([convId]);"
+    - "\t\t\tconst queue = [convId];"
+    - "\t\t\twhile (queue.length > 0) {"
+    - "\t\t\t\tconst parentId = queue.pop()!;"
+    - "\t\t\t\tfor (const c of this.conversations) {"
+    - "\t\t\t\t\tif (c.forkedFromConversationId === parentId && !idsToRemove.has(c.id))\
+      \ {"
+    - "\t\t\t\t\t\tidsToRemove.add(c.id);"
+    - "\t\t\t\t\t\tqueue.push(c.id);"
+    - "\t\t\t\t\t}"
+    - "\t\t\t\t}"
+    - "\t\t\t}"
+    - "\t\t\tthis.conversations = this.conversations.filter((c) => !idsToRemove.has(c.id));"
+    - "\t\t\tif (this.activeConversation && idsToRemove.has(this.activeConversation.id))\
+      \ {"
+    - "\t\t\t\tthis.clearActiveConversation();"
+    - "\t\t\t\tawait goto(`?new_chat=true#/`);"
+    - "\t\t\t}"
+    - "\t\t} else {"
+    - "\t\t\t// Reparent direct children to deleted conv's parent (or promote to top-level)"
+    - "\t\t\tconst deletedConv = this.conversations.find((c) => c.id === convId);"
+    - "\t\t\tconst newParent = deletedConv?.forkedFromConversationId;"
+    - "\t\t\tthis.conversations = this.conversations"
+    - "\t\t\t\t.filter((c) => c.id !== convId)"
+    - "\t\t\t\t.map((c) =>"
+    - "\t\t\t\t\tc.forkedFromConversationId === convId"
+    - "\t\t\t\t\t\t? { ...c, forkedFromConversationId: newParent }"
+    - "\t\t\t\t\t\t: c"
+    - "\t\t\t\t);"
+    - "\t\t\tif (this.activeConversation?.id === convId) {"
+    - "\t\t\t\tthis.clearActiveConversation();"
+    - "\t\t\t\tawait goto(`?new_chat=true#/`);"
+    - "\t\t\t}"
+    - "\t\t}"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to delete conversation:', error);"
+    - "\t}"
+    - '}'
+    desc: 删除指定会话及其消息：支持级联删除所有分叉后代（递归收集后代 ID），或将直接子分叉重新挂接到被删会话的父节点；若删除的是当前激活会话则清空并跳转新建页。
+    line: 310-350
+    name: deleteConversation
+  - code:
+    - 'async deleteAll(): Promise<void> {'
+    - "\ttry {"
+    - "\t\tconst allConversations = await DatabaseService.getAllConversations();"
+    - "\t\tfor (const conv of allConversations) {"
+    - "\t\t\tawait DatabaseService.deleteConversation(conv.id);"
+    - "\t\t}"
+    - "\t\tthis.clearActiveConversation();"
+    - "\t\tthis.conversations = [];"
+    - "\t\ttoast.success('All conversations deleted');"
+    - "\t\tawait goto(`?new_chat=true#/`);"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to delete all conversations:', error);"
+    - "\t\ttoast.error('Failed to delete conversations');"
+    - "\t}"
+    - '}'
+    desc: 删除数据库中的全部会话及其消息，清空激活状态与会话列表，提示成功并跳转新建会话页。
+    line: 355-372
+    name: deleteAll
+  - code:
+    - 'async refreshActiveMessages(): Promise<void> {'
+    - "\tif (!this.activeConversation) return;"
+    - "\tconst allMessages = await DatabaseService.getConversationMessages(this.activeConversation.id);"
+    - "\tif (allMessages.length === 0) {"
+    - "\t\tthis.activeMessages = [];"
+    - "\t\treturn;"
+    - "\t}"
+    - "\tconst leafNodeId ="
+    - "\t\tthis.activeConversation.currNode ||"
+    - "\t\tallMessages.reduce((latest, msg) => (msg.timestamp > latest.timestamp ?\
+      \ msg : latest)).id;"
+    - "\tconst currentPath = filterByLeafNodeId(allMessages, leafNodeId, false) as\
+      \ DatabaseMessage[];"
+    - "\tthis.activeMessages = currentPath;"
+    - '}'
+    desc: 分支导航后刷新激活消息：以 currNode 或最新时间戳消息为叶节点，重新计算当前分支路径的消息序列。
+    line: 385-401
+    name: refreshActiveMessages
+  - code:
+    - 'async getConversationMessages(convId: string): Promise<DatabaseMessage[]> {'
+    - "\treturn await DatabaseService.getConversationMessages(convId);"
+    - '}'
+    desc: 获取指定会话的全部消息（不做分支过滤），直接委托给 DatabaseService。
+    line: 408-410
+    name: getConversationMessages
+  - code:
+    - 'async updateConversationName(convId: string, name: string): Promise<void> {'
+    - "\ttry {"
+    - "\t\tawait DatabaseService.updateConversation(convId, { name });"
+    - "\t\tconst convIndex = this.conversations.findIndex((c) => c.id === convId);"
+    - "\t\tif (convIndex !== -1) {"
+    - "\t\t\tthis.conversations[convIndex].name = name;"
+    - "\t\t\tthis.conversations = [...this.conversations];"
+    - "\t\t}"
+    - "\t\tif (this.activeConversation?.id === convId) {"
+    - "\t\t\tthis.activeConversation = { ...this.activeConversation, name };"
+    - "\t\t}"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to update conversation name:', error);"
+    - "\t}"
+    - '}'
+    desc: 更新会话名称：先持久化到数据库，再同步更新列表中对应项及激活会话的 name 字段。
+    line: 423-440
+    name: updateConversationName
+  - code:
+    - async updateConversationTitleWithConfirmation(
+    - "\tconvId: string,"
+    - "\tnewTitle: string"
+    - '): Promise<boolean> {'
+    - "\ttry {"
+    - "\t\tconst currentConfig = config();"
+    - "\t\tif (currentConfig.askForTitleConfirmation && this.titleUpdateConfirmationCallback)\
+      \ {"
+    - "\t\t\tconst conversation = await DatabaseService.getConversation(convId);"
+    - "\t\t\tif (!conversation) return false;"
+    - "\t\t\tconst shouldUpdate = await this.titleUpdateConfirmationCallback("
+    - "\t\t\t\tconversation.name,"
+    - "\t\t\t\tnewTitle"
+    - "\t\t\t);"
+    - "\t\t\tif (!shouldUpdate) return false;"
+    - "\t\t}"
+    - "\t\tawait this.updateConversationName(convId, newTitle);"
+    - "\t\treturn true;"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to update conversation title with confirmation:',\
+      \ error);"
+    - "\t\treturn false;"
+    - "\t}"
+    - '}'
+    desc: 根据用户设置决定是否在更新标题前弹出确认对话框，确认后调用 updateConversationName 完成更新，返回是否更新成功。
+    line: 448-470
+    name: updateConversationTitleWithConfirmation
+  - code:
+    - 'updateConversationTimestamp(): void {'
+    - "\tif (!this.activeConversation) return;"
+    - "\tconst chatIndex = this.conversations.findIndex((c) => c.id === this.activeConversation!.id);"
+    - "\tif (chatIndex !== -1) {"
+    - "\t\tthis.conversations[chatIndex].lastModified = Date.now();"
+    - "\t\tconst updatedConv = this.conversations.splice(chatIndex, 1)[0];"
+    - "\t\tthis.conversations = [updatedConv, ...this.conversations];"
+    - "\t}"
+    - '}'
+    desc: 更新激活会话的 lastModified 时间戳并将该会话移动到列表顶部（最近使用优先排序）。
+    line: 475-484
+    name: updateConversationTimestamp
+  - code:
+    - 'async updateCurrentNode(nodeId: string): Promise<void> {'
+    - "\tif (!this.activeConversation) return;"
+    - "\tawait DatabaseService.updateCurrentNode(this.activeConversation.id, nodeId);"
+    - "\tthis.activeConversation = { ...this.activeConversation, currNode: nodeId\
+      \ };"
+    - '}'
+    desc: 更新激活会话的 currNode 指针（消息树中的当前叶节点）并持久化到数据库。
+    line: 490-495
+    name: updateCurrentNode
+  - code:
+    - 'async navigateToSibling(siblingId: string): Promise<void> {'
+    - "\tif (!this.activeConversation) return;"
+    - "\tconst allMessages = await DatabaseService.getConversationMessages(this.activeConversation.id);"
+    - "\tconst rootMessage = allMessages.find((m) => m.type === 'root' && m.parent\
+      \ === null);"
+    - "\tconst currentFirstUserMessage = this.activeMessages.find("
+    - "\t\t(m) => m.role === MessageRole.USER && m.parent === rootMessage?.id"
+    - "\t);"
+    - "\tconst currentLeafNodeId = findLeafNode(allMessages, siblingId);"
+    - "\tawait DatabaseService.updateCurrentNode(this.activeConversation.id, currentLeafNodeId);"
+    - "\tthis.activeConversation = { ...this.activeConversation, currNode: currentLeafNodeId\
+      \ };"
+    - "\tawait this.refreshActiveMessages();"
+    - "\tif (rootMessage && this.activeMessages.length > 0) {"
+    - "\t\tconst newFirstUserMessage = this.activeMessages.find("
+    - "\t\t\t(m) => m.role === MessageRole.USER && m.parent === rootMessage.id"
+    - "\t\t);"
+    - "\t\tif ("
+    - "\t\t\tnewFirstUserMessage &&"
+    - "\t\t\tnewFirstUserMessage.content.trim() &&"
+    - "\t\t\t(!currentFirstUserMessage ||"
+    - "\t\t\t\tnewFirstUserMessage.id !== currentFirstUserMessage.id ||"
+    - "\t\t\t\tnewFirstUserMessage.content.trim() !== currentFirstUserMessage.content.trim())"
+    - "\t\t) {"
+    - "\t\t\tawait this.updateConversationTitleWithConfirmation("
+    - "\t\t\t\tthis.activeConversation.id,"
+    - "\t\t\t\tnewFirstUserMessage.content.trim()"
+    - "\t\t\t);"
+    - "\t\t}"
+    - "\t}"
+    - '}'
+    desc: 导航到某个兄弟分支：计算目标兄弟消息的叶节点，更新 currNode 并刷新消息；若新分支首条用户消息内容变化则触发标题更新确认流程。
+    line: 508-540
+    name: navigateToSibling
+  - code:
+    - 'getMcpServerOverride(serverId: string): McpServerOverride | undefined {'
+    - "\tif (this.activeConversation) {"
+    - "\t\treturn this.activeConversation.mcpServerOverrides?.find("
+    - "\t\t\t(o: McpServerOverride) => o.serverId === serverId"
+    - "\t\t);"
+    - "\t}"
+    - "\treturn this.pendingMcpServerOverrides.find((o) => o.serverId === serverId);"
+    - '}'
+    desc: 获取当前激活会话中指定 MCP 服务器的覆盖配置；无激活会话时回退到待生效覆盖配置。
+    line: 555-562
+    name: getMcpServerOverride
+  - code:
+    - 'getAllMcpServerOverrides(): McpServerOverride[] {'
+    - "\tif (this.activeConversation?.mcpServerOverrides) {"
+    - "\t\treturn this.activeConversation.mcpServerOverrides;"
+    - "\t}"
+    - "\treturn this.pendingMcpServerOverrides;"
+    - '}'
+    desc: 获取当前会话的全部 MCP 服务器覆盖配置，无激活会话时返回待生效覆盖列表。
+    line: 568-573
+    name: getAllMcpServerOverrides
+  - code:
+    - 'isMcpServerEnabledForChat(serverId: string): boolean {'
+    - "\tconst override = this.getMcpServerOverride(serverId);"
+    - "\treturn override?.enabled ?? false;"
+    - '}'
+    desc: 判断指定 MCP 服务器在当前会话中是否启用（依据覆盖配置，默认 false）。
+    line: 580-583
+    name: isMcpServerEnabledForChat
+  - code:
+    - 'async setMcpServerOverride(serverId: string, enabled: boolean | undefined):
+      Promise<void> {'
+    - "\tif (!this.activeConversation) {"
+    - "\t\tthis.setPendingMcpServerOverride(serverId, enabled);"
+    - "\t\treturn;"
+    - "\t}"
+    - "\t// Clone to plain objects to avoid Proxy serialization issues with IndexedDB"
+    - "\tconst currentOverrides = (this.activeConversation.mcpServerOverrides || []).map("
+    - "\t\t(o: McpServerOverride) => ({"
+    - "\t\t\tserverId: o.serverId,"
+    - "\t\t\tenabled: o.enabled"
+    - "\t\t})"
+    - "\t);"
+    - "\tlet newOverrides: McpServerOverride[];"
+    - "\tif (enabled === undefined) {"
+    - "\t\tnewOverrides = currentOverrides.filter((o: McpServerOverride) => o.serverId\
+      \ !== serverId);"
+    - "\t} else {"
+    - "\t\tconst existingIndex = currentOverrides.findIndex("
+    - "\t\t\t(o: McpServerOverride) => o.serverId === serverId"
+    - "\t\t);"
+    - "\t\tif (existingIndex >= 0) {"
+    - "\t\t\tnewOverrides = [...currentOverrides];"
+    - "\t\t\tnewOverrides[existingIndex] = { serverId, enabled };"
+    - "\t\t} else {"
+    - "\t\t\tnewOverrides = [...currentOverrides, { serverId, enabled }];"
+    - "\t\t}"
+    - "\t}"
+    - "\tawait DatabaseService.updateConversation(this.activeConversation.id, {"
+    - "\t\tmcpServerOverrides: newOverrides.length > 0 ? newOverrides : undefined"
+    - "\t});"
+    - "\tthis.activeConversation = {"
+    - "\t\t...this.activeConversation,"
+    - "\t\tmcpServerOverrides: newOverrides.length > 0 ? newOverrides : undefined"
+    - "\t};"
+    - "\tconst convIndex = this.conversations.findIndex((c) => c.id === this.activeConversation!.id);"
+    - "\tif (convIndex !== -1) {"
+    - "\t\tthis.conversations[convIndex].mcpServerOverrides ="
+    - "\t\t\tnewOverrides.length > 0 ? newOverrides : undefined;"
+    - "\t\tthis.conversations = [...this.conversations];"
+    - "\t}"
+    - '}'
+    desc: 设置或移除当前激活会话的 MCP 服务器覆盖配置（undefined 表示移除），克隆为纯对象后持久化到数据库并同步更新内存状态与会话列表；无激活会话时转为设置待生效覆盖。
+    line: 591-632
+    name: setMcpServerOverride
+  - code:
+    - 'private setPendingMcpServerOverride(serverId: string, enabled: boolean | undefined):
+      void {'
+    - "\tif (enabled === undefined) {"
+    - "\t\tthis.pendingMcpServerOverrides = this.pendingMcpServerOverrides.filter("
+    - "\t\t\t(o) => o.serverId !== serverId"
+    - "\t\t);"
+    - "\t} else {"
+    - "\t\tconst existingIndex = this.pendingMcpServerOverrides.findIndex("
+    - "\t\t\t(o) => o.serverId === serverId"
+    - "\t\t);"
+    - "\t\tif (existingIndex >= 0) {"
+    - "\t\t\tconst newOverrides = [...this.pendingMcpServerOverrides];"
+    - "\t\t\tnewOverrides[existingIndex] = { serverId, enabled };"
+    - "\t\t\tthis.pendingMcpServerOverrides = newOverrides;"
+    - "\t\t} else {"
+    - "\t\t\tthis.pendingMcpServerOverrides = [...this.pendingMcpServerOverrides,\
+      \ { serverId, enabled }];"
+    - "\t\t}"
+    - "\t}"
+    - "\tthis.saveMcpDefaults();"
+    - '}'
+    desc: 私有方法，设置或移除新会话的待生效 MCP 覆盖配置（支持更新已有项或追加新项），并持久化到 localStorage。
+    line: 637-656
+    name: setPendingMcpServerOverride
+  - code:
+    - 'async toggleMcpServerForChat(serverId: string): Promise<void> {'
+    - "\tconst currentEnabled = this.isMcpServerEnabledForChat(serverId);"
+    - "\tawait this.setMcpServerOverride(serverId, !currentEnabled);"
+    - '}'
+    desc: 切换指定 MCP 服务器在当前会话中的启用状态（读取当前状态后取反设置）。
+    line: 662-665
+    name: toggleMcpServerForChat
+  - code:
+    - 'async removeMcpServerOverride(serverId: string): Promise<void> {'
+    - "\tawait this.setMcpServerOverride(serverId, undefined);"
+    - '}'
+    desc: 移除当前会话中指定 MCP 服务器的覆盖配置（通过设置 undefined 实现）。
+    line: 671-673
+    name: removeMcpServerOverride
+  - code:
+    - 'clearPendingMcpServerOverrides(): void {'
+    - "\tthis.pendingMcpServerOverrides = [];"
+    - "\tthis.saveMcpDefaults();"
+    - '}'
+    desc: 清空全部待生效 MCP 覆盖配置并同步更新 localStorage。
+    line: 678-681
+    name: clearPendingMcpServerOverrides
+  - code:
+    - async forkConversation(
+    - "\tmessageId: string,"
+    - "\toptions: { name: string; includeAttachments: boolean }"
+    - '): Promise<string | null> {'
+    - "\tif (!this.activeConversation) return null;"
+    - "\ttry {"
+    - "\t\tconst newConv = await DatabaseService.forkConversation("
+    - "\t\t\tthis.activeConversation.id,"
+    - "\t\t\tmessageId,"
+    - "\t\t\toptions"
+    - "\t\t);"
+    - "\t\tthis.conversations = [newConv, ...this.conversations];"
+    - "\t\tawait goto(`#/chat/${newConv.id}`);"
+    - "\t\ttoast.success('Conversation forked');"
+    - "\t\treturn newConv.id;"
+    - "\t} catch (error) {"
+    - "\t\tconsole.error('Failed to fork conversation:', error);"
+    - "\t\ttoast.error('Failed to fork conversation');"
+    - "\t\treturn null;"
+    - "\t}"
+    - '}'
+    desc: 在指定消息处分叉当前会话：委托 DatabaseService 创建包含根到目标消息路径的新会话，将其置顶、跳转并提示结果，失败返回 null。
+    line: 691-715
+    name: forkConversation
+  - code:
+    - generateConversationFilename(
+    - "\tconversation: { id?: string; name?: string },"
+    - "\tmsgs?: DatabaseMessage[]"
+    - '): string {'
+    - "\tconst conversationName = (conversation.name ?? '').trim().toLowerCase();"
+    - "\tconst sanitizedName = conversationName"
+    - "\t\t.replace(NON_ALPHANUMERIC_REGEX, EXPORT_CONV_NONALNUM_REPLACEMENT)"
+    - "\t\t.replace(MULTIPLE_UNDERSCORE_REGEX, '_')"
+    - "\t\t.substring(0, EXPORT_CONV_NAME_SUFFIX_MAX_LENGTH);"
+    - "\t// If we have messages, use the timestamp of the newest message"
+    - "\tconst referenceDate = msgs?.length"
+    - "\t\t? new Date(Math.max(...msgs.map((m) => m.timestamp)))"
+    - "\t\t: new Date();"
+    - "\tconst iso = referenceDate.toISOString().slice(0, ISO_TIMESTAMP_SLICE_LENGTH);"
+    - "\tconst formattedDate = iso"
+    - "\t\t.replace(ISO_DATE_TIME_SEPARATOR, ISO_DATE_TIME_SEPARATOR_REPLACEMENT)"
+    - "\t\t.replaceAll(ISO_TIME_SEPARATOR, ISO_TIME_SEPARATOR_REPLACEMENT);"
+    - "\tconst trimmedConvId = conversation.id?.slice(0, EXPORT_CONV_ID_TRIM_LENGTH)\
+      \ ?? '';"
+    - "\treturn `${formattedDate}_conv_${trimmedConvId}_${sanitizedName}.json`;"
+    - '}'
+    desc: 生成会话导出文件名：净化会话名（非字母数字转下划线、压缩重复下划线、截断长度），以最新消息时间戳（或当前时间）格式化日期，拼接会话 ID 前缀生成
+      .json 文件名。
+    line: 730-753
+    name: generateConversationFilename
+  - code:
+    - 'downloadConversationFile(data: ExportedConversations, filename?: string): void
+      {'
+    - "\t// Choose the first conversation or message"
+    - "\tconst conversation ="
+    - "\t\t'conv' in data ? data.conv : Array.isArray(data) ? data[0]?.conv : undefined;"
+    - "\tconst msgs ="
+    - "\t\t'messages' in data ? data.messages : Array.isArray(data) ? data[0]?.messages\
+      \ : undefined;"
+    - "\tif (!conversation) {"
+    - "\t\tconsole.error('Invalid data: missing conversation');"
+    - "\t\treturn;"
+    - "\t}"
+    - "\tconst downloadFilename = filename ?? this.generateConversationFilename(conversation,\
+      \ msgs);"
+    - "\tconst blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json'\
+      \ });"
+    - "\tconst url = URL.createObjectURL(blob);"
+    - "\tconst a = document.createElement('a');"
+    - "\ta.href = url;"
+    - "\ta.download = downloadFilename;"
+    - "\tdocument.body.appendChild(a);"
+    - "\ta.click();"
+    - "\tdocument.body.removeChild(a);"
+    - "\tURL.revokeObjectURL(url);"
+    - '}'
+    desc: 将导出的会话数据（单个或数组）序列化为 JSON，通过创建临时 Blob URL 和隐藏 a 标签触发浏览器下载，文件名缺省时自动生成。
+    line: 760-782
+    name: downloadConversationFile
+  - code:
+    - 'async downloadConversation(convId: string): Promise<void> {'
+    - "\tlet conversation: DatabaseConversation | null;"
+    - "\tlet messages: DatabaseMessage[];"
+    - "\tif (this.activeConversation?.id === convId) {"
+    - "\t\tconversation = this.activeConversation;"
+    - "\t\tmessages = this.activeMessages;"
+    - "\t} else {"
+    - "\t\tconversation = await DatabaseService.getConversation(convId);"
+    - "\t\tif (!conversation) return;"
+    - "\t\tmessages = await DatabaseService.getConversationMessages(convId);"
+    - "\t}"
+    - "\tthis.downloadConversationFile({ conv: conversation, messages });"
+    - '}'
+    desc: 下载指定会话为 JSON 文件：优先使用内存中的激活会话与消息，否则从数据库读取后触发下载。
+    line: 788-803
+    name: downloadConversation
+  - code:
+    - 'async importConversations(): Promise<DatabaseConversation[]> {'
+    - "\treturn new Promise((resolve, reject) => {"
+    - "\t\tconst input = document.createElement('input');"
+    - "\t\tinput.type = 'file';"
+    - "\t\tinput.accept = '.json';"
+    - "\t\tinput.onchange = async (e) => {"
+    - "\t\t\tconst file = (e.target as HTMLInputElement)?.files?.[0];"
+    - "\t\t\tif (!file) {"
+    - "\t\t\t\treject(new Error('No file selected'));"
+    - "\t\t\t\treturn;"
+    - "\t\t\t}"
+    - "\t\t\ttry {"
+    - "\t\t\t\tconst text = await file.text();"
+    - "\t\t\t\tconst parsedData = JSON.parse(text);"
+    - "\t\t\t\tlet importedData: ExportedConversations;"
+    - "\t\t\t\tif (Array.isArray(parsedData)) {"
+    - "\t\t\t\t\timportedData = parsedData;"
+    - "\t\t\t\t} else if ("
+    - "\t\t\t\t\tparsedData &&"
+    - "\t\t\t\t\ttypeof parsedData === 'object' &&"
+    - "\t\t\t\t\t'conv' in parsedData &&"
+    - "\t\t\t\t\t'messages' in parsedData"
+    - "\t\t\t\t) {"
+    - "\t\t\t\t\timportedData = [parsedData];"
+    - "\t\t\t\t} else {"
+    - "\t\t\t\t\tthrow new Error('Invalid file format');"
+    - "\t\t\t\t}"
+    - "\t\t\t\tconst result = await DatabaseService.importConversations(importedData);"
+    - "\t\t\t\ttoast.success(`Imported ${result.imported} conversation(s), skipped\
+      \ ${result.skipped}`);"
+    - "\t\t\t\tawait this.loadConversations();"
+    - "\t\t\t\tconst importedConversations = ("
+    - "\t\t\t\t\tArray.isArray(importedData) ? importedData : [importedData]"
+    - "\t\t\t\t).map((item) => item.conv);"
+    - "\t\t\t\tresolve(importedConversations);"
+    - "\t\t\t} catch (err: unknown) {"
+    - "\t\t\t\tconst message = err instanceof Error ? err.message : 'Unknown error';"
+    - "\t\t\t\tconsole.error('Failed to import conversations:', err);"
+    - "\t\t\t\ttoast.error('Import failed', { description: message });"
+    - "\t\t\t\treject(new Error(`Import failed: ${message}`));"
+    - "\t\t\t}"
+    - "\t\t};"
+    - "\t\tinput.click();"
+    - "\t});"
+    - '}'
+    desc: 通过文件选择器导入 JSON 会话文件：解析并校验数据格式（支持单个对象或数组），调用数据库导入，提示导入/跳过数量，刷新会话列表并返回导入的会话数组。
+    line: 810-858
+    name: importConversations
+  - code:
+    - async importConversationsData(
+    - "\tdata: ExportedConversations"
+    - '): Promise<{ imported: number; skipped: number }> {'
+    - "\tconst result = await DatabaseService.importConversations(data);"
+    - "\tawait this.loadConversations();"
+    - "\treturn result;"
+    - '}'
+    desc: 不经过文件选择器，直接从给定数据导入会话，导入完成后刷新会话列表并返回导入/跳过计数。
+    line: 865-871
+    name: importConversationsData
+  name: ConversationsStore
+desc: 该文件实现了 llama.cpp WebUI 的会话管理 Store（ConversationsStore），基于 Svelte 5 的响应式状态（$state）管理会话列表、当前激活会话、消息数组的树形导航（分支切换）、MCP
+  服务器按会话覆盖配置、会话导入导出以及分叉（fork）功能，通过 DatabaseService 与 IndexedDB 持久化层交互，并导出便捷的状态访问函数和会话树构建工具函数。
+file: tools/server/webui/src/lib/stores/conversations.svelte.ts
+funcs:
+- code:
+  - export interface ConversationTreeItem {
+  - "\tconversation: DatabaseConversation;"
+  - "\tdepth: number;"
+  - '}'
+  - export const conversationsStore = new ConversationsStore();
+  - // Auto-initialize in browser
+  - if (browser) {
+  - "\tconversationsStore.init();"
+  - '}'
+  - export const conversations = () => conversationsStore.conversations;
+  - export const activeConversation = () => conversationsStore.activeConversation;
+  - export const activeMessages = () => conversationsStore.activeMessages;
+  - export const isConversationsInitialized = () => conversationsStore.isInitialized;
+  desc: 模块级全局代码：定义 ConversationTreeItem 接口（会话树节点，含深度），实例化并导出 conversationsStore 单例，在浏览器环境自动初始化，并导出
+    conversations、activeConversation、activeMessages、isConversationsInitialized 四个响应式状态访问函数。
+  line: 45-889
+  name: __main__
+- code:
+  - 'export function buildConversationTree(convs: DatabaseConversation[]): ConversationTreeItem[]
+    {'
+  - "\tconst childrenByParent = new SvelteMap<string, DatabaseConversation[]>();"
+  - "\tconst forkIds = new SvelteSet<string>();"
+  - "\tfor (const conv of convs) {"
+  - "\t\tif (conv.forkedFromConversationId) {"
+  - "\t\t\tforkIds.add(conv.id);"
+  - "\t\t\tconst siblings = childrenByParent.get(conv.forkedFromConversationId) ||\
+    \ [];"
+  - "\t\t\tsiblings.push(conv);"
+  - "\t\t\tchildrenByParent.set(conv.forkedFromConversationId, siblings);"
+  - "\t\t}"
+  - "\t}"
+  - "\tconst result: ConversationTreeItem[] = [];"
+  - "\tconst visited = new SvelteSet<string>();"
+  - "\tfunction walk(conv: DatabaseConversation, depth: number) {"
+  - "\t\tvisited.add(conv.id);"
+  - "\t\tresult.push({ conversation: conv, depth });"
+  - "\t\tconst children = childrenByParent.get(conv.id);"
+  - "\t\tif (children) {"
+  - "\t\t\tchildren.sort((a, b) => b.lastModified - a.lastModified);"
+  - "\t\t\tfor (const child of children) {"
+  - "\t\t\t\twalk(child, depth + 1);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - "\tconst roots = convs.filter((c) => !forkIds.has(c.id));"
+  - "\tfor (const root of roots) {"
+  - "\t\twalk(root, 0);"
+  - "\t}"
+  - "\tfor (const conv of convs) {"
+  - "\t\tif (!visited.has(conv.id)) {"
+  - "\t\t\twalk(conv, 1);"
+  - "\t\t}"
+  - "\t}"
+  - "\treturn result;"
+  - '}'
+  desc: 将扁平会话列表构建为带层级的树形结构：按 forkedFromConversationId 分组子分叉，递归遍历（子节点按 lastModified
+    降序）生成带 depth 的扁平列表，未访问到的孤儿节点以 depth=1 追加到末尾。
+  line: 895-938
+  name: buildConversationTree

@@ -1,0 +1,392 @@
+code_map:
+- tools/tts/tts.cpp
+- ├── 音频处理工具集
+- '│   ├── wav_header 结构体        # WAV 文件头二进制布局定义'
+- '│   ├── save_wav16()            # 86-107: 16-bit PCM WAV 文件写入（RIFF结构体）'
+- '│   ├── fill_hann_window()      # 109-117: 汉宁窗生成（周期/非周期模式）'
+- '│   ├── twiddle()               # 120-124: FFT 旋转因子计算（cos/sin）'
+- '│   ├── irfft()                 # 126-153: 逆实数 FFT（基于 DFT 的简易实现）'
+- '│   ├── fold()                  # 165-187: PyTorch 风格重叠相加（Overlap-Add）'
+- '│   └── embd_to_audio()         # 190-261: 嵌入→声谱→波形的完整 iSTFT 流程'
+- ├── 文本预处理模块
+- '│   ├── convert_less_than_thousand()  # 274-291: 千位以下数字转英文（百/十/个）'
+- '│   ├── number_to_words()             # 293-337: 完整数字转写（支持十亿/百万/千/小数）'
+- '│   ├── replace_numbers_with_words()  # 339-355: 正则匹配替换文本中的数字'
+- '│   └── process_text()                # 358-389: 文本归一化管道（小写、清洗、分词）'
+- ├── 提示词工程模块
+- '│   ├── prompt_add()                  # 391-402: 多态提示 token 追加（单 token/数组/文本）'
+- '│   ├── prompt_init()                 # 404-408: 初始化 conversation 标记（<|im_start|>）'
+- '│   ├── prepare_guide_tokens()        # 410-433: 生成单词首 token 引导序列'
+- '│   ├── speaker_from_file()           # 435-444: 加载说话人 JSON 配置'
+- '│   ├── get_tts_version()             # 446-465: 识别 OuteTTS v0.2/v0.3（双路径检测）'
+- '│   ├── audio_text_from_speaker()     # 467-478: 构建参考文本的标记序列'
+- '│   └── audio_data_from_speaker()     # 480-504: 构建参考音频的码本数据（含时长）'
+- ├── 终端工具集
+- '│   ├── rgb2xterm256()                # 35-46: 24位 RGB 量化为 xterm256 色值'
+- '│   └── set_xterm256_foreground()     # 48-53: 生成 ANSI 前景色转义序列'
+- ├── 程序入口
+- '│   ├── print_usage()                 # 65-69: 显示命令行使用示例'
+- '│   ├── main()                        # 506-792: 参数解析→模型加载→prompt 构建'
+- '│   └── __main__                      # 793-1041: 生成循环→码本过滤→声码器解码→WAV 保存'
+- └── 全局初始化
+- '    └── __main__                      # 全局变量与配置初始化（ones/tens 表等）'
+- ''
+- tools/tts/tts-outetts.py
+- ├── 信号处理函数
+- '│   ├── fill_hann_window()            # 11-14: NumPy 汉宁窗生成'
+- '│   ├── irfft()                       # 17-18: NumPy 逆 FFT 封装（O(n log n)）'
+- '│   ├── fold()                        # 21-30: 重叠相加（向量化 NumPy 实现）'
+- '│   ├── process_frame()               # 33-38: 单帧 iFFT+加窗（ThreadPool 工作函数）'
+- '│   └── embd_to_audio()               # 41-81: 多线程 Griffin-Lim 重建主函数'
+- ├── 文件 IO
+- '│   └── save_wav()                    # 84-113: struct.pack 构建 WAV 头（struct 格式串）'
+- ├── 文本处理
+- '│   └── process_text()                # 116-120: 简化版文本归一化（正则清洗）'
+- └── 主流程
+- '    └── __main__                      # 123-326: HTTP 客户端模式'
+- '        ├── LLM 服务请求              # POST /completion (top_k=16)'
+- '        ├── 音频码过滤                # 区间 [151672, 155772] 减 151672'
+- '        ├── 解码服务请求              # POST /embeddings'
+- '        └── 音频合成与保存            # embd_to_audio → save_wav'
+exercises:
+- contents:
+  - 阅读 `tools/tts/tts.cpp` 中 `convert_less_than_thousand()`（274-291 行）、`number_to_words()`（293-337
+    行）与 `replace_numbers_with_words()`（339-355 行）的协作实现。
+  - 当前实现对以下输入的处理存在什么问题？
+  - '- 输入："I have 1,000,000 dollars"（带逗号分隔符，正则未匹配逗号）'
+  - '- 输入："Room 101"（数字作为专有名词，101 会被转写为 one hundred one 而非 one o one）'
+  - '- 输入："Version 2.0"（小数点被当作序号，转写为 two point zero 而非 two dot oh）'
+  - '- 输入："3.14159"（小数部分逐位转写导致过长）'
+  - 思考如何改进正则表达式或数字转写逻辑，使其更健壮地处理这些边界情况。
+  'no': 1
+  title: 数字转写边界情况攻击
+- contents:
+  - 修改 `tools/tts/tts-outetts.py` 中的 `embd_to_audio()` 函数，分别尝试以下参数组合并听辨差异：
+  - 1. 将 `n_fft` 从 1280 改为 2048（更高频率分辨率），观察声音是否变得更「闷」或更「清晰」？
+  - 2. 将 `n_hop` 从 320 改为 640（50% 重叠），观察是否出现「机器人」般的断续感？
+  - 3. 注释掉包络归一化代码（`audio[mask] /= env[mask]`），观察输出音量是否出现周期性波动？
+  - 4. 将 `fill_hann_window()` 中的 `periodic` 参数从 True 改为 False，观察频谱泄漏差异。
+  - 解释 FFT 大小、重叠率与计算复杂度、音质之间的权衡关系。
+  'no': 2
+  title: Griffin-Lim 参数敏感性分析
+- contents:
+  - 对比 `tools/tts/tts.cpp` 的 `irfft()`（126-153 行，基于 `twiddle()` 的 O(n²) DFT）与 `tts-outetts.py`
+    中直接调用 `np.fft.irfft`（基于 Cooley-Tukey FFT 算法）的实现。
+  - 回答以下问题：
+  - '- C++ 版本的 `irfft()` 时间复杂度是多少？为什么在处理 1280 点、数百帧时仍然可用？'
+  - '- `twiddle()` 函数中的 `cos/sin` 计算在每次内层循环都会执行，这带来了什么性能开销？如何优化（提示：查表法）？'
+  - '- 如果要在 C++ 中实现真正的 O(n log n) FFT，需要引入什么数据结构（位反转置换、蝶形运算网络）？'
+  - '- Python 版使用 `np.complex64` 而 C++ 版分离实部/虚部存储，这两种内存布局对 SIMD 向量化有何影响？'
+  - '- 对比 `process_frame()`（Python）与 `embd_to_audio()` 中的线程循环（C++），分析 GIL 对 Python
+    多线程加速 FFT 的实际效果影响。'
+  'no': 3
+  title: C++ vs Python FFT 性能对决
+- contents:
+  - 分析 `tools/tts/tts.cpp` 中的 `rgb2xterm256()`（35-46 行）与 `set_xterm256_foreground()`（48-53
+    行）。
+  - 任务：
+  - '- 解释 `cube[]` 数组中 `{0, 0137, 0207, 0257, 0327, 0377}` 这些八进制数值的含义（提示：转换为十进制并观察
+    0x5F 步长）'
+  - '- 理解 `UNCUBE` 宏与 `SQR` 宏在三维欧氏距离计算中的作用'
+  - '- 修改代码，使其支持 24-bit 真彩色终端（生成 `\033[38;2;R;G;Bm` 序列而非 256 色），并对比两种情况下的色彩还原度'
+  - '- 如果终端不支持颜色，如何通过环境变量或参数禁用这些 ANSI 转义序列？'
+  'no': 4
+  title: 终端颜色与 UI 调试
+- contents:
+  - 在 `tools/tts/tts.cpp` 的 `__main__` 生成循环（793-1041 行）中添加调试日志。
+  - 具体任务：
+  - '- 每当触发引导机制（`next_token_uses_guide_token == true`）时，打印当前被强制的 token ID 及其对应的文本'
+  - '- 统计一次完整生成中，有多少 token 是 LLM 自由采样的，有多少是被引导强制替换的'
+  - '- 如果移除引导机制（将 `guide_tokens` 置空），观察生成结果是否会出现漏词或重复，并分析原因'
+  - '- 对比 `prepare_guide_tokens()`（410-433 行）在 v0.2 与 v0.3 模式下的分隔符差异（`<|text_sep|>`
+    vs `<|space|>`）'
+  'no': 5
+  title: 实现引导 Token 的可视化追踪
+- contents:
+  - 对比 `save_wav16()`（tts.cpp:86-107）与 `save_wav()`（tts-outetts.py:84-113）的实现。
+  - 分析以下问题：
+  - '- Python 版的 `struct.pack(''<4sI4s4sIHHIIHH4sI'', ...)` 格式字符串中每个字符代表什么含义（如 `<`
+    表示小端、`4s` 表示 4 字节字符串）？'
+  - '- C++ 版直接 `reinterpret_cast` 结构体写入，这种写法在什么情况下会失败（字节对齐、填充字节、端序）？'
+  - '- 当前实现对音频样本的截断逻辑（`np.clip` vs `std::clamp`）在样本值为 1.5 或 -1.2 时的行为是否完全一致？'
+  - '- 如何修改代码以支持 24-bit 或 32-bit float WAV 格式？需要修改哪些字段（bits_per_sample、byte_rate、block_align）？'
+  'no': 6
+  title: WAV 文件格式的跨语言差异
+learning_targets:
+- 理解 OuteTTS 双模型架构（TTC + CTS）的流水线设计原理与职责划分
+- 掌握文本归一化（数字转写、清洗、分词）在语音合成中的关键作用与实现细节
+- 解析引导 Token（Guide Token）机制如何防止 LLM 生成漏词
+- 理解音频码的提取、过滤与归一化过程（区间 [151672, 155772] → [0, 4100]）
+- 掌握 Griffin-Lim/iSTFT 算法将声谱嵌入重建为波形的数学原理与工程实现
+- 对比 C++ 与 Python 在 FFT、多线程、WAV 写入等模块的实现差异与技术选型
+- 学习 WAV 文件格式（RIFF/PCM）的底层结构与跨语言二进制序列化方式
+- 掌握终端颜色量化的位运算技巧与 ANSI 转义序列生成
+life_analogy:
+- 想象 OuteTTS 是一座**同声传译录音棚**：
+- '- **TTC 模型** = **速记员**，把文字稿翻译成只有内部能懂的「语音速记符号」（离散音频码）'
+- '- **CTS 模型** = **配音演员**，拿着速记符号在隔音棚里录制成「声谱照片」（频谱嵌入）'
+- '- **Griffin-Lim** = **暗房冲印师**，把二维声谱照片通过多次重叠显影（iFFT + Overlap-Add），冲洗成一维的连续声波胶片'
+- '- **引导 Token** = **提词器**，每当速记员换气（遇到换行符）时，强制提示下一个词的开头，防止漏词'
+- '- **文本预处理** = **稿件校对**，把数字（123）改写成文字（one two three），生僻词注音，确保速记员不会念错'
+- '- **终端颜色工具** = **调音台的指示灯**，将 24 位真彩色（RGB）压缩为 256 色终端能显示的信号'
+- 整个流程如同「文字 → 速记 → 配音 → 冲印」的工业流水线，C++ 版是棚内全自动设备，Python 版是远程遥控的客户端。
+'no': 72
+summary:
+- concept: OuteTTS 双模型架构
+  desc: TTC（Text-to-Codes）负责语言建模生成离散音频码，CTS（Codes-to-Speech）负责将码本解码为声谱嵌入，实现语言与声学的解耦
+- concept: 引导 Token 机制
+  desc: 在 LLM 生成过程中，当检测到换行符（198）时强制下一个 token 为单词的首 token，确保生成文本与输入对齐，防止漏词
+- concept: 音频码区间
+  desc: LLM 词表中 [151672, 155772] 为专用音频码本，过滤后需减去 151672 映射到 [0, 4100] 的声码器输入空间
+- concept: Griffin-Lim / iSTFT
+  desc: 利用短时傅里叶逆变换将频谱图转回时域波形，核心步骤：iFFT → 加汉宁窗 → 重叠相加 → 包络归一化
+- concept: 数字转写（C++ 全量版）
+  desc: 通过 convert_less_than_thousand、number_to_words、replace_numbers_with_words 三层函数，将任意数字（含小数、千分位）转写为英文单词，避免模型对数字发音不稳定
+- concept: 终端颜色量化
+  desc: rgb2xterm256 将 24 位真彩色通过颜色立方体（6x6x6）映射到 256 色终端索引，set_xterm256_foreground
+    生成 ANSI 转义序列
+- concept: WAV 二进制格式
+  desc: C++ 版使用结构体 reinterpret_cast 直接写入 RIFF 头，Python 版使用 struct.pack 按 '<4sI4s4sIHHIIHH4sI'
+    格式打包，两者均生成标准 16-bit PCM 文件
+- concept: C++ vs Python FFT
+  desc: C++ 自实现 O(n²) DFT（twiddle 基运算），Python 调用 NumPy O(n log n) FFT；阻塞式 vs 线程池（ThreadPoolExecutor）的多线程策略差异
+- concept: 文本清洗管道
+  desc: C++ 版 process_text 包含完整数字转写，Python 版为正则简化版，两者均输出小写无标点单词列表用于 prompt 构造
+- concept: 说话人克隆数据流
+  desc: audio_text_from_speaker 构建文本序列，audio_data_from_speaker 构建带时长和码本的音频序列，get_tts_version
+    自动识别 v0.2/v0.3 格式差异
+units:
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 65-69
+    method_or_func: print_usage()
+  - file: tools/tts/tts.cpp
+    line: 35-46
+    method_or_func: rgb2xterm256()
+  - file: tools/tts/tts.cpp
+    line: 48-53
+    method_or_func: set_xterm256_foreground()
+  - file: tools/tts/tts.cpp
+    line: 506-550
+    method_or_func: main()
+  name: 程序入口与终端工具 —— TTS 的「门面与指示灯」
+  'no': 1
+  points:
+  - '**C++ 程序的启动与配置**'
+  - '- `main()` 作为流程总控，解析命令行参数（模型路径、文本、并行数等），初始化 llama 后端，协调 TTC/CTS 双模型生命周期'
+  - '- `print_usage()` 提供标准帮助信息，展示最小调用示例（`-m model.gguf -p "Hello!"`）'
+  - '**终端颜色的科学**'
+  - '- `rgb2xterm256()` 将 24 位 RGB 颜色通过 6x6x6 颜色立方体（0-5 级）量化为 xterm256 索引（16-231 范围），或灰度级（232-255）'
+  - '- 使用欧氏距离平方（`SQR` 宏）比较量化误差，选择最接近的终端颜色'
+  - '- `set_xterm256_foreground()` 生成 ANSI 转义序列（`\033[38;5;Xm`），用于日志高亮显示'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 506-1041
+    method_or_func: main()
+  - file: tools/tts/tts-outetts.py
+    line: 123-326
+    method_or_func: __main__
+  name: OuteTTS 工具链全景 —— 文字到声音的「双端流水线」
+  'no': 2
+  points:
+  - '**TTS 工具的核心定位是什么？**'
+  - '- 基于 OuteTTS 架构，将文本通过「LLM 生成音频码 → 解码器转嵌入 → iSTFT 重建波形」三段流程合成语音'
+  - '- C++ 端（tts.cpp）是本地推理实现，直接调用 llama.cpp 引擎完成全流程'
+  - '- Python 端（tts-outetts.py）是轻量客户端，通过 HTTP 调用 LLM 服务与解码服务协同工作'
+  - '**为什么需要「双模型」协作？**'
+  - '- Text-to-Codes（TTC）模型负责将文本转换为离散音频 token 序列（self-compression）'
+  - '- Codes-to-Speech（CTS）模型负责将音频 token 解码为声谱嵌入向量（spectrogram embedding）'
+  - '- 两者分离设计，兼顾了语言建模的灵活性与声码器的专业性'
+  - '**全局入口的差异**'
+  - '- C++ 端通过 `main()` 完成全部流程，Python 端通过 `__main__` 块协调两个 HTTP 服务'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 274-291
+    method_or_func: convert_less_than_thousand()
+  - file: tools/tts/tts.cpp
+    line: 293-337
+    method_or_func: number_to_words()
+  - file: tools/tts/tts.cpp
+    line: 339-355
+    method_or_func: replace_numbers_with_words()
+  - file: tools/tts/tts.cpp
+    line: 358-389
+    method_or_func: process_text()
+  - file: tools/tts/tts-outetts.py
+    line: 116-120
+    method_or_func: process_text()
+  name: 文本预处理与分词 —— 把「人类语言」翻译成模型能懂的「暗号」
+  'no': 3
+  points:
+  - '**为什么要做文本清洗与数字转写？**'
+  - '- `process_text()` 将数字替换为英文单词（如 42 → forty-two），避免模型对数字发音不稳定'
+  - '- 统一转为小写、移除特殊符号、按空白分词，保证与模型训练分布一致'
+  - '- C++ 版完整实现数字转写管道，`convert_less_than_thousand()` 处理 0-999，`number_to_words()`
+    扩展至十亿并支持小数，`replace_numbers_with_words()` 用正则全局替换'
+  - '- Python 版 `process_text()` 为正则简化版，仅做清洗不做数字转写（依赖预训练模型的鲁棒性）'
+  - '**OuteTTS 的「语音配方」如何注入？**'
+  - '- 通过 `prompt_init()` 注入 `<|im_start|>` 标记初始化对话上下文'
+  - '- `prepare_guide_tokens()` 提取每个单词的首 token 作为「引导 token」，防止生成时漏词'
+  - '- `get_tts_version()` 自动识别 OuteTTS v0.2/v0.3，适配 `<|text_sep|>` vs `<|space|>`
+    分隔符差异'
+  - '- `audio_text_from_speaker()` 与 `audio_data_from_speaker()` 构建参考音频的文本与码本序列，实现声音克隆'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 391-402
+    method_or_func: prompt_add()
+  - file: tools/tts/tts.cpp
+    line: 404-408
+    method_or_func: prompt_init()
+  - file: tools/tts/tts.cpp
+    line: 410-433
+    method_or_func: prepare_guide_tokens()
+  - file: tools/tts/tts.cpp
+    line: 435-444
+    method_or_func: speaker_from_file()
+  - file: tools/tts/tts.cpp
+    line: 446-465
+    method_or_func: get_tts_version()
+  - file: tools/tts/tts.cpp
+    line: 467-478
+    method_or_func: audio_text_from_speaker()
+  - file: tools/tts/tts.cpp
+    line: 480-504
+    method_or_func: audio_data_from_speaker()
+  name: 提示词工程与引导机制 —— 给 LLM 的「提词器」
+  'no': 4
+  points:
+  - '**Prompt 构造流水线**'
+  - '- `prompt_add()` 提供多态重载，支持单 token、token 数组或直接分词文本的灵活拼接'
+  - '- `prompt_init()` 重置 prompt 并注入 `<|im_start|>\n` 起始标记，建立对话上下文'
+  - '**引导 Token（Guide Token）机制**'
+  - '- `prepare_guide_tokens()` 按分隔符（`<|text_sep|>` 或 `<|space|>`）切分输入文本，提取每个单词的首个
+    token ID'
+  - '- 在生成循环中，每当检测到换行 token（198），强制下一个采样结果为引导 token，确保语音与文本严格对齐'
+  - '- 该机制是防止神经 TTS 漏词、跳词的关键工程 trick'
+  - '**说话人配置与版本适配**'
+  - '- `speaker_from_file()` 加载 JSON 格式的参考音频特征（包含单词、时长、音频码）'
+  - '- `get_tts_version()` 通过 speaker JSON 或模型 chat_template 自动识别 v0.2/v0.3 协议'
+  - '- `audio_text_from_speaker()` 生成参考文本的标记序列（`<|text_start|>word1<|text_sep|>...`）'
+  - '- `audio_data_from_speaker()` 生成带有时长和码本的音频数据（`<|t_0.50|><|code|>` 格式）'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 793-969
+    method_or_func: __main__
+  name: 音频码生成与采样 —— LLM 如何「逐字念出」语音密码
+  'no': 5
+  points:
+  - '**LLM 如何生成音频 token？**'
+  - '- 构建 prompt 后通过 `llama_decode()` 批量评估前缀，缓存 KV 以加速后续生成'
+  - '- 逐 token 采样：使用 Top-K 采样器（`top_k=4`）从 TTC 模型中预测下一个音频码'
+  - '- 引导机制：当遇到换行符（token 198）时，强制下一个 token 为该单词的首 token，确保不漏词'
+  - '**多序列并行与终止控制**'
+  - '- 支持 `n_parallel` 个序列并行生成，通过 `i_batch` 追踪各序列进度'
+  - '- 遇到 EOG（End of Generation）token 或达到 `n_predict` 上限时终止该序列'
+  - '- 采样完成后用 `common_batch_add()` 构建新批次，迭代调用 `llama_decode()`'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 970-1010
+    method_or_func: __main__
+  - file: tools/tts/tts-outetts.py
+    line: 270-300
+    method_or_func: __main__
+  name: 音频码过滤与声码器解码 —— 从「数字密码」到「声谱嵌入」
+  'no': 6
+  points:
+  - '**为什么要过滤 token 范围？**'
+  - '- LLM 输出的 token 包含文本 token 和音频 token，只有 `[151672, 155772]` 区间是有效音频码'
+  - '- 通过 `std::remove_if()` 剔除无效 token，再统一减去 `151672` 归一化为 `[0, 4100]` 的码本索引'
+  - '**CTS 模型如何解码？**'
+  - '- 调用 `llama_encode()` 将归一化后的音频码输入解码器模型，输出连续的嵌入向量'
+  - '- 嵌入向量通过 `llama_get_embeddings()` 获取，形状为 `(n_codes, n_embd)`'
+  - '- Python 端通过 HTTP `POST /embeddings` 请求解码服务，获取相同的嵌入矩阵'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 190-261
+    method_or_func: embd_to_audio()
+  - file: tools/tts/tts.cpp
+    line: 109-117
+    method_or_func: fill_hann_window()
+  - file: tools/tts/tts.cpp
+    line: 126-153
+    method_or_func: irfft()
+  - file: tools/tts/tts.cpp
+    line: 165-187
+    method_or_func: fold()
+  - file: tools/tts/tts-outetts.py
+    line: 41-81
+    method_or_func: embd_to_audio()
+  - file: tools/tts/tts-outetts.py
+    line: 33-38
+    method_or_func: process_frame()
+  - file: tools/tts/tts-outetts.py
+    line: 21-30
+    method_or_func: fold()
+  - file: tools/tts/tts-outetts.py
+    line: 17-18
+    method_or_func: irfft()
+  - file: tools/tts/tts-outetts.py
+    line: 11-14
+    method_or_func: fill_hann_window()
+  name: Griffin-Lim 波形重建 —— 从「声谱」到「声音」的逆变换魔法
+  'no': 7
+  points:
+  - '**什么是 Griffin-Lim 算法？**'
+  - '- 将 CTS 模型输出的嵌入向量拆分为幅度（magnitude）与相位（phase）两部分'
+  - '- 对幅度取 `exp()` 并限幅（`1e2`），结合相位重建复数频谱 `S = mag * exp(1j * phi)`'
+  - '- 核心流程：iFFT → 加窗 → 重叠相加（Overlap-Add）→ 包络归一化'
+  - '**关键参数设计**'
+  - '- `n_fft = 1280`：FFT 点数，决定频率分辨率'
+  - '- `n_hop = 320`：帧移，控制时间分辨率与重叠率（75% 重叠）'
+  - '- `n_win = 1280`：窗长，与 n_fft 相同，使用汉宁窗减少频谱泄漏'
+  - '**多线程加速 iFFT**'
+  - '- C++ 版在 `embd_to_audio()` 中使用 `std::thread` 按帧分配任务，Python 版用 `ThreadPoolExecutor`
+    并行处理多帧'
+  - '- Python 版 `process_frame()` 作为线程工作函数，独立完成单帧 iFFT 与加窗'
+  - '- `fold()` 函数实现 PyTorch 风格的 overlapping-add，将分帧缓冲折叠为连续信号'
+  - '- `fill_hann_window()` 生成周期汉宁窗，`hann2`（窗平方）用于后续的包络归一化'
+  - '- 包络归一化：用窗函数平方和作为分母消除幅度调制，Python 版通过 `env > 1e-10` 掩码保护除零'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 86-107
+    method_or_func: save_wav16()
+  - file: tools/tts/tts-outetts.py
+    line: 84-113
+    method_or_func: save_wav()
+  - file: tools/tts/tts.cpp
+    line: 120-124
+    method_or_func: twiddle()
+  - file: tools/tts/tts.cpp
+    line: 1011-1041
+    method_or_func: __main__
+  name: WAV 文件保存与后处理 —— 把「数字波形」装进「标准容器」
+  'no': 8
+  points:
+  - '**WAV 文件结构解析**'
+  - '- RIFF 头 + fmt 块 + data 块的三段式结构，C++ 通过 `wav_header` 结构体二进制布局直接写入，Python 通过 `struct.pack(''<4sI4s4sIHHIIHH4sI'',
+    ...)` 手工组装'
+  - '- 16-bit PCM 格式：浮点样本先乘以 32767 并截断到 `[-32768, 32767]` 范围'
+  - '- C++ 版使用 `std::ofstream` 二进制写入，Python 版使用有序字典式打包确保跨平台兼容'
+  - '**工程细节与后处理**'
+  - '- 采样率固定为 24000 Hz，与 OuteTTS 训练配置一致'
+  - '- 前 1/4 秒强制静音（`audio[:6000] = 0` 或 C++ 循环清零），消除生成起始阶段的噪声'
+  - '- C++ 版 `save_wav16()` 处理文件打开错误，Python 版通过 `np.clip` 确保数据范围'
+  - '**C++ 与 Python 实现的差异对比**'
+  - '- C++ 自实现简易 iFFT（基于 `twiddle()` 的 O(n²) DFT），Python 直接用 `np.fft.irfft`（O(n log
+    n) FFT）'
+  - '- C++ 手写 WAV 头结构体（内存布局依赖编译器），Python 显式字节打包（跨平台安全）'
+  - '- 两者核心算法一致，均遵循 Griffin-Lim 的重叠相加范式'
+- codes:
+  - file: tools/tts/tts.cpp
+    line: 1-64
+    method_or_func: __main__
+  name: 全局初始化与基础设施 —— 录音棚的「开机自检」
+  'no': 9
+  points:
+  - '**全局静态数据初始化**'
+  - '- `ones` 与 `tens` 字符串数组：数字转写的词典基础（0-19, 20-90）'
+  - '- `outetts_version` 枚举：区分 v0.2 与 v0.3 协议差异'
+  - '- C++ 全局 `__main__` 代码段：在 `main()` 之前完成的静态初始化与配置加载'
+  - '**与 Python 脚本的模式差异**'
+  - '- C++ 需要显式管理全局状态与堆内存，而 Python 通过 `__main__` 块直接执行过程式逻辑'
+  - '- 理解 C++ 静态初始化顺序对多线程安全的潜在影响'

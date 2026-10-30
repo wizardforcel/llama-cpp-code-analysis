@@ -1,0 +1,460 @@
+code_map:
+- common/
+- '├── sampling.h                                 # 采样系统公共接口头文件'
+- '│   ├── common_sampler_init()                  # 初始化：组装 grammar→budget→chain'
+- '│   ├── common_sampler_free()                  # 释放：按序释放子采样器→实例'
+- '│   ├── common_sampler_accept()                # 接受 token：同步三状态机+历史'
+- '│   ├── common_sampler_reset()                 # 重置采样器状态'
+- '│   ├── common_sampler_clone()                 # 深拷贝：支持并行分支推理'
+- '│   ├── common_perf_print()                    # 性能透视：分离采样/计算耗时'
+- '│   ├── common_sampler_get()                   # 获取底层 chain 指针'
+- '│   ├── common_sampler_sample()                # 核心采样：logits→过滤→accept'
+- '│   ├── common_sampler_sample_and_accept_n()   # 批量采样（推测解码专用）'
+- '│   ├── common_sampler_get_seed()              # 获取随机种子'
+- '│   ├── common_sampler_get_candidates()        # 获取当前概率分布（可排序）'
+- '│   ├── common_sampler_last()                  # 获取最近接受的 token'
+- '│   ├── common_sampler_print()                 # 采样器链字符串化'
+- '│   ├── common_sampler_prev_str()              # 历史记录转可读文本'
+- '│   ├── common_sampler_type_to_chr()           # 类型转字符编码'
+- '│   ├── common_sampler_type_to_str()           # 类型转字符串'
+- '│   ├── common_sampler_types_from_names()      # 名称列表转类型枚举'
+- '│   ├── common_sampler_types_from_chars()      # 字符列表转类型枚举'
+- '│   └── llama_sampler_init_llg()               # llguidance 集成入口'
+- '├── sampling.cpp                               # 采样系统实现'
+- '│   ├── ring_buffer<T> (14-105)                # 环形缓冲区模板类'
+- '│   │   ├── ring_buffer()                      # 构造函数（指定容量）'
+- '│   │   ├── push_back()                        # 追加元素（容量满时覆盖最旧）'
+- '│   │   ├── pop_front()                        # 移除并返回最旧元素'
+- '│   │   ├── front() / front() const            # 访问最旧元素（常/非常版本）'
+- '│   │   ├── back() / back() const              # 访问最新元素（常/非常版本）'
+- '│   │   ├── rat()                              # 反向索引访问（最新→最旧）'
+- '│   │   ├── to_vector()                        # 导出完整时间序列'
+- '│   │   ├── clear()                            # 清空缓冲区'
+- '│   │   ├── empty()                            # 判空'
+- '│   │   └── size()                             # 获取当前大小'
+- '│   ├── common_sampler (107-168)               # 采样器统一封装结构体'
+- '│   │   ├── reset()                            # 清空历史并重置底层链'
+- '│   │   ├── set_logits()                       # 从 llama_context 同步 logits'
+- '│   │   └── tm()                               # 性能计时器工厂方法'
+- '│   ├── common_params_sampling::print()        # 参数指纹生成（1024字节缓冲区）'
+- '│   ├── common_sampler_init() (189-374)        # 装配流水线实现'
+- '│   │   ├── 创建 grammar sampler               # 语法约束（若提供）'
+- '│   │   ├── 创建 reasoning budget sampler      # 推理预算控制'
+- │   │   └── 构建 chain：penalties→dry→top_k→typical→top_p→min_p→xtc→temperature→dist
+- '│   ├── common_sampler_free() (376-388)        # 资源释放：chain→budget→grammar'
+- '│   ├── grammar_should_apply() (390-404)       # 惰性语法激活判定'
+- │   │   └── 逻辑：budget IDLE/DONE 时才启用 grammar（若 lazy）
+- '│   ├── common_sampler_accept() (406-427)      # 同步接受：更新三状态机+历史'
+- '│   ├── common_sampler_reset()                 # C 风格重置封装'
+- '│   ├── common_sampler_clone() (437-449)       # 深拷贝实现'
+- '│   ├── common_perf_print() (451-493)          # 性能统计输出'
+- '│   ├── common_sampler_get()                   # 获取 chain 指针'
+- '│   ├── common_sampler_sample() (503-577)      # 采样主逻辑'
+- '│   │   ├── set_logits()                       # 同步后端 logits'
+- '│   │   ├── llama_sampler_apply(budget)        # 1. 预算强制过滤'
+- '│   │   ├── llama_sampler_apply(grammar)       # 2. 语法剪枝（若激活）'
+- '│   │   ├── llama_sampler_apply(chain)         # 3. 概率采样链'
+- '│   │   └── 语法回退机制                       # 若不符合语法则重置重采样'
+- '│   ├── common_sampler_sample_and_accept_n()   # 推测解码批量处理'
+- '│   │   ├── 交叉比对 draft tokens              # 匹配前缀自动接受'
+- '│   │   └── 分歧处截断                         # 返回已接受前缀+新采样结果'
+- '│   ├── common_sampler_get_seed()              # 获取随机种子'
+- '│   ├── common_sampler_get_candidates()        # 获取候选数组（支持概率排序）'
+- '│   ├── common_sampler_last()                  # 获取最近 token'
+- '│   ├── common_sampler_print()                 # 打印采样器链结构'
+- '│   ├── common_sampler_prev_str()              # 历史转文本'
+- '│   ├── common_sampler_type_to_chr()           # 类型→字符'
+- '│   ├── common_sampler_type_to_str()           # 类型→字符串'
+- '│   ├── common_sampler_types_from_names()      # 名称→类型列表'
+- '│   ├── common_sampler_types_from_chars()      # 字符→类型列表'
+- '│   └── llama_sampler_init_llg()               # llguidance 语法约束集成'
+- '├── reasoning-budget.h                         # 推理预算采样器接口'
+- '│   ├── enum common_reasoning_budget_state     # 五态状态机定义'
+- '│   │   ├── REASONING_BUDGET_IDLE              # 0. 等待推理开始标记'
+- '│   │   ├── REASONING_BUDGET_COUNTING          # 1. 计数中（消耗预算）'
+- '│   │   ├── REASONING_BUDGET_WAITING_UTF8      # 2. 等待 UTF-8 字符完整'
+- '│   │   ├── REASONING_BUDGET_FORCING           # 3. 强制输出结束标记'
+- '│   │   └── REASONING_BUDGET_DONE              # 4. 推理结束'
+- '│   ├── common_reasoning_budget_init()         # 初始化（支持 prefill 状态检测）'
+- '│   └── common_reasoning_budget_get_state()    # 状态查询接口'
+- '└── reasoning-budget.cpp                       # 推理预算实现'
+- '    ├── token_matcher (14-34)                  # 流式 token 序列匹配器'
+- '    │   ├── advance()                          # 单步推进（支持部分匹配回退）'
+- '    │   └── reset()                            # 重置匹配位置'
+- '    ├── common_reasoning_budget_ctx            # 预算采样器上下文结构'
+- '    ├── common_reasoning_budget_accept()       # 状态迁移核心逻辑 (52-111)'
+- '    │   ├── IDLE→COUNTING                      # 匹配到 start_tokens'
+- '    │   ├── COUNTING→WAITING_UTF8              # 预算耗尽但 UTF-8 不完整'
+- '    │   ├── WAITING_UTF8→FORCING               # UTF-8 完整后进入强制模式'
+- '    │   ├── COUNTING→FORCING                   # 预算耗尽且 UTF-8 完整'
+- '    │   └── FORCING→DONE                       # 强制序列输出完毕'
+- '    ├── common_reasoning_budget_apply()        # 强制模式 logits 过滤'
+- '    ├── common_reasoning_budget_init_state()   # 显式状态初始化'
+- '    ├── common_reasoning_budget_clone()        # 克隆采样器状态'
+- '    ├── common_reasoning_budget_free()         # 释放上下文内存'
+- '    ├── common_reasoning_budget_name()         # 返回固定名称字符串'
+- '    ├── common_reasoning_budget_init()         # 双重重载（预填充/显式状态）'
+- '    └── common_reasoning_budget_get_state()    # 状态查询接口'
+exercises:
+- contents:
+  - 阅读 `common/reasoning-budget.cpp` 第 52-111 行（`common_reasoning_budget_accept` 函数），结合代码注释回答：
+  - 1. 当状态处于 `REASONING_BUDGET_COUNTING` 且 `remaining` 减到 0 时，什么情况下会进入 `FORCING`，什么情况下会进入
+    `WAITING_UTF8`？
+  - 2. 为什么在进入 `FORCING` 状态时要调用 `ctx->end_matcher.reset()`？如果不重置会发生什么？
+  - 3. 假设 `forced_tokens = {token_A, token_B}`，当前处于 `FORCING` 状态且 `force_pos=0`，当接受
+    token_A 后，`force_pos` 和状态会如何变化？
+  - 4. 在 `common_reasoning_budget_init` 的预填充版本中（194-219 行），如果 `prefill_tokens` 同时包含了
+    `start_tokens` 和 `end_tokens`，初始状态应该是什么？这解决了什么实际场景问题？
+  'no': 1
+  title: 追踪 Reasoning Budget 状态机
+- contents:
+  - 阅读 `common/sampling.cpp` 第 189-374 行（`common_sampler_init` 函数），绘制采样链的组装流程图：
+  - 1. 列出在构建 `chain` 时，各个采样器（如 `penalties`, `dry`, `top_k`, `typical`, `top_p`, `min_p`,
+    `xtc`, `temperature`）被添加的严格顺序
+  - 2. 解释为什么 `grammar` 和 `reasoning budget` 采样器没有被放入 `chain`，而是作为独立成员 `grmr` 和 `rbudget`
+    存在？
+  - 3. 查看 `grammar_should_apply()` 函数（390-404 行），解释 `grammar_lazy=true` 且 `rbudget`
+    存在时，语法约束的激活条件与状态机状态的关系
+  - 4. 如果用户希望在推理阶段（thinking）也启用语法约束（即使 budget 处于 COUNTING 状态），应该如何修改 `grammar_should_apply`
+    的逻辑？
+  'no': 2
+  title: 分析采样器初始化顺序
+- contents:
+  - 基于 `common_sampler_sample_and_accept_n()`（579-615 行），编写一个模拟测试用例（伪代码即可）：
+  - '1. 假设 draft 模型预测了 5 个 token: [t1, t2, t3, t4, t5]，主模型实际采样结果前 3 个匹配，第 4 个分歧，描述函数返回值和内部状态变化'
+  - 2. 解释为什么需要 `idxs` 参数（显式索引数组）？在什么情况下可以省略（使用自动生成连续索引的重载版本）？
+  - 3. 在循环中，为什么每次采样后都要立即调用 `common_sampler_accept`？这保证了哪些状态的一致性？
+  - 4. 思考：如果 draft token 与采样结果分歧，`chain` 和 `grammar` 的状态是否需要回滚回最后一次匹配的位置？当前实现是如何处理的？
+  'no': 3
+  title: 实现推测解码的批量采样模拟
+- contents:
+  - 阅读 `common/sampling.cpp` 第 14-105 行（`ring_buffer` 模板类），设计单元测试验证以下边界条件：
+  - 1. 当缓冲区为空时调用 `front()` 或 `back()` 会发生什么？如何确保调用方不会触发此异常？
+  - 2. 验证 `rat(0)` 和 `rat(sz-1)` 分别返回什么？`rat` 的索引语义与常规数组索引有何本质区别？
+  - 3. 当 `push_back` 导致 `sz == capacity` 时，`first` 和 `pos` 指针如何移动？新元素覆盖的是哪个位置？
+  - 4. 对比 `to_vector()` 和直接遍历 `data[first..pos]` 的区别，为什么 `to_vector` 需要按 `(first +
+    i) % capacity` 计算索引？
+  - 5. 设计一个场景：连续 push 150 个元素到容量为 128 的 buffer，验证 `to_vector()` 是否返回最近 128 个元素且顺序正确
+  'no': 4
+  title: 环形缓冲区边界条件测试
+learning_targets:
+- 掌握 `common_sampler` 的三元架构设计（Chain + Grammar + Budget），理解其如何统一封装采样器链、语法约束与推理预算
+- 精通 `ring_buffer` 环形缓冲区的实现机制，理解其在 token 历史管理、内存恒定性与反向索引访问中的关键作用
+- 深入 `common_sampler_init` 的装配逻辑，掌握如何按优先级动态组装 penalties、dry、temperature、top-k、top-p
+  等 10+ 种采样器
+- 理解 `common_reasoning_budget` 的五态状态机（IDLE/COUNTING/WAITING_UTF8/FORCING/DONE）及其对推理长度的硬性控制机制
+- 掌握 `token_matcher` 的流式匹配算法，理解其单遍扫描、部分匹配回退与状态重置的实现细节
+- 洞悉批量采样接口 `common_sampler_sample_and_accept_n` 如何支持 Speculative Decoding 的 draft
+  token 交叉比对与自动截断
+- 理解语法约束的惰性激活策略（`grammar_lazy`）及其与推理预算状态机的协同工作机制
+- 学会运用 `common_perf_print` 分离采样耗时与模型计算耗时，进行推理性能瓶颈分析
+- 掌握 `common_sampler_get_candidates` 获取当前概率分布快照的技巧及排序语义
+life_analogy:
+- 想象 llama.cpp 的采样系统是一场**高规格的「剧本杀」主持人（DM）工作台**：
+- '- **`common_sampler`** = 主持人的总控台，集成了剧本规则手册（Grammar）、计时器（Reasoning Budget）、骰子塔（Chain）和玩家行动记录（History）'
+- '- **`ring_buffer`** = **自动旋转的证据展示板**：固定 128 个卡槽，旧证据自动被新证据覆盖，支持倒序查看（`rat()`）以便快速检查最近的违规操作（重复惩罚）'
+- '- **采样器链（Chain）** = **骰子塔的层层过滤机关**：先经过「重复惩罚筛子」剔除重复选项，再经过「温度调节器」控制随机性，接着是 Top-K/Top-P
+  的「候选圈定器」，最后由「贪心/随机选择器」定夺'
+- '- **`reasoning_budget`** = **严格的演讲计时器**：五盏状态灯（IDLE→COUNTING→WAITING_UTF8→FORCING→DONE）监控发言时长，时间到立即强制闭麦（强制输出结束标记），即使话说到一半（UTF-8
+  字符不完整）也要等这句话说完再闭麦（WAITING_UTF8）'
+- '- **`token_matcher`** = **关键词触发警报器**：像检票闸机一样逐个 token 扫描，一旦识别到预设的暗号序列（如 `</think>`），立即切换状态'
+- '- **`grammar_lazy`** = **弹性监考模式**：推理阶段（思考中）允许自由发挥，只有正式答题（回复）时才启用严格监考'
+- '- **`sample_and_accept_n`** = **速记员与预言家的对质**：预言家（Draft 模型）预先写出多个词，速记员（主模型）逐个核对，前面都猜对就直接采纳，猜错立即叫停并重新记录——这就是推测解码的赛马机制'
+'no': 49
+summary:
+- concept: '`common_sampler`'
+  desc: 采样系统总控台，封装 Chain（概率采样）+ Grammar（语法约束）+ Budget（推理预算）+ History（历史记录）
+- concept: '`ring_buffer`'
+  desc: 固定容量（默认128）的环形缓冲区，支持 O(1) 反向索引访问与自动覆盖最旧记录，内存占用恒定
+- concept: '`common_sampler_init()`'
+  desc: 组装流水线：按序创建 Grammar→Budget→Chain（penalties→dry→top_k→typical→top_p→min_p→xtc→temperature→dist）
+- concept: '`common_reasoning_budget_state`'
+  desc: 五态状态机（IDLE/COUNTING/WAITING_UTF8/FORCING/DONE），硬性限制推理阶段 token 数量
+- concept: '`token_matcher`'
+  desc: 轻量级流式序列匹配器，单遍扫描识别 start/end 标记，支持部分匹配失败回退（KMP 简化版）
+- concept: '`grammar_should_apply()`'
+  desc: 惰性语法激活策略：当 `grammar_lazy=true` 且 Budget 处于 IDLE/DONE 时才启用语法约束
+- concept: '`common_sampler_sample()`'
+  desc: 三段式采样流程：set_logits() → 应用 Budget/Grammar/Chain → 语法回退重采样（若接受失败）
+- concept: '`common_sampler_sample_and_accept_n()`'
+  desc: 推测解码专用批量接口，交叉比对 draft tokens 与采样结果，自动接受匹配前缀并在分歧处截断
+- concept: '`common_reasoning_budget_accept()`'
+  desc: 状态迁移引擎，处理预算递减、UTF-8 完整性检查、强制模式切换等核心逻辑
+- concept: '`common_reasoning_budget_apply()`'
+  desc: 强制模式下的 logits 掩码：将非 forced token 的 logit 置为 -INFINITY，确保必输出指定序列
+- concept: '`common_perf_print()`'
+  desc: 性能分析工具，分离采样耗时（sampling）与模型计算耗时（prompt eval/eval），支持内存分解打印
+- concept: '`common_sampler_clone()`'
+  desc: 深拷贝采样器完整状态（含历史、候选缓存、子采样器），支持并行分支推理与探索
+- concept: '`common_sampler_prev_str()`'
+  desc: 历史回看工具，将最近 n 个 token 还原为可读文本，用于调试与日志输出
+- concept: '`common_sampler_type_to_chr/str()`'
+  desc: 采样器类型的编解码器，支持人类可读标识与配置解析（如 'd'→dry, top_k→'k'）
+- concept: '`common_sampler_get_candidates()`'
+  desc: 获取当前候选 token 数组（llama_token_data_array），支持按概率原地排序（std::sort），用于查看采样前分布或调试
+- concept: '`common_sampler_reset()`'
+  desc: C 风格重置接口，封装 C++ 成员函数 reset()，清空 ring_buffer 历史并重置底层 chain 状态
+units:
+- codes:
+  - file: common/sampling.h
+    line: 27-30
+    method_or_func: common_sampler_init()
+  - file: common/sampling.h
+    line: 32-33
+    method_or_func: common_sampler_free()
+  - file: common/sampling.h
+    line: 37-40
+    method_or_func: common_sampler_accept()
+  - file: common/sampling.h
+    line: 41-42
+    method_or_func: common_sampler_reset()
+  - file: common/sampling.h
+    line: 43-43
+    method_or_func: common_sampler_clone()
+  - file: common/sampling.cpp
+    line: 14-105
+    method_or_func: ring_buffer<T>.*
+  - file: common/sampling.cpp
+    line: 107-168
+    method_or_func: common_sampler
+  - file: common/sampling.cpp
+    line: 174-187
+    method_or_func: common_params_sampling::print()
+  name: 采样器核心接口与历史管理 —— 构建推理决策的"控制塔"
+  'no': 1
+  points:
+  - '**`common_sampler` 的统一封装架构**'
+  - '- 整合 `llama_sampler` 链、语法约束（grammar）与推理预算（budget）的三元管理体系'
+  - '- 内部维护 `ring_buffer` 保存 token 历史，支持回溯与重复惩罚'
+  - '- 通过 `cur_p` 缓存当前 logits 候选集，避免重复读取'
+  - '**`ring_buffer` 的环形缓冲区设计**'
+  - '- 固定容量（默认 128）自动覆盖最旧 token，内存使用恒定'
+  - '- 提供 `rat()` 反向索引访问（从最新到最旧），适配重复惩罚场景'
+  - '- `to_vector()` 按时间序导出完整历史，用于调试与状态保存'
+  - '**`common_params_sampling` 的超参数宇宙**'
+  - '- 聚合温度、Top-K、Top-P、Min-P、XTC、DRY 等 30+ 采样参数'
+  - '- `print()` 方法生成参数指纹字符串，用于日志与配置文件'
+  - '- 与 `llama_sampling_params` 的互转，桥接 backend 与 frontend'
+- codes:
+  - file: common/sampling.cpp
+    line: 189-374
+    method_or_func: common_sampler_init()
+  - file: common/sampling.cpp
+    line: 376-388
+    method_or_func: common_sampler_free()
+  - file: common/sampling.cpp
+    line: 390-404
+    method_or_func: grammar_should_apply()
+  - file: common/sampling.cpp
+    line: 406-427
+    method_or_func: common_sampler_accept()
+  - file: common/sampling.cpp
+    line: 429-435
+    method_or_func: common_sampler_reset()
+  - file: common/sampling.cpp
+    line: 437-449
+    method_or_func: common_sampler_clone()
+  name: 采样器装配与生命周期 —— 打造"概率过滤流水线"
+  'no': 2
+  points:
+  - '**`common_sampler_init()` 的组装逻辑**'
+  - '- 首先创建 grammar sampler（若提供语法约束）'
+  - '- 接着创建 reasoning budget sampler（限制推理 token 数量）'
+  - '- 最后构建概率采样链：penalties → temperature → top-k → top-p → min-p → typical → xtc →
+    dry → top-n-sigma → greedy'
+  - '- 按 `params.samplers` 顺序动态组装，支持高度定制化'
+  - '**语法约束的惰性激活策略**'
+  - '- `grammar_lazy` 参数控制是否延迟激活语法检查'
+  - '- 与 reasoning budget 状态机联动：仅在 `REASONING_BUDGET_IDLE` 或 `DONE` 时启用语法'
+  - '- `grammar_should_apply()` 的内部决策逻辑'
+  - '**资源管理与深拷贝**'
+  - '- `common_sampler_free()` 按序释放 chain → budget → grammar → 实例'
+  - '- `common_sampler_clone()` 深拷贝所有子采样器与历史缓冲区，支持并行分支推理'
+  - '- `common_sampler_reset()` C 风格封装：安全判空后调用成员函数重置状态'
+- codes:
+  - file: common/sampling.h
+    line: 70-73
+    method_or_func: common_sampler_sample()
+  - file: common/sampling.h
+    line: 88-91
+    method_or_func: common_sampler_sample_and_accept_n()
+  - file: common/sampling.h
+    line: 95-96
+    method_or_func: common_sampler_sample_and_accept_n()
+  - file: common/sampling.cpp
+    line: 503-577
+    method_or_func: common_sampler_sample()
+  - file: common/sampling.cpp
+    line: 579-604
+    method_or_func: common_sampler_sample_and_accept_n()
+  - file: common/sampling.cpp
+    line: 606-615
+    method_or_func: common_sampler_sample_and_accept_n()
+  name: 核心采样算法与批量处理 —— 执行"候选过滤"的决策时刻
+  'no': 3
+  points:
+  - '**`common_sampler_sample()` 的三段式流程**'
+  - '- **设置 Logits**：通过 `set_logits()` 从 llama_context 提取原始 logits，支持 backend 采样结果直接复用'
+  - '- **链式过滤**：依次应用 reasoning budget（强制截断）→ grammar（语法剪枝）→ 概率采样链（温度、Top-P 等）'
+  - '- **语法回退**：若采样结果不符合语法（`accept_grammar=false`），回滚链状态并重新采样'
+  - '**`common_sampler_accept()` 的状态同步**'
+  - '- 同时更新 grammar（语法栈推进）、reasoning budget（token 计数）、token 历史缓冲区'
+  - '- 确保多状态机之间的状态一致性'
+  - '**批量采样与接受：`common_sampler_sample_and_accept_n`**'
+  - '- 为推测解码（Speculative Decoding）设计的批量接口'
+  - '- 将 draft tokens 与采样结果交叉比对，自动接受匹配前缀，分歧处截断'
+  - '- 支持自动索引生成（连续 idxs）与显式索引传递两种模式'
+- codes:
+  - file: common/reasoning-budget.h
+    line: 29-36
+    method_or_func: common_reasoning_budget_init()
+  - file: common/reasoning-budget.h
+    line: 40-46
+    method_or_func: common_reasoning_budget_init()
+  - file: common/reasoning-budget.h
+    line: '48'
+    method_or_func: common_reasoning_budget_get_state()
+  - file: common/reasoning-budget.cpp
+    line: 14-34
+    method_or_func: token_matcher.advance()
+  - file: common/reasoning-budget.cpp
+    line: '36'
+    method_or_func: token_matcher.reset()
+  - file: common/reasoning-budget.cpp
+    line: 38-46
+    method_or_func: common_reasoning_budget_ctx
+  - file: common/reasoning-budget.cpp
+    line: 52-111
+    method_or_func: common_reasoning_budget_accept()
+  - file: common/reasoning-budget.cpp
+    line: 113-132
+    method_or_func: common_reasoning_budget_apply()
+  - file: common/reasoning-budget.cpp
+    line: 134-141
+    method_or_func: common_reasoning_budget_reset()
+  - file: common/reasoning-budget.cpp
+    line: 145-172
+    method_or_func: common_reasoning_budget_init_state()
+  - file: common/reasoning-budget.cpp
+    line: 175-184
+    method_or_func: common_reasoning_budget_clone()
+  - file: common/reasoning-budget.cpp
+    line: 186-188
+    method_or_func: common_reasoning_budget_free()
+  - file: common/reasoning-budget.cpp
+    line: 48-50
+    method_or_func: common_reasoning_budget_name()
+  - file: common/reasoning-budget.cpp
+    line: 194-219
+    method_or_func: common_reasoning_budget_init()
+  - file: common/reasoning-budget.cpp
+    line: 221-229
+    method_or_func: common_reasoning_budget_init()
+  - file: common/reasoning-budget.cpp
+    line: 231-237
+    method_or_func: common_reasoning_budget_get_state()
+  name: 推理预算状态机 —— 控制推理长度的"计时器与熔断器"
+  'no': 4
+  points:
+  - '**`token_matcher` 的流式序列匹配**'
+  - '- 无需回溯的在线匹配算法，单遍扫描即可识别 start/end token 序列'
+  - '- 部分匹配失败后自动回退到子串起始位置（KMP 简化版）'
+  - '- `advance()` 返回 true 表示完整匹配，触发状态迁移'
+  - '**`common_reasoning_budget_ctx` 的五态状态机**'
+  - '- `IDLE`：等待推理起始标记（如 `<|im_start|>`）'
+  - '- `COUNTING`：消耗预算，递减 `remaining` 计数器'
+  - '- `WAITING_UTF8`：预算耗尽但 UTF-8 字符不完整，等待完整字符结束'
+  - '- `FORCING`：强制输出结束标记序列，屏蔽其他所有候选'
+  - '- `DONE`：推理完成，停止干预'
+  - '**UTF-8 完整性保护机制**'
+  - '- 通过 `common_token_to_piece()` 将 token 还原为文本片段'
+  - '- `common_utf8_is_complete()` 检测是否为合法 UTF-8 字符边界'
+  - '- 防止在半个汉字或 emoji 中间强制截断导致乱码'
+  - '**预填充状态的初始化**'
+  - '- 通过 `prefill_tokens` 识别已存在的推理开头，直接进入 COUNTING 状态'
+  - '- 支持续写场景（如继续之前的推理）'
+- codes:
+  - file: common/sampling.h
+    line: 46-47
+    method_or_func: common_perf_print()
+  - file: common/sampling.cpp
+    line: 451-493
+    method_or_func: common_perf_print()
+  - file: common/sampling.h
+    line: 50-51
+    method_or_func: common_sampler_get()
+  - file: common/sampling.cpp
+    line: 495-501
+    method_or_func: common_sampler_get()
+  - file: common/sampling.h
+    line: 98-99
+    method_or_func: common_sampler_get_seed()
+  - file: common/sampling.cpp
+    line: 617-619
+    method_or_func: common_sampler_get_seed()
+  - file: common/sampling.h
+    line: 105-107
+    method_or_func: common_sampler_get_candidates()
+  - file: common/sampling.cpp
+    line: 623-647
+    method_or_func: common_sampler_get_candidates()
+  - file: common/sampling.h
+    line: 110-111
+    method_or_func: common_sampler_last()
+  - file: common/sampling.cpp
+    line: 649-651
+    method_or_func: common_sampler_last()
+  - file: common/sampling.h
+    line: 114-115
+    method_or_func: common_sampler_print()
+  - file: common/sampling.cpp
+    line: 653-665
+    method_or_func: common_sampler_print()
+  - file: common/sampling.h
+    line: 118-119
+    method_or_func: common_sampler_prev_str()
+  - file: common/sampling.cpp
+    line: 667-685
+    method_or_func: common_sampler_prev_str()
+  - file: common/sampling.h
+    line: 122-122
+    method_or_func: common_sampler_type_to_chr()
+  - file: common/sampling.cpp
+    line: 687-703
+    method_or_func: common_sampler_type_to_chr()
+  - file: common/sampling.h
+    line: 123-123
+    method_or_func: common_sampler_type_to_str()
+  - file: common/sampling.cpp
+    line: 705-721
+    method_or_func: common_sampler_type_to_str()
+  - file: common/sampling.h
+    line: 124-124
+    method_or_func: common_sampler_types_from_names()
+  - file: common/sampling.cpp
+    line: 723-778
+    method_or_func: common_sampler_types_from_names()
+  - file: common/sampling.h
+    line: 125-125
+    method_or_func: common_sampler_types_from_chars()
+  - file: common/sampling.cpp
+    line: 780-811
+    method_or_func: common_sampler_types_from_chars()
+  - file: common/sampling.h
+    line: 127-129
+    method_or_func: llama_sampler_init_llg()
+  name: 辅助工具与性能监控 —— 采样系统的"仪表盘"
+  'no': 5
+  points:
+  - '**`common_perf_print()` 的性能透视**'
+  - '- 分离采样耗时（`sampling`）与模型计算耗时（`prompt eval`/`eval`）'
+  - '- 调用 `llama_memory_breakdown_print()` 输出 KV 缓存与计算图内存分布'
+  - '- 支持仅打印 sampler（`ctx=nullptr`）或仅打印 context（`gsmpl=nullptr`）'
+  - '**采样器类型的编解码**'
+  - '- `common_sampler_type_to_chr()` 与 `common_sampler_type_to_str()` 提供人类可读标识'
+  - '- `common_sampler_types_from_names()`/`from_chars()` 支持从配置文件解析采样链顺序'
+  - '**历史记录与调试**'
+  - '- `common_sampler_prev_str()` 将最近 n 个 token 转为可读文本，用于日志与调试'
+  - '- `common_sampler_get_candidates()` 获取当前概率分布快照，支持按概率排序（`std::sort` + `sorted`
+    标志维护）'
+  - '- `common_sampler_get()`/`get_seed()`/`last()`/`print()` 提供运行时状态查询'

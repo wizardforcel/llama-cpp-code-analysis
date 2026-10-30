@@ -1,0 +1,94 @@
+classes: []
+desc: 该文件是 ggml 库中 zDNN 后端相关的工具函数集合，负责将 ggml 张量类型映射为 zDNN 数据类型，并提供张量描述符初始化、转换及加载等底层操作的封装，桥接
+  ggml 张量与 zDNN 张量系统。
+file: ggml/src/ggml-zdnn/utils.cpp
+funcs:
+- code:
+  - zdnn_data_types ggml_zdnn_type_mapping(ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_F32:'
+  - '            return FP32;'
+  - '        case GGML_TYPE_F16:'
+  - '            return FP16;'
+  - '        case GGML_TYPE_BF16:'
+  - '            return BFLOAT;'
+  - '        case GGML_TYPE_Q8_0:'
+  - '            return INT8;'
+  - '        case GGML_TYPE_I8:'
+  - '            return INT8;'
+  - '        case GGML_TYPE_I32:'
+  - '            return INT32;'
+  - '        default:'
+  - '            GGML_ABORT("%s: fatal: unable to determine zTensor data type",'
+  - '                       __func__);'
+  - '            break;'
+  - '    }'
+  - '}'
+  desc: 将 ggml 张量数据类型映射为 zDNN 数据类型，不支持的类型会触发终止。
+  line: 5-18
+  name: ggml_zdnn_type_mapping
+- code:
+  - void ggml_zdnn_create_tensor(zdnn_tensor_desc  & pre_tfm_desc,
+  - '                             zdnn_tensor_desc  & tfm_desc,'
+  - '                             zdnn_ztensor      & ztensor,'
+  - '                       const ggml_tensor       * src,'
+  - '                       const int64_t           * ne,'
+  - '                       const zdnn_data_layouts   layout) {'
+  - '    zdnn_init_pre_transformed_desc('
+  - '        layout,'
+  - '        ggml_zdnn_type_mapping(src->type),'
+  - '        &pre_tfm_desc,'
+  - '        ne[3], ne[2], ne[1], ne[0]'
+  - '    );'
+  - ''
+  - '    ZDNN_CHECK(zdnn_generate_transformed_desc(&pre_tfm_desc, &tfm_desc));'
+  - '    ZDNN_CHECK(zdnn_init_ztensor_with_malloc(&pre_tfm_desc, &tfm_desc, &ztensor));'
+  - '}'
+  desc: 根据 ggml 张量参数创建 zDNN 张量描述符并分配内存初始化 zTensor。
+  line: 20-34
+  name: ggml_zdnn_create_tensor
+- code:
+  - void ggml_zdnn_load_tensor(zdnn_ztensor & ztensor, void * buffer) {
+  - '    ZDNN_CHECK(zdnn_transform_ztensor(&ztensor, buffer));'
+  - '}'
+  desc: 将数据缓冲区内容转换并加载到已初始化的 zDNN 张量中。
+  line: 36-39
+  name: ggml_zdnn_load_tensor
+- code:
+  - void ggml_zdnn_init_tensor(ggml_backend_zdnn_buffer * buffer, const ggml_tensor
+    * tensor) {
+  - '    switch (tensor->op) {'
+  - '        case GGML_OP_MUL_MAT:'
+  - '            {'
+  - '                zdnn_init_pre_transformed_desc('
+  - '                    ZDNN_2D,'
+  - '                    ggml_zdnn_type_mapping(tensor->type),'
+  - '                    &buffer->pre_tfm_desc,'
+  - '                    tensor->ne[1], tensor->ne[0]'
+  - '                );'
+  - '            } break;'
+  - ''
+  - '        default:'
+  - '            {'
+  - '                // 对于4D张量，GGML使用NCHW布局，但zDNN自动转换为NHWC格式'
+  - '                // 此处直接使用NHWC以避免布局变换带来的性能开销'
+  - '                zdnn_init_pre_transformed_desc('
+  - '                    ZDNN_NHWC,'
+  - '                    ggml_zdnn_type_mapping(tensor->type),'
+  - '                    &buffer->pre_tfm_desc,'
+  - '                    tensor->ne[3], tensor->ne[2], tensor->ne[1], tensor->ne[0]'
+  - '                );'
+  - ''
+  - '                // TODO: 考虑添加ggml检查。'
+  - '                // TODO: 如果tensor=4D，默认使用ZDNN_NCHW。'
+  - '                // TODO: 如果tensor=2D，默认使用ZDNN_NHWC。'
+  - '            } break;'
+  - '    }'
+  - ''
+  - '    ZDNN_CHECK(zdnn_generate_transformed_desc(&buffer->pre_tfm_desc, &buffer->tfm_desc));'
+  - '    ZDNN_CHECK(zdnn_init_ztensor_with_malloc(&buffer->pre_tfm_desc, &buffer->tfm_desc,
+    &buffer->ztensor));'
+  - '}'
+  desc: 根据张量的操作类型初始化 zDNN 缓冲区中的张量描述符，并根据维度适配不同的数据布局方案。
+  line: 41-65
+  name: ggml_zdnn_init_tensor

@@ -1,0 +1,112 @@
+classes: []
+desc: This header file provides SIMD-optimized square root and inverse square root
+  implementations for Hexagon HVX DSP architecture, utilizing the fast inverse square
+  root algorithm with three Newton-Raphson iterations. It offers vectorized float32
+  operations with alignment-aware variants to handle different memory alignment scenarios
+  between source and destination buffers.
+file: ggml/src/ggml-hexagon/htp/hvx-sqrt.h
+funcs:
+- code:
+  - static inline HVX_Vector hvx_vec_rsqrt_f32(HVX_Vector in_vec) {
+  - '    //Algorithm :'
+  - '    //  x2 = input*0.5'
+  - '    //  y  = * (long *) &input'
+  - '    //  y  = 0x5f3759df - (y>>1)'
+  - '    //  y  = y*(threehalfs - x2*y*y)'
+  - '    HVX_Vector rsqrtconst = Q6_V_vsplat_R(RSQRT_CONST);'
+  - '    HVX_Vector onehalf    = Q6_V_vsplat_R(RSQRT_ONE_HALF);'
+  - '    HVX_Vector threehalfs = Q6_V_vsplat_R(RSQRT_THREE_HALVES);'
+  - '    HVX_Vector x2, y, ypower2, temp;'
+  - '    x2 = Q6_Vqf32_vmpy_VsfVsf(in_vec, onehalf);'
+  - '    x2 = Q6_Vqf32_vadd_Vqf32Vsf(x2, Q6_V_vzero());'
+  - '    y = Q6_Vw_vasr_VwR(in_vec, 1);'
+  - '    y = Q6_Vw_vsub_VwVw(rsqrtconst, y);'
+  - '    // 1st iteration'
+  - '    ypower2 = Q6_Vqf32_vmpy_VsfVsf(y, y);'
+  - '    ypower2 = Q6_Vqf32_vadd_Vqf32Vsf(ypower2, Q6_V_vzero());'
+  - '    temp    = Q6_Vqf32_vmpy_Vqf32Vqf32(x2, ypower2);'
+  - '    temp    = Q6_Vqf32_vsub_VsfVsf(threehalfs, Q6_Vsf_equals_Vqf32(temp));'
+  - '    temp    = Q6_Vqf32_vmpy_VsfVsf(y, Q6_Vsf_equals_Vqf32(temp));'
+  - '    // 2nd iteration'
+  - '    y       = Q6_Vqf32_vadd_Vqf32Vsf(temp, Q6_V_vzero());'
+  - '    ypower2 = Q6_Vqf32_vmpy_Vqf32Vqf32(y, y);'
+  - '    ypower2 = Q6_Vqf32_vadd_Vqf32Vsf(ypower2, Q6_V_vzero());'
+  - '    temp    = Q6_Vqf32_vmpy_Vqf32Vqf32(x2, ypower2);'
+  - '    temp    = Q6_Vqf32_vsub_VsfVsf(threehalfs, Q6_Vsf_equals_Vqf32(temp));'
+  - '    temp    = Q6_Vqf32_vmpy_Vqf32Vqf32(y, temp);'
+  - '    // 3rd iteration'
+  - '    y       = Q6_Vqf32_vadd_Vqf32Vsf(temp, Q6_V_vzero());'
+  - '    ypower2 = Q6_Vqf32_vmpy_Vqf32Vqf32(y, y);'
+  - '    ypower2 = Q6_Vqf32_vadd_Vqf32Vsf(ypower2, Q6_V_vzero());'
+  - '    temp    = Q6_Vqf32_vmpy_Vqf32Vqf32(x2, ypower2);'
+  - '    temp    = Q6_Vqf32_vsub_VsfVsf(threehalfs, Q6_Vsf_equals_Vqf32(temp));'
+  - '    temp    = Q6_Vqf32_vmpy_Vqf32Vqf32(y, temp);'
+  - '    return Q6_Vsf_equals_Vqf32(temp);'
+  - '}'
+  desc: Computes the inverse square root of a 32-bit float vector using the fast inverse
+    square root algorithm with three Newton-Raphson iterations, optimized for HVX
+    DSP.
+  line: 24-59
+  name: hvx_vec_rsqrt_f32
+- code:
+  - static inline void hvx_sqrt_f32_aa(uint8_t * restrict dst, const uint8_t * restrict
+    src, uint32_t n) {
+  - '    assert((unsigned long) dst % 128 == 0);'
+  - '    assert((unsigned long) src % 128 == 0);'
+  - '    hvx_sqrt_f32_loop_body(HVX_Vector, HVX_Vector, hvx_vec_store_a);'
+  - '}'
+  desc: Computes float32 square root on HVX with both source and destination aligned
+    to 128 bytes.
+  line: 75-80
+  name: hvx_sqrt_f32_aa
+- code:
+  - static inline void hvx_sqrt_f32_au(uint8_t * restrict dst, const uint8_t * restrict
+    src, uint32_t n) {
+  - '    assert((unsigned long) dst % 128 == 0);'
+  - '    hvx_sqrt_f32_loop_body(HVX_Vector, HVX_UVector, hvx_vec_store_a);'
+  - '}'
+  desc: Computes float32 square root on HVX with source unaligned and destination
+    aligned to 128 bytes.
+  line: 83-88
+  name: hvx_sqrt_f32_au
+- code:
+  - static inline void hvx_sqrt_f32_ua(uint8_t * restrict dst, const uint8_t * restrict
+    src, uint32_t n) {
+  - '    assert((unsigned long) src % 128 == 0);'
+  - '    hvx_sqrt_f32_loop_body(HVX_UVector, HVX_Vector, hvx_vec_store_u);'
+  - '}'
+  desc: Computes float32 square root on HVX with source aligned and destination unaligned
+    to 128 bytes.
+  line: 91-96
+  name: hvx_sqrt_f32_ua
+- code:
+  - static inline void hvx_sqrt_f32_uu(uint8_t * restrict dst, const uint8_t * restrict
+    src, uint32_t n) {
+  - '    hvx_sqrt_f32_loop_body(HVX_UVector, HVX_UVector, hvx_vec_store_u);'
+  - '}'
+  desc: Computes float32 square root on HVX with both source and destination unaligned
+    to 128 bytes.
+  line: 99-102
+  name: hvx_sqrt_f32_uu
+- code:
+  - static inline void hvx_sqrt_f32(uint8_t * restrict dst, const uint8_t * restrict
+    src, const int num_elems) {
+  - '    if ((unsigned long) dst % 128 == 0) {'
+  - '        if ((unsigned long) src % 128 == 0) {'
+  - '            hvx_sqrt_f32_aa(dst, src, num_elems);'
+  - '        } else {'
+  - '            hvx_sqrt_f32_au(dst, src, num_elems);'
+  - '        }'
+  - '    } else {'
+  - '        if ((unsigned long) src % 128 == 0) {'
+  - '            hvx_sqrt_f32_ua(dst, src, num_elems);'
+  - '        } else {'
+  - '            hvx_sqrt_f32_uu(dst, src, num_elems);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: Main dispatch function that computes float32 square root on HVX, automatically
+    selecting the appropriate alignment-optimized variant based on memory alignment
+    of source and destination buffers.
+  line: 105-117
+  name: hvx_sqrt_f32

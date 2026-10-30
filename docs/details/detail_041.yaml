@@ -1,0 +1,1592 @@
+code_map:
+- ggml/include/ggml-rpc.h
+- '├── ggml_backend_rpc_init()           # RPC 后端初始化'
+- '├── ggml_backend_is_rpc()             # RPC 后端类型检查'
+- '├── ggml_backend_rpc_buffer_type()    # 获取 RPC 缓冲区类型'
+- '├── ggml_backend_rpc_get_device_memory()  # 查询远程设备内存'
+- '├── ggml_backend_rpc_start_server()   # 启动 RPC 服务器'
+- '├── ggml_backend_rpc_reg()            # 获取 RPC 后端注册表'
+- '└── ggml_backend_rpc_add_server()     # 添加 RPC 服务器端点'
+- ''
+- ggml/src/ggml-rpc/ggml-rpc.cpp
+- ├── 协议定义与核心结构（1-250 行）
+- '│   ├── struct rpc_tensor              # 张量网络传输格式'
+- '│   ├── enum rpc_cmd                   # 15 种 RPC 命令枚举'
+- '│   ├── 各种 rpc_msg_*_req/rsp         # 请求/响应消息结构'
+- '│   └── 三个核心接口表                  # buffer_type_i, buffer_i, backend_i'
+- ├── Socket 工具函数（250-540 行）
+- '│   ├── socket_connect()               # 客户端 Socket 连接'
+- '│   ├── create_server_socket()         # 服务器 Socket 创建'
+- '│   ├── send_data() / recv_data()      # 数据收发（支持 >1GiB 分块）'
+- '│   ├── send_msg() / recv_msg()        # 消息封装收发'
+- '│   ├── send_rpc_cmd()                 # RPC 命令发送'
+- '│   ├── get_socket()                   # 获取/创建 socket（带缓存）'
+- '│   └── check_server_version()         # HELLO 版本握手'
+- ├── 张量序列化（540-850 行）
+- '│   ├── serialize_tensor()             # 张量 → 网络格式'
+- '│   ├── add_tensor()                   # 递归收集依赖'
+- '│   └── serialize_graph()              # 计算图序列化'
+- ├── 客户端 RPC 调用（540-950 行）
+- '│   ├── ggml_backend_rpc_buffer_type_alloc_buffer()  # 远程缓冲区分配'
+- '│   ├── ggml_backend_rpc_buffer_set_tensor()         # 远程张量写入'
+- '│   ├── ggml_backend_rpc_buffer_get_tensor()         # 远程张量读取'
+- '│   ├── ggml_backend_rpc_buffer_cpy_tensor()         # 远程张量复制'
+- '│   ├── ggml_backend_rpc_graph_compute()             # 远程图计算'
+- '│   ├── ggml_backend_rpc_get_device_memory()         # 查询远程内存'
+- '│   └── ggml_backend_rpc_add_server()                # 注册远程服务器'
+- ├── 服务端 RPC 处理（950-1500 行）
+- '│   ├── rpc_serve_client()             # 客户端请求循环'
+- '│   ├── rpc_server::rpc_server()       # 服务端构造函数'
+- '│   ├── rpc_server::hello()            # 握手响应'
+- '│   ├── rpc_server::alloc_buffer()     # 服务端缓冲区分配'
+- '│   ├── rpc_server::get_alloc_size()   # 远程查询分配大小'
+- '│   ├── rpc_server::get_alignment()    # 查询对齐要求'
+- '│   ├── rpc_server::get_max_size()     # 查询最大缓冲区大小'
+- '│   ├── rpc_server::buffer_get_base()  # 获取缓冲区基地址'
+- '│   ├── rpc_server::set_tensor()       # 服务端张量设置'
+- '│   ├── rpc_server::set_tensor_hash()  # 哈希缓存优化'
+- '│   ├── rpc_server::get_tensor()       # 服务端张量读取'
+- '│   ├── rpc_server::graph_compute()    # 服务端图执行'
+- '│   ├── rpc_server::graph_recompute()  # 图重计算快进'
+- '│   └── rpc_server::create_node()      # 递归创建计算图节点'
+- └── 注册表接口（1500-2100 行）
+- '    ├── ggml_backend_rpc_device_*      # 设备名称/描述/类型/内存/算子支持'
+- '    ├── ggml_backend_rpc_reg_*         # 注册表接口'
+- '    └── ggml_backend_rpc_reg()         # 注册表入口'
+- ''
+- ggml/include/ggml-virtgpu.h
+- '└── ggml_backend_virtgpu_reg()          # VirtGPU 后端注册'
+- ''
+- ggml/src/ggml-virtgpu/
+- ├── 前端序列化与转发
+- │   ├── apir_cs_ggml-rpc-front.cpp
+- '│   │   ├── apir_serialize_tensor()     # 张量序列化（转句柄）'
+- '│   │   ├── apir_add_tensor()           # 递归收集依赖'
+- '│   │   └── apir_serialize_graph()      # 计算图序列化'
+- '│   └── virtgpu-forward-*.cpp           # 前向调用封装'
+- '│       ├── virtgpu-forward-device.cpp  # 设备查询转发'
+- │       ├── virtgpu-forward-buffer-type.cpp
+- │       ├── virtgpu-forward-buffer.cpp
+- │       └── virtgpu-forward-backend.cpp
+- '│           ├── current_time_ms()           # 纳秒级时间戳'
+- '│           └── apir_backend_graph_compute() # 图计算远程调用'
+- ├── 后端反序列化与执行
+- │   ├── backend/apir_cs_ggml-rpc-back.cpp
+- '│   │   ├── apir_deserialize_tensor()   # 张量反序列化'
+- '│   │   ├── apir_create_node()          # 递归创建节点'
+- '│   │   ├── apir_deserialize_graph()    # 图重建'
+- '│   │   ├── apir_track_backend_buffer() # 缓冲区跟踪'
+- │   │   └── apir_untrack_backend_buffer()
+- │   ├── backend/backend.cpp
+- '│   │   ├── apir_backend_initialize()   # 后端库加载初始化'
+- '│   │   ├── apir_backend_dispatcher()   # 命令分发入口'
+- '│   │   └── apir_backend_deinit()       # 资源清理'
+- │   ├── backend/backend-dispatched-*.cpp
+- '│   │   ├── backend-dispatched-device.cpp    # 设备查询处理'
+- '│   │   ├── backend-dispatched-buffer-type.cpp # 缓冲区类型处理'
+- '│   │   ├── backend-dispatched-buffer.cpp     # 缓冲区操作处理'
+- '│   │   ├── backend-dispatched-backend.cpp    # 图计算执行'
+- '│   │   └── backend-dispatched.gen.h          # 自动生成的分发表（25 个命令处理函数声明）'
+- │   └── backend/backend-dispatched.cpp
+- '│       └── backend_dispatch_initialize()  # 后端加载初始化'
+- ├── 共享内存与工具
+- │   ├── virtgpu-shm.cpp/h
+- '│   │   ├── virtgpu_shmem_create()      # 创建共享内存（blob）'
+- '│   │   └── virtgpu_shmem_destroy()     # 销毁共享内存'
+- │   ├── virtgpu.cpp
+- '│   │   ├── create_virtgpu()            # 创建 virtgpu 对象'
+- '│   │   ├── virtgpu_handshake()         # APIR 协议握手'
+- '│   │   ├── virtgpu_load_library()      # 远程加载后端库'
+- '│   │   ├── remote_call_prepare()       # 远程调用准备'
+- '│   │   ├── remote_call()               # 执行远程调用'
+- '│   │   └── remote_call_finish()        # 远程调用清理'
+- │   └── virtgpu-utils.cpp/h
+- '│       └── util_sparse_array           # 稀疏数组（管理共享内存）'
+- ├── 编码器/解码器与协议
+- │   ├── backend/shared/apir_cs.h
+- '│   │   ├── struct apir_encoder/apir_decoder  # 编码器/解码器结构'
+- │   │   ├── apir_encoder::apir_new_encoder() / apir_encoder_write() / apir_encoder_set_fatal()
+  等
+- │   │   ├── apir_decoder::apir_new_decoder() / apir_decoder_read() / apir_decoder_peek()
+  / apir_decoder_use_inplace() 等
+- │   │   └── 基础类型编码函数族
+- │   │       ├── apir_encode_uint32_t() / apir_decode_uint32_t()
+- │   │       ├── apir_encode_uint64_t() / apir_decode_uint64_t()
+- │   │       ├── apir_encode_size_t() / apir_decode_size_t()
+- │   │       ├── apir_encode_bool_t() / apir_decode_bool_t()
+- │   │       ├── apir_encode_char_array() / apir_decode_char_array()
+- │   │       ├── apir_encode_blob_array() / apir_decode_blob_array()
+- │   │       ├── apir_encode_simple_pointer() / apir_decode_simple_pointer()
+- │   │       ├── apir_encode_apir_buffer_type_host_handle_t() / apir_decode()
+- │   │       ├── apir_encode_apir_buffer_host_handle_t() / apir_decode()
+- │   │       ├── apir_encode_uintptr_t() / apir_decode_uintptr_t()
+- │   │       ├── apir_encode_array_size() / apir_decode_array_size()
+- │   │       └── 各种数组编码函数（uint32_t_array、size_t_array 等）
+- │   ├── backend/shared/apir_cs_ggml.h
+- '│   │   ├── apir_encode_ggml_tensor()   # 张量编码'
+- '│   │   ├── apir_decode_ggml_tensor()   # 张量解码'
+- '│   │   ├── apir_encode_ggml_cgraph()   # 计算图编码'
+- '│   │   ├── apir_decode_ggml_cgraph()   # 计算图解码'
+- '│   │   ├── apir_encode_ggml_buffer()   # 缓冲区句柄编码'
+- '│   │   ├── apir_decode_ggml_buffer()   # 缓冲区句柄解码（带安全校验）'
+- '│   │   ├── apir_encode_ggml_tensor_inline()  # 内联张量编码'
+- '│   │   └── apir_decode_ggml_tensor_inplace() # 内联张量解码'
+- │   ├── backend/shared/api_remoting.h
+- │   │   ├── ApirCommandType / ApirLoadLibraryReturnCode / ApirForwardReturnCode
+- '│   │   ├── apir_command_name()         # 命令名转字符串'
+- '│   │   ├── apir_load_library_error()   # 加载错误转字符串'
+- '│   │   └── apir_forward_error()        # 前向调用错误转字符串'
+- │   └── backend/backend-convert.h
+- '│       ├── ggml_buffer_to_apir_handle()  # 缓冲区句柄转换'
+- │       └── ggml_buffer_type_to_apir_handle()
+- ├── 核心头文件与注册
+- '│   ├── virtgpu.h / virtgpu-apir.h      # virtgpu 结构体与 API 定义'
+- '│   ├── include/apir_hw.h               # virgl_renderer_capset_apir 结构定义'
+- '│   ├── ggml-remoting.h                 # 远程后端接口'
+- │   └── ggml-backend-reg.cpp
+- '│       ├── apir_initialize()           # virtgpu 初始化'
+- '│       ├── virtgpu::cleanup()          # 资源清理'
+- │       ├── ggml_backend_remoting_reg_get_device_count()
+- │       └── ggml_backend_remoting_reg_init_devices()
+- └── 代码自动生成
+- '    └── regenerate_remoting.py'
+- '        ├── RemotingCodebaseGenerator.__init__()       # 生成器初始化（加载 YAML）'
+- '        ├── RemotingCodebaseGenerator.regenerate_codebase()  # 自动生成头文件'
+- '        └── main()                       # 脚本入口（创建生成器并执行）'
+- ''
+- ggml/src/ggml-zdnn/
+- ├── ggml-zdnn.cpp
+- │   ├── 缓冲区管理
+- '│   │   ├── ggml_backend_zdnn_buffer_type_alloc_buffer()  # 分配缓冲区'
+- '│   │   ├── ggml_backend_zdnn_buffer_init_tensor()        # 初始化张量'
+- '│   │   ├── ggml_backend_zdnn_buffer_set_tensor()         # 写入张量（含 ztensor 转换）'
+- '│   │   ├── ggml_backend_zdnn_buffer_get_tensor()         # 读取张量'
+- '│   │   ├── ggml_backend_zdnn_buffer_clear()              # 清空缓冲区'
+- '│   │   └── ggml_backend_zdnn_buffer_free_buffer()        # 释放缓冲区'
+- │   ├── 计算执行
+- '│   │   ├── ggml_zdnn_compute_forward()       # 算子分发'
+- '│   │   ├── ggml_zdnn_compute_forward_mul_mat() # MUL_MAT 前向'
+- '│   │   └── ggml_zdnn_graph_compute()         # 图计算遍历（跳过空节点）'
+- │   ├── 设备与注册
+- '│   │   ├── ggml_backend_zdnn_device_acq()    # 设备获取（引用计数）'
+- '│   │   ├── ggml_backend_zdnn_device_rel()    # 设备释放'
+- '│   │   ├── ggml_backend_zdnn_reg()           # 后端注册'
+- '│   │   └── ggml_backend_zdnn_reg_device_count() # 设备计数（运行时检测）'
+- │   ├── 算子支持检查
+- '│   │   └── ggml_zdnn_supports_op()           # 检查 MUL_MAT 支持'
+- │   └── 其他接口
+- '│       ├── ggml_backend_zdnn_get_features()  # 功能特性查询'
+- '│       └── ggml_backend_is_zdnn()            # 后端类型检查'
+- ├── mmf.cpp
+- '│   └── ggml_zdnn_mul_mat_f()                 # 矩阵乘法实现（zdnn_matmul_transpose_op）'
+- ├── utils.cpp
+- '│   ├── ggml_zdnn_type_mapping()              # 类型映射（F32/F16/BF16 → zDNN）'
+- '│   ├── ggml_zdnn_create_tensor()             # 创建 zTensor 描述符'
+- '│   ├── ggml_zdnn_load_tensor()               # 加载张量（zdnn_transform_ztensor）'
+- '│   └── ggml_zdnn_init_tensor()               # 初始化张量描述'
+- └── common.hpp
+- '    ├── struct ggml_backend_zdnn_buffer        # ZDNN 缓冲区结构'
+- '    └── struct ggml_backend_zdnn_buffer_context # 缓冲区分组管理'
+- ''
+- ggml/src/ggml-zendnn/
+- └── ggml-zendnn.cpp
+- '    ├── 上下文结构'
+- '    │   └── struct ggml_backend_zendnn_context  # ZenDNN 上下文（线程数+工作缓冲区，隐式构造/析构）'
+- '    ├── 核心矩阵乘'
+- '    │   ├── ggml_zendnn_matmul<>()              # 模板化矩阵乘（F32/BF16）'
+- '    │   ├── ggml_zendnn_sgemm()                 # 类型分发（F32/BF16 组合）'
+- '    │   ├── ggml_zendnn_compute_forward_mul_mat()    # MUL_MAT 前向'
+- '    │   └── ggml_zendnn_compute_forward_mul_mat_id() # MUL_MAT_ID 前向（MoE）'
+- '    ├── MoE 辅助'
+- '    │   └── struct mmid_row_mapping             # 行映射结构（i1+i2，隐式定义）'
+- '    ├── 后端接口'
+- '    │   ├── ggml_backend_zendnn_init()          # 后端初始化'
+- '    │   ├── ggml_backend_zendnn_graph_compute() # 图计算入口'
+- '    │   ├── ggml_backend_zendnn_set_n_threads() # 线程数设置'
+- '    │   └── ggml_backend_zendnn_free()          # 资源释放'
+- '    └── 设备与注册'
+- '        ├── ggml_backend_zendnn_device_*        # 设备名称/类型/内存/属性'
+- '        ├── ggml_backend_zendnn_device_supports_op()   # 算子支持'
+- '        ├── ggml_backend_zendnn_device_supports_buft() # 缓冲区支持'
+- '        └── ggml_backend_zendnn_reg()                  # 后端注册'
+exercises:
+- contents:
+  - 假设你有一个包含 3 个节点的计算图（MUL → ADD → SILU），需要发送到远程 RPC 后端执行。
+  - 1. 阅读 `ggml_backend_rpc_graph_compute()` 函数（880-900 行），画出客户端的执行流程图，标注 `graph_cache.is_cached()`
+    的判断分支
+  - 2. 追踪 `serialize_graph()` 生成的字节流结构，写出其内存布局（device | n_nodes | nodes[] | n_tensors
+    | tensors[] 各占多少字节）
+  - 3. 回答：如果两次调用传入完全相同数量、相同形状的节点（仅数据不同），会走哪个命令？为什么这是合理的优化？
+  - 4. 思考题：`rpc_server::graph_compute()` 中使用 `stored_graphs[device].buffer` 做什么？为什么需要预分配上下文内存？
+  'no': 1
+  title: 追踪一次完整的 RPC 图执行
+- contents:
+  - VirtGPU 后端采用编码器/解码器对称设计。请完成以下分析：
+  - 1. 打开 `apir_cs_ggml-rpc-front.cpp` 的 `apir_serialize_tensor()` 和 `backend/apir_cs_ggml-rpc-back.cpp`
+    的 `apir_deserialize_tensor()`，逐行对比两者处理的字段：type、ne[]、nb[]、op、src[]、view_src 等
+  - 2. 特别观察 `data` 字段：前端为什么将 `tensor->data` 转换为「相对于缓冲区基址的偏移量」？后端又是如何还原的？
+  - 3. 思考问题：为什么要用 `BUFFER_TO_HOST_HANDLE()` 宏转换缓冲区指针？如果不在 Guest/Host 之间使用句柄映射，直接传指针会有什么问题？
+  - 4. 阅读 `apir_create_node()` 函数，解释它为什么要先用 `tensor_map.find(id)` 检查，再递归创建子节点？这解决了图中的什么拓扑问题？
+  'no': 2
+  title: 对比 VirtGPU 前端序列化与后端反序列化的对称性
+- contents:
+  - VirtGPU 后端的初始化过程涉及多次跨进程通信。请回答：
+  - 1. 阅读 `virtgpu.cpp` 中的 `virtgpu_handshake()` 函数，说明握手阶段交换了哪些信息？为什么要检查 `APIR_PROTOCOL_MAJOR/MINOR`
+    版本号？
+  - 2. 阅读 `virtgpu_load_library()` 和 `backend_dispatch_initialize()`，描述从「Guest 发起
+    LOADLIBRARY 命令」到「Host 侧 dlopen 后端库并返回设备数」的完整流程
+  - 3. 阅读 `backend.cpp` 中的 `apir_backend_dispatcher()`，说明它如何根据 `cmd_type` 索引 `apir_backend_dispatch_table[]`
+    并调用对应的处理函数
+  - 4. 思考题：`apir_backend_dispatch_table[]` 中的函数指针顺序是如何保证与前端 `virtgpu-forward.gen.h`
+    中的声明一一对应的？为什么要用代码生成器维护这个映射？
+  'no': 3
+  title: 分析 VirtGPU 远程调用的三次握手与命令分发
+- contents:
+  - VirtGPU 的 `apir_encoder` 和 `apir_decoder` 提供了内存安全的序列化接口。请分析：
+  - 1. 阅读 `backend/shared/apir_cs.h`，解释 `apir_decoder_use_inplace()` 和 `apir_decoder_peek()`
+    的区别：前者何时使用？后者何时使用？
+  - 2. 说明 `apir_decoder_set_fatal()` 的作用：当解码器检测到越界读取或不一致状态时，会发生什么？如何避免恶意 Guest 构造畸形数据导致
+    Host 崩溃？
+  - 3. 阅读 `backend/shared/apir_cs_ggml.h` 中的 `apir_decode_ggml_buffer()`，解释为什么要调用
+    `apir_decoder_set_fatal(dec)` 并返回 NULL？这在安全防护中扮演什么角色？
+  - 4. 思考题：`apir_encode_ggml_tensor_inline()` 为什么不支持带有 `tensor->extra` 的张量？如果要支持，需要在前端/后端之间传递哪些额外信息？
+  - 5. 进阶：阅读 `apir_encode_uint32_t()` / `apir_decode_uint32_t()`、`apir_encode_size_t()`
+    / `apir_decode_size_t()`、`apir_encode_bool_t()` / `apir_decode_bool_t()` 的实现，理解为什么需要对基本类型做对齐和尺寸断言？
+  'no': 4
+  title: 分析 VirtGPU 编码器/解码器的内存安全机制
+- contents:
+  - VirtGPU 使用 `regenerate_remoting.py` 自动生成三份协议头文件。请分析该流程：
+  - 1. 阅读 `RemotingCodebaseGenerator.__init__()`，说明它如何加载 YAML 配置文件并检查 clang-format
+    可用性
+  - 2. 阅读 `regenerate_codebase()`，描述从读取配置到生成 `apir_backend.gen.h`、`backend-dispatched.gen.h`、`virtgpu-forward.gen.h`
+    的完整步骤
+  - 3. 阅读 `generate_apir_backend_header()`，解释如何为每个函数生成枚举值并分配命令索引
+  - 4. 思考题：`main()` 函数作为脚本入口，如何捕获异常并退出？如果在生成过程中某个头文件写入失败，会发生什么？
+  'no': 5
+  title: 分析 VirtGPU 代码自动生成器的完整流程
+- contents:
+  - zDNN 后端代表了高度专业化的硬件加速器接入方式。
+  - 1. 阅读 `ggml_backend_zdnn_device_acq()` 和 `ggml_backend_zdnn_reg_device_count()`，说明设备数量是如何在运行时决定的，为什么需要
+    `zdnn_is_nnpa_installed()` 检查？
+  - 2. 阅读 `ggml_backend_zdnn_buffer_init_tensor()`，画出从 `ggml_tensor` 到 `zdnn_buffer`
+    再到 `ztensor` 的创建链路，指出 `tensor->extra` 指针的作用
+  - 3. 问题：`ggml_zdnn_supports_op()` 为什么对 weights 和 inputs 都要求「连续布局」（`ggml_is_contiguous()`）？如果传入
+    permute 后的非连续张量会发生什么？
+  - 4. 思考 zDNN 的「只支持 MUL_MAT」对其他算子（如 ADD、SOFTMAX）意味着什么？在 llama.cpp 的多后端调度中，这些不支持的算子会被调度到哪里去？
+  'no': 6
+  title: 分析 zDNN 的「惰性初始化」与类型限制
+- contents:
+  - ZenDNN 后端的 `MUL_MAT_ID` 实现了高效的专家路由计算。
+  - 1. 阅读 `ggml_zendnn_compute_forward_mul_mat_id()`（267-379 行），用纸笔画出「输入张量 → 按专家分组
+    → 分组矩阵乘 → 散回输出」的数据流
+  - 2. 计算：假设有 8 个专家、批次大小 16、每个 token 选 2 个专家，矩阵维度 d_model=1024。`matrix_row_counts`
+    数组的最大可能值是多少？`ggml_zendnn_sgemm()` 会被调用多少次？
+  - 3. 为什么 ZenDNN 选择「先按专家分组，再按行收集到 `wdata_cur`，最后结果散回」这个三段式策略，而不是直接在原输入上按行计算多次？
+  - 4. 思考题：`ggml_backend_zendnn_device_supports_op()` 中对 `MUL_MAT_ID` 的专家数限制 `max_experts
+    = 32` 可能来源于什么硬件约束或性能考虑？
+  'no': 7
+  title: 推导 ZenDNN 的 MoE 分组逻辑
+- contents:
+  - ZenDNN 的 `ggml_backend_zendnn_context` 承载了关键的运行时状态。请分析：
+  - 1. 阅读 `ggml_backend_zendnn_context` 结构体定义（15-19 行），说明 `n_threads` 和 `work_data`
+    / `work_size` 的作用
+  - 2. 阅读 `ggml_zendnn_compute_forward_mul_mat_id()` 中 `if (ctx->work_size < total_size)`
+    这段逻辑，解释为什么要按需扩展工作缓冲区，而不是每次分配固定大小？
+  - 3. 阅读 `mmid_row_mapping` 结构体（262-265 行），说明 `i1` 和 `i2` 分别代表什么含义，它们如何帮助在 MoE 分组后恢复原始的
+    token 顺序？
+  - 4. 思考题：`ggml_backend_zendnn_set_n_threads()` 更新的线程数，在 `ggml_zendnn_matmul()` 的
+    OpenMP 并行循环中如何生效？如果线程数设置过多会发生什么？
+  'no': 8
+  title: 分析 ZenDNN 的上下文与工作缓冲区管理
+- contents:
+  - 四种后端（RPC、VirtGPU、zDNN、ZenDNN）都实现了 ggml_backend_reg_t 接口，但注册时机和设备模型各不相同。
+  - 1. 列出每个后端的 `ggml_backend_*_reg()` 或 `ggml_backend_*_init()` 函数，标注：何时被调用？返回的是动态创建还是静态变量？
+  - 2. 分析 RPC 后端的 `ggml_backend_rpc_add_server()` 为什么使用 `static std::unordered_map<std::string,
+    ggml_backend_reg_t> reg_map` 做进程级缓存？这在多线程场景下有什么风险和保护机制？
+  - 3. 对比 zDNN 的「引用计数设备管理」（`acq/rel`）与 ZenDNN 的「单例初始化」：为什么 IBM NNPA 需要引用计数，而 AMD CPU
+    优化库不需要？
+  - 4. 思考题：如果让你为某种新的「远程 TPU」设计后端，你会选择 RPC 的「显式服务器」模式，还是 VirtGPU 的「共享内存+前端转发」模式？各有什么权衡？
+  'no': 9
+  title: 对比四种后端的设备注册与算子支持策略
+learning_targets:
+- 理解 RPC 后端的架构设计：如何通过「命令字节 + 长度 + 数据」协议将 GGML 计算图跨网络传输到远程服务器执行
+- 掌握 RPC 客户端/服务端的握手协议（HELLO 版本检查）、Socket 连接管理、缓冲区管理和张量序列化/反序列化机制
+- 理解 graph_cache 缓存优化：如何通过节点比对实现「图重计算」快进模式，避免重复传输计算图
+- 掌握 VirtGPU API Remoting 的实现原理：如何通过共享内存、APIR 协议和代码生成实现 Guest → Host 的透明远程调用
+- 理解 VirtGPU 前后端分离架构：前端序列化（apir_cs_ggml-rpc-front）与后端反序列化（apir_cs_ggml-rpc-back）的对称设计
+- 掌握 VirtGPU 编码器/解码器的内存安全机制：apir_encoder/apir_decoder 如何防止缓冲区溢出和整数溢出
+- 理解 VirtGPU 代码自动生成机制：从 YAML 配置到三份协议头文件的自动化生成流程（RemotingCodebaseGenerator）
+- 理解 zDNN 后端如何利用 IBM Z NNPA 加速器执行矩阵乘法：张量描述符、zTensor 转换和专用缓冲区管理
+- 掌握 ZenDNN 后端的 AMD CPU 优化路径：matmul_direct 调度、BF16/FP32 混合支持与 MoE 专家分组策略
+- 理解 ZenDNN 上下文管理与行映射机制：ggml_backend_zendnn_context 的工作缓冲区生命周期与 mmid_row_mapping 的
+  MoE 行追踪
+- 能阅读并分析四种后端的设备注册、缓冲区类型定义、算子支持检查、图计算入口等关键接口
+life_analogy:
+- 想象 GGML 的四种「边界后端」是四家风格迥异的**跨国物流与加工服务**：
+- '- **RPC 后端** = 顺丰国际快递：把计算任务「打包快递」到远程仓库，对方签收后拆包执行，再把结果寄回来'
+- '  - `serialize_tensor()` = 打包员把货物装入标准集装箱'
+- '  - `set_tensor_hash()` = 之前寄过的大宗货物直接走「电子签收」，不用拆箱检查'
+- '  - `graph_cache` = 老客户复购清单，同样订单直接发货不用重新打包'
+- '- **VirtGPU** = 虚拟办公室里的同层协作文档：即使你在子公司的虚拟办公室（Guest），也能通过共享白板（共享内存）直接在母公司（Host）的资源库上操作，就像在同一张桌子上工作'
+- '  - `apir_serialize_graph()` = 把工作计划书整理成投屏格式'
+- '  - `virtgpu_shmem_create()` = 申请一块共享白板区域'
+- '  - `backend_dispatch_initialize()` = 接通母公司内部资源系统'
+- '  - `apir_encoder/apir_decoder` = 双向翻译官，确保 Guest 和 Host 说的「语言」完全一致'
+- '  - `RemotingCodebaseGenerator` = 行政秘书，定期按模板（YAML）自动生成最新通讯录（头文件），确保两个办公室的电话号码完全同步'
+- '- **zDNN 后端** = IBM 专属「矩阵快餐店」：只接受标准盒子（zTensor）装好的食材，只能做特定套餐（MUL_MAT），但出餐速度极快'
+- '  - `ggml_backend_zdnn_buffer_init_tensor()` = 把散装食材装进标准盒'
+- '  - `zdnn_transform_ztensor()` = 后厨预处理（切割、腌制）'
+- '  - `ggml_zdnn_mul_mat_f()` = 按下「矩阵套餐」按钮，NNPA 加速器出餐'
+- '- **ZenDNN 后端** = AMD 厨房专用的「高效炉灶」：专为 AMD CPU 优化，擅长大锅菜（MUL_MAT）和分锅小炒（MUL_MAT_ID
+  MoE）'
+- '  - `ggml_zendnn_matmul()` = 调用 ZenDNN 炉灶的标准菜谱'
+- '  - `ggml_zendnn_compute_forward_mul_mat_id()` = 把不同顾客的订单按口味分组，分别下锅再合并上菜'
+- '  - `ggml_backend_zendnn_context` = 厨师的工作台，放着随时取用的临时食材（工作缓冲区）'
+- '  - `mmid_row_mapping` = 每道菜的分工单，记录这道菜原本属于哪桌客人（专家 ID、批次位置）'
+- 四者共同印证一个道理：**不是所有计算都要在本地完成，有时是网络传输更划算，有时是虚拟化穿透更高效，有时是专用硬件更省电，有时是 CPU 优化库更懂你的数据类型。**
+'no': 40
+summary:
+- concept: '`ggml_backend_rpc_init/start_server/add_server`'
+  desc: RPC 后端三大入口：客户端初始化、服务端启动、注册远程设备，用于跨网络分发计算任务
+- concept: '`struct rpc_tensor` / `serialize_tensor()` / `rpc_server::deserialize_tensor()`'
+  desc: RPC 张量传输协议：将本地 ggml_tensor 转换为网络字节流格式（包含 ID、形状、缓冲区间接引用），在服务端反序列化重建
+- concept: '`graph_cache.is_cached()` / `ggml_backend_rpc_graph_compute()`'
+  desc: RPC 图缓存优化：客户端记录已执行的计算图节点哈希，若本次调用与上次完全一致则发送 `GRAPH_RECOMPUTE` 命令跳过序列化与重建
+- concept: '`set_tensor_hash()` / `HASH_THRESHOLD`'
+  desc: RPC 大权重传输优化：超过 10MB 的张量先计算 FNV 哈希并查询服务端缓存，命中则免传输
+- concept: '`get_socket()` / `send_rpc_cmd()` / `recv_msg()`'
+  desc: RPC Socket 管理：连接缓存（weak_ptr）、命令封装发送、消息大小校验接收
+- concept: '`rpc_server::rpc_server()` / `rpc_server::hello()` / `rpc_server::alloc_buffer()`
+    / `rpc_server::set_tensor()` / `rpc_server::graph_compute()` / `rpc_server::graph_recompute()`'
+  desc: RPC 服务端核心处理：构造初始化、hello 握手、alloc_buffer、set/get_tensor、graph_compute、graph_recompute
+    等
+- concept: '`rpc_server::buffer_get_base()` / `rpc_server::get_alignment()` / `rpc_server::get_max_size()`
+    / `rpc_server::get_alloc_size()`'
+  desc: RPC 设备属性查询服务：基地址、对齐、最大尺寸、分配大小的远程获取
+- concept: '`ggml_backend_rpc_device_*` / `ggml_backend_rpc_reg_*`'
+  desc: RPC 设备与注册表接口：设备名称/描述/内存/算子支持、注册表名称/设备计数/进程地址获取
+- concept: '`apir_serialize_tensor()` / `apir_add_tensor()` / `apir_serialize_graph()`'
+  desc: VirtGPU 前端序列化：将 GGML 张量/计算图编码为 APIR 协议所需的字节流，通过共享内存或临时缓冲区送往 Host
+- concept: '`apir_deserialize_tensor()` / `apir_create_node()` / `apir_deserialize_graph()`'
+  desc: VirtGPU 后端反序列化：在 Host 侧重建 ggml 上下文和计算图，准备执行
+- concept: '`apir_track_backend_buffer()` / `apir_decode_ggml_buffer()`'
+  desc: VirtGPU 缓冲区句柄安全校验：跟踪已分配的 Host 缓冲区，防止 Guest 传入伪造指针
+- concept: '`apir_backend_initialize()` / `apir_backend_dispatcher()` / `apir_backend_deinit()`'
+  desc: VirtGPU 后端生命周期：动态加载真实后端库、按命令索引分发表、卸载资源
+- concept: '`apir_encoder` / `apir_decoder`'
+  desc: VirtGPU 编解码基础设施：内存安全的读写指针、fatal 错误标志、多种基本类型（uint32_t/size_t/bool/指针/数组）的编解码
+- concept: '`apir_encoder::apir_new_encoder()` / `apir_encoder_write()` / `apir_encoder_set_fatal()`
+    / `apir_decoder::apir_new_decoder()` / `apir_decoder_read()` / `apir_decoder_peek()`
+    / `apir_decoder_use_inplace()`'
+  desc: VirtGPU 编码器/解码器核心方法：构造、写入、错误标记、读取、预读、原地访问等内存安全操作
+- concept: '`apir_encode_uint32_t()` / `apir_encode_size_t()` / `apir_encode_bool_t()`
+    / `apir_encode_char_array()` / `apir_encode_blob_array()` 及对应 decode 函数'
+  desc: VirtGPU 基础类型编解码函数族：支持 uint32/uint64/size_t/bool/char*/blob 等类型的双向转换
+- concept: '`REMOTE_CALL_PREPARE` / `REMOTE_CALL` / `remote_call_finish()`'
+  desc: VirtGPU 远程调用三步曲：准备编码器 → 执行 hypercall → 解码响应
+- concept: '`virtgpu_shmem_create()` / `virtgpu_shmem_destroy()`'
+  desc: VirtGPU 共享内存管理：通过 DRM ioctl 创建 Host/Guest 共享的 blob 资源并映射到用户空间，实现零拷贝数据传输
+- concept: '`RemotingCodebaseGenerator.__init__()` / `RemotingCodebaseGenerator.regenerate_codebase()`
+    / `main()`'
+  desc: VirtGPU 代码自动化：生成器初始化（加载 YAML 配置）、从配置读取函数列表自动生成 `apir_backend.gen.h`、`backend-dispatched.gen.h`、`virtgpu-forward.gen.h`
+    三份协议头文件的核心方法；`main()` 是脚本入口，负责创建生成器并执行代码库重生成
+- concept: '`current_time_ms()`'
+  desc: VirtGPU 计时工具：获取纳秒级时间戳，用于性能统计
+- concept: '`backend-dispatched.gen.h` 中的 25 个命令处理函数声明'
+  desc: VirtGPU 自动生成的命令分发表：device/buffer-type/buffer/backend 四类命令的函数指针映射
+- concept: '`virtgpu::cleanup()`'
+  desc: VirtGPU 资源清理：释放设备名称、描述、缓冲区名称并销毁互斥锁
+- concept: '`include/apir_hw.h` 中的 `virgl_renderer_capset_apir`'
+  desc: VirtGPU 硬件能力集结构：定义 APIR 版本与 blob 资源支持标志
+- concept: '`ggml_backend_zdnn_buffer_init_tensor()` / `ggml_zdnn_load_tensor()`'
+  desc: zDNN 缓冲区初始化：为 IBM Z NNPA 创建标准 zTensor 描述符，并通过 `zdnn_transform_ztensor()` 完成格式转换
+- concept: '`ggml_zdnn_compute_forward()` / `ggml_zdnn_mul_mat_f()`'
+  desc: zDNN 计算入口：只处理 `GGML_OP_MUL_MAT`，调用 NNPA 硬件的 `zdnn_matmul_transpose_op()` 完成矩阵乘加
+- concept: '`ggml_zdnn_supports_op()`'
+  desc: zDNN 算子支持检查：仅接受 F32/F16/BF16 类型、矩阵形状、连续布局的 MUL_MAT 操作，且有批次上限
+- concept: '`ggml_backend_zdnn_device_acq()` / `rel()`'
+  desc: zDNN 设备引用计数：acq 增加引用并初始化 NNPA 参数块格式，rel 减少引用，归零时清理
+- concept: '`ggml_zendnn_matmul<>()` / `zendnnl::lowoha::matmul::matmul_direct()`'
+  desc: ZenDNN 核心矩阵乘：模板函数封装 ZenDNN 库的 matmul_direct API，支持 FP32 和 BF16 数据路径
+- concept: '`ggml_zendnn_compute_forward_mul_mat()`'
+  desc: ZenDNN MUL_MAT 前向：处理批量维度循环，必要时将 FP32 输入先转换为 BF16 再执行
+- concept: '`ggml_zendnn_compute_forward_mul_mat_id()` / `mmid_row_mapping`'
+  desc: ZenDNN MoE 分组策略：按专家 ID 将输入行分组（mmid_row_mapping 记录原始位置），每组独立调用矩阵乘，最后将结果按原始位置散回
+- concept: '`ggml_backend_zendnn_context`'
+  desc: ZenDNN 上下文：存储线程数配置和工作缓冲区（std::unique_ptr<char[]>），用于 MoE 场景的输入类型转换与临时矩阵存储
+- concept: '`ggml_backend_zendnn_device_supports_op()`'
+  desc: ZenDNN 算子过滤：仅支持 MUL_MAT 和 MUL_MAT_ID（且专家数 ≤ 32），以及基础形状重排操作
+- concept: '`ggml_backend_zendnn_set_n_threads()`'
+  desc: ZenDNN 线程控制：允许用户设置后端内部线程数，影响 OpenMP 并行度
+units:
+- codes:
+  - file: ggml/include/ggml-rpc.h
+    line: 1-40
+    method_or_func: '*'
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1-250
+    method_or_func: __main__
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 242-245
+    method_or_func: ggml_backend_rpc_guid
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 308-315
+    method_or_func: fnv_hash
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 317-327
+    method_or_func: make_socket
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 329-334
+    method_or_func: set_no_delay
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 336-341
+    method_or_func: set_reuse_addr
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 343-367
+    method_or_func: socket_connect
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 369-380
+    method_or_func: socket_accept
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 382-405
+    method_or_func: create_server_socket
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 407-422
+    method_or_func: send_data
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 424-440
+    method_or_func: recv_data
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 442-448
+    method_or_func: send_msg
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 450-475
+    method_or_func: recv_msg
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 477-486
+    method_or_func: parse_endpoint
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 489-519
+    method_or_func: send_rpc_cmd
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 523-536
+    method_or_func: check_server_version
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 538-567
+    method_or_func: get_socket
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 597-629
+    method_or_func: serialize_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 838-853
+    method_or_func: add_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 855-878
+    method_or_func: serialize_graph
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 273-283
+    method_or_func: graph_cache.is_cached
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 285-291
+    method_or_func: graph_cache.add
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 569-576
+    method_or_func: ggml_backend_rpc_buffer_free_buffer
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 578-590
+    method_or_func: ggml_backend_rpc_buffer_get_base
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 592-595
+    method_or_func: ggml_backend_buffer_is_rpc
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 631-643
+    method_or_func: ggml_backend_rpc_buffer_init_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 645-669
+    method_or_func: ggml_backend_rpc_buffer_set_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 671-681
+    method_or_func: ggml_backend_rpc_buffer_get_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 683-704
+    method_or_func: ggml_backend_rpc_buffer_cpy_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 706-712
+    method_or_func: ggml_backend_rpc_buffer_clear
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 726-730
+    method_or_func: ggml_backend_rpc_buffer_type_name
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 732-749
+    method_or_func: ggml_backend_rpc_buffer_type_alloc_buffer
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 751-758
+    method_or_func: get_alignment
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 760-764
+    method_or_func: ggml_backend_rpc_buffer_type_get_alignment
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 766-773
+    method_or_func: get_max_size
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 775-779
+    method_or_func: ggml_backend_rpc_get_max_size
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 781-812
+    method_or_func: ggml_backend_rpc_buffer_type_get_alloc_size
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 819-823
+    method_or_func: ggml_backend_rpc_name
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 825-830
+    method_or_func: ggml_backend_rpc_free
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 832-836
+    method_or_func: ggml_backend_rpc_synchronize
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 880-900
+    method_or_func: ggml_backend_rpc_graph_compute
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 908-939
+    method_or_func: ggml_backend_rpc_buffer_type
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 941-958
+    method_or_func: ggml_backend_rpc_init
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 960-963
+    method_or_func: ggml_backend_is_rpc
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 965-975
+    method_or_func: get_device_memory
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 977-985
+    method_or_func: ggml_backend_rpc_get_device_memory
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 666-818
+    method_or_func: rpc_serve_client
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 843-848
+    method_or_func: rpc_server.rpc_server
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 104-109
+    method_or_func: rpc_server.hello
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 111-147
+    method_or_func: rpc_server.get_alloc_size
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 149-169
+    method_or_func: rpc_server.alloc_buffer
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 209-220
+    method_or_func: rpc_server.free_buffer
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 222-232
+    method_or_func: rpc_server.buffer_clear
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 234-276
+    method_or_func: rpc_server.deserialize_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 278-329
+    method_or_func: rpc_server.set_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 331-345
+    method_or_func: rpc_server.get_cached_file
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 347-386
+    method_or_func: rpc_server.set_tensor_hash
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 388-420
+    method_or_func: rpc_server.init_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 422-453
+    method_or_func: rpc_server.get_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 455-493
+    method_or_func: rpc_server.copy_tensor
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 495-552
+    method_or_func: rpc_server.create_node
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 554-631
+    method_or_func: rpc_server.graph_compute
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 633-646
+    method_or_func: rpc_server.graph_recompute
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 648-658
+    method_or_func: rpc_server.get_device_memory
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 660-664
+    method_or_func: rpc_server.~rpc_server
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 195-207
+    method_or_func: rpc_server.buffer_get_base
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 171-181
+    method_or_func: rpc_server.get_alignment
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 183-193
+    method_or_func: rpc_server.get_max_size
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 820-895
+    method_or_func: ggml_backend_rpc_start_server
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1200-1250
+    method_or_func: ggml_backend_rpc_device_get_name
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1250-1300
+    method_or_func: ggml_backend_rpc_device_get_description
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1300-1350
+    method_or_func: ggml_backend_rpc_device_get_memory
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1350-1400
+    method_or_func: ggml_backend_rpc_device_get_type
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1400-1450
+    method_or_func: ggml_backend_rpc_device_get_props
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1450-1500
+    method_or_func: ggml_backend_rpc_device_init
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1500-1550
+    method_or_func: ggml_backend_rpc_device_get_buffer_type
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1550-1600
+    method_or_func: ggml_backend_rpc_device_supports_op
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1600-1650
+    method_or_func: ggml_backend_rpc_device_supports_buft
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1650-1700
+    method_or_func: ggml_backend_rpc_reg_get_name
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1700-1750
+    method_or_func: ggml_backend_rpc_reg_get_device_count
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1750-1800
+    method_or_func: ggml_backend_rpc_reg_get_device
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1800-1850
+    method_or_func: ggml_backend_rpc_get_proc_address
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1850-1900
+    method_or_func: ggml_backend_rpc_reg
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1900-1950
+    method_or_func: ggml_backend_rpc_get_device_count
+  - file: ggml/src/ggml-rpc/ggml-rpc.cpp
+    line: 1950-2100
+    method_or_func: ggml_backend_rpc_add_server
+  name: RPC 后端 —— 跨网络的「算力传送门」
+  'no': 1
+  points:
+  - '**为什么需要 RPC 后端？**'
+  - '- 单机算力不足时，需要把 GGML 计算图远程分发到另一台主机'
+  - '- 类比：把「图纸」带到隔壁更强的「工坊」去执行，再把结果带回来'
+  - '- 将本地后端变成网络服务，让 GGML 在不感知网络的前提下完成远端执行'
+  - '**客户端/服务端协议设计**'
+  - '- 协议头包含版本号（`RPC_PROTO_MAJOR/MINOR/PATCH`），`HELLO` 握手做兼容性检查'
+  - '- 所有命令都走「命令字节 + 长度 + 数据」的统一序列化格式'
+  - '- `RPC_CMD_*` 枚举覆盖缓冲区、张量传输、图执行、设备查询等 15 类操作'
+  - '**Socket 管理与连接缓存**'
+  - '- `get_socket()` 维护 endpoint → socket 的弱指针缓存，避免重复连接'
+  - '- `send_data()` / `recv_data()` 支持超过 1 GiB 的大数据分块传输'
+  - '- `check_server_version()` 在连接建立时执行版本握手'
+  - '**缓冲区与张量的远程管理**'
+  - '- `ggml_backend_rpc_buffer_*` 接口把远端缓冲区包装成本地对象'
+  - '- `serialize_tensor()` / `deserialize_tensor()` 负责张量元数据与缓冲区的编码解码'
+  - '- 服务端通过 `rpc_server::set_tensor_hash()` 利用 FNV 哈希缓存避免重复传输大权重'
+  - '**图执行的「快进模式」**'
+  - '- `graph_cache` 对比节点序列判断是否重复执行同一图'
+  - '- 若一致则走 `RPC_CMD_GRAPH_RECOMPUTE` 直接重算，跳过图重建开销'
+  - '- 否则走 `RPC_CMD_GRAPH_COMPUTE`，将整张图序列化后发给服务端重建执行'
+  - '**服务的启动与设备注册**'
+  - '- `ggml_backend_rpc_start_server()` 启动 socket 监听并接收客户端连接'
+  - '- 客户端通过 `ggml_backend_rpc_add_server()` 注册远程 endpoint'
+  - '- `ggml_backend_rpc_reg()` 提供统一注册表入口，完成设备发现与后端接入'
+  - '**设备接口的细节**'
+  - '- `ggml_backend_rpc_device_get_memory()` 通过 RPC 调用查询远程设备内存'
+  - '- `ggml_backend_rpc_device_supports_op()` 默认支持所有算子（透传）'
+  - '- `ggml_backend_rpc_device_supports_buft()` 检查缓冲区类型是否匹配同一 endpoint 和 device'
+  - '**服务端设备属性查询服务**'
+  - '- `rpc_server::get_alloc_size()` 在服务端计算张量的实际分配大小（考虑后端特殊需求）'
+  - '- `rpc_server::get_alignment()`、`rpc_server::get_max_size()`、`rpc_server::buffer_get_base()`
+    提供设备缓冲区属性查询'
+- codes:
+  - file: ggml/include/ggml-virtgpu.h
+    line: '7'
+    method_or_func: ggml_backend_virtgpu_reg
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 12-70
+    method_or_func: apir_initialize
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 73-80
+    method_or_func: ggml_backend_remoting_get_device_count
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 82-87
+    method_or_func: ggml_backend_remoting_reg_get_device_count
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 91-94
+    method_or_func: ggml_backend_remoting_get_device
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 96-132
+    method_or_func: ggml_backend_remoting_reg_init_devices
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 134-138
+    method_or_func: ggml_backend_remoting_reg_get_device
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 140-144
+    method_or_func: ggml_backend_remoting_reg_get_name
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 137-151
+    method_or_func: virtgpu.cleanup
+  - file: ggml/src/ggml-virtgpu/ggml-backend-reg.cpp
+    line: 146-164
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/ggml-remoting.h
+    line: 1-80
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/apir_cs_ggml-rpc-front.cpp
+    line: 14-53
+    method_or_func: apir_serialize_tensor
+  - file: ggml/src/ggml-virtgpu/apir_cs_ggml-rpc-front.cpp
+    line: 55-71
+    method_or_func: apir_add_tensor
+  - file: ggml/src/ggml-virtgpu/apir_cs_ggml-rpc-front.cpp
+    line: 73-94
+    method_or_func: apir_serialize_graph
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward-backend.cpp
+    line: 1-6
+    method_or_func: current_time_ms
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward-backend.cpp
+    line: 8-53
+    method_or_func: apir_backend_graph_compute
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward-device.cpp
+    line: 1-211
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward-buffer-type.cpp
+    line: 5-115
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward-buffer.cpp
+    line: 1-159
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-forward.gen.h
+    line: 4-52
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.h
+    line: 1-20
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.cpp
+    line: 81-103
+    method_or_func: virtgpu_shmem_create
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.cpp
+    line: 75-79
+    method_or_func: virtgpu_shmem_destroy
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.cpp
+    line: 8-39
+    method_or_func: virtgpu_ioctl_resource_create_blob
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.cpp
+    line: 56-73
+    method_or_func: virtgpu_ioctl_map
+  - file: ggml/src/ggml-virtgpu/virtgpu-shm.cpp
+    line: 41-54
+    method_or_func: virtgpu_ioctl_gem_close
+  - file: ggml/src/ggml-virtgpu/virtgpu.h
+    line: 1-125
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 1-27
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 174-227
+    method_or_func: create_virtgpu
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 229-248
+    method_or_func: virtgpu_open
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 250-278
+    method_or_func: virtgpu_open_device
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 280-289
+    method_or_func: virtgpu_init_context
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 291-313
+    method_or_func: virtgpu_init_capset
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 315-335
+    method_or_func: virtgpu_ioctl_context_init
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 337-351
+    method_or_func: virtgpu_ioctl_get_caps
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 353-363
+    method_or_func: virtgpu_ioctl_getparam
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 29-82
+    method_or_func: virtgpu_handshake
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 84-172
+    method_or_func: virtgpu_load_library
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 365-390
+    method_or_func: remote_call_prepare
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 410-476
+    method_or_func: remote_call
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 392-408
+    method_or_func: remote_call_finish
+  - file: ggml/src/ggml-virtgpu/virtgpu.cpp
+    line: 478-488
+    method_or_func: log_call_duration
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.h
+    line: 38-107
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: '55'
+    method_or_func: util_logbase2_64
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 64-71
+    method_or_func: os_malloc_aligned
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 73-75
+    method_or_func: _util_sparse_array_node_data
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 77-79
+    method_or_func: _util_sparse_array_node_level
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 81-92
+    method_or_func: _util_sparse_array_node_finish
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 94-99
+    method_or_func: _util_sparse_array_node
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 101-111
+    method_or_func: _util_sparse_array_node_alloc
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 113-123
+    method_or_func: _util_sparse_array_set_or_free_node
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 57-62
+    method_or_func: util_sparse_array.util_sparse_array_init
+  - file: ggml/src/ggml-virtgpu/virtgpu-utils.cpp
+    line: 129-170
+    method_or_func: util_sparse_array.util_sparse_array_get
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 13-15
+    method_or_func: apir_track_backend_buffer
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 17-25
+    method_or_func: apir_untrack_backend_buffer
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 27-29
+    method_or_func: apir_get_track_backend_buffers
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 33-62
+    method_or_func: apir_deserialize_tensor
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 64-88
+    method_or_func: apir_create_node
+  - file: ggml/src/ggml-virtgpu/backend/apir_cs_ggml-rpc-back.cpp
+    line: 90-116
+    method_or_func: apir_deserialize_graph
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs_rpc.h
+    line: 1-50
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend.cpp
+    line: 1-37
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/backend/backend.cpp
+    line: 33-37
+    method_or_func: log_to_file_callback
+  - file: ggml/src/ggml-virtgpu/backend/backend.cpp
+    line: 40-59
+    method_or_func: apir_backend_deinit
+  - file: ggml/src/ggml-virtgpu/backend/backend.cpp
+    line: 63-112
+    method_or_func: apir_backend_initialize
+  - file: ggml/src/ggml-virtgpu/backend/backend.cpp
+    line: 114-147
+    method_or_func: apir_backend_dispatcher
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.cpp
+    line: 10-16
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.cpp
+    line: 18-56
+    method_or_func: backend_dispatch_initialize
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.h
+    line: 1-28
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 1-67
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 5-5
+    method_or_func: backend_device_get_device_count
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 6-6
+    method_or_func: backend_device_get_count
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 7-7
+    method_or_func: backend_device_get_name
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 8-8
+    method_or_func: backend_device_get_description
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 9-9
+    method_or_func: backend_device_get_type
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 10-10
+    method_or_func: backend_device_get_memory
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 11-11
+    method_or_func: backend_device_supports_op
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 12-12
+    method_or_func: backend_device_get_buffer_type
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 13-13
+    method_or_func: backend_device_get_props
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 14-14
+    method_or_func: backend_device_buffer_from_ptr
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 18-18
+    method_or_func: backend_buffer_type_get_name
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 19-19
+    method_or_func: backend_buffer_type_get_alignment
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 20-20
+    method_or_func: backend_buffer_type_get_max_size
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 22-22
+    method_or_func: backend_buffer_type_is_host
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 23-23
+    method_or_func: backend_buffer_type_alloc_buffer
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 24-24
+    method_or_func: backend_buffer_type_get_alloc_size
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 28-28
+    method_or_func: backend_buffer_get_base
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 29-29
+    method_or_func: backend_buffer_set_tensor
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 30-30
+    method_or_func: backend_buffer_get_tensor
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 31-31
+    method_or_func: backend_buffer_cpy_tensor
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 32-32
+    method_or_func: backend_buffer_clear
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 33-33
+    method_or_func: backend_buffer_free_buffer
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched.gen.h
+    line: 37-37
+    method_or_func: backend_backend_graph_compute
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-device.cpp
+    line: 10-145
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-buffer-type.cpp
+    line: 10-111
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-buffer.cpp
+    line: 10-20
+    method_or_func: validate_buffer_operation
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-buffer.cpp
+    line: 22-194
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-backend.cpp
+    line: 1-8
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-backend.cpp
+    line: 11-26
+    method_or_func: validate_graph_operation
+  - file: ggml/src/ggml-virtgpu/backend/backend-dispatched-backend.cpp
+    line: 28-110
+    method_or_func: backend_backend_graph_compute
+  - file: ggml/src/ggml-virtgpu/backend/backend-convert.h
+    line: 6-14
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/backend-virgl-apir.h
+    line: 1-34
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_backend.h
+    line: 1-60
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_backend.gen.h
+    line: 38-99
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/shared/api_remoting.h
+    line: 1-97
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-100
+    method_or_func: apir_encoder.apir_new_encoder
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_encoder.apir_encoder_write
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_encoder.apir_encoder_reset_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_encoder.apir_encoder_set_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_encoder.apir_encoder_get_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-100
+    method_or_func: apir_decoder.apir_new_decoder
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_read
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_peek
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_peek_internal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_use_inplace
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_reset_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_set_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 101-200
+    method_or_func: apir_decoder.apir_decoder_get_fatal
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-100
+    method_or_func: apir_decoder.apir_decoder_alloc_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_uint32_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_uint32_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_uint32_t_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_uint32_t_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_size_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_size_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_size_t_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_size_t_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_bool_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_bool_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_char_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_char_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_blob_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_blob_array
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_simple_pointer
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_simple_pointer
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_array_size
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_array_size
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_array_size_unchecked
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_apir_buffer_type_host_handle_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_apir_buffer_type_host_handle_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_apir_buffer_host_handle_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_apir_buffer_host_handle_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_encode_uintptr_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs.h
+    line: 1-500
+    method_or_func: apir_decode_uintptr_t
+  - file: ggml/src/ggml-virtgpu/backend/shared/apir_cs_ggml.h
+    line: 8-264
+    method_or_func: '*'
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 1-27
+    method_or_func: ggml_backend_remoting_buffer_type_alloc_buffer
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 29-32
+    method_or_func: ggml_backend_remoting_buffer_type_get_name
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 34-37
+    method_or_func: ggml_backend_remoting_buffer_type_get_alignment
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 39-42
+    method_or_func: ggml_backend_remoting_buffer_type_get_max_size
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 44-53
+    method_or_func: ggml_backend_remoting_buffer_type_get_alloc_size
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer-type.cpp
+    line: 55-70
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/ggml-backend-buffer.cpp
+    line: 1-117
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/ggml-backend-device.cpp
+    line: 1-172
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/ggml-backend.cpp
+    line: 4-8
+    method_or_func: ggml_backend_remoting_get_name
+  - file: ggml/src/ggml-virtgpu/ggml-backend.cpp
+    line: 10-12
+    method_or_func: ggml_backend_remoting_free
+  - file: ggml/src/ggml-virtgpu/ggml-backend.cpp
+    line: 14-18
+    method_or_func: ggml_backend_remoting_graph_compute
+  - file: ggml/src/ggml-virtgpu/ggml-backend.cpp
+    line: 20-32
+    method_or_func: ggml_backend_remoting_graph_optimize
+  - file: ggml/src/ggml-virtgpu/ggml-backend.cpp
+    line: 34-77
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/include/apir_hw.h
+    line: 1-10
+    method_or_func: __main__
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 29-45
+    method_or_func: RemotingCodebaseGenerator.__init__
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 47-49
+    method_or_func: RemotingCodebaseGenerator._check_clang_format_available
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 51-69
+    method_or_func: RemotingCodebaseGenerator._format_file_with_clang_format
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 71-74
+    method_or_func: RemotingCodebaseGenerator.generate_enum_name
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 76-86
+    method_or_func: RemotingCodebaseGenerator.generate_backend_function_name
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 88-91
+    method_or_func: RemotingCodebaseGenerator.generate_frontend_function_name
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 93-119
+    method_or_func: RemotingCodebaseGenerator.get_enabled_functions
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 121-175
+    method_or_func: RemotingCodebaseGenerator.generate_apir_backend_header
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 177-221
+    method_or_func: RemotingCodebaseGenerator.generate_backend_dispatched_header
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 223-246
+    method_or_func: RemotingCodebaseGenerator.generate_virtgpu_forward_header
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 248-306
+    method_or_func: RemotingCodebaseGenerator.regenerate_codebase
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 309-315
+    method_or_func: main
+  - file: ggml/src/ggml-virtgpu/regenerate_remoting.py
+    line: 317-318
+    method_or_func: __main__
+  name: VirtGPU API Remoting —— 虚拟化里的「隐形传送带」
+  'no': 2
+  points:
+  - '**为什么需要 VirtGPU 远程调用？**'
+  - '- 在虚拟化环境中，Guest 想使用 Host 上真实 GPU 执行 GGML 计算'
+  - '- 通过 virtio-GPU 把后端 API 「远程化」，像在本地调用一样透明'
+  - '- 类比：在虚拟机里放了一条直通宿主机的「传送带」'
+  - '**前端初始化与设备发现**'
+  - '- `apir_initialize()` 创建 virtgpu 对象并缓存设备信息（名称、描述、内存）'
+  - '- `ggml_backend_virtgpu_reg()` 返回注册表，内部调用 `ggml_backend_remoting_reg_init_devices()`'
+  - '- `ggml_backend_remoting_get_device()` 根据索引返回设备'
+  - '**前端序列化：把图和张量打包带走**'
+  - '- `apir_serialize_tensor()` 将张量元数据、buffer 句柄、data 偏移安全编码'
+  - '- `apir_add_tensor()` 递归收集依赖，避免重复序列化'
+  - '- `apir_serialize_graph()` 将整张计算图切成字节流供传输'
+  - '**共享内存：Guest/Host 的「零拷贝」通道**'
+  - '- `virtgpu_shmem_create()` 通过 DRM ioctl 创建 Host/Guest 共享的 blob 资源'
+  - '- 图计算数据优先走共享内存（`gpu->data_shmem`），避免多次复制'
+  - '- `apir_backend_graph_compute()` 在解码后完成重建并执行图计算'
+  - '**后端分发：命令到达后的「分工台」**'
+  - '- `apir_backend_initialize()` 在 Host 侧加载真实后端库（如 CUDA、Metal）'
+  - '- `backend_dispatch_initialize()` 注册后端、获取设备、初始化后端实例'
+  - '- `apir_backend_dispatcher()` 用命令类型索引 `apir_backend_dispatch_table[]` 分发请求'
+  - '- `backend-dispatched-*` 系列函数按设备/缓冲区/图计算分类处理'
+  - '- `backend-dispatched.gen.h` 由代码生成器自动维护 25 个命令处理函数的映射关系'
+  - '**后端反序列化：Host 侧的「拆包重建」**'
+  - '- `apir_deserialize_tensor()` 重建 ggml_tensor，验证缓冲区句柄'
+  - '- `apir_create_node()` 递归创建依赖节点，利用 tensor_map 去重'
+  - '- `apir_deserialize_graph()` 重建完整的 ggml_cgraph'
+  - '**编码器/解码器：双向翻译的「安全卫士」**'
+  - '- `apir_encoder` / `apir_decoder` 维护读写指针和 fatal 错误标志'
+  - '- `apir_encoder::apir_new_encoder()` / `apir_encoder_write()` / `apir_encoder_set_fatal()`
+    构成编码核心'
+  - '- `apir_decoder::apir_new_decoder()` / `apir_decoder_read()` / `apir_decoder_peek()`
+    / `apir_decoder_use_inplace()` 构成解码核心'
+  - '- 提供数十种基本类型（uint32_t、size_t、bool、指针、数组、字符串、blob）的编解码函数'
+  - '- `apir_decode_ggml_buffer()` 校验缓冲区句柄是否在 Host 跟踪集合中，防止伪造指针'
+  - '**自动化代码生成：协议一改，代码全同步**'
+  - '- `regenerate_remoting.py` 根据 YAML 配置自动生成头文件，入口为 `main()` 函数'
+  - '- 输出 `apir_backend.gen.h`、`backend-dispatched.gen.h`、`virtgpu-forward.gen.h`'
+  - '- 保证前端/后端协议索引一致，降低手工维护成本'
+  - '**远程调用的三次握手与资源清理**'
+  - '- `virtgpu_handshake()` 交换 APIR 协议版本'
+  - '- `virtgpu_load_library()` 触发 Host 侧 dlopen 真实后端库'
+  - '- `apir_backend_deinit()` 释放所有跟踪的缓冲区并卸载库'
+  - '- `virtgpu::cleanup()` 释放设备名称、描述等缓存字符串并销毁互斥锁'
+  - '**硬件抽象层定义**'
+  - '- `include/apir_hw.h` 定义 `virgl_renderer_capset_apir` 结构体，声明 APIR 版本和 blob 资源支持'
+- codes:
+  - file: ggml/include/ggml-zdnn.h
+    line: 12-14
+    method_or_func: '*'
+  - file: ggml/src/ggml-zdnn/common.hpp
+    line: 1-100
+    method_or_func: '*'
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 17-29
+    method_or_func: ggml_zdnn_compute_forward_mul_mat
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 31-48
+    method_or_func: ggml_zdnn_compute_forward
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 50-79
+    method_or_func: ggml_zdnn_graph_compute
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 81-116
+    method_or_func: ggml_zdnn_supports_op
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 132-146
+    method_or_func: ggml_backend_zdnn_device_acq
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 148-157
+    method_or_func: ggml_backend_zdnn_device_rel
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 176-198
+    method_or_func: ggml_zdnn_init
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 200-204
+    method_or_func: ggml_zdnn_free
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 213-224
+    method_or_func: ggml_backend_zdnn_buffer_free_buffer
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 226-230
+    method_or_func: ggml_backend_zdnn_buffer_get_base
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 232-277
+    method_or_func: ggml_backend_zdnn_buffer_init_tensor
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 279-284
+    method_or_func: ggml_backend_zdnn_buffer_memset_tensor
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 286-295
+    method_or_func: ggml_backend_zdnn_buffer_set_tensor
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 297-302
+    method_or_func: ggml_backend_zdnn_buffer_get_tensor
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 304-309
+    method_or_func: ggml_backend_zdnn_buffer_clear
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 332-337
+    method_or_func: ggml_backend_zdnn_buffer_type_get_name
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 339-365
+    method_or_func: ggml_backend_zdnn_buffer_type_alloc_buffer
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 367-372
+    method_or_func: ggml_backend_zdnn_buffer_type_get_alignment
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 374-380
+    method_or_func: ggml_backend_zdnn_buffer_type_is_host
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 382-397
+    method_or_func: ggml_backend_zdnn_buffer_type
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 417-422
+    method_or_func: ggml_backend_zdnn_name
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 424-430
+    method_or_func: ggml_backend_zdnn_free
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 432-435
+    method_or_func: ggml_backend_zdnn_graph_compute
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 454-458
+    method_or_func: ggml_backend_zdnn_guid
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 460-465
+    method_or_func: ggml_backend_is_zdnn
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 472-477
+    method_or_func: ggml_backend_zdnn_device_get_name
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 479-484
+    method_or_func: ggml_backend_zdnn_device_get_description
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 486-492
+    method_or_func: ggml_backend_zdnn_device_get_memory
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 494-499
+    method_or_func: ggml_backend_zdnn_device_get_type
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 501-512
+    method_or_func: ggml_backend_zdnn_device_get_props
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 514-531
+    method_or_func: ggml_backend_zdnn_device_init
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 533-538
+    method_or_func: ggml_backend_zdnn_device_get_buffer_type
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 540-545
+    method_or_func: ggml_backend_zdnn_device_supports_op
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 547-553
+    method_or_func: ggml_backend_zdnn_device_supports_buft
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 578-583
+    method_or_func: ggml_backend_zdnn_reg_get_name
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 585-592
+    method_or_func: ggml_backend_zdnn_reg_device_count
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 594-602
+    method_or_func: ggml_backend_zdnn_reg_device_get
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 608-613
+    method_or_func: ggml_backend_zdnn_get_features
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 615-623
+    method_or_func: ggml_backend_zdnn_get_proc_address
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 630-633
+    method_or_func: ggml_zdnn_cleanup
+  - file: ggml/src/ggml-zdnn/ggml-zdnn.cpp
+    line: 635-657
+    method_or_func: ggml_backend_zdnn_reg
+  - file: ggml/src/ggml-zdnn/mmf.cpp
+    line: 1-65
+    method_or_func: ggml_zdnn_mul_mat_f
+  - file: ggml/src/ggml-zdnn/mmf.hpp
+    line: 7-12
+    method_or_func: '*'
+  - file: ggml/src/ggml-zdnn/utils.cpp
+    line: 5-18
+    method_or_func: ggml_zdnn_type_mapping
+  - file: ggml/src/ggml-zdnn/utils.cpp
+    line: 20-34
+    method_or_func: ggml_zdnn_create_tensor
+  - file: ggml/src/ggml-zdnn/utils.cpp
+    line: 36-39
+    method_or_func: ggml_zdnn_load_tensor
+  - file: ggml/src/ggml-zdnn/utils.cpp
+    line: 41-65
+    method_or_func: ggml_zdnn_init_tensor
+  - file: ggml/src/ggml-zdnn/utils.hpp
+    line: 7-18
+    method_or_func: '*'
+  name: zDNN 后端 —— IBM Z 的「矩阵加速器」
+  'no': 3
+  points:
+  - '**IBM Z NNPA 的特殊「口味」**'
+  - '- zDNN 后端面向 IBM Z 系列 NNPA 加速器，只接受特定布局的张量'
+  - '- 支持 F32/F16/BF16 的矩阵乘法，偏硬件原生数据流'
+  - '- 不支持的算子会被拒绝，由其他后端处理'
+  - '**缓冲区与张量描述**'
+  - '- `ggml_backend_zdnn_buffer` 里维护 `ztensor` 与 `pre_tfm_desc`'
+  - '- `init_tensor()` 会根据算子类型准备 zDNN 张量描述'
+  - '- 对 `MUL_MAT` 额外分配 bias 缓冲区（`zdnn_bias_buffer`）'
+  - '**张量数据的「预加工」**'
+  - '- `buffer_set_tensor()`：先把数据拷贝到张量，再 `zdnn_transform_ztensor()` 转成 zTensor'
+  - '- 如果已转换过，需要先 `zdnn_reset_ztensor()` 再重新加载'
+  - '- `ggml_zdnn_load_tensor()` 完成实际的格式转换'
+  - '**图执行只认核心算子**'
+  - '- `ggml_zdnn_graph_compute()` 遍历图中所有节点'
+  - '- 跳过 reshape/view/permute/transpose 等非计算节点'
+  - '- 对 `GGML_OP_MUL_MAT` 调用 `ggml_zdnn_compute_forward_mul_mat()`'
+  - '- 底层调用 `zdnn_matmul_transpose_op()` 利用 NNPA 硬件'
+  - '**设备注册与生命周期管理**'
+  - '- `ggml_backend_zdnn_device_acq()` 引用计数式设备获取'
+  - '- `ggml_backend_zdnn_device_rel()` 释放时减少引用，归零时清理'
+  - '- `ggml_backend_zdnn_reg()` 注册后端并用 `atexit()` 做清理'
+  - '- `ggml_backend_zdnn_reg_device_count()` 运行时检测 NNPA 是否安装'
+  - '**算子支持检查**'
+  - '- `ggml_zdnn_supports_op()` 只允许 F32/F16/BF16、连续布局的 MUL_MAT'
+  - '- 检查批次大小是否超过 NNPA 的 `max_dim_idx_size` 上限'
+  - '- 不支持 view、量化类型、非连续张量'
+- codes:
+  - file: ggml/include/ggml-zendnn.h
+    line: 10-17
+    method_or_func: '*'
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 21-28
+    method_or_func: ggml_to_zendnn_type
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 37-66
+    method_or_func: ggml_zendnn_matmul
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 68-97
+    method_or_func: ggml_zendnn_sgemm
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 100-181
+    method_or_func: ggml_zendnn_compute_forward_mul_mat
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 267-379
+    method_or_func: ggml_zendnn_compute_forward_mul_mat_id
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 383-387
+    method_or_func: ggml_backend_zendnn_get_name
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 389-393
+    method_or_func: ggml_backend_zendnn_free
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 395-424
+    method_or_func: ggml_backend_zendnn_graph_compute
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 436-440
+    method_or_func: ggml_backend_zendnn_guid
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 442-451
+    method_or_func: ggml_backend_zendnn_init
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 453-456
+    method_or_func: ggml_backend_is_zendnn
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 458-464
+    method_or_func: ggml_backend_zendnn_set_n_threads
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 467-471
+    method_or_func: ggml_backend_zendnn_device_get_name
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 478-482
+    method_or_func: ggml_backend_zendnn_device_get_description
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 484-489
+    method_or_func: ggml_backend_zendnn_device_get_memory
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 491-495
+    method_or_func: ggml_backend_zendnn_device_get_type
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 497-509
+    method_or_func: ggml_backend_zendnn_device_get_props
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 511-522
+    method_or_func: ggml_backend_zendnn_device_init_backend
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 524-528
+    method_or_func: ggml_backend_zendnn_device_get_buffer_type
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 530-535
+    method_or_func: ggml_backend_zendnn_device_buffer_from_host_ptr
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 537-585
+    method_or_func: ggml_backend_zendnn_device_supports_op
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 587-590
+    method_or_func: ggml_backend_zendnn_device_supports_buft
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 606-610
+    method_or_func: ggml_backend_zendnn_reg_get_name
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 612-616
+    method_or_func: ggml_backend_zendnn_reg_get_device_count
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 618-628
+    method_or_func: ggml_backend_zendnn_reg_get_device
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 630-638
+    method_or_func: ggml_backend_zendnn_get_proc_address
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 649-657
+    method_or_func: ggml_backend_zendnn_reg
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 15-19
+    method_or_func: ggml_backend_zendnn_context
+  - file: ggml/src/ggml-zendnn/ggml-zendnn.cpp
+    line: 262-265
+    method_or_func: mmid_row_mapping
+  name: ZenDNN 后端 —— AMD CPU 的「矩阵发动机」
+  'no': 4
+  points:
+  - '**为什么需要 ZenDNN？**'
+  - '- 专为 AMD CPU 优化的矩阵乘法库，替代纯 CPU 的通用实现'
+  - '- 主要聚焦 `MUL_MAT` 与 `MUL_MAT_ID`（MoE）两大算子'
+  - '- 通过 ZenDNN 库的 `matmul_direct` 接口直接调用底层优化 kernel'
+  - '**核心计算路径**'
+  - '- `ggml_zendnn_matmul<>()` 模板函数封装 `zendnnl::lowoha::matmul::matmul_direct()`'
+  - '- 支持 F32 与 BF16 的组合：`<float,float,float>`、`<bf16,bf16,bf16>`、`<bf16,bf16,float>`'
+  - '- `ggml_zendnn_sgemm()` 根据 A/B/C 三个矩阵的实际类型分发到对应的模板实例'
+  - '- `ggml_zendnn_compute_forward_mul_mat()` 处理批量维度循环与类型转换（FP32→BF16）'
+  - '**MoE 的「分组对齐」策略**'
+  - '- `ggml_zendnn_compute_forward_mul_mat_id()` 先把输入按专家 ID 分组'
+  - '- `mmid_row_mapping` 记录每行的原始位置（expert_id, batch_idx）'
+  - '- 每个专家执行独立的矩阵乘法，结果先写到临时缓冲区 `dst_cur`'
+  - '- 最后根据 `mmid_row_mapping` 把结果散回原始位置'
+  - '**工作缓冲区管理**'
+  - '- `ggml_backend_zendnn_context` 维护一个可增长的工作缓冲区 `work_data`'
+  - '- 如果输入类型与权重类型不匹配，需要先在 `work_data` 中完成类型转换'
+  - '- MoE 场景下，`work_data` 需容纳转换后的输入、分组后的临时矩阵和结果'
+  - '**上下文与行映射的隐式管理**'
+  - '- `ggml_backend_zendnn_context` 通过隐式构造/析构管理线程数配置和 `std::unique_ptr<char[]> work_data`'
+  - '- 工作缓冲区按需扩展（`work_size` 记录当前容量），避免重复分配'
+  - '- `mmid_row_mapping` 结构体隐式定义 `i1`（输入批次索引）和 `i2`（专家/样本索引），用于 MoE 分组后的行位置恢复'
+  - '**后端接入与设备能力**'
+  - '- `ggml_backend_zendnn_init()` 创建后端并注册到设备 0'
+  - '- `ggml_backend_zendnn_graph_compute()` 遍历计算图，只处理 MUL_MAT/MUL_MAT_ID'
+  - '- 其他算子（如 reshape/view）直接跳过，由其他后端处理'
+  - '**线程与并发控制**'
+  - '- `ggml_backend_zendnn_set_n_threads()` 允许用户控制线程数'
+  - '- 影响 OpenMP 并行循环的线程数量'
+  - '**设备能力查询**'
+  - '- `ggml_backend_zendnn_device_supports_op()` 过滤不支持的算子'
+  - '- 仅支持 MUL_MAT、MUL_MAT_ID（专家数 ≤ 32）、基础重排操作'
+  - '- `ggml_backend_zendnn_device_supports_buft()` 只支持主机缓冲区'
+  - '- `ggml_backend_zendnn_device_get_buffer_type()` 返回 CPU 缓冲区类型'
+  - '**注册表接口**'
+  - '- `ggml_backend_zendnn_reg()` 返回静态注册表，包含一个设备'
+  - '- `ggml_backend_zendnn_reg_get_device()` 返回静态设备对象'
+  - '- `ggml_backend_zendnn_get_proc_address()` 目前只暴露 `ggml_backend_set_n_threads`'

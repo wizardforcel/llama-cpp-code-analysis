@@ -1,0 +1,169 @@
+classes: []
+desc: 该文件是 SYCL 后端归一化操作的实现，包含四种归一化操作（norm、group norm、rms norm、l2 norm）的内核函数及宿主编排函数的定义，用于在
+  SYCL 设备上执行归一化运算。
+file: ggml/src/ggml-sycl/norm.cpp
+funcs:
+- code:
+  - static void norm_f32(const float* x, float* dst, const int ncols, const int64_t
+    stride_row, const int64_t stride_channel, const int64_t stride_sample, const float
+    eps, const sycl::nd_item<3>& item_ct1, sycl::float2* s_sum, int block_size) {
+  - '    const int nrows = item_ct1.get_group_range(2);'
+  - '    const int nchannels = item_ct1.get_group_range(1);'
+  - '    ...'
+  - '    for (int col = tid; col < ncols; col += block_size) {'
+  - '        dst[col] = (x[col] - mean) * inv_std;'
+  - '    }'
+  - '}'
+  desc: 使用 SYCL kernel 在设备端执行常规归一化操作的内核函数，计算每个样本、通道和行的均值和方差，并进行标准化。
+  line: 7-68
+  name: norm_f32
+- code:
+  - static void group_norm_f32(const float* x, float* dst, const int group_size, const
+    int ne_elements, const float eps, const sycl::nd_item<3>& item_ct1, float* s_sum,
+    int block_size) {
+  - '    int start = item_ct1.get_group(2) * group_size;'
+  - '    int end = start + group_size;'
+  - '    ...'
+  - '    for (int j = start; j < end; j += block_size) {'
+  - '        dst[j] *= scale;'
+  - '    }'
+  - '}'
+  desc: 使用 SYCL kernel 在设备端执行组归一化操作的内核函数，对每组的元素计算均值和方差，并进行标准化。
+  line: 70-157
+  name: group_norm_f32
+- code:
+  - static void rms_norm_f32(const float* x, float* dst, const int ncols, const int64_t
+    stride_row, const int64_t stride_channel, const int64_t stride_sample, const float
+    eps, const sycl::nd_item<3>& item_ct1, float* s_sum, int block_size) {
+  - '    const int sample  = item_ct1.get_group(0);'
+  - '    const int channel = item_ct1.get_group(1);'
+  - '    const int row     = item_ct1.get_group(2);'
+  - '    ...'
+  - '    for (int col = tid; col < ncols; col += block_size) {'
+  - '        dst[col] = scale * x[col];'
+  - '    }'
+  - '}'
+  desc: 使用 SYCL kernel 在设备端执行均方根归一化操作的内核函数，不计算均值，直接基于平方和进行缩放。
+  line: 159-211
+  name: rms_norm_f32
+- code:
+  - template<int warp_size>
+  - static void l2_norm_f32(const float * x, float * dst, const int ncols,
+  - '        const int64_t stride_row, const int64_t stride_channel,'
+  - '        const int64_t stride_sample, const float eps,'
+  - '        const sycl::nd_item<3>& item_ct1, float* s_sum, const int block_size)
+    {'
+  - '    ...'
+  - '    for (int col = tid; col < ncols; col += block_size) {'
+  - '        dst[col] = scale * x[col];'
+  - '    }'
+  - '}'
+  desc: 使用 SYCL kernel 在设备端执行L2归一化操作的内核函数，基于L2范数进行缩放。
+  line: 213-238
+  name: l2_norm_f32
+- code:
+  - static void norm_f32_sycl(const float * x, float * dst, const int ncols, const
+    int nrows, const int nchannels, const int nsamples,
+  - '        const int64_t stride_row, const int64_t stride_channel, const int64_t
+    stride_sample,'
+  - '        const float eps, queue_ptr stream, int device) {'
+  - '    ...'
+  - '    stream->submit([&](sycl::handler& cgh) {'
+  - '        ...'
+  - '        });'
+  - '}'
+  desc: 宿主编排函数，负责分配工作组大小并启动 norm_f32 SYCL 内核。
+  line: 240-277
+  name: norm_f32_sycl
+- code:
+  - static void group_norm_f32_sycl(const float* x, float* dst,
+  - '    const int num_groups, const float eps, const int group_size,'
+  - '    const int ne_elements, queue_ptr stream, int device) {'
+  - '    ...'
+  - '    stream->submit([&](sycl::handler& cgh) {'
+  - '        ...'
+  - '        });'
+  - '}'
+  desc: 宿主编排函数，负责分配工作组大小并启动 group_norm_f32 SYCL 内核。
+  line: 279-333
+  name: group_norm_f32_sycl
+- code:
+  - static void rms_norm_f32_sycl(const float* x, float* dst, const int ncols, const
+    int nrows, const int nchannels, const int nsamples,
+  - '        const int64_t stride_row, const int64_t stride_channel, const int64_t
+    stride_sample, const float eps, queue_ptr stream, int device) {'
+  - '    ...'
+  - '    stream->submit([&](sycl::handler& cgh) {'
+  - '        ...'
+  - '        });'
+  - '}'
+  desc: 宿主编排函数，负责分配工作组大小并启动 rms_norm_f32 SYCL 内核。
+  line: 335-381
+  name: rms_norm_f32_sycl
+- code:
+  - template<int warp_size>
+  - static void l2_norm_f32_sycl(const float *   x,
+  - '                             float *         dst,'
+  - '                             const int       ncols,'
+  - '                             const int       nrows,'
+  - '                             ...'
+  - '                             int             device) {'
+  - '    ...'
+  - '    stream->submit([&](sycl::handler& cgh) {'
+  - '        ...'
+  - '        });'
+  - '}'
+  desc: 宿主编排函数，负责分配工作组大小并启动 l2_norm_f32 SYCL 内核。
+  line: 383-443
+  name: l2_norm_f32_sycl
+- code:
+  - void ggml_sycl_op_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    ...'
+  - '    norm_f32_sycl(src0_dd, dst_dd, ne00, ne01, ne02, ne03, s01, s02, s03, eps,
+    main_stream, ctx.device);'
+  - '}'
+  desc: SYCL 后端 norm 操作的主调度函数。
+  line: 445-464
+  name: ggml_sycl_op_norm
+- code:
+  - void ggml_sycl_op_group_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst)
+    {
+  - '    ...'
+  - '    group_norm_f32_sycl(src0_dd, dst_dd, num_groups, eps, group_size, dst->src[0]->ne[0]
+    * dst->src[0]->ne[1] * dst->src[0]->ne[2], main_stream, ctx.device);'
+  - '}'
+  desc: SYCL 后端 group_norm 操作的主调度函数。
+  line: 466-481
+  name: ggml_sycl_op_group_norm
+- code:
+  - void ggml_sycl_op_rms_norm(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    ...'
+  - '    rms_norm_f32_sycl(src0_dd, dst_dd, ne00, ne01, ne02, ne03, s01, s02, s03,
+    eps, main_stream, ctx.device);'
+  - '}'
+  desc: SYCL 后端 rms_norm 操作的主调度函数。
+  line: 483-503
+  name: ggml_sycl_op_rms_norm
+- code:
+  - void ggml_sycl_op_rms_norm_back(ggml_backend_sycl_context & ctx, ggml_tensor *
+    dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);'
+  - '    ...'
+  - '    q->submit([&](sycl::handler &cgh) {'
+  - '        ...'
+  - '        });'
+  - '}'
+  desc: SYCL 后端 rms_norm 反向操作的主调度函数。
+  line: 505-594
+  name: ggml_sycl_op_rms_norm_back
+- code:
+  - void ggml_sycl_op_l2_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst) {
+  - '    ...'
+  - '    l2_norm_f32_sycl<WARP_SIZE>(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02,
+    s03, eps, stream, ctx.device);'
+  - '}'
+  desc: SYCL 后端 l2_norm 操作的主调度函数。
+  line: 596-622
+  name: ggml_sycl_op_l2_norm

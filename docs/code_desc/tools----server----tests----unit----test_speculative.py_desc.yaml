@@ -1,0 +1,142 @@
+classes: []
+desc: 该文件是针对推测解码（Speculative Decoding）功能的单元测试集。它通过启动一个使用小型MOE模型作为主模型、q4_0量化模型作为草稿模型的服务器，测试了在有无草稿模型、不同草稿长度、上下文长度限制及并发请求等多种场景下，推测解码是否能正确工作并保持输出一致性。
+file: tools/server/tests/unit/test_speculative.py
+funcs:
+- code:
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.stories15m_moe()'
+  - '    # set default values'
+  - '    server.model_draft = download_file(MODEL_DRAFT_FILE_URL)'
+  - '    server.draft_min = 4'
+  - '    server.draft_max = 8'
+  - '    server.fa = "off"'
+  desc: 初始化并配置全局服务器实例，包括设置草稿模型和推测参数。
+  line: 10-16
+  name: create_server
+- code:
+  - '@pytest.fixture(autouse=True)'
+  - 'def fixture_create_server():'
+  - '    return create_server()'
+  desc: 一个pytest自动化夹具（fixture），用于在每个测试函数运行前自动调用create_server()来重置服务器状态。
+  line: 18-20
+  name: fixture_create_server
+- code:
+  - 'def test_with_and_without_draft():'
+  - '    global server'
+  - '    server.model_draft = None  # disable draft model'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "I believe the meaning of life is",'
+  - '        "temperature": 0.0,'
+  - '        "top_k": 1,'
+  - '        "n_predict": 16,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    content_no_draft = res.body["content"]'
+  - '    server.stop()'
+  - ''
+  - '    # create new server with draft model'
+  - '    create_server()'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "I believe the meaning of life is",'
+  - '        "temperature": 0.0,'
+  - '        "top_k": 1,'
+  - '        "n_predict": 16,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    content_draft = res.body["content"]'
+  - ''
+  - '    assert content_no_draft == content_draft'
+  desc: 测试在关闭或启用草稿模型两种情况下，服务器生成的文本内容是否保持一致。
+  line: 22-47
+  name: test_with_and_without_draft
+- code:
+  - 'def test_different_draft_min_draft_max():'
+  - '    global server'
+  - '    test_values = ['
+  - '        (1, 2),'
+  - '        (1, 4),'
+  - '        (4, 8),'
+  - '        (4, 12),'
+  - '        (8, 16),'
+  - '    ]'
+  - '    last_content = None'
+  - '    for draft_min, draft_max in test_values:'
+  - '        server.stop()'
+  - '        server.draft_min = draft_min'
+  - '        server.draft_max = draft_max'
+  - '        server.start()'
+  - '        res = server.make_request("POST", "/completion", data={'
+  - '            "prompt": "I believe the meaning of life is",'
+  - '            "temperature": 0.0,'
+  - '            "top_k": 1,'
+  - '            "n_predict": 16,'
+  - '        })'
+  - '        assert res.status_code == 200'
+  - '        if last_content is not None:'
+  - '            assert last_content == res.body["content"]'
+  - '        last_content = res.body["content"]'
+  desc: 测试在不同最小和最大草稿长度组合下，模型生成的输出文本是否保持一致。
+  line: 49-72
+  name: test_different_draft_min_draft_max
+- code:
+  - 'def test_slot_ctx_not_exceeded():'
+  - '    global server'
+  - '    server.n_ctx = 256'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "Hello " * 248,'
+  - '        "temperature": 0.0,'
+  - '        "top_k": 1,'
+  - '        "speculative.p_min": 0.0,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body["content"]) > 0'
+  desc: 测试在上下文字段长度小于输入提示长度时，服务器能正常工作并返回非空内容，验证上下文未被超出。
+  line: 74-84
+  name: test_slot_ctx_not_exceeded
+- code:
+  - 'def test_with_ctx_shift():'
+  - '    global server'
+  - '    server.n_ctx = 256'
+  - '    server.enable_ctx_shift = True'
+  - '    server.start()'
+  - '    res = server.make_request("POST", "/completion", data={'
+  - '        "prompt": "Hello " * 248,'
+  - '        "temperature": 0.0,'
+  - '        "top_k": 1,'
+  - '        "n_predict": 256,'
+  - '        "speculative.p_min": 0.0,'
+  - '    })'
+  - '    assert res.status_code == 200'
+  - '    assert len(res.body["content"]) > 0'
+  - '    assert res.body["tokens_predicted"] == 256'
+  - '    assert res.body["truncated"] == True'
+  desc: 测试在启用上下文偏移功能后，当输入过长时，服务器能够正常完成完整长度的预测并正确报告截断状态。
+  line: 86-101
+  name: test_with_ctx_shift
+- code:
+  - '@pytest.mark.parametrize("n_slots,n_requests", ['
+  - '    (1, 2),'
+  - '    (2, 2),'
+  - '])'
+  - 'def test_multi_requests_parallel(n_slots: int, n_requests: int):'
+  - '    global server'
+  - '    server.n_slots = n_slots'
+  - '    server.start()'
+  - '    tasks = []'
+  - '    for _ in range(n_requests):'
+  - '        tasks.append((server.make_request, ("POST", "/completion", {'
+  - '            "prompt": "I believe the meaning of life is",'
+  - '            "temperature": 0.0,'
+  - '            "top_k": 1,'
+  - '        })))'
+  - '    results = parallel_function_calls(tasks)'
+  - '    for res in results:'
+  - '        assert res.status_code == 200'
+  - '        assert match_regex("(wise|kind|owl|answer)+", res.body["content"])'
+  desc: 测试在同一服务器实例上并发处理多个请求时，每个请求都能成功返回且输出内容符合预期的格式。
+  line: 103-118
+  name: test_multi_requests_parallel

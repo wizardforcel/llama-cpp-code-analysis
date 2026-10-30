@@ -1,0 +1,2392 @@
+classes:
+- desc: 一个模板化的矩阵乘法计算类，根据向量寄存器数量选择不同的分块策略，并通过模板参数（如行块 RM、列块 RN、列块组 BM）进行编译期优化。
+  methods:
+  - code:
+    - tinyBLAS(const ggml_compute_params * params, int64_t k,
+    - '         const TA *A, int64_t lda,'
+    - '         const TB *B, int64_t ldb,'
+    - '         TC *C, int64_t ldc)'
+    - '    : params(params), A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc)
+      {'
+    - '}'
+    desc: 构造函数，初始化矩阵乘法所需参数，包括计算参数、矩阵维度 K、矩阵 A/B/C 的指针及其 leading dimension。
+    line: 378-386
+    name: tinyBLAS
+  - code:
+    - bool matmul(int64_t m, int64_t n) {
+    - '    if (k % KN != 0)'
+    - '        return false;'
+    - '    // compute RM for only need tile with size RM&RM-1'
+    - '    #if VECTOR_REGISTERS == 32'
+    - '        if (m % 16 == 0 && (m/16 >= params->nth)) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 4>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 8 == 0 ) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 2>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 4 == 0) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 1>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '    #else  // VECTOR_REGISTERS == 16'
+    - '        if (m % 16 == 0 && (m/16 >= params->nth)) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 4>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 8 == 0 ) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 2>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 4 == 0) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 1>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '    #endif'
+    - '    return false;'
+    - '}'
+    desc: 矩阵乘法的入口函数，检查 K 维度是否可被向量宽度整除，并根据 M 的维度要求选择合适的分块大小执行计算。
+    line: 396-427
+    name: matmul
+  - code:
+    - template <int RM, int RN, int BM>
+    - inline void mnpack(int64_t m, int64_t n, int64_t SIZE_N, int64_t BN) {
+    - '    if (SIZE_N == RN) {'
+    - '        return gemm<RM, RN, BM>(m, n, BN);'
+    - '    }'
+    - '    if constexpr (RN > 1) {'
+    - '        return mnpack<RM, RN-1, BM>(m, n, SIZE_N, BN);'
+    - '    } else {'
+    - '        GGML_LOG_ERROR("mnpack<%d, %d> block size not supported\n", RM, (int)SIZE_N);'
+    - '        GGML_ASSERT(false); // we have miss something.'
+    - '    }'
+    - '}'
+    desc: 递归模板函数，根据给定的列块大小 (SIZE_N) 选择合适的 gemm 函数调用，若 SIZE_N 不是预设的 RN 则会递归递减 RN 直到匹配。
+    line: 429-440
+    name: mnpack
+  - code:
+    - template <int RM, int RN>
+    - inline void gemm_bloc(int64_t ii, int64_t jj) {
+    - '    D Cv[RN][RM] = {};'
+    - '    for (int64_t l = 0; l < k; l += KN) {'
+    - '        // help compiler for op order.'
+    - '        if constexpr (RM <= RN) {'
+    - '            V Av[RM];'
+    - '            for (int64_t i = 0; i < RM; ++i) {'
+    - '                Av[i] = load<V>(A + lda * (ii + i) + l);'
+    - '            }'
+    - '            for (int64_t j = 0; j < RN; ++j) {'
+    - '                V Bv = load<V>(B + ldb * (jj + j) + l);'
+    - '                for (int64_t i = 0; i < RM; ++i) {'
+    - '                    Cv[j][i] = madd(Av[i], Bv, Cv[j][i]);'
+    - '                }'
+    - '            }'
+    - '        } else {'
+    - '            V Bv[RN];'
+    - '            for (int64_t j = 0; j < RN; ++j) {'
+    - '                Bv[j] = load<V>(B + ldb * (jj + j) + l);'
+    - '            }'
+    - '            for (int64_t i = 0; i < RM; ++i) {'
+    - '                V Av = load<V>(A + lda * (ii + i) + l);'
+    - '                for (int64_t j = 0; j < RN; ++j) {'
+    - '                    Cv[j][i] = madd(Av, Bv[j], Cv[j][i]);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    for (int64_t j = 0; j < RN; ++j)'
+    - '        for (int64_t i = 0; i < RM; ++i)'
+    - '            C[ldc * (jj + j) + (ii + i)] = hsum(Cv[j][i]);'
+    - '}'
+    desc: 计算单个分块 (RM x RN) 的矩阵乘法，通过在 K 维度上循环并使用向量化的加载和融合乘加指令累加结果，最后进行水平求和并写入输出矩阵 C。
+    line: 443-470
+    name: gemm_bloc
+  - code:
+    - template <int RM, int RN, int BM>
+    - NOINLINE void gemm(int64_t m, int64_t n, int64_t BN) {
+    - '    GGML_ASSERT(m % (RM * BM) == 0);'
+    - '    const int64_t ytiles = m / (RM * BM);'
+    - '    const int64_t xtiles = (n + RN -1) / RN;'
+    - '    const int64_t jj_RN = (xtiles - (xtiles * RN - n));'
+    - '    // "round" bloc_size to "nearest" BN'
+    - '    const int64_t NB_BN = xtiles < BN ? 1 : (xtiles + BN / 2) / BN;'
+    - '    const int64_t SIZE_BN = xtiles % NB_BN == 0 ? xtiles / NB_BN : xtiles /
+      NB_BN + 1;'
+    - '    const int64_t jj_BN = (NB_BN - (NB_BN * SIZE_BN - xtiles));'
+    - '    const int64_t nb_job = ytiles * NB_BN;'
+    - '    if (params->ith == 0) {'
+    - '        GGML_ASSERT( jj_BN * SIZE_BN + (NB_BN - jj_BN) * (SIZE_BN - 1) == xtiles);'
+    - '        ggml_threadpool_chunk_set(params->threadpool, params->nth);'
+    - '    }'
+    - '    ggml_barrier(params->threadpool);'
+    - '    int64_t job = params->ith;'
+    - '    while (job < nb_job) {'
+    - '        const int64_t ii = (job % ytiles) * RM * BM;'
+    - '        const int64_t jb =  job / ytiles;'
+    - '        const int64_t jr0 = BLOC_POS(jb  , jj_BN, SIZE_BN);'
+    - '        const int64_t jrN = BLOC_POS(jb+1, jj_BN, SIZE_BN);'
+    - '        const int64_t jj0 = BLOC_POS(jr0, jj_RN, RN);'
+    - '        const int64_t jj2 = BLOC_POS(jrN, jj_RN, RN);'
+    - '        const int64_t jj1 = jj2 < jj_RN * RN ? jj2 : jj_RN * RN;'
+    - '        for (int64_t bi = 0; bi < BM * RM; bi += RM) {'
+    - '            int64_t jj = jj0;'
+    - '            for (; jj < jj1; jj += RN) {'
+    - '                gemm_bloc<RM, RN>(ii + bi, jj);'
+    - '            }'
+    - '            if constexpr (RN > 1) {'
+    - '                for (; jj < jj2; jj += RN - 1) {'
+    - '                    gemm_bloc<RM, RN-1>(ii + bi, jj);'
+    - '                }'
+    - '            }'
+    - '            GGML_ASSERT(jj == jj2);'
+    - '        }'
+    - '        job = ggml_threadpool_chunk_add(params->threadpool, 1);'
+    - '    }'
+    - '    ggml_barrier(params->threadpool);'
+    - '    return;'
+    - '}'
+    desc: 执行完整的矩阵乘法计算，负责将矩阵按列和行分块，并在多线程环境下分配任务到线程池进行并行计算。
+    line: 472-511
+    name: gemm
+  name: tinyBLAS
+- desc: 针对 RISC-V 向量指令集（RVV）的矩阵乘法特化类，使用 LMUL 参数控制向量长度，并提供了专门优化的 4x6、4x5、4x4 分块计算函数。
+  methods:
+  - code:
+    - tinyBLAS_RVV(const ggml_compute_params * params, int64_t k,
+    - '             const TA *A, int64_t lda,'
+    - '             const TB *B, int64_t ldb,'
+    - '             TC *C, int64_t ldc)'
+    - '    : params(params), A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc)
+      {'
+    - '}'
+    desc: 构造函数，初始化 RVV 矩阵乘法所需的参数，与 tinyBLAS 类似。
+    line: 601-609
+    name: tinyBLAS_RVV
+  - code:
+    - bool matmul(int64_t m, int64_t n) {
+    - '    if (k % vlmax<V>() != 0) {'
+    - '        return false;'
+    - '    }'
+    - '    #if LMUL == 1'
+    - '        if (m % 16 == 0 && (m/16 >= params->nth)) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 4>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 8 == 0 ) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 2>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 4 == 0) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<6>(n);'
+    - '            mnpack<4, 6, 1>(m, n, SIZE_N, 12);'
+    - '            return true;'
+    - '        }'
+    - '    #elif LMUL == 2'
+    - '        if (m % 16 == 0 && (m/16 >= params->nth)) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 4>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 8 == 0 ) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 2>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 4 == 0) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<3>(n);'
+    - '            mnpack<4, 3, 1>(m, n, SIZE_N, 24);'
+    - '            return true;'
+    - '        }'
+    - '    #else // LMUL = 4'
+    - '        if (m % 16 == 0 && (m/16 >= params->nth)) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<2>(n);'
+    - '            mnpack<2, 2, 8>(m, n, SIZE_N, 36);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 8 == 0 ) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<2>(n);'
+    - '            mnpack<2, 2, 4>(m, n, SIZE_N, 36);'
+    - '            return true;'
+    - '        }'
+    - '        if (m % 4 == 0) {'
+    - '            const int64_t SIZE_N = BLOCK_SIZE<2>(n);'
+    - '            mnpack<2, 2, 2>(m, n, SIZE_N, 36);'
+    - '            return true;'
+    - '        }'
+    - '    #endif'
+    - '    return false;'
+    - '}'
+    desc: 矩阵乘法入口，检查 K 维度是否可被最大向量长度整除，然后根据 LMUL 和 M 维度选择不同的分块策略。
+    line: 615-655
+    name: matmul
+  - code:
+    - template<int RM, int RN, int BM>
+    - inline void mnpack(int64_t m, int64_t n, int64_t SIZE_N, int64_t BN) {
+    - '    if (SIZE_N == RN) {'
+    - '        return gemm<RM, RN, BM>(m, n, BN);'
+    - '    }'
+    - '    if constexpr (RN > 1) {'
+    - '        return mnpack<RM, RN-1, BM>(m, n, SIZE_N, BN);'
+    - '    } else {'
+    - '        GGML_LOG_ERROR("mnpack<%d, %d> block size not supported\n", RM, (int)SIZE_N);'
+    - '        GGML_ASSERT(false); // we have miss something.'
+    - '    }'
+    - '}'
+    desc: 递归模板函数，与 tinyBLAS 中的 mnpack 作用相同，根据列块大小选择嵌套的 gemm 函数。
+    line: 656-666
+    name: mnpack
+  - code:
+    - inline void gemm_bloc_4x6(int64_t ii, int64_t jj) {
+    - '    size_t vl = vlmax<V>();'
+    - '    D Cv00 = set_zero<D>();'
+    - '    D Cv01 = set_zero<D>();'
+    - '    D Cv02 = set_zero<D>();'
+    - '    D Cv03 = set_zero<D>();'
+    - '    D Cv10 = set_zero<D>();'
+    - '    D Cv11 = set_zero<D>();'
+    - '    D Cv12 = set_zero<D>();'
+    - '    D Cv13 = set_zero<D>();'
+    - '    D Cv20 = set_zero<D>();'
+    - '    D Cv21 = set_zero<D>();'
+    - '    D Cv22 = set_zero<D>();'
+    - '    D Cv23 = set_zero<D>();'
+    - '    D Cv30 = set_zero<D>();'
+    - '    D Cv31 = set_zero<D>();'
+    - '    D Cv32 = set_zero<D>();'
+    - '    D Cv33 = set_zero<D>();'
+    - '    D Cv40 = set_zero<D>();'
+    - '    D Cv41 = set_zero<D>();'
+    - '    D Cv42 = set_zero<D>();'
+    - '    D Cv43 = set_zero<D>();'
+    - '    D Cv50 = set_zero<D>();'
+    - '    D Cv51 = set_zero<D>();'
+    - '    D Cv52 = set_zero<D>();'
+    - '    D Cv53 = set_zero<D>();'
+    - '    for (int64_t l = 0; l < k; l += vl) {'
+    - '        V Bv0 = load<V>(B + ldb * (jj + 0) + l);'
+    - '        V Bv1 = load<V>(B + ldb * (jj + 1) + l);'
+    - '        V Bv2 = load<V>(B + ldb * (jj + 2) + l);'
+    - '        V Bv3 = load<V>(B + ldb * (jj + 3) + l);'
+    - '        V Bv4 = load<V>(B + ldb * (jj + 4) + l);'
+    - '        V Bv5 = load<V>(B + ldb * (jj + 5) + l);'
+    - '        V Av0 = load<V>(A + lda * (ii + 0) + l);'
+    - '        Cv00 = madd(Av0, Bv0, Cv00);'
+    - '        Cv10 = madd(Av0, Bv1, Cv10);'
+    - '        Cv20 = madd(Av0, Bv2, Cv20);'
+    - '        Cv30 = madd(Av0, Bv3, Cv30);'
+    - '        Cv40 = madd(Av0, Bv4, Cv40);'
+    - '        Cv50 = madd(Av0, Bv5, Cv50);'
+    - '        V Av1 = load<V>(A + lda * (ii + 1) + l);'
+    - '        Cv01 = madd(Av1, Bv0, Cv01);'
+    - '        Cv11 = madd(Av1, Bv1, Cv11);'
+    - '        Cv21 = madd(Av1, Bv2, Cv21);'
+    - '        Cv31 = madd(Av1, Bv3, Cv31);'
+    - '        Cv41 = madd(Av1, Bv4, Cv41);'
+    - '        Cv51 = madd(Av1, Bv5, Cv51);'
+    - '        V Av2 = load<V>(A + lda * (ii + 2) + l);'
+    - '        Cv02 = madd(Av2, Bv0, Cv02);'
+    - '        Cv12 = madd(Av2, Bv1, Cv12);'
+    - '        Cv22 = madd(Av2, Bv2, Cv22);'
+    - '        Cv32 = madd(Av2, Bv3, Cv32);'
+    - '        Cv42 = madd(Av2, Bv4, Cv42);'
+    - '        Cv52 = madd(Av2, Bv5, Cv52);'
+    - '        V Av3 = load<V>(A + lda * (ii + 3) + l);'
+    - '        Cv03 = madd(Av3, Bv0, Cv03);'
+    - '        Cv13 = madd(Av3, Bv1, Cv13);'
+    - '        Cv23 = madd(Av3, Bv2, Cv23);'
+    - '        Cv33 = madd(Av3, Bv3, Cv33);'
+    - '        Cv43 = madd(Av3, Bv4, Cv43);'
+    - '        Cv53 = madd(Av3, Bv5, Cv53);'
+    - '    }'
+    - '    C[ldc * (jj + 0) + (ii + 0)] = hsum(Cv00);'
+    - '    C[ldc * (jj + 0) + (ii + 1)] = hsum(Cv01);'
+    - '    C[ldc * (jj + 0) + (ii + 2)] = hsum(Cv02);'
+    - '    C[ldc * (jj + 0) + (ii + 3)] = hsum(Cv03);'
+    - '    C[ldc * (jj + 1) + (ii + 0)] = hsum(Cv10);'
+    - '    C[ldc * (jj + 1) + (ii + 1)] = hsum(Cv11);'
+    - '    C[ldc * (jj + 1) + (ii + 2)] = hsum(Cv12);'
+    - '    C[ldc * (jj + 1) + (ii + 3)] = hsum(Cv13);'
+    - '    C[ldc * (jj + 2) + (ii + 0)] = hsum(Cv20);'
+    - '    C[ldc * (jj + 2) + (ii + 1)] = hsum(Cv21);'
+    - '    C[ldc * (jj + 2) + (ii + 2)] = hsum(Cv22);'
+    - '    C[ldc * (jj + 2) + (ii + 3)] = hsum(Cv23);'
+    - '    C[ldc * (jj + 3) + (ii + 0)] = hsum(Cv30);'
+    - '    C[ldc * (jj + 3) + (ii + 1)] = hsum(Cv31);'
+    - '    C[ldc * (jj + 3) + (ii + 2)] = hsum(Cv32);'
+    - '    C[ldc * (jj + 3) + (ii + 3)] = hsum(Cv33);'
+    - '    C[ldc * (jj + 4) + (ii + 0)] = hsum(Cv40);'
+    - '    C[ldc * (jj + 4) + (ii + 1)] = hsum(Cv41);'
+    - '    C[ldc * (jj + 4) + (ii + 2)] = hsum(Cv42);'
+    - '    C[ldc * (jj + 4) + (ii + 3)] = hsum(Cv43);'
+    - '    C[ldc * (jj + 5) + (ii + 0)] = hsum(Cv50);'
+    - '    C[ldc * (jj + 5) + (ii + 1)] = hsum(Cv51);'
+    - '    C[ldc * (jj + 5) + (ii + 2)] = hsum(Cv52);'
+    - '    C[ldc * (jj + 5) + (ii + 3)] = hsum(Cv53);'
+    - '}'
+    desc: 专门为 RVV 优化的 4x6 分块矩阵乘法，手动展开循环并使用向量寄存器累加 24 个结果，最后写入输出矩阵。
+    line: 668-751
+    name: gemm_bloc_4x6
+  - code:
+    - inline void gemm_bloc_4x5(int64_t ii, int64_t jj) {
+    - '    size_t vl = vlmax<V>();'
+    - '    D Cv00 = set_zero<D>();'
+    - '    D Cv01 = set_zero<D>();'
+    - '    D Cv02 = set_zero<D>();'
+    - '    D Cv03 = set_zero<D>();'
+    - '    D Cv10 = set_zero<D>();'
+    - '    D Cv11 = set_zero<D>();'
+    - '    D Cv12 = set_zero<D>();'
+    - '    D Cv13 = set_zero<D>();'
+    - '    D Cv20 = set_zero<D>();'
+    - '    D Cv21 = set_zero<D>();'
+    - '    D Cv22 = set_zero<D>();'
+    - '    D Cv23 = set_zero<D>();'
+    - '    D Cv30 = set_zero<D>();'
+    - '    D Cv31 = set_zero<D>();'
+    - '    D Cv32 = set_zero<D>();'
+    - '    D Cv33 = set_zero<D>();'
+    - '    D Cv40 = set_zero<D>();'
+    - '    D Cv41 = set_zero<D>();'
+    - '    D Cv42 = set_zero<D>();'
+    - '    D Cv43 = set_zero<D>();'
+    - '    for (int64_t l = 0; l < k; l += vl) {'
+    - '        V Bv0 = load<V>(B + ldb * (jj + 0) + l);'
+    - '        V Bv1 = load<V>(B + ldb * (jj + 1) + l);'
+    - '        V Bv2 = load<V>(B + ldb * (jj + 2) + l);'
+    - '        V Bv3 = load<V>(B + ldb * (jj + 3) + l);'
+    - '        V Bv4 = load<V>(B + ldb * (jj + 4) + l);'
+    - '        V Av0 = load<V>(A + lda * (ii + 0) + l);'
+    - '        Cv00 = madd(Av0, Bv0, Cv00);'
+    - '        Cv10 = madd(Av0, Bv1, Cv10);'
+    - '        Cv20 = madd(Av0, Bv2, Cv20);'
+    - '        Cv30 = madd(Av0, Bv3, Cv30);'
+    - '        Cv40 = madd(Av0, Bv4, Cv40);'
+    - '        V Av1 = load<V>(A + lda * (ii + 1) + l);'
+    - '        Cv01 = madd(Av1, Bv0, Cv01);'
+    - '        Cv11 = madd(Av1, Bv1, Cv11);'
+    - '        Cv21 = madd(Av1, Bv2, Cv21);'
+    - '        Cv31 = madd(Av1, Bv3, Cv31);'
+    - '        Cv41 = madd(Av1, Bv4, Cv41);'
+    - '        V Av2 = load<V>(A + lda * (ii + 2) + l);'
+    - '        Cv02 = madd(Av2, Bv0, Cv02);'
+    - '        Cv12 = madd(Av2, Bv1, Cv12);'
+    - '        Cv22 = madd(Av2, Bv2, Cv22);'
+    - '        Cv32 = madd(Av2, Bv3, Cv32);'
+    - '        Cv42 = madd(Av2, Bv4, Cv42);'
+    - '        V Av3 = load<V>(A + lda * (ii + 3) + l);'
+    - '        Cv03 = madd(Av3, Bv0, Cv03);'
+    - '        Cv13 = madd(Av3, Bv1, Cv13);'
+    - '        Cv23 = madd(Av3, Bv2, Cv23);'
+    - '        Cv33 = madd(Av3, Bv3, Cv33);'
+    - '        Cv43 = madd(Av3, Bv4, Cv43);'
+    - '    }'
+    - '    C[ldc * (jj + 0) + (ii + 0)] = hsum(Cv00);'
+    - '    C[ldc * (jj + 0) + (ii + 1)] = hsum(Cv01);'
+    - '    C[ldc * (jj + 0) + (ii + 2)] = hsum(Cv02);'
+    - '    C[ldc * (jj + 0) + (ii + 3)] = hsum(Cv03);'
+    - '    C[ldc * (jj + 1) + (ii + 0)] = hsum(Cv10);'
+    - '    C[ldc * (jj + 1) + (ii + 1)] = hsum(Cv11);'
+    - '    C[ldc * (jj + 1) + (ii + 2)] = hsum(Cv12);'
+    - '    C[ldc * (jj + 1) + (ii + 3)] = hsum(Cv13);'
+    - '    C[ldc * (jj + 2) + (ii + 0)] = hsum(Cv20);'
+    - '    C[ldc * (jj + 2) + (ii + 1)] = hsum(Cv21);'
+    - '    C[ldc * (jj + 2) + (ii + 2)] = hsum(Cv22);'
+    - '    C[ldc * (jj + 2) + (ii + 3)] = hsum(Cv23);'
+    - '    C[ldc * (jj + 3) + (ii + 0)] = hsum(Cv30);'
+    - '    C[ldc * (jj + 3) + (ii + 1)] = hsum(Cv31);'
+    - '    C[ldc * (jj + 3) + (ii + 2)] = hsum(Cv32);'
+    - '    C[ldc * (jj + 3) + (ii + 3)] = hsum(Cv33);'
+    - '    C[ldc * (jj + 4) + (ii + 0)] = hsum(Cv40);'
+    - '    C[ldc * (jj + 4) + (ii + 1)] = hsum(Cv41);'
+    - '    C[ldc * (jj + 4) + (ii + 2)] = hsum(Cv42);'
+    - '    C[ldc * (jj + 4) + (ii + 3)] = hsum(Cv43);'
+    - '}'
+    desc: RVV 优化的 4x5 分块矩阵乘法，类似 gemm_bloc_4x6，但只处理 5 列，计算 20 个结果。
+    line: 753-829
+    name: gemm_bloc_4x5
+  - code:
+    - inline void gemm_bloc_4x4(int64_t ii, int64_t jj) {
+    - '    size_t vl = vlmax<V>();'
+    - '    D Cv00 = set_zero<D>();'
+    - '    D Cv01 = set_zero<D>();'
+    - '    D Cv02 = set_zero<D>();'
+    - '    D Cv03 = set_zero<D>();'
+    - '    D Cv10 = set_zero<D>();'
+    - '    D Cv11 = set_zero<D>();'
+    - '    D Cv12 = set_zero<D>();'
+    - '    D Cv13 = set_zero<D>();'
+    - '    D Cv20 = set_zero<D>();'
+    - '    D Cv21 = set_zero<D>();'
+    - '    D Cv22 = set_zero<D>();'
+    - '    D Cv23 = set_zero<D>();'
+    - '    D Cv30 = set_zero<D>();'
+    - '    D Cv31 = set_zero<D>();'
+    - '    D Cv32 = set_zero<D>();'
+    - '    D Cv33 = set_zero<D>();'
+    - '    for (int64_t l = 0; l < k; l += vl) {'
+    - '        V Av0 = load<V>(A + lda * (ii + 0) + l);'
+    - '        V Av1 = load<V>(A + lda * (ii + 1) + l);'
+    - '        V Av2 = load<V>(A + lda * (ii + 2) + l);'
+    - '        V Av3 = load<V>(A + lda * (ii + 3) + l);'
+    - '        V Bv0 = load<V>(B + ldb * (jj + 0) + l);'
+    - '        Cv00 = madd(Av0, Bv0, Cv00);'
+    - '        Cv01 = madd(Av1, Bv0, Cv01);'
+    - '        Cv02 = madd(Av2, Bv0, Cv02);'
+    - '        Cv03 = madd(Av3, Bv0, Cv03);'
+    - '        V Bv1 = load<V>(B + ldb * (jj + 1) + l);'
+    - '        Cv10 = madd(Av0, Bv1, Cv10);'
+    - '        Cv11 = madd(Av1, Bv1, Cv11);'
+    - '        Cv12 = madd(Av2, Bv1, Cv12);'
+    - '        Cv13 = madd(Av3, Bv1, Cv13);'
+    - '        V Bv2 = load<V>(B + ldb * (jj + 2) + l);'
+    - '        Cv20 = madd(Av0, Bv2, Cv20);'
+    - '        Cv21 = madd(Av1, Bv2, Cv21);'
+    - '        Cv22 = madd(Av2, Bv2, Cv22);'
+    - '        Cv23 = madd(Av3, Bv2, Cv23);'
+    - '        V Bv3 = load<V>(B + ldb * (jj + 3) + l);'
+    - '        Cv30 = madd(Av0, Bv3, Cv30);'
+    - '        Cv31 = madd(Av1, Bv3, Cv31);'
+    - '        Cv32 = madd(Av2, Bv3, Cv32);'
+    - '        Cv33 = madd(Av3, Bv3, Cv33);'
+    - '    }'
+    - '    C[ldc * (jj + 0) + (ii + 0)] = hsum(Cv00);'
+    - '    C[ldc * (jj + 0) + (ii + 1)] = hsum(Cv01);'
+    - '    C[ldc * (jj + 0) + (ii + 2)] = hsum(Cv02);'
+    - '    C[ldc * (jj + 0) + (ii + 3)] = hsum(Cv03);'
+    - '    C[ldc * (jj + 1) + (ii + 0)] = hsum(Cv10);'
+    - '    C[ldc * (jj + 1) + (ii + 1)] = hsum(Cv11);'
+    - '    C[ldc * (jj + 1) + (ii + 2)] = hsum(Cv12);'
+    - '    C[ldc * (jj + 1) + (ii + 3)] = hsum(Cv13);'
+    - '    C[ldc * (jj + 2) + (ii + 0)] = hsum(Cv20);'
+    - '    C[ldc * (jj + 2) + (ii + 1)] = hsum(Cv21);'
+    - '    C[ldc * (jj + 2) + (ii + 2)] = hsum(Cv22);'
+    - '    C[ldc * (jj + 2) + (ii + 3)] = hsum(Cv23);'
+    - '    C[ldc * (jj + 3) + (ii + 0)] = hsum(Cv30);'
+    - '    C[ldc * (jj + 3) + (ii + 1)] = hsum(Cv31);'
+    - '    C[ldc * (jj + 3) + (ii + 2)] = hsum(Cv32);'
+    - '    C[ldc * (jj + 3) + (ii + 3)] = hsum(Cv33);'
+    - '}'
+    desc: RVV 优化的 4x4 分块矩阵乘法，处理 4 行 4 列，计算 16 个结果。
+    line: 831-893
+    name: gemm_bloc_4x4
+  - code:
+    - template <int RM, int RN, int BM>
+    - NOINLINE void gemm(int64_t m, int64_t n, int64_t BN) {
+    - '    GGML_ASSERT(m % (RM * BM) == 0);'
+    - '    const int64_t ytiles = m / (RM * BM);'
+    - '    const int64_t xtiles = (n + RN -1) / RN;'
+    - '    const int64_t jj_RN = (xtiles - (xtiles * RN - n));'
+    - '    // "round" bloc_size to "nearest" BN'
+    - '    const int64_t NB_BN = xtiles < BN ? 1 : (xtiles + BN / 2) / BN;'
+    - '    const int64_t SIZE_BN = xtiles % NB_BN == 0 ? xtiles / NB_BN : xtiles /
+      NB_BN + 1;'
+    - '    const int64_t jj_BN = (NB_BN - (NB_BN * SIZE_BN - xtiles));'
+    - '    const int64_t nb_job = ytiles * NB_BN;'
+    - '    if (params->ith == 0) {'
+    - '        GGML_ASSERT( jj_BN * SIZE_BN + (NB_BN - jj_BN) * (SIZE_BN - 1) == xtiles);'
+    - '        ggml_threadpool_chunk_set(params->threadpool, params->nth);'
+    - '    }'
+    - '    ggml_barrier(params->threadpool);'
+    - '    int64_t job = params->ith;'
+    - '    while (job < nb_job) {'
+    - '        const int64_t ii = (job % ytiles) * RM * BM;'
+    - '        const int64_t jb =  job / ytiles;'
+    - '        const int64_t jr0 = BLOC_POS(jb  , jj_BN, SIZE_BN);'
+    - '        const int64_t jrN = BLOC_POS(jb+1, jj_BN, SIZE_BN);'
+    - '        const int64_t jj0 = BLOC_POS(jr0, jj_RN, RN);'
+    - '        const int64_t jj2 = BLOC_POS(jrN, jj_RN, RN);'
+    - '        const int64_t jj1 = jj2 < jj_RN * RN ? jj2 : jj_RN * RN;'
+    - '        for (int64_t bi = 0; bi < BM * RM; bi += RM) {'
+    - '            int64_t jj = jj0;'
+    - '            for (; jj < jj1; jj += RN) {'
+    - '                gemm_bloc_4x6(ii + bi, jj);'
+    - '            }'
+    - '            if constexpr (RN > 1) {'
+    - '                for (; jj < jj2; jj += RN - 1) {'
+    - '                    gemm_bloc_4x5(ii + bi, jj);'
+    - '                }'
+    - '            }'
+    - '            GGML_ASSERT(jj == jj2);'
+    - '        }'
+    - '        job = ggml_threadpool_chunk_add(params->threadpool, 1);'
+    - '    }'
+    - '    ggml_barrier(params->threadpool);'
+    - '}'
+    desc: RVV 的完整矩阵乘法执行函数，负责任务分配和调用不同的 gemm_bloc_* 函数，实现多线程并行计算。
+    line: 895-924
+    name: gemm
+  name: tinyBLAS_RVV
+- desc: A generic SIMD-optimized matrix multiplication kernel for unquantized float
+    (or half) precision matrices, templated on vector type, accumulator type, and
+    element type, using vector length agnostic operations.
+  methods:
+  - code:
+    - tinyBLAS(int64_t k,
+    - '        const TA *A, int64_t lda,'
+    - '        const TB *B, int64_t ldb,'
+    - '        TC *C, int64_t ldc,'
+    - '        const ggml_compute_params * params)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), params(params)
+      {'
+    - '        UNUSED(ith);'
+    - '    }'
+    desc: Constructor that initializes the matrix dimensions, pointers, strides, and
+      thread parameters.
+    line: 1-50
+    name: tinyBLAS
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    mnpack(0, m, 0, n);'
+    - '    // ... (implementation of mnpack recursion)'
+    - '}'
+    desc: Public entry point that dispatches to the recursive mnpack tiling function
+      for matrix multiplication.
+    line: 50-60
+    name: matmul
+  - code:
+    - void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t mc, nc, mp, np;'
+    - '    switch ((MIN(m - m0, 4) << 4) | MIN(n - n0, 4)) {'
+    - '    case 0x44: mc = 4; nc = 4; gemm<4,4>(m0, m, n0, n); break;'
+    - '    case 0x42: mc = 4; nc = 2; gemm<4,2>(m0, m, n0, n); break;'
+    - '    // ... other cases ...'
+    - '    }'
+    - '    mp = m0 + (m - m0) / mc * mc;'
+    - '    np = n0 + (n - n0) / nc * nc;'
+    - '    mnpack(mp, m, n0, np);'
+    - '    mnpack(m0, m, np, n);'
+    - '}'
+    desc: Recursively tiles the matrix multiplication into fixed-size micro-kernels
+      (blocks) based on powers of 2 and 4, handling remainders.
+    line: 60-120
+    name: mnpack
+  - code:
+    - template <int RM, int RN, int BM>
+    - NOINLINE void gemm(int64_t m, int64_t n, int64_t BN) {
+    - '    GGML_ASSERT(m % (RM * BM) == 0);'
+    - '    // ... thread pool coordination and loop over blocks ...'
+    - '}'
+    desc: Template function that performs the actual matrix multiplication for a tile
+      of size RMxRN, distributing work across threads.
+    line: 120-200
+    name: gemm
+  - code:
+    - inline void gemm_bloc_4x6(int64_t ii, int64_t jj) {
+    - '    size_t vl = vlmax<V>();'
+    - '    D Cv00 = set_zero<D>();'
+    - '    // ... initialize accumulators ...'
+    - '    for (int64_t l = 0; l < k; l += vl) {'
+    - '        // ... load and multiply-accumulate vectors ...'
+    - '    }'
+    - '    // ... store results ...'
+    - '}'
+    desc: Computes a 4x6 micro-kernel block of matrix multiplication using vector
+      operations.
+    line: 200-250
+    name: gemm_bloc_4x6
+  - code:
+    - inline void gemm_bloc_4x5(int64_t ii, int64_t jj) {
+    - '    size_t vl = vlmax<V>();'
+    - '    // ... (similar structure as gemm_bloc_4x6)'
+    - '}'
+    desc: Computes a 4x5 micro-kernel block of matrix multiplication.
+    line: 250-300
+    name: gemm_bloc_4x5
+  - code:
+    - inline void gemm_bloc_4x4(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 4x4 micro-kernel block of matrix multiplication.
+    line: 300-350
+    name: gemm_bloc_4x4
+  - code:
+    - inline void gemm_bloc_4x3(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 4x3 micro-kernel block of matrix multiplication.
+    line: 350-400
+    name: gemm_bloc_4x3
+  - code:
+    - inline void gemm_bloc_4x2(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 4x2 micro-kernel block of matrix multiplication.
+    line: 400-450
+    name: gemm_bloc_4x2
+  - code:
+    - inline void gemm_bloc_4x1(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 4x1 micro-kernel block of matrix multiplication.
+    line: 450-500
+    name: gemm_bloc_4x1
+  - code:
+    - inline void gemm_bloc_2x2(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 2x2 micro-kernel block of matrix multiplication.
+    line: 500-550
+    name: gemm_bloc_2x2
+  - code:
+    - inline void gemm_bloc_2x1(int64_t ii, int64_t jj) {
+    - '    // ... (similar structure)'
+    - '}'
+    desc: Computes a 2x1 micro-kernel block of matrix multiplication.
+    line: 550-600
+    name: gemm_bloc_2x1
+  - code:
+    - template <int RM, int RN>
+    - inline void gemm_bloc(int64_t ii, int64_t jj) {
+    - '    if constexpr (RM == 4) {'
+    - '        // ... dispatch to gemm_bloc_4x* based on RN ...'
+    - '    } else if constexpr (RM == 2) {'
+    - '        // ... dispatch to gemm_bloc_2x* based on RN ...'
+    - '    }'
+    - '}'
+    desc: Template dispatch function that calls the appropriate specialized gemm_bloc_XxY
+      based on RM and RN template parameters.
+    line: 600-620
+    name: gemm_bloc
+  name: tinyBLAS
+- desc: ARM-specific SIMD implementation for quantized matrix multiplication using
+    the dot product instruction (DOTPROD), supporting block types Q4_0 and Q8_0.
+  methods:
+  - code:
+    - tinyBLAS_Q0_ARM(int64_t k,
+    - '                const TA *A, int64_t lda,'
+    - '                const block_q8_0 *B, int64_t ldb,'
+    - '                float *C, int64_t ldc,'
+    - '                int ith, int nth)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth)
+      {}'
+    desc: Constructor that initializes matrix pointers and dimensions for ARM quantized
+      multiplication.
+    line: 620-640
+    name: tinyBLAS_Q0_ARM
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    mnpack(0, m, 0, n);'
+    - '}'
+    desc: Public entry point that calls the mnpack tiling function.
+    line: 640-650
+    name: matmul
+  - code:
+    - NOINLINE void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t mc, nc, mp, np;'
+    - '    switch ((MIN(m - m0, 3) << 4) | MIN(n - n0, 3ll)) {'
+    - '    // ... case 0x33, 0x32, etc. calling gemm<3,3>, gemm<3,2>, etc.'
+    - '    }'
+    - '    // ... recursive calls ...'
+    - '}'
+    desc: Recursively tiles the matrix into blocks of size up to 3x3 and calls the
+      appropriate gemm kernel.
+    line: 650-700
+    name: mnpack
+  - code:
+    - template <int RM, int RN>
+    - NOINLINE void gemm(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    // ... loop over tiles, compute dot products with vdotq_s32, scale by delta
+      values ...'
+    - '}'
+    desc: Template function performing the quantized matrix multiplication for a tile
+      of size RMxRN, using ARM dot product intrinsics.
+    line: 700-750
+    name: gemm
+  - code:
+    - inline int8x16_t load_lo(const block_q8_0 *b) {
+    - '    return vld1q_s8(b->qs);'
+    - '}'
+    desc: Loads the lower 16 bytes of a block_q8_0 or block_q4_0 vector.
+    line: 750-760
+    name: load_lo
+  - code:
+    - inline int8x16_t load_hi(const block_q8_0 *b) {
+    - '    return vld1q_s8(b->qs + 16);'
+    - '}'
+    desc: Loads the upper 16 bytes of a block_q8_0 or block_q4_0 vector.
+    line: 760-770
+    name: load_hi
+  name: tinyBLAS_Q0_ARM
+- desc: AVX/AVX2/AVX512-specific SIMD implementation for quantized matrix multiplication,
+    supporting block types Q4_0, Q5_0, Q8_0, and IQ4_NL.
+  methods:
+  - code:
+    - tinyBLAS_Q0_AVX(int64_t k,
+    - '                const TA *A, int64_t lda,'
+    - '                const TB *B, int64_t ldb,'
+    - '                TC *C, int64_t ldc,'
+    - '                int ith, int nth)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth)
+      {'
+    - '    // ... initialize iq4nlt lookup table ...'
+    - '}'
+    desc: Constructor that initializes matrix pointers, dimensions, and the IQ4NL
+      lookup table.
+    line: 770-800
+    name: tinyBLAS_Q0_AVX
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    mnpack(0, m, 0, n);'
+    - '}'
+    desc: Public entry point that calls the mnpack tiling function.
+    line: 800-810
+    name: matmul
+  - code:
+    - void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t mc, nc, mp, np;'
+    - '    switch ((MIN(m - m0, 4) << 4) | MIN(n - n0, 4)) {'
+    - '    // ... various cases calling gemm4xN, gemmMx4, or gemm ...'
+    - '    }'
+    - '    // ... recursive calls ...'
+    - '}'
+    desc: Recursively tiles the matrix into blocks, with special cases for 4x4 tiles
+      using gemm4xN or gemmMx4 on AVX2, else falls back to generic gemm.
+    line: 810-870
+    name: mnpack
+  - code:
+    - template <int RN>
+    - NOINLINE void gemm4xN(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    // ... loop over tiles, compute with __m256 vectors and _mm256_sign_epi8
+      ...'
+    - '}'
+    desc: AVX2-specific gemm kernel for tiles with 4 rows and RN columns, using vectorized
+      dot product and delta handling.
+    line: 870-950
+    name: gemm4xN
+  - code:
+    - template <int RM>
+    - NOINLINE void gemmMx4(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    // ... loop over tiles, compute with __m256 vectors ...'
+    - '}'
+    desc: AVX2-specific gemm kernel for tiles with RM rows and 4 columns, using vectorized
+      dot product and delta handling.
+    line: 950-1030
+    name: gemmMx4
+  - code:
+    - template <int RM, int RN>
+    - NOINLINE void gemm(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    // ... loop over tiles, compute dot products and scale by deltas ...'
+    - '}'
+    desc: Generic AVX gemm kernel for tiles of size RMxRN, handling various block
+      types and using either AVX2 or AVX instructions.
+    line: 1030-1090
+    name: gemm
+  - code:
+    - inline __m256i load(const block_q8_0 *b) {
+    - '    return _mm256_loadu_si256((const __m256i *)b->qs);'
+    - '}'
+    desc: Loads a 256-bit vector from a block_q8_0, block_q4_0, block_q5_0, or block_iq4_nl,
+      converting to signed bytes for computation.
+    line: 1090-1120
+    name: load
+  - code:
+    - inline __m128i load0(const block_q8_0 *b) {
+    - '    return _mm_loadu_si128((const __m128i *)b->qs);'
+    - '}'
+    desc: Loads the lower 128-bit lane of a block, converting based on block type.
+    line: 1120-1150
+    name: load0
+  - code:
+    - inline __m128i load1(const block_q8_0 *b) {
+    - '    return _mm_loadu_si128(((const __m128i *)b->qs) + 1);'
+    - '}'
+    desc: Loads the upper 128-bit lane of a block, converting based on block type.
+    line: 1150-1180
+    name: load1
+  - code:
+    - inline __m256 updot(__m256i u, __m256i s) {
+    - '    __m256i res;'
+    - '#if defined(__AVX512VNNI__) && defined(__AVX512VL__)'
+    - '    res = _mm256_dpbusd_epi32(_mm256_setzero_si256(), u, s);'
+    - '#elif defined(__AVXVNNI__)'
+    - '    res = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), u, s);'
+    - '#else'
+    - '    res = _mm256_madd_epi16(_mm256_set1_epi16(1), _mm256_maddubs_epi16(u, s));'
+    - '#endif'
+    - '    return _mm256_cvtepi32_ps(res);'
+    - '}'
+    desc: Computes the dot product of two vectors, returning the result as a float
+      vector.
+    line: 1180-1200
+    name: updot
+  - code:
+    - static inline __m256i denibble(const uint8_t *p) {
+    - '    __m128i x = _mm_loadu_si128((const __m128i *)p);'
+    - '    return _mm256_and_si256(_mm256_set1_epi8(15),'
+    - '                            _mm256_insertf128_si256(_mm256_castsi128_si256(x),'
+    - '                                                    _mm_srli_epi16(x, 4), 1));'
+    - '}'
+    desc: Converts nibble-packed data into byte values (for block_q4_0 and block_q5_0).
+    line: 1200-1220
+    name: denibble
+  - code:
+    - static inline __m256i bittobyte(const uint8_t *p) {
+    - '    // ... implementation using _mm256_cmpeq_epi8 and shuffles ...'
+    - '}'
+    desc: Converts high bits from block_q5_0 into byte masks.
+    line: 1220-1240
+    name: bittobyte
+  name: tinyBLAS_Q0_AVX
+- desc: Template struct providing MMA (Matrix Multiply Accumulate) instructions for
+    PPC, specialized for bf16 and fp16 types.
+  methods:
+  - code:
+    - static inline void outer_product(acc_t *acc, vec_t a, vec_t b) {
+    - '    __builtin_mma_xvbf16ger2pp(acc, a, b);  // or xvf16ger2pp for fp16'
+    - '}'
+    desc: Performs a matrix outer product accumulate for the given type (bf16 or fp16)
+      using PPC MMA instructions.
+    line: 1240-1250
+    name: outer_product
+  name: mma_instr
+- desc: PPC-specific SIMD implementation for half-precision (bf16/fp16) matrix multiplication
+    using MMA instructions.
+  methods:
+  - code:
+    - tinyBLAS_HP16_PPC(int64_t k,
+    - '                const TA *A, int64_t lda,'
+    - '                const TB *B, int64_t ldb,'
+    - '                TC *C, int64_t ldc,'
+    - '                int ith, int nth)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth)
+      {}'
+    desc: Constructor that initializes matrix pointers and dimensions for PPC half-precision
+      multiplication.
+    line: 1250-1270
+    name: tinyBLAS_HP16_PPC
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    mnpack(0, m, 0, n);'
+    - '}'
+    desc: Public entry point that calls the mnpack tiling function.
+    line: 1270-1280
+    name: matmul
+  - code:
+    - void vector_permute_store(vec_t *c, int numVec, unsigned char *vecOffset) {
+    - '    // ... permutation logic to store results ...'
+    - '}'
+    desc: Helper function to store accumulated vector results into the output matrix,
+      handling permutation for proper layout.
+    line: 1280-1320
+    name: vector_permute_store
+  name: tinyBLAS_HP16_PPC
+- desc: A PPC-optimized SGEMM kernel class for FP32 matrices with im2col packing and
+    tile-based matrix multiplication using MMA instructions.
+  methods:
+  - code:
+    - tinyBLAS_Q0_PPC(int64_t k,
+    - '             const TA * A, int64_t lda,'
+    - '             const block_q8_0 * B, int64_t ldb,'
+    - '             float * C, int64_t ldc,'
+    - '             int ith, int nth)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth)
+      {'
+    - '}'
+    desc: Constructor initializing matrix dimensions, strides, and thread indices
+      for the FP32 SGEMM kernel.
+    line: 1881-1890
+    name: tinyBLAS_Q0_PPC
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    const int64_t mc = 64;'
+    - '    const int64_t kc = 64;'
+    - '    int64_t nc = 64;'
+    - '    int64_t n_aligned = 0;'
+    - '    ... (logic for tile size selection)'
+    - '    if (can_use_tiled) {'
+    - '        matmul_tiled(m, n_aligned, mc, nc, kc);'
+    - '        if (n > n_aligned) {'
+    - '            mnpack(0, m, n_aligned, n);'
+    - '        }'
+    - '    } else {'
+    - '        mnpack(0, m, 0, n);'
+    - '    }'
+    - '}'
+    desc: Orchestrates the matrix multiplication by calculating tile sizes and determining
+      whether to use tiled or scalar path based on dimensions.
+    line: 1250-1310
+    name: matmul
+  - code:
+    - void packNormal(const TA* a, int64_t lda, int rows, int cols, unsigned char*
+      vec) {
+    - '    int64_t i, j;'
+    - '    TA *aoffset = NULL;'
+    - '    unsigned char *vecOffset = NULL;'
+    - '    ... (packing logic for 4x8 and 8x8 blocks)'
+    - '}'
+    desc: Packs a portion of matrix A into vector registers with permutation for efficient
+      MMA computation.
+    line: 1900-1980
+    name: packNormal
+  - code:
+    - void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t mc, nc, mp, np;'
+    - '    int m_rem = MIN(m - m0, 8);'
+    - '    int n_rem = MIN(n - n0, 8);'
+    - '    ... (block size selection and dispatch)'
+    - '}'
+    desc: Recursively partitions the matrix multiplication into smaller blocks and
+      dispatches to appropriate gemm kernels.
+    line: 1981-2090
+    name: mnpack
+  - code:
+    - void KERNEL_4x8(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[4], vec_B[8] , vec_C[4];'
+    - '    acc_t acc_0, acc_1;'
+    - '    __builtin_mma_xxsetaccz(&acc_0);'
+    - '    __builtin_mma_xxsetaccz(&acc_1);'
+    - '    ... (loop over k dimension)'
+    - '}'
+    desc: Implements 4x8 MMA kernel for FP32 matrix multiplication.
+    line: 2091-2110
+    name: KERNEL_4x8
+  - code:
+    - void KERNEL_8x4(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[8], vec_B[4] , vec_C[4];'
+    - '    acc_t acc_0, acc_1;'
+    - '    __builtin_mma_xxsetaccz(&acc_0);'
+    - '    __builtin_mma_xxsetaccz(&acc_1);'
+    - '    ... (loop over k dimension)'
+    - '}'
+    desc: Implements 8x4 MMA kernel for FP32 matrix multiplication.
+    line: 2111-2130
+    name: KERNEL_8x4
+  - code:
+    - void KERNEL_8x8(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[8], vec_B[8], vec_C[4];'
+    - '    acc_t acc_0, acc_1, acc_2, acc_3;'
+    - '    __builtin_mma_xxsetaccz(&acc_0);'
+    - '    __builtin_mma_xxsetaccz(&acc_1);'
+    - '    __builtin_mma_xxsetaccz(&acc_2);'
+    - '    __builtin_mma_xxsetaccz(&acc_3);'
+    - '    ... (loop over k dimension)'
+    - '}'
+    desc: Implements 8x8 MMA kernel for FP32 matrix multiplication.
+    line: 2131-2160
+    name: KERNEL_8x8
+  - code:
+    - template<int RM, int RN>
+    - void gemm_small(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t ytiles = (m - m0) / RM;'
+    - '    int64_t xtiles = (n - n0) / RN;'
+    - '    ... (tile loop with MMA operations)'
+    - '}'
+    desc: Template kernel for small matrix blocks (RM x RN) using MMA instructions.
+    line: 2161-2230
+    name: gemm_small
+  - code:
+    - template<int RM>
+    - void gemm_Mx8(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int RN = 8;'
+    - '    ... (tile loop with MMA operations)'
+    - '}'
+    desc: Template kernel for Mx8 matrix blocks with MMA instructions.
+    line: 2231-2300
+    name: gemm_Mx8
+  - code:
+    - template<int RM, int RN>
+    - inline void kernel(int64_t ii, int64_t jj) {
+    - '   if constexpr(RM == 4 && RN == 8) {'
+    - '      KERNEL_4x8(ii,jj);'
+    - '   } else if constexpr(RM == 8 && RN == 8) {'
+    - '      KERNEL_8x8(ii,jj);'
+    - '   } else if constexpr(RM == 8 && RN == 4) {'
+    - '      KERNEL_8x4(ii,jj);'
+    - '   } else {'
+    - '      assert(false && "RN/RM values not supported");'
+    - '   }'
+    - '}'
+    desc: Template dispatch function selecting between 4x8, 8x8, and 8x4 MMA kernels.
+    line: 2301-2315
+    name: kernel
+  - code:
+    - template <int RM, int RN>
+    - NOINLINE void gemm(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int64_t ytiles = (m - m0) / RM;'
+    - '    int64_t xtiles = (n - n0) / RN;'
+    - '    ... (tile loop with thread distribution)'
+    - '}'
+    desc: Main template kernel for tile-based matrix multiplication with thread parallelization.
+    line: 2316-2340
+    name: gemm
+  name: tinyBLAS_Q0_PPC
+- desc: A PPC-optimized SGEMM kernel class for Q8_0 quantized matrices, supporting
+    FP16 and Q4_0 packing for efficient MMA-based computation.
+  methods:
+  - code:
+    - tinyBLAS_Q0_PPC(int64_t k,
+    - '             const TA * A, int64_t lda,'
+    - '             const block_q8_0 * B, int64_t ldb,'
+    - '             float * C, int64_t ldc,'
+    - '             int ith, int nth)'
+    - '    : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth)
+      {'
+    - '}'
+    desc: Constructor initializing matrix dimensions, strides, and thread indices
+      for the quantized SGEMM kernel.
+    line: 1891-1900
+    name: tinyBLAS_Q0_PPC
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    const int64_t mc = 64;'
+    - '    const int64_t kc = 64;'
+    - '    int64_t nc = 64;'
+    - '    ... (alignment checks and path selection)'
+    - '}'
+    desc: Orchestrates the quantized matrix multiplication, selecting tiled or scalar
+      path based on block alignment.
+    line: 1950-2010
+    name: matmul
+  - code:
+    - inline void save_res(int ii, int jj, int idx, vector float * fin_res, int RM
+      = 4, int RN = 4) {
+    - '    for (int I = 0; I < RM; I++) {'
+    - '        for (int J = 0; J < RN; J++) {'
+    - '            *((float *)(C + ii + ((jj + J) * ldc) + I)) = *((float *)&fin_res[idx
+      + I] + J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Stores results from FP16 vector registers to output matrix C.
+    line: 2020-2030
+    name: save_res
+  - code:
+    - inline void save_acc(acc_t * ACC, int64_t ii, int64_t jj) {
+    - '    vec_t vec_C[4];'
+    - '    __builtin_mma_disassemble_acc(vec_C, ACC);'
+    - '    for (int I = 0; I < 4; I++) {'
+    - '        for (int J = 0; J < 4; J++) {'
+    - '            *((float *)(C + ii + ((jj + J) * ldc) + I)) = *((float *)&vec_C[I]
+      + J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Disassembles accumulator registers and stores results to output matrix C.
+    line: 2031-2040
+    name: save_acc
+  - code:
+    - inline void add_save_acc(acc_t * ACC, int64_t ii, int64_t jj) {
+    - '    vec_t vec_C[4];'
+    - '    __builtin_mma_disassemble_acc(vec_C, ACC);'
+    - '    for (int I = 0; I < 4; I++) {'
+    - '        for (int J = 0; J < 4; J++) {'
+    - '            float * c_ptr = (float *)(C + ii+ ((jj + J) * ldc) + I);'
+    - '            *c_ptr += *((float *)&vec_C[I] + J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Disassembles accumulator registers and adds results to output matrix C.
+    line: 2041-2050
+    name: add_save_acc
+  - code:
+    - template<typename ArrayType>
+    - inline void compute(acc_t * ACC, int c_idx, int s_idx, ArrayType & comparray,
+      vector float * vs, vector float * fin_res) {
+    - '    vector signed int vec_C[4];'
+    - '    vector float CA[4] = {0};'
+    - '    vector float res[4] = {0};'
+    - '    __builtin_mma_disassemble_acc(vec_C, ACC);'
+    - '    ... (scaling and accumulation logic)'
+    - '}'
+    desc: Computes FP16 results by adjusting MMA accumulator with quantization scale
+      factors.
+    line: 2051-2070
+    name: compute
+  - code:
+    - inline void process_q4_elements(vector signed char (&c)[2], int * ca) {
+    - '    const vector signed char lowMask = vec_splats((signed char)0xF);'
+    - '    const vector unsigned char v4 = vec_splats((unsigned char)0x4);'
+    - '    const vector signed char v8 = vec_splats((signed char)0x8);'
+    - '    ... (nibble unpacking and summing)'
+    - '}'
+    desc: Processes Q4 elements by unpacking nibbles, applying bias, and summing to
+      produce quantized values.
+    line: 2071-2085
+    name: process_q4_elements
+  - code:
+    - template <typename V1, typename V2>
+    - inline void vector_permute_store(V2 & s1, V2 & s2, V2 & s3, V2 & s4, V1 * vecOffset,
+      bool flip) {
+    - '    ... (permutation and store operations)'
+    - '}'
+    desc: Performs vector permutations and stores 4 vectors with optional sign flip
+      for quantized data.
+    line: 2086-2100
+    name: vector_permute_store
+  - code:
+    - inline void unpack_q4_to_q8(vector signed char packed, vector signed char &
+      lo, vector signed char & hi) {
+    - '    const vector signed char lowMask = vec_splats((signed char)0x0F);'
+    - '    const vector signed char v8      = vec_splats((signed char)0x08);'
+    - '    const vector unsigned char v4    = vec_splats((unsigned char)4);'
+    - '    lo = vec_and(packed, lowMask);'
+    - '    hi = vec_sr(packed, v4);'
+    - '    lo = vec_sub(lo, v8);'
+    - '    hi = vec_sub(hi, v8);'
+    - '}'
+    desc: Unpacks Q4 nibbles into high and low Q8 signed bytes with bias adjustment.
+    line: 2101-2115
+    name: unpack_q4_to_q8
+  - code:
+    - inline void vector_permute_store_fp16(vec_t * c, unsigned char * vecOffset)
+      {
+    - '    vec_t t[8], s[8];'
+    - '    vec_t swiz1 = {0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20, 21, 22, 23};'
+    - '    ... (permutation and store operations)'
+    - '}'
+    desc: Performs vector permutations and stores FP16 data for quantized matrix packing.
+    line: 2116-2135
+    name: vector_permute_store_fp16
+  - code:
+    - static inline void convert_and_scale_q8(vector signed char raw, vector float
+      v_scale, vector unsigned short & out_hi, vector unsigned short & out_lo) {
+    - '    vector signed short i16_hi = vec_unpackh(raw);'
+    - '    vector signed short i16_lo = vec_unpackl(raw);'
+    - '    ... (conversion and scaling)'
+    - '}'
+    desc: Converts Q8 signed bytes to FP16 and applies scale factor for quantization.
+    line: 2136-2150
+    name: convert_and_scale_q8
+  - code:
+    - void packNormal_q4_fp16(const block_q4_0 * a, int64_t lda, int rows, int blocks,
+      unsigned char * vec) {
+    - '    unsigned char * vecOffset = vec;'
+    - '    for (int i = 0; i < rows; i += 8) {'
+    - '        ... (packing loop with Q4 unpacking)'
+    - '    }'
+    - '}'
+    desc: Packs Q4_0 quantized matrix rows into FP16 vector registers with permutations.
+    line: 2151-2200
+    name: packNormal_q4_fp16
+  - code:
+    - template <int chunk_size>
+    - static inline void pack_q8_block(const block_q8_0 * a, int64_t lda, int rows,
+      int blocks, unsigned char * vec) {
+    - '    unsigned char * vecOffset = vec;'
+    - '    const vec_t swiz1 = {0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20, 21, 22,
+      23};'
+    - '    ... (packing loop with Q8 conversion)'
+    - '}'
+    desc: Template function to pack Q8_0 quantized matrix blocks into FP16 vector
+      registers.
+    line: 2201-2260
+    name: pack_q8_block
+  - code:
+    - void packNormal_q8_fp16(const block_q8_0 * a, int64_t lda, int rows, int blocks,
+      unsigned char * vec) {
+    - '    if (rows == 4) {'
+    - '        pack_q8_block<4>(a, lda, rows, blocks, vec);'
+    - '    } else {'
+    - '        pack_q8_block<8>(a, lda, rows, blocks, vec);'
+    - '    }'
+    - '}'
+    desc: Packs Q8_0 quantized matrix rows into FP16 vector registers, delegating
+      to pack_q8_block.
+    line: 2261-2270
+    name: packNormal_q8_fp16
+  - code:
+    - template<int size>
+    - void packNormalInt4(const TA * a, int64_t lda, int rows, int cols, int8_t *
+      vec, std::array<int, size> & comparray) {
+    - '    ... (packing loop with Q4 processing)'
+    - '}'
+    desc: Packs Q4_0 or Q4_1 matrix rows into int8 registers with quantized sums.
+    line: 2271-2350
+    name: packNormalInt4
+  name: tinyBLAS_Q0_PPC (Q8_0 quantized version)
+- desc: 量化矩阵乘法的PowerPC实现类，负责处理block_q4_0/block_q8_0类型数据的矩阵乘法计算和任务分派。
+  methods:
+  - code:
+    - void compute(acc_t * acc, int row_offset, int col_offset, std::array<int, 4>
+      comparray, vector float vs[8], vector float fin_res[8]) {
+    - '    vec_t vec_C[4];'
+    - '    vector float CA[4] = {0};'
+    - '    vector float res[4] = {0};'
+    - '    __builtin_mma_disassemble_acc(vec_C, acc);'
+    - '    for (int i = 0; i < 4; i++) {'
+    - '        CA[i] = vec_splats((float)(((double)comparray[i + row_offset]) * -128.0));'
+    - '        res[i] = vec_add(vec_ctf(vec_C[i], 0), CA[i]);'
+    - '        fin_res[i + col_offset] = vec_madd(res[i], vs[i + row_offset], fin_res[i
+      + col_offset]);'
+    - '    }'
+    - '}'
+    desc: 对MMA累加器结果进行后处理，包括常量偏移校正和与缩放因子相乘累加。
+    line: 3800-3900
+    name: compute
+  - code:
+    - template<typename VB, int rows>
+    - void packNormalInt4(const block_q4_0 * a, int64_t lda, int rows, int cols, int8_t
+      * vec, std::array<int, 4> & comparray) {
+    - '    int64_t i, j;'
+    - '    block_q4_0 * aoffset = NULL;'
+    - '    VB * vecOffset = NULL;'
+    - '    block_q4_0 * aoffsets[8];'
+    - '    __vector_pair arr[8];'
+    - '    VB c[8][2] = {0};'
+    - '    VB c1[8] = {0}; VB c2[8] = {0}; VB c3[8] = {0}; VB c4[8] = {0};'
+    - '    aoffset = const_cast<block_q4_0 *>(a);'
+    - '    vecOffset = (VB *)vec;'
+    - '    j = (rows >> 3);'
+    - '    if (j > 0) {'
+    - '        do {'
+    - '            aoffsets[0] = aoffset;'
+    - '            for (int it = 1; it < 8; it++)'
+    - '                aoffsets[it] = aoffsets[it - 1] + lda;'
+    - '            aoffset += 8 * lda;'
+    - '            i = (cols >> 3);'
+    - '            if (i > 0) {'
+    - '                do {'
+    - '                    for (int it = 0; it < 8; it++) {'
+    - '                        arr[it] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[it]->qs);'
+    - '                        __builtin_vsx_disassemble_pair(c[it], &arr[it]);'
+    - '                        c1[it] = c[it][0];'
+    - '                        c2[it] = c[it][1];'
+    - '                    }'
+    - '                    vector_permute_store<VB, VB>(c1[0], c1[1], c1[2], c1[3],
+      vecOffset, false);'
+    - '                    vector_permute_store<VB, VB>(c2[0], c2[1], c2[2], c2[3],
+      vecOffset + 64, false);'
+    - '                    vector_permute_store<VB, VB>(c1[4], c1[5], c1[6], c1[7],
+      vecOffset + 128, false);'
+    - '                    vector_permute_store<VB, VB>(c2[4], c2[5], c2[6], c2[7],
+      vecOffset + 192, false);'
+    - '                    for (int it = 0; it < 8; it++)'
+    - '                        aoffsets[it] += lda;'
+    - '                    vecOffset += 256;'
+    - '                    i--;'
+    - '                } while(i > 0);'
+    - '            }'
+    - '            j--;'
+    - '        } while(j > 0);'
+    - '    }'
+    - '    if (rows & 4) {'
+    - '        aoffsets[0]  = aoffset;'
+    - '        for (int it = 1; it < 4; it++ )'
+    - '            aoffsets[it] = aoffsets[it-1] + lda;'
+    - '        aoffset += 4 * lda;'
+    - '        i = (cols >> 3);'
+    - '        if (i > 0) {'
+    - '            do {'
+    - '                for (int it = 0; it < 4; it++) {'
+    - '                    arr[it] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[it]->qs);'
+    - '                    __builtin_vsx_disassemble_pair(c[it], &arr[it]);'
+    - '                    c1[it] = c[it][0];'
+    - '                    c2[it] = c[it][1];'
+    - '                }'
+    - '                vector_permute_store<VB, VB>(c1[0], c1[1], c1[2], c1[3], vecOffset,
+      false);'
+    - '                vector_permute_store<VB, VB>(c2[0], c2[1], c2[2], c2[3], vecOffset
+      + 64, false);'
+    - '                for (int it = 0; it < 4; it++) {'
+    - '                    aoffsets[it] += lda;'
+    - '                }'
+    - '                vecOffset += 128;'
+    - '                i--;'
+    - '            } while(i > 0);'
+    - '        }'
+    - '    }'
+    - '    if (rows & 3) {'
+    - '        aoffsets[0]  = aoffset;'
+    - '        for (int it = 1; it < 3; it++ )'
+    - '            aoffsets[it] = aoffsets[it - 1] + lda;'
+    - '        i = (cols >> 3);'
+    - '        if (i > 0) {'
+    - '            do {'
+    - '                switch(rows) {'
+    - '                    case 3: c3[1] = vec_xl(0, (const vector signed char *)aoffset3->qs);'
+    - '                    case 2: c2[1] = vec_xl(0, (const vector signed char *)aoffset2->qs);'
+    - '                    case 1: c1[1] = vec_xl(0, (const vector signed char *)aoffset1->qs);'
+    - '                        break;'
+    - '                }'
+    - '                process_q4_elements(c1, &comparray[0]);'
+    - '                process_q4_elements(c2, &comparray[1]);'
+    - '                process_q4_elements(c3, &comparray[2]);'
+    - '                process_q4_elements(c4, &comparray[3]);'
+    - '                vector_permute_store<int8_t, vector signed char>(c1[0], c2[0],
+      c3[0], c4[0], vecOffset, false);'
+    - '                vector_permute_store<int8_t, vector signed char>(c1[1], c2[1],
+      c3[1], c4[1], vecOffset + 64, false);'
+    - '                aoffset1 += lda;'
+    - '                aoffset2 += lda;'
+    - '                aoffset3 += lda;'
+    - '                vecOffset += 128;'
+    - '                i--;'
+    - '            } while(i > 0);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 将quantized int4类型（block_q4_0）的矩阵块加载并重排为适用于MMA指令的向量格式，同时计算每行的常量偏移和。
+    line: 3640-3900
+    name: packNormalInt4
+  - code:
+    - template<typename VA, typename VB>
+    - void packNormal(const block_q8_0 * a, int64_t lda, int rows, int cols, VA *
+      vec, bool flip) {
+    - '    int64_t i, j;'
+    - '    block_q8_0 * aoffset = NULL;'
+    - '    VA * vecOffset = NULL;'
+    - '    block_q8_0 * aoffsets[8];'
+    - '    __vector_pair arr[8];'
+    - '    VB c[8][2] = {0};'
+    - '    VB c1[8] = {0}; VB c2[8] = {0};'
+    - '    aoffset = const_cast<block_q8_0 *>(a);'
+    - '    vecOffset = vec;'
+    - '    j = (rows >> 3);'
+    - '    if (j > 0) {'
+    - '        do {'
+    - '            aoffsets[0] = aoffset;'
+    - '            for (int it = 1; it < 8; it++)'
+    - '                aoffsets[it] = aoffsets[it - 1] + lda;'
+    - '            aoffset += 8 * lda;'
+    - '            i = (cols >> 3);'
+    - '            if (i > 0) {'
+    - '                do {'
+    - '                    for (int it = 0; it < 8; it++) {'
+    - '                        arr[it] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[it]->qs);'
+    - '                        __builtin_vsx_disassemble_pair(c[it], & arr[it]);'
+    - '                        c1[it] = c[it][0];'
+    - '                        c2[it] = c[it][1];'
+    - '                    }'
+    - '                    vector_permute_store<VA, VB>(c1[0], c1[1], c1[2], c1[3],
+      vecOffset, flip);'
+    - '                    vector_permute_store<VA, VB>(c2[0], c2[1], c2[2], c2[3],
+      vecOffset + 64, flip);'
+    - '                    vector_permute_store<VA, VB>(c1[4], c1[5], c1[6], c1[7],
+      vecOffset + 128, flip);'
+    - '                    vector_permute_store<VA, VB>(c2[4], c2[5], c2[6], c2[7],
+      vecOffset + 192, flip);'
+    - '                    for (int it = 0; it < 8; it++)'
+    - '                        aoffsets[it] += lda;'
+    - '                    vecOffset += 256;'
+    - '                    i--;'
+    - '                } while(i > 0);'
+    - '            }'
+    - '            j--;'
+    - '        } while(j > 0);'
+    - '    }'
+    - '    if (rows & 4) {'
+    - '        aoffsets[0]  = aoffset;'
+    - '        for (int it = 1; it < 4; it++ )'
+    - '            aoffsets[it] = aoffsets[it-1] + lda;'
+    - '        aoffset += 4 * lda;'
+    - '        i = (cols >> 3);'
+    - '        if (i > 0) {'
+    - '            do {'
+    - '                for (int it = 0; it < 4; it++) {'
+    - '                    arr[it] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[it]->qs);'
+    - '                    __builtin_vsx_disassemble_pair(c[it], & arr[it]);'
+    - '                    c1[it] = c[it][0];'
+    - '                    c2[it] = c[it][1];'
+    - '                }'
+    - '                vector_permute_store<VA, VB>(c1[0], c1[1], c1[2], c1[3], vecOffset,
+      flip);'
+    - '                vector_permute_store<VA, VB>(c2[0], c2[1], c2[2], c2[3], vecOffset
+      + 64, flip);'
+    - '                for (int it = 0; it < 4; it++) {'
+    - '                    aoffsets[it] += lda;'
+    - '                }'
+    - '                vecOffset += 128;'
+    - '                i--;'
+    - '            } while(i > 0);'
+    - '        }'
+    - '    }'
+    - '    if (rows & 3) {'
+    - '        aoffsets[0]  = aoffset;'
+    - '        for (int it = 1; it < 3; it++ )'
+    - '            aoffsets[it] = aoffsets[it - 1] + lda;'
+    - '        i = (cols >> 3);'
+    - '        if (i > 0) {'
+    - '            do {'
+    - '                switch(rows) {'
+    - '                    case 3: arr[2] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[2]->qs);'
+    - '                            __builtin_vsx_disassemble_pair(c[2], & arr[2]);'
+    - '                            c1[2] = c[2][0]; c2[2] = c[2][1];'
+    - '                    case 2: arr[1] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[1]->qs);'
+    - '                            __builtin_vsx_disassemble_pair(c[1], & arr[1]);'
+    - '                            c1[1] = c[1][0]; c2[1] = c[1][1];'
+    - '                    case 1: arr[0] = __builtin_vsx_lxvp(0, (__vector_pair *)aoffsets[0]->qs);'
+    - '                            __builtin_vsx_disassemble_pair(c[0], & arr[0]);'
+    - '                            c1[0] = c[0][0]; c2[0] = c[0][1];'
+    - '                            break;'
+    - '                }'
+    - '                vector_permute_store<VA, VB>(c1[0], c1[1], c1[2], c1[3], vecOffset,
+      flip);'
+    - '                vector_permute_store<VA, VB>(c2[0], c2[1], c2[2], c2[3], vecOffset
+      + 64, flip);'
+    - '                for (int it = 0; it < 3; it++)'
+    - '                     aoffsets[it] += lda;'
+    - '                vecOffset += 128;'
+    - '                i--;'
+    - '            } while(i > 0);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 将block_q8_0类型的矩阵块加载并重排为适用于MMA指令的向量格式（支持整型和浮点型向量）。
+    line: 3900-4100
+    name: packNormal
+  - code:
+    - void save_res(const int64_t ii, const int64_t jj, const int offset, const vector
+      float fin_res[8], const int rows = 4, const int cols = 4) {
+    - '    for (int I = 0; I < rows; I++) {'
+    - '        for (int J = 0; J < cols; J++) {'
+    - '            float * c_ptr = (float *)(C + (ii + I) + ((jj + J) *  ldc));'
+    - '            *c_ptr = *((float *)&fin_res[I + offset] + J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 将计算完成的浮点结果向量存储到输出矩阵C的正确位置。
+    line: 4100-4200
+    name: save_res
+  - code:
+    - static inline float unhalf(uint16_t h) {
+    - '    ggml_fp16_t fp16;'
+    - '    memcpy(&fp16, &h, sizeof(fp16));'
+    - '    return ggml_compute_fp16_to_fp32(fp16);'
+    - '}'
+    desc: 将存储在16位半精度（bf16）中的浮点缩放因子转换为单精度浮点数。
+    line: 4200-4250
+    name: unhalf
+  - code:
+    - void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    int m_rem = MIN(m - m0, 16);'
+    - '    int n_rem = MIN(n - n0, 16);'
+    - '    int mc = 0, nc = 0;'
+    - '    if (m_rem >= 8 && n_rem >= 8) {'
+    - '        mc = 8; nc = 8; gemm<8, 8>(m0, m, n0, n);'
+    - '    } else if (m_rem >= 4 && n_rem >= 8) {'
+    - '        mc = 4; nc = 8; gemm<4, 8>(m0, m, n0, n);'
+    - '    } else if (m_rem >= 8 && n_rem >= 4) {'
+    - '        mc = 8; nc = 4; gemm<8, 4>(m0, m, n0, n);'
+    - '    } else if (m_rem >= 4 && n_rem >= 4) {'
+    - '        mc = 4; nc = 4; gemm_small(m0, m, n0, n, mc, nc);'
+    - '    } else {'
+    - '        mc = (m_rem >= 4) ? 4 : m_rem; nc = (n_rem >= 4) ? 4 : n_rem;'
+    - '        if (mc == 0 || nc == 0) return;'
+    - '        gemm_small(m0, m, n0, n, mc, nc);'
+    - '    }'
+    - '    int64_t mp = m0 + ((m - m0) / mc) * mc;'
+    - '    int64_t np = n0 + ((n - n0) / nc) * nc;'
+    - '    mnpack(mp, m, n0, np);'
+    - '    mnpack(m0, m, np, n);'
+    - '}'
+    desc: 基于剩余尺寸，选择合适尺寸（4x4， 4x8， 8x4， 8x8）的内核函数或通用gemm_small来处理未对齐的矩阵分块，并进行递归调用以遍历整个矩阵。
+    line: 4300-4400
+    name: mnpack
+  - code:
+    - void KERNEL_4x8(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[8], vec_B[16] = {0};'
+    - '    acc_t acc_0, acc_1;'
+    - '    std::array<int, 4> comparray {};'
+    - '    vector float fin_res[8] = {0};'
+    - '    vector float vs[8] = {0};'
+    - '    bool isAblock_q4 = std::is_same_v<TA, block_q4_0>;'
+    - '    for (int l = 0; l < k; l++) {'
+    - '        __builtin_mma_xxsetaccz(&acc_0);'
+    - '        __builtin_mma_xxsetaccz(&acc_1);'
+    - '        if (std::is_same_v<TA, block_q4_0>) {'
+    - '            packNormalInt4<4>((A + (ii * lda) + l), lda, 4, 4, (int8_t *)vec_A,
+      comparray);'
+    - '        } else {'
+    - '            packNormal<int8_t, vector signed char>((const block_q8_0 *)(A +
+      (ii * lda) + l), lda, 4, 8, (int8_t *)vec_A, false);'
+    - '        }'
+    - '        packNormal<uint8_t, vector unsigned char>((B + (jj * ldb) + l), ldb,
+      8, 8, (uint8_t *)vec_B, true);'
+    - '        for(int x = 0; x < 8; x++) {'
+    - '            __builtin_mma_xvi8ger4pp(&acc_0, vec_A[x], vec_B[x]);'
+    - '            __builtin_mma_xvi8ger4pp(&acc_1, vec_A[x], vec_B[x+8]);'
+    - '        }'
+    - '        for (int I = 0; I<4; I++) {'
+    - '            for (int J = 0; J<4; J++) {'
+    - '                *((float *)&vs[I] + J) = (unhalf((A + ((ii + I) * lda) + l)->d)
+      * unhalf((B + ((jj + J) * ldb) + l)->d));'
+    - '                *((float *)&vs[I + 4] + J) = (unhalf((A +((ii + I) * lda) +
+      l)->d) * unhalf((B + ((jj + J + 4) * ldb) + l)->d));'
+    - '            }'
+    - '        }'
+    - '        if (!isAblock_q4) {'
+    - '            auto aoffset = A + (ii * lda) + l;'
+    - '            for (int i = 0; i < 4; i++) {'
+    - '                comparray[i] = 0;'
+    - '                int ca = 0;'
+    - '                auto *at = aoffset->qs;'
+    - '                for (int j = 0; j < 32; j++) ca += (int)*at++;'
+    - '                comparray[i] = ca;'
+    - '                aoffset += lda;'
+    - '            }'
+    - '        }'
+    - '        compute(&acc_0, 0, 0, comparray, vs, fin_res);'
+    - '        compute(&acc_1, 0, 4, comparray, vs, fin_res);'
+    - '    }'
+    - '    save_res(ii, jj, 0, fin_res);'
+    - '    save_res(ii, jj + 4, 4, fin_res);'
+    - '}'
+    desc: 量化数据的4x8矩阵乘法核心函数，使用两个MMA累加器并整合数据进行计算和存储。
+    line: 4500-4650
+    name: KERNEL_4x8
+  - code:
+    - void KERNEL_8x4(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[16], vec_B[8] = {0};'
+    - '    acc_t acc_0, acc_1;'
+    - '    std::array<int, 8> comparray {};'
+    - '    vector float fin_res[8] = {0};'
+    - '    vector float vs[8] = {0};'
+    - '    bool isAblock_q4 = std::is_same_v<TA, block_q4_0>;'
+    - '    for (int l = 0; l < k; l++) {'
+    - '        __builtin_mma_xxsetaccz(&acc_0);'
+    - '        __builtin_mma_xxsetaccz(&acc_1);'
+    - '        if (std::is_same_v<TA, block_q4_0>) {'
+    - '            packNormalInt4<8>((A + (ii * lda) + l), lda, 8, 4, (int8_t *)vec_A,
+      comparray);'
+    - '        } else {'
+    - '            packNormal<int8_t, vector signed char>((const block_q8_0 *)(A +
+      (ii * lda) + l), lda, 8, 8, (int8_t *)vec_A, false);'
+    - '        }'
+    - '        packNormal<uint8_t, vector unsigned char>((B + (jj * ldb) + l), ldb,
+      4, 8, (uint8_t *)vec_B, true);'
+    - '        for(int x = 0; x < 8; x++) {'
+    - '            __builtin_mma_xvi8ger4pp(&acc_0, vec_A[x], vec_B[x]);'
+    - '            __builtin_mma_xvi8ger4pp(&acc_1, vec_A[x + 8], vec_B[x]);'
+    - '        }'
+    - '        for (int I = 0; I < 8; I++) {'
+    - '            for (int J = 0; J < 4; J++) {'
+    - '                *((float *)&vs[I] + J) = (unhalf((A + ((ii + I) * lda) + l)->d)
+      * unhalf((B + ((jj + J) * ldb) + l)->d));'
+    - '            }'
+    - '        }'
+    - '        if (!isAblock_q4) {'
+    - '            auto aoffset = A + (ii * lda) + l;'
+    - '            for (int i = 0; i < 8; i++) {'
+    - '                comparray[i] = 0;'
+    - '                int ca = 0;'
+    - '                auto *at = aoffset->qs;'
+    - '                for (int j = 0; j < 32; j++) ca += (int)*at++;'
+    - '                comparray[i] = ca;'
+    - '                aoffset += lda;'
+    - '            }'
+    - '        }'
+    - '        compute(&acc_0, 0, 0, comparray, vs, fin_res);'
+    - '        compute(&acc_1, 4, 4, comparray, vs, fin_res);'
+    - '    }'
+    - '    save_res(ii, jj, 0, fin_res);'
+    - '    save_res(ii + 4, jj, 4, fin_res);'
+    - '}'
+    desc: 量化数据的8x4矩阵乘法核心函数，使用两个MMA累加器并整合数据进行计算和存储。
+    line: 4650-4800
+    name: KERNEL_8x4
+  - code:
+    - void KERNEL_8x8(int64_t ii, int64_t jj) {
+    - '    vec_t vec_A[16], vec_B[16] = {0};'
+    - '    acc_t acc_0, acc_1, acc_2, acc_3;'
+    - '    acc_t acc_4, acc_5, acc_6, acc_7;'
+    - '    std::array<int, 8> comparray {};'
+    - '    vector float fin_res[16] = {0};'
+    - '    vector float vs[16] = {0};'
+    - '    bool isAblock_q4 = std::is_same_v<TA, block_q4_0>;'
+    - '    for (int l = 0; l < k; l++) {'
+    - '        __builtin_mma_xxsetaccz(&acc_0);'
+    - '        __builtin_mma_xxsetaccz(&acc_1);'
+    - '        __builtin_mma_xxsetaccz(&acc_2);'
+    - '        __builtin_mma_xxsetaccz(&acc_3);'
+    - '        if (std::is_same_v<TA, block_q4_0>) {'
+    - '            packNormalInt4<8>((A + (ii * lda) + l), lda, 8, 4, (int8_t *)vec_A,
+      comparray);'
+    - '        } else {'
+    - '            packNormal<int8_t, vector signed char>((const block_q8_0 *)(A +
+      (ii * lda) + l), lda, 8, 8, (int8_t *)vec_A, false);'
+    - '        }'
+    - '        packNormal<uint8_t, vector unsigned char>((B + (jj * ldb) + l), ldb,
+      8, 8, (uint8_t *)vec_B, true);'
+    - '        for(int x = 0; x < 8; x++) {'
+    - '            __builtin_mma_xvi8ger4pp(&acc_0, vec_A[x], vec_B[x]);'
+    - '            __builtin_mma_xvi8ger4pp(&acc_1, vec_A[x + 8], vec_B[x]);'
+    - '            __builtin_mma_xvi8ger4pp(&acc_2, vec_A[x], vec_B[x + 8]);'
+    - '            __builtin_mma_xvi8ger4pp(&acc_3, vec_A[x + 8], vec_B[x + 8]);'
+    - '        }'
+    - '        for (int I = 0; I < 8 ; I++) {'
+    - '            for (int J = 0; J < 4; J++) {'
+    - '                *((float *)&vs[I] + J) = (unhalf((A + ((ii + I) * lda) + l)->d)
+      * unhalf((B + ((jj + J) * ldb) + l)->d));'
+    - '                *((float *)&vs[I + 8] + J) = (unhalf((A + ((ii + I) * lda)
+      + l)->d) * unhalf((B + ((jj + J + 4) * ldb) + l)->d));'
+    - '            }'
+    - '        }'
+    - '        if (!isAblock_q4) {'
+    - '            auto aoffset = A + (ii * lda) + l;'
+    - '            for (int i = 0; i < 8; i++) {'
+    - '                comparray[i] = 0;'
+    - '                int ca = 0;'
+    - '                auto *at = aoffset->qs;'
+    - '                for (int j = 0; j < 32; j++) ca += (int)*at++;'
+    - '                comparray[i] = ca;'
+    - '                aoffset += lda;'
+    - '            }'
+    - '        }'
+    - '        compute(&acc_0, 0, 0, comparray, vs, fin_res);'
+    - '        compute(&acc_1, 4, 4, comparray, vs, fin_res);'
+    - '        compute(&acc_2, 0, 8, comparray, vs, fin_res);'
+    - '        compute(&acc_3, 4, 12, comparray, vs, fin_res);'
+    - '    }'
+    - '    save_res(ii, jj, 0, fin_res);'
+    - '    save_res(ii + 4, jj, 4, fin_res);'
+    - '    save_res(ii, jj + 4, 8, fin_res);'
+    - '    save_res(ii + 4, jj + 4, 12, fin_res);'
+    - '}'
+    desc: 量化数据的8x8矩阵乘法核心函数，使用四个MMA累加器并整合数据进行计算和存储。
+    line: 4800-5100
+    name: KERNEL_8x8
+  - code:
+    - void KERNEL_Q0(int64_t ii, int64_t jj, int64_t mc, int64_t nc, int64_t kc, int64_t
+      l, vec_t * vec_A, vec_t * vec_B) {
+    - '    acc_t acc[8];'
+    - '    for (int i = 0; i < mc ; i += 16) {'
+    - '        for (int j = 0; j < nc; j += 8) {'
+    - '            int A0_base = (i / 16) * (2 * 32 * kc);'
+    - '            int B0_base = (j / 8) * (32 * kc);'
+    - '            for (int x = 0; x < 8; x++) {'
+    - '                 __builtin_mma_xxsetaccz(&acc[x]);'
+    - '            }'
+    - '            for (int64_t kk = 0; kk < kc; kk++) {'
+    - '                int A0_block_idx = A0_base + kk * 32;'
+    - '                int B0_block_idx = B0_base + kk * 32;'
+    - '                int A1_block_idx = A0_block_idx + 32 * kc;'
+    - '                vec_t * A0_block = & vec_A[A0_block_idx];'
+    - '                vec_t * B0_block = & vec_B[B0_block_idx];'
+    - '                vec_t * A1_block = & vec_A[A1_block_idx];'
+    - '                for (int it = 0; it < 4; it++) {'
+    - '                    for (int x = 0; x < 4; x++) {'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[0], A0_block[8 * it
+      + x], B0_block[8 * it + x]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[1], A0_block[8 * it
+      + x], B0_block[8 * it + x + 4]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[2], A0_block[8 * it
+      + x + 4], B0_block[8 * it + x]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[3], A0_block[8 * it
+      + x + 4], B0_block[8 * it + x + 4]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[4], A1_block[8 * it
+      + x], B0_block[8 * it + x]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[5], A1_block[8 * it
+      + x], B0_block[8 * it + x + 4]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[6], A1_block[8 * it
+      + x + 4], B0_block[8 * it + x]);'
+    - '                        __builtin_mma_xvf16ger2pp(& acc[7], A1_block[8 * it
+      + x + 4], B0_block[8 * it + x + 4]);'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '            if (l == 0) {'
+    - '                save_acc(&acc[0], ii + i, jj + j);'
+    - '                save_acc(&acc[1], ii + i, jj + j + 4);'
+    - '                save_acc(&acc[2], ii + i + 4, jj + j);'
+    - '                save_acc(&acc[3], ii + i + 4, jj + j + 4);'
+    - '                save_acc(&acc[4], ii + i + 8, jj + j);'
+    - '                save_acc(&acc[5], ii + i + 8, jj + j + 4);'
+    - '                save_acc(&acc[6], ii + i + 12, jj + j);'
+    - '                save_acc(&acc[7], ii + i + 12, jj + j + 4);'
+    - '            } else {'
+    - '                add_save_acc(&acc[0], ii + i, jj + j);'
+    - '                add_save_acc(&acc[1], ii + i, jj + j + 4);'
+    - '                add_save_acc(&acc[2], ii + i + 4, jj + j);'
+    - '                add_save_acc(&acc[3], ii + i + 4, jj + j + 4);'
+    - '                add_save_acc(&acc[4], ii + i + 8, jj + j);'
+    - '                add_save_acc(&acc[5], ii + i + 8, jj + j + 4);'
+    - '                add_save_acc(&acc[6], ii + i + 12, jj + j);'
+    - '                add_save_acc(&acc[7], ii + i + 12, jj + j + 4);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 用于处理超大矩阵分块的核函数，使用fp16进行MMA运算，并支持累加结果的保存。
+    line: 5100-5400
+    name: KERNEL_Q0
+  - code:
+    - template<uint32_t ROWS, uint32_t COLS>
+    - void packNormal_q4_fp16(const block_q4_0 * a, int64_t lda, int32_t rows, int32_t
+      cols, uint8_t * vec) {
+    - '    ...'
+    - '}'
+    desc: 将block_q4_0的量化矩阵块转换为适合fp16 MMA运算的向量表示，并存储到输出数组。
+    line: 基础设施
+    name: packNormal_q4_fp16
+  - code:
+    - template<uint32_t ROWS, uint32_t COLS>
+    - void packNormal_q8_fp16(const block_q8_0 * a, int64_t lda, int32_t rows, int32_t
+      cols, uint8_t * vec) {
+    - '    ...'
+    - '}'
+    desc: 将block_q8_0的量化矩阵块转换为适合fp16 MMA运算的向量表示，并存储到输出数组。
+    line: 基础设施
+    name: packNormal_q8_fp16
+  - code:
+    - void matmul_tiled(int64_t m, int64_t n, int64_t mc, int64_t nc, int64_t kc)
+      {
+    - '    vec_t A_pack[mc * kc * 4];'
+    - '    vec_t B_pack[nc * kc * 4];'
+    - '    constexpr bool is_Ablock_q4 = std::is_same_v<TA, block_q4_0>;'
+    - '    int64_t ytiles = m / mc;'
+    - '    int64_t xtiles = n / nc;'
+    - '    int64_t tiles  = xtiles * ytiles;'
+    - '    int64_t duty = (tiles + nth - 1) / nth;'
+    - '    int64_t start = duty * ith;'
+    - '    int64_t end = start + duty;'
+    - '    if (end > tiles) { end = tiles; }'
+    - '    for (int64_t job = start; job < end; ++job) {'
+    - '        int64_t ii = (job / xtiles) * mc;'
+    - '        int64_t jj = (job % xtiles) * nc;'
+    - '        for (int64_t kk = 0; kk < k; kk += kc) {'
+    - '            if constexpr(is_Ablock_q4) {'
+    - '                packNormal_q4_fp16(A + ii * lda + kk, lda, mc, kc, (uint8_t
+      *)A_pack);'
+    - '            } else {'
+    - '                packNormal_q8_fp16(A + ii * lda + kk, lda, mc, kc, (uint8_t
+      *)A_pack);'
+    - '            }'
+    - '            packNormal_q8_fp16(B + jj * ldb + kk, ldb, nc, kc, (uint8_t *)B_pack);'
+    - '            KERNEL_Q0(ii, jj, mc, nc, kc, kk, A_pack, B_pack);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 对可整除的大矩阵乘法执行分块并行计算的调度函数，利用多线程划分任务并调用KERNEL_Q0内核。
+    line: 5400-5550
+    name: matmul_tiled
+  - code:
+    - void gemm_small(int64_t m0, int64_t m, int64_t n0, int64_t n, int RM, int RN)
+      {
+    - '    ...'
+    - '}'
+    desc: 处理未对齐或小尺寸矩阵分块的通用矩阵乘法函数，支持4x4等小规模计算。
+    line: 5550-5800
+    name: gemm_small
+  - code:
+    - template<int RM, int RN> inline void kernel(int64_t ii, int64_t jj) {
+    - '    if constexpr(RM == 4 && RN == 8) {'
+    - '        KERNEL_4x8(ii,jj);'
+    - '    } else if constexpr(RM == 8 && RN == 4) {'
+    - '        KERNEL_8x4(ii,jj);'
+    - '    } else if constexpr(RM == 8 && RN == 8) {'
+    - '        KERNEL_8x8(ii,jj);'
+    - '    } else {'
+    - '        assert(false && "RN/RM values not supported");'
+    - '    }'
+    - '}'
+    desc: 根据模板参数分的派（dispatch）函数，将计算转发给对应的KERNEL_4x8， KERNEL_8x4或KERNEL_8x8函数。
+    line: 5800-5900
+    name: kernel
+  - code:
+    - template <int RM, int RN> NOINLINE void gemm(int64_t m0, int64_t m, int64_t
+      n0, int64_t n) {
+    - '    ...'
+    - '}'
+    desc: 模板化的分块矩阵乘法函数，将可整除的矩阵分块分配给对应的kernel函数进行计算。
+    line: 5900-6000
+    name: gemm
+  name: llamafile_sgemm_ppc_quantized
+- desc: PowerPC架构下的通用FP32矩阵乘法实现类，使用MMA指令集处理单精度矩阵乘法。
+  methods:
+  - code:
+    - void matmul(int64_t m, int64_t n) {
+    - '    int64_t mc = 256; int64_t nc = 256; int64_t kc = 256;'
+    - '    if (m % mc == 0 && n % nc == 0 && k % kc == 0) {'
+    - '        matmul_tiled(m, n, mc, nc, kc);'
+    - '    } else {'
+    - '        mnpack(0, m, 0, n);'
+    - '    }'
+    - '}'
+    desc: 矩阵乘法入口，根据矩阵尺寸决定是使用分块并行（tiled）还是递归（mnpack）方式执行。
+    line: 6000-6050
+    name: matmul
+  - code:
+    - inline void save_acc(acc_t * ACC, int64_t ii, int64_t jj) {
+    - '    vec_t vec_C[4];'
+    - '    __builtin_mma_disassemble_acc(vec_C, ACC);'
+    - '    for (int I = 0; I < 4; I++) {'
+    - '        for (int J = 0; J < 4; J++) {'
+    - '            *((float *)(C+ii+((jj+J)*ldc)+I)) = *((float *)&vec_C[I]+J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 将MMA累加器结果保存到输出矩阵。
+    line: 6050-6100
+    name: save_acc
+  - code:
+    - inline void add_save_acc(acc_t * ACC, int64_t ii, int64_t jj) {
+    - '    vec_t vec_C[4];'
+    - '    __builtin_mma_disassemble_acc(vec_C, ACC);'
+    - '    for (int I = 0; I < 4; I++) {'
+    - '        for (int J = 0; J < 4; J++) {'
+    - '            float * c_ptr = (float *)(C+ii+((jj+J)*ldc)+I);'
+    - '            *c_ptr += *((float *)&vec_C[I]+J);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 累积MMA累加器结果到输出矩阵（用于多步累积）。
+    line: 6100-6150
+    name: add_save_acc
+  - code:
+    - inline void vector_permute_store_4(vector float * src, float * vecOffset) {
+    - '    ...'
+    - '}'
+    desc: 使用向量置换指令将4个向量数据按特定顺序存储到内存。
+    line: 6150-6200
+    name: vector_permute_store_4
+  - code:
+    - inline void vector_permute_store_8(vector float * src, float * vecOffset) {
+    - '    ...'
+    - '}'
+    desc: 使用向量置换指令将8个向量数据按特定顺序存储到内存。
+    line: 6200-6250
+    name: vector_permute_store_8
+  - code:
+    - void packTranspose(const float * a, int64_t lda, int rows, int cols, float *
+      vec) {
+    - '    ...'
+    - '}'
+    desc: 将FP32矩阵块按转置方式加载并重排为适合MMA运算的向量格式。
+    line: 6250-6500
+    name: packTranspose
+  - code:
+    - void KERNEL_4x4(int64_t ii, int64_t jj) {
+    - '    ...'
+    - '}'
+    desc: FP32的4x4矩阵乘法核心函数，使用单个MMA累加器。
+    line: 6500-6550
+    name: KERNEL_4x4
+  - code:
+    - void KERNEL_4x8(int64_t ii, int64_t jj) {
+    - '    ...'
+    - '}'
+    desc: FP32的4x8矩阵乘法核心函数，使用两个MMA累加器。
+    line: 6550-6600
+    name: KERNEL_4x8
+  - code:
+    - void KERNEL_8x4(int64_t ii, int64_t jj) {
+    - '    ...'
+    - '}'
+    desc: FP32的8x4矩阵乘法核心函数，使用两个MMA累加器。
+    line: 6600-6650
+    name: KERNEL_8x4
+  - code:
+    - void KERNEL_8x8(int64_t ii, int64_t jj) {
+    - '    ...'
+    - '}'
+    desc: FP32的8x8矩阵乘法核心函数，使用四个MMA累加器。
+    line: 6650-6700
+    name: KERNEL_8x8
+  - code:
+    - inline void MMA_16x8(vec_t * vec_A0, vec_t * vec_A1, vec_t * vec_B, acc_t *
+      acc) {
+    - '    ...'
+    - '}'
+    desc: 执行16x8矩阵块的MMA累加操作，使用8个累加器。
+    line: 6700-6750
+    name: MMA_16x8
+  - code:
+    - void KERNEL(int64_t ii, int64_t jj, int64_t mc, int64_t nc, int64_t kc, vec_t
+      * vec_A, vec_t * vec_B, int64_t kk) {
+    - '    ...'
+    - '}'
+    desc: 通用FP32的矩阵乘法核心函数，处理16x8大小的分块，支持累加。
+    line: 6750-6850
+    name: KERNEL
+  - code:
+    - void matmul_tiled(int64_t m, int64_t n, int64_t mc, int64_t nc, int64_t kc)
+      {
+    - '    ...'
+    - '}'
+    desc: FP32的tiled矩阵乘法调度函数，针对可整除的大矩阵乘法执行分块并行计算，调用KERNEL函数。
+    line: 6850-6900
+    name: matmul_tiled
+  - code:
+    - void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+    - '    ...'
+    - '}'
+    desc: FP32的通用矩阵分块函数，用于处理不可整除的矩阵尺寸，选择合适的KERNEL尺寸或调用KERNEL_general。
+    line: 6900-7000
+    name: mnpack
+  name: tinyBLAS_PPC
+desc: 该文件实现了针对常见连续矩阵场景 C = Aᵀ * B 的多线程 CPU 矩阵乘法，设计目标是充分利用 CPU 缓存，提供高性能的 SGEMM（单精度通用矩阵乘法）内核，并针对不同
+  SIMD 指令集（如 SSE、AVX、AVX512、NEON、RVV 等）提供了向量化和融合乘加（FMA）的底层封装。This file contains SIMD-optimized
+  implementations of small matrix multiplication (sgemm) kernels for various CPU architectures
+  (ARM, AVX, PPC), including specialized handling for quantized block types like Q4_0,
+  Q5_0, Q8_0, and IQ4_NL. It also includes a generic tinyBLAS class template for unquantized
+  float/half precision matrices.The file implements PowerPC (PPC) optimized SGEMM
+  (Single precision GEneral Matrix Multiply) kernels for llama.cpp, supporting FP32,
+  FP16, Q4_0, and Q8_0 quantization, using Altivec/VSX and MMA instructions for vectorized
+  SIMD and matrix-multiply-accumulate operations.该文件是ggml项目中用于PowerPC架构（PPC）的SGEMM（单精度通用矩阵乘法）内核实现。它利用PowerPC的MMA（矩阵乘法加速）指令集以及VSX向量化指令，针对不同量化数据类型（如block_q4_0和block_q8_0）和FP32类型，提供了多种尺寸（4x4，
+  4x8， 8x4， 8x8等）的矩阵乘加内核。该代码通过分块（tiling）和任务分配（基于线程ID）策略，高效地将大矩阵乘法分解为小规模内核计算，并支持FP32累加、量化数据反量化以及结果存储等功能。该文件实现了llamafile_sgemm函数，这是一个针对CPU优化的矩阵乘法（GEMM）实现，支持多种数据类型（F32、BF16、F16、量化格式如Q8_0、Q4_0、Q5_0、IQ4_NL）和多种SIMD指令集（如AVX、AVX512、ARM
+  NEON、PowerPC MMA、RISC-V RVV等），根据硬件能力选择不同的内核函数进行加速计算，用于ggml框架中的矩阵运算。
+file: ggml/src/ggml-cpu/llamafile/sgemm.cpp
+funcs:
+- code:
+  - // Copyright 2024 Mozilla Foundation
+  - // ... [文件头注释]
+  - '#if defined(__GNUC__)'
+  - '#pragma GCC diagnostic ignored "-Wpedantic"'
+  - '#pragma GCC diagnostic ignored "-Wignored-attributes"'
+  - '#endif'
+  - '#include "sgemm.h"'
+  - '#include "ggml-impl.h"'
+  - '#include "ggml-cpu-impl.h"'
+  - '#include "ggml-quants.h"'
+  - '#include "simd-mappings.h"'
+  - '#include <array>'
+  - '#include <type_traits>'
+  - '#ifdef _MSC_VER'
+  - '#define NOINLINE __declspec(noinline)'
+  - '#else'
+  - '#define NOINLINE __attribute__((__noinline__))'
+  - '#endif'
+  - '#if defined(__ARM_NEON) || defined(__AVX512F__) || defined(__VXE__) || defined(__VXE2__)'
+  - '#define VECTOR_REGISTERS 32'
+  - '#else'
+  - '#define VECTOR_REGISTERS 16'
+  - '#endif'
+  - '#if defined(__riscv_v_intrinsic)'
+  - '#define LMUL 4'
+  - '#endif'
+  - '#define MM256_SET_M128I(a, b) _mm256_insertf128_si256(_mm256_castsi128_si256(b),
+    (a), 1)'
+  - namespace {
+  - inline float unhalf(ggml_fp16_t d) {
+  - '    return GGML_CPU_FP16_TO_FP32(d);'
+  - '}'
+  - // ... [向量化算术运算 add/sub/mul 重载]
+  - // ... [向量化融合乘加 madd 模板及特化]
+  - // ... [向量化水平求和 hsum 重载]
+  - // ... [向量化内存加载 load 模板及特化]
+  - template <typename T> T set_zero();
+  - // ... [RVV set_zero 特化]
+  - template <typename T> size_t vlmax() {
+  - '    // ...'
+  - '    return 0;'
+  - '}'
+  - template <int M>
+  - static inline int64_t BLOCK_SIZE(size_t m) {
+  - '    const int64_t NB_BLOC_M = (m + M - 1) / M;'
+  - '    return (m % NB_BLOC_M == 0) ? m / NB_BLOC_M : (m / NB_BLOC_M) + 1;'
+  - '}'
+  - static constexpr inline int64_t BLOC_POS(int64_t ib, int64_t ibN, int64_t bloc_size)
+    {
+  - '    return ib < ibN ? ib * bloc_size : ibN * bloc_size + (ib - ibN) * (bloc_size
+    - 1);'
+  - '}'
+  - '} // namespace'
+  - template <int KN, typename D, typename V, typename TA, typename TB, typename TC>
+  - class tinyBLAS {
+  - '    // ...'
+  - '};'
+  - '#if defined(__riscv_v_intrinsic)'
+  - template <typename D, typename V, typename TA, typename TB, typename TC>
+  - class tinyBLAS_RVV {
+  - '    // ...'
+  - '};'
+  - '#endif'
+  desc: 全局作用域定义，包含所有全局函数、模板、宏和常量，用于支持矩阵乘法计算，例如 unhalf、向量化算术运算、融合乘加、水平求和、内存加载、分块大小计算等。
+  line: 1-1000
+  name: __main__
+- code:
+  - // Includes and macro definitions
+  - '#if defined(__ARM_FEATURE_DOTPROD)'
+  - // ... ARM intrinsics includes ...
+  - '#endif'
+  - '#define MIN(a,b) ((a) < (b) ? (a) : (b))'
+  - // ... other template specializations ...
+  desc: Global code including includes, macros (MAKE_MMAP, MIN, SAVE_ACC), and template
+    specializations for block types like block_iq4_nl, block_q8_0, etc., supporting
+    the SIMD kernels.
+  line: 1-100
+  name: __main__
+- code:
+  - // Global type definitions and constants
+  - typedef vector float vec_t;
+  - typedef __vector_pair acc_t;
+  - // MMA helper macros like SAVE_ACC
+  - // ... (various PPC SIMD intrinsics and architecture checks)
+  - // Compile-time configuration for PPC MMA support
+  desc: Global section containing type definitions, constants, and utility macros
+    for MMA and SIMD operations in PPC architecture.
+  line: 1881-1900
+  name: __main__
+- code:
+  - // 全局类型别名和辅助函数定义
+  - '...'
+  - // vec_xst函数
+  - '...'
+  - // vector_permute_store函数模板
+  - '...'
+  - // process_q4_elements函数
+  - '...'
+  - // ggml_compute_fp16_to_fp32 等辅助函数
+  - '...'
+  desc: 全局代码，包含类型别名定义、辅助函数vec_xst、vector_permute_store、process_q4_elements等，以及文末的GGML_TASK_TYPE_INIT/FINALIZE宏定义，用于实现sgemm函数的完整逻辑。
+  line: 2700-2800 + 7000-7200
+  name: __main__
+- code:
+  - bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64_t
+    n, int64_t k,
+  - '                     const void *A, int64_t lda, const void *B, int64_t ldb,
+    void *C,'
+  - '                     int64_t ldc, int Atype, int Btype, int Ctype) {'
+  - '    assert(m >= 0);'
+  - '    assert(n >= 0);'
+  - '    assert(k >= 0);'
+  - '    assert(lda >= k);'
+  - '    assert(ldb >= k);'
+  - '    assert(ldc >= m);'
+  - '    assert(params->nth > 0);'
+  - '    assert(params->ith < params->nth);'
+  - '    #if !defined(__MMA__)'
+  - '    if (n < 2)'
+  - '        return false;'
+  - '    #endif'
+  - '    if (Ctype != GGML_TYPE_F32)'
+  - '        return false;'
+  - '    switch (Atype) {'
+  - '    case GGML_TYPE_F32: {'
+  - '        if (Btype != GGML_TYPE_F32)'
+  - '            return false;'
+  - '        #if defined(__AVX512F__)'
+  - '        tinyBLAS<16, __m512, __m512, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        return tb.matmul(m, n);'
+  - '        #elif defined(__AVX__) || defined(__AVX2__)'
+  - '        tinyBLAS<8, __m256, __m256, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        return tb.matmul(m, n);'
+  - '        #elif defined(__ARM_NEON)'
+  - '        if (n < 4)'
+  - '            return false;'
+  - '        tinyBLAS<4, float32x4_t, float32x4_t, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        return tb.matmul(m, n);'
+  - '        #elif defined(__VXE__) || defined(__VXE2__)'
+  - '        if (n < 4)'
+  - '            return false;'
+  - '        tinyBLAS<4, float32x4_t, float32x4_t, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        return tb.matmul(m, n);'
+  - '        #elif defined(__MMA__)'
+  - '        if (k % 8)'
+  - '            return false;'
+  - '        tinyBLAS_PPC tb{'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #elif defined(__riscv_v_intrinsic)'
+  - '        #if LMUL == 1'
+  - '        tinyBLAS_RVV<vfloat32m1_t, vfloat32m1_t, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        #elif LMUL == 2'
+  - '        tinyBLAS_RVV<vfloat32m2_t, vfloat32m2_t, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        #else // LMUL = 4'
+  - '        tinyBLAS_RVV<vfloat32m4_t, vfloat32m4_t, float, float, float> tb{ params,'
+  - '            k, (const float *)A, lda,'
+  - '            (const float *)B, ldb,'
+  - '            (float *)C, ldc};'
+  - '        #endif'
+  - '        return tb.matmul(m, n);'
+  - '        #else'
+  - '        return false;'
+  - '        #endif'
+  - '    }'
+  - '    case GGML_TYPE_BF16: {'
+  - '        #if defined(__AVX512BF16__)'
+  - '        if (Btype == GGML_TYPE_BF16) {'
+  - '            tinyBLAS<32, __m512, __m512bh, ggml_bf16_t, ggml_bf16_t, float> tb{
+    params, k,'
+  - '                (const ggml_bf16_t *)A, lda,'
+  - '                (const ggml_bf16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__AVX512F__)'
+  - '        if (Btype == GGML_TYPE_BF16) {'
+  - '            tinyBLAS<16, __m512, __m512, ggml_bf16_t, ggml_bf16_t, float> tb{
+    params, k,'
+  - '                (const ggml_bf16_t *)A, lda,'
+  - '                (const ggml_bf16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__AVX2__)'
+  - '        if (Btype == GGML_TYPE_BF16) {'
+  - '            tinyBLAS<8, __m256, __m256, ggml_bf16_t, ggml_bf16_t, float> tb{
+    params, k,'
+  - '                (const ggml_bf16_t *)A, lda,'
+  - '                (const ggml_bf16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__MMA__)'
+  - '        if (k % 8) {'
+  - '            return false;'
+  - '        }'
+  - '        if (Btype == GGML_TYPE_BF16) {'
+  - '            tinyBLAS_HP16_PPC<ggml_bf16_t, ggml_bf16_t, float> tb{ k,'
+  - '                (const ggml_bf16_t *)A, lda,'
+  - '                (const ggml_bf16_t *)B, ldb,'
+  - '                (float *)C, ldc,'
+  - '                params->ith, params->nth };'
+  - '            tb.matmul(m, n);'
+  - '            return true;'
+  - '        }'
+  - '        #elif defined(__riscv_zvfbfwma)'
+  - '        if (Btype == GGML_TYPE_BF16) {'
+  - '            #if LMUL == 1'
+  - '                tinyBLAS_RVV<vfloat32m1_t, vbfloat16mf2_t, ggml_bf16_t, ggml_bf16_t,
+    float> tb{ params,'
+  - '                    k, (const ggml_bf16_t *)A, lda,'
+  - '                    (const ggml_bf16_t *)B, ldb,'
+  - '                    (float *)C, ldc};'
+  - '            #elif LMUL == 2'
+  - '                tinyBLAS_RVV<vfloat32m2_t, vbfloat16m1_t, ggml_bf16_t, ggml_bf16_t,
+    float> tb{ params,'
+  - '                    k, (const ggml_bf16_t *)A, lda,'
+  - '                    (const ggml_bf16_t *)B, ldb,'
+  - '                    (float *)C, ldc};'
+  - '            #else // LMUL = 4'
+  - '                tinyBLAS_RVV<vfloat32m4_t, vbfloat16m2_t, ggml_bf16_t, ggml_bf16_t,
+    float> tb{ params,'
+  - '                    k, (const ggml_bf16_t *)A, lda,'
+  - '                    (const ggml_bf16_t *)B, ldb,'
+  - '                    (float *)C, ldc};'
+  - '            #endif'
+  - '                return tb.matmul(m, n);'
+  - '        }'
+  - '        #endif'
+  - '        return false;'
+  - '    }'
+  - '    case GGML_TYPE_F16: {'
+  - '        #if defined(__AVX512F__)'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '            tinyBLAS<16, __m512, __m512, ggml_fp16_t, ggml_fp16_t, float> tb{
+    params, k,'
+  - '                (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif (defined(__AVX__) || defined(__AVX2__)) && defined(__F16C__)'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '            tinyBLAS<8, __m256, __m256, ggml_fp16_t, ggml_fp16_t, float> tb{
+    params, k,'
+  - '                (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)'
+  - '        if (n < 8)'
+  - '            return false;'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '            tinyBLAS<8, float16x8_t, float16x8_t, ggml_fp16_t, ggml_fp16_t, float>
+    tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__ARM_NEON) && !defined(_MSC_VER)'
+  - '        if (Btype == GGML_TYPE_F32) {'
+  - '            tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, float, float>
+    tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const float *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__VXE__) || defined(__VXE2__)'
+  - '        if (n < 4)'
+  - '            return false;'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '            tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, ggml_fp16_t, float>
+    tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__riscv_zvfh)'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '        #if LMUL == 1'
+  - '            tinyBLAS_RVV<vfloat32m1_t, vfloat16mf2_t, ggml_fp16_t, ggml_fp16_t,
+    float> tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '        #elif LMUL == 2'
+  - '            tinyBLAS_RVV<vfloat32m2_t, vfloat16m1_t, ggml_fp16_t, ggml_fp16_t,
+    float> tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '        #else // LMUL = 4'
+  - '            tinyBLAS_RVV<vfloat32m4_t, vfloat16m2_t, ggml_fp16_t, ggml_fp16_t,
+    float> tb{ params,'
+  - '                k, (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc};'
+  - '        #endif'
+  - '            return tb.matmul(m, n);'
+  - '        }'
+  - '        #elif defined(__MMA__)'
+  - '        if (k % 8) {'
+  - '            return false;'
+  - '        }'
+  - '        if (Btype == GGML_TYPE_F16) {'
+  - '            tinyBLAS_HP16_PPC<ggml_fp16_t, ggml_fp16_t, float> tb{ k,'
+  - '                (const ggml_fp16_t *)A, lda,'
+  - '                (const ggml_fp16_t *)B, ldb,'
+  - '                (float *)C, ldc,'
+  - '                params->ith, params->nth };'
+  - '            tb.matmul(m, n);'
+  - '            return true;'
+  - '        }'
+  - '        #endif'
+  - '        return false;'
+  - '    }'
+  - '    case GGML_TYPE_Q8_0: {'
+  - '        if (Btype != GGML_TYPE_Q8_0)'
+  - '           return false;'
+  - '        #if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX__)'
+  - '        tinyBLAS_Q0_AVX<block_q8_0, block_q8_0, float> tb{'
+  - '            k, (const block_q8_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #elif defined(__ARM_FEATURE_DOTPROD)'
+  - '        tinyBLAS_Q0_ARM<block_q8_0> tb{'
+  - '            k, (const block_q8_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #elif defined(__MMA__)'
+  - '        if (n < 8 && n != 4)'
+  - '           return false;'
+  - '        if (m < 8 && m != 4)'
+  - '           return false;'
+  - '        tinyBLAS_Q0_PPC<block_q8_0> tb{'
+  - '            k, (const block_q8_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #else'
+  - '        return false;'
+  - '        #endif'
+  - '    }'
+  - '    case GGML_TYPE_Q4_0: {'
+  - '        if (Btype != GGML_TYPE_Q8_0)'
+  - '            return false;'
+  - '        #if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX__)'
+  - '        tinyBLAS_Q0_AVX<block_q4_0, block_q8_0, float> tb{'
+  - '            k, (const block_q4_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #elif defined(__ARM_FEATURE_DOTPROD)'
+  - '        tinyBLAS_Q0_ARM<block_q4_0> tb{'
+  - '            k, (const block_q4_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #elif defined(__MMA__)'
+  - '        if (n < 8 && n != 4)'
+  - '           return false;'
+  - '        if (m < 8 && m != 4)'
+  - '           return false;'
+  - '        tinyBLAS_Q0_PPC<block_q4_0> tb{'
+  - '            k, (const block_q4_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #else'
+  - '        return false;'
+  - '        #endif'
+  - '    }'
+  - '    case GGML_TYPE_Q5_0: {'
+  - '        if (Btype != GGML_TYPE_Q8_0)'
+  - '            return false;'
+  - '        #if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX__)'
+  - '        tinyBLAS_Q0_AVX<block_q5_0, block_q8_0, float> tb{'
+  - '            k, (const block_q5_0 *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #else'
+  - '        return false;'
+  - '        #endif'
+  - '    }'
+  - '    case GGML_TYPE_IQ4_NL: {'
+  - '        if (Btype != GGML_TYPE_Q8_0)'
+  - '            return false;'
+  - '        #if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX__)'
+  - '        tinyBLAS_Q0_AVX<block_iq4_nl, block_q8_0, float> tb{'
+  - '            k, (const block_iq4_nl *)A, lda,'
+  - '            (const block_q8_0 *)B, ldb,'
+  - '            (float *)C, ldc,'
+  - '            params->ith, params->nth};'
+  - '        tb.matmul(m, n);'
+  - '        return true;'
+  - '        #else'
+  - '        return false;'
+  - '        #endif'
+  - '    }'
+  - '    default:'
+  - '        return false;'
+  - '    }'
+  - '    (void)params;'
+  - '    (void)m;'
+  - '    (void)n;'
+  - '    (void)k;'
+  - '    (void)A;'
+  - '    (void)lda;'
+  - '    (void)B;'
+  - '    (void)ldb;'
+  - '    (void)C;'
+  - '    (void)ldc;'
+  - '    (void)Atype;'
+  - '    (void)Btype;'
+  - '    (void)Ctype;'
+  - '}'
+  desc: 执行优化的CPU矩阵乘法，计算C = Aᵀ * B，根据输入矩阵的类型和硬件平台选择相应的优化内核。
+  line: 3826-4010
+  name: llamafile_sgemm

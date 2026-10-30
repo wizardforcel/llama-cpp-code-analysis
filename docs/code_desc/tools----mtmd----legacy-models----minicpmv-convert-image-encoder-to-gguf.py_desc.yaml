@@ -1,0 +1,554 @@
+classes:
+- desc: Configuration class for the Siglip vision encoder, inheriting from PretrainedConfig,
+    defining model architecture hyperparameters like hidden size, layers, heads, image
+    size, and patch size.
+  methods:
+  - code:
+    - def __init__(
+    - '    self,'
+    - '    hidden_size=768,'
+    - '    intermediate_size=3072,'
+    - '    num_hidden_layers=12,'
+    - '    num_attention_heads=12,'
+    - '    num_channels=3,'
+    - '    image_size=224,'
+    - '    patch_size=16,'
+    - '    hidden_act="gelu_pytorch_tanh",'
+    - '    layer_norm_eps=1e-6,'
+    - '    attention_dropout=0.0,'
+    - '    **kwargs,'
+    - '):'
+    - '    super().__init__(**kwargs)'
+    - '    self.hidden_size = hidden_size'
+    - '    self.intermediate_size = intermediate_size'
+    - '    self.num_hidden_layers = num_hidden_layers'
+    - '    self.num_attention_heads = num_attention_heads'
+    - '    self.num_channels = num_channels'
+    - '    self.patch_size = patch_size'
+    - '    self.image_size = image_size'
+    - '    self.attention_dropout = attention_dropout'
+    - '    self.layer_norm_eps = layer_norm_eps'
+    - '    self.hidden_act = hidden_act'
+    desc: Initializes the configuration with default values for hidden size, intermediate
+      size, number of layers, heads, channels, image/patch size, activation, layer
+      norm epsilon, and attention dropout.
+    line: 99-127
+    name: __init__
+  name: SiglipVisionConfig
+- desc: Defines the patch embedding and position embedding layers for the vision transformer,
+    using a convolutional layer for patchification and an embedding table for positional
+    information.
+  methods:
+  - code:
+    - 'def __init__(self, config: SiglipVisionConfig):'
+    - '    super().__init__()'
+    - '    self.config = config'
+    - '    self.embed_dim = config.hidden_size'
+    - '    self.image_size = config.image_size'
+    - '    self.patch_size = config.patch_size'
+    - '    self.patch_embedding = nn.Conv2d('
+    - '        in_channels=config.num_channels,'
+    - '        out_channels=self.embed_dim,'
+    - '        kernel_size=self.patch_size,'
+    - '        stride=self.patch_size,'
+    - '        padding="valid",'
+    - '    )'
+    - '    self.num_patches_per_side = self.image_size // self.patch_size'
+    - '    self.num_patches = self.num_patches_per_side**2'
+    - '    self.num_positions = self.num_patches'
+    - '    self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)'
+    desc: Initializes the patch embedding convolution and position embedding based
+      on the provided config, calculating number of patches from image and patch sizes.
+    line: 170-194
+    name: __init__
+  name: SiglipVisionEmbeddings
+- desc: Multi-head attention module for the vision encoder, containing query, key,
+    value, and output projection layers.
+  methods:
+  - code:
+    - 'def __init__(self, config):'
+    - '    super().__init__()'
+    - '    self.config = config'
+    - '    self.embed_dim = config.hidden_size'
+    - '    self.num_heads = config.num_attention_heads'
+    - '    self.head_dim = self.embed_dim // self.num_heads'
+    - '    if self.head_dim * self.num_heads != self.embed_dim:'
+    - '        raise ValueError('
+    - '            f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}
+      and `num_heads`:"'
+    - '            f" {self.num_heads})."'
+    - '        )'
+    - '    self.scale = self.head_dim**-0.5'
+    - '    self.dropout = config.attention_dropout'
+    - '    self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)'
+    - '    self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)'
+    - '    self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)'
+    - '    self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)'
+    desc: Initializes attention projection layers and checks embedding dimension divisibility
+      by the number of attention heads.
+    line: 197-218
+    name: __init__
+  name: SiglipAttention
+- desc: Multi-layer perceptron module with an activation function and two linear layers
+    for the feed-forward part of the encoder.
+  methods:
+  - code:
+    - 'def __init__(self, config):'
+    - '    super().__init__()'
+    - '    self.config = config'
+    - '    self.activation_fn = ACT2FN[config.hidden_act]'
+    - '    self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)'
+    - '    self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)'
+    desc: Initializes the MLP with an activation function from config and two linear
+      layers mapping hidden size to intermediate size and back.
+    line: 221-228
+    name: __init__
+  name: SiglipMLP
+- desc: A single transformer encoder layer consisting of self-attention, layer normalizations,
+    and an MLP.
+  methods:
+  - code:
+    - 'def __init__(self, config: SiglipVisionConfig):'
+    - '    super().__init__()'
+    - '    self.embed_dim = config.hidden_size'
+    - '    self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"'
+    - '    self.self_attn = ('
+    - '        SiglipAttention(config)'
+    - '    )'
+    - '    self.layer_norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)'
+    - '    self.mlp = SiglipMLP(config)'
+    - '    self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)'
+    desc: Initializes self-attention, two layer normalization layers, and an MLP,
+      along with a flag for flash attention usage.
+    line: 231-243
+    name: __init__
+  name: SiglipEncoderLayer
+- desc: Abstract base class for the vision model handling weight initialization, inheriting
+    from PreTrainedModel.
+  methods:
+  - code:
+    - 'def _init_weights(self, module):'
+    - '    """Initialize the weights"""'
+    - '    if isinstance(module, SiglipVisionEmbeddings):'
+    - '        width = self.config.hidden_size'
+    - '        nn.init.normal_(module.position_embedding.weight, std=1 / np.sqrt(width))'
+    - '    elif isinstance(module, nn.Embedding):'
+    - '        default_flax_embed_init(module.weight)'
+    - '    elif isinstance(module, SiglipAttention):'
+    - '        nn.init.normal_(module.q_proj.weight)'
+    - '        nn.init.normal_(module.k_proj.weight)'
+    - '        nn.init.normal_(module.v_proj.weight)'
+    - '        nn.init.normal_(module.out_proj.weight)'
+    - '        nn.init.zeros_(module.q_proj.bias)'
+    - '        nn.init.zeros_(module.k_proj.bias)'
+    - '        nn.init.zeros_(module.v_proj.bias)'
+    - '        nn.init.zeros_(module.out_proj.bias)'
+    - '    elif isinstance(module, SiglipMLP):'
+    - '        nn.init.normal_(module.fc1.weight)'
+    - '        nn.init.normal_(module.fc2.weight)'
+    - '        nn.init.normal_(module.fc1.bias, std=1e-6)'
+    - '        nn.init.normal_(module.fc2.bias, std=1e-6)'
+    - '    elif isinstance(module, (nn.Linear, nn.Conv2d)):'
+    - '        lecun_normal_(module.weight)'
+    - '        if module.bias is not None:'
+    - '            nn.init.zeros_(module.bias)'
+    - '    elif isinstance(module, nn.LayerNorm):'
+    - '        module.bias.data.zero_()'
+    - '        module.weight.data.fill_(1.0)'
+    desc: Initializes weights for various module types using normal or zero initialization,
+      and lecun normal for linear/conv layers.
+    line: 246-279
+    name: _init_weights
+  name: SiglipPreTrainedModel
+- desc: Transformer encoder composed of multiple SiglipEncoderLayer modules.
+  methods:
+  - code:
+    - 'def __init__(self, config: SiglipVisionConfig):'
+    - '    super().__init__()'
+    - '    self.config = config'
+    - '    self.layers = nn.ModuleList([SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)])'
+    - '    self.gradient_checkpointing = False'
+    desc: Initializes a module list of encoder layers based on the number of hidden
+      layers in the config.
+    line: 308-314
+    name: __init__
+  name: SiglipEncoder
+- desc: The main vision transformer model combining embeddings, encoder, and post-layernorm,
+    inheriting from SiglipPreTrainedModel.
+  methods:
+  - code:
+    - 'def __init__(self, config: SiglipVisionConfig):'
+    - '    super().__init__(config)'
+    - '    self.config = config'
+    - '    embed_dim = config.hidden_size'
+    - '    self.embeddings = SiglipVisionEmbeddings(config)'
+    - '    self.encoder = SiglipEncoder(config)'
+    - '    self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)'
+    - '    self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"'
+    - '    # Initialize weights and apply final processing'
+    - '    self.post_init()'
+    desc: Initializes the embeddings, encoder, and post-layernorm modules, and calls
+      post_init for weight initialization.
+    line: 317-327
+    name: __init__
+  - code:
+    - 'def get_input_embeddings(self) -> nn.Module:'
+    - '    return self.embeddings.patch_embedding'
+    desc: Returns the patch embedding layer as the input embeddings module.
+    line: 329-331
+    name: get_input_embeddings
+  name: SiglipVisionTransformer
+desc: This file defines the Siglip vision model architecture (configuration, embeddings,
+  attention, MLP, encoder layers, and transformer) and provides a conversion script
+  to export a MiniCPM-V vision encoder (based on Siglip/Idefics2) and optionally its
+  projector to GGUF format. It includes utilities for tensor renaming, weight skipping,
+  and positional embedding generation.该文件是一个将MiniCPM-V模型的图像编码器转换为GGUF格式的脚本，通过处理模型权重、重命名张量、进行数据类型转换（如float16/float32），最终写入GGUF文件。
+file: tools/mtmd/legacy-models/minicpmv-convert-image-encoder-to-gguf.py
+funcs:
+- code:
+  - 'def _get_unpad_data(attention_mask):'
+  - '    seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)'
+  - '    indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()'
+  - '    max_seqlen_in_batch = seqlens_in_batch.max().item()'
+  - '    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32),
+    (1, 0))'
+  - '    return ('
+  - '        indices,'
+  - '        cu_seqlens,'
+  - '        max_seqlen_in_batch,'
+  - '    )'
+  desc: Utility function to compute unpad indices, cumulative sequence lengths, and
+    max sequence length from an attention mask.
+  line: 136-149
+  name: _get_unpad_data
+- code:
+  - 'def _trunc_normal_(tensor, mean, std, a, b):'
+  - '    # Cut & paste from PyTorch official master until it''s in a few official
+    releases - RW'
+  - '    # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf'
+  - '    def norm_cdf(x):'
+  - '        # Computes standard normal cumulative distribution function'
+  - '        return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0'
+  - '    if (mean < a - 2 * std) or (mean > b + 2 * std):'
+  - '        warnings.warn('
+  - '            "mean is more than 2 std from [a, b] in nn.init.trunc_normal_. "'
+  - '            "The distribution of values may be incorrect.",'
+  - '            stacklevel=2,'
+  - '        )'
+  - '    l = norm_cdf((a - mean) / std)'
+  - '    u = norm_cdf((b - mean) / std)'
+  - '    tensor.uniform_(2 * l - 1, 2 * u - 1)'
+  - '    if tensor.dtype in [torch.float16, torch.bfloat16]:'
+  - '        og_dtype = tensor.dtype'
+  - '        tensor = tensor.to(torch.float32)'
+  - '        tensor.erfinv_()'
+  - '        tensor = tensor.to(og_dtype)'
+  - '    else:'
+  - '        tensor.erfinv_()'
+  - '    tensor.mul_(std * math.sqrt(2.0))'
+  - '    tensor.add_(mean)'
+  - '    if tensor.dtype == torch.float16:'
+  - '        tensor = tensor.to(torch.float32)'
+  - '        tensor.clamp_(min=a, max=b)'
+  - '        tensor = tensor.to(torch.float16)'
+  - '    else:'
+  - '        tensor.clamp_(min=a, max=b)'
+  desc: Internal helper to fill a tensor with values from a truncated normal distribution
+    using inverse CDF transformation.
+  line: 152-181
+  name: _trunc_normal_
+- code:
+  - def trunc_normal_tf_(
+  - '    tensor: torch.Tensor, mean: float = 0.0, std: float = 1.0, a: float = -2.0,
+    b: float = 2.0'
+  - '):'
+  - "    \"\"\"Fills the input Tensor with values drawn from a truncated\n    normal\
+    \ distribution. The values are effectively drawn from the\n    normal distribution\
+    \ :math:`\\mathcal{N}(\\text{mean}, \\text{std}^2)`\n    with values outside :math:`[a,\
+    \ b]` redrawn until they are within\n    the bounds. The method used for generating\
+    \ the random values works\n    best when :math:`a \\leq \\text{mean} \\leq b`.\n\
+    \    NOTE: this 'tf' variant behaves closer to Tensorflow / JAX impl where the\n\
+    \    bounds [a, b] are applied when sampling the normal distribution with mean=0,\
+    \ std=1.0\n    and the result is subsequently scaled and shifted by the mean and\
+    \ std args.\"\"\""
+  - '    with torch.no_grad():'
+  - '        _trunc_normal_(tensor, 0, 1.0, a, b)'
+  - '        tensor.mul_(std).add_(mean)'
+  desc: Fills a tensor with values drawn from a truncated normal distribution, scaling
+    and shifting by mean and std after sampling.
+  line: 184-203
+  name: trunc_normal_tf_
+- code:
+  - 'def variance_scaling_(tensor, scale=1.0, mode="fan_in", distribution="normal"):'
+  - '    fan_in, fan_out = _calculate_fan_in_and_fan_out(tensor)'
+  - '    denom = fan_in'
+  - '    if mode == "fan_in":'
+  - '        denom = fan_in'
+  - '    elif mode == "fan_out":'
+  - '        denom = fan_out'
+  - '    elif mode == "fan_avg":'
+  - '        denom = (fan_in + fan_out) / 2'
+  - '    variance = scale / denom'
+  - '    if distribution == "truncated_normal":'
+  - '        # constant is stddev of standard normal truncated to (-2, 2)'
+  - '        trunc_normal_tf_(tensor, std=math.sqrt(variance) / 0.87962566103423978)'
+  - '    elif distribution == "normal":'
+  - '        with torch.no_grad():'
+  - '            tensor.normal_(std=math.sqrt(variance))'
+  - '    elif distribution == "uniform":'
+  - '        bound = math.sqrt(3 * variance)'
+  - '        with torch.no_grad():'
+  - '            tensor.uniform_(-bound, bound)'
+  - '    else:'
+  - '        raise ValueError(f"invalid distribution {distribution}")'
+  desc: Initializes a tensor using variance scaling based on fan-in/fan-out and specified
+    distribution type (truncated normal, normal, or uniform).
+  line: 206-225
+  name: variance_scaling_
+- code:
+  - 'def lecun_normal_(tensor):'
+  - '    variance_scaling_(tensor, mode="fan_in", distribution="truncated_normal")'
+  desc: Initializes a tensor using LeCun normal initialization (fan_in mode with truncated
+    normal distribution).
+  line: 227-229
+  name: lecun_normal_
+- code:
+  - 'def default_flax_embed_init(tensor):'
+  - '    variance_scaling_(tensor, mode="fan_in", distribution="normal")'
+  desc: Initializes a tensor using Flax default embedding initialization (fan_in mode
+    with normal distribution).
+  line: 231-233
+  name: default_flax_embed_init
+- code:
+  - 'def add_key_str(raw_key: str, arch: str) -> str:'
+  - '    return raw_key.format(arch=arch)'
+  desc: Formats a raw key string with the architecture name placeholder.
+  line: 351-353
+  name: add_key_str
+- code:
+  - 'def should_skip_tensor(name: str, has_text: bool, has_vision: bool, has_minicpmv:
+    bool) -> bool:'
+  - '    if name in ('
+  - '        "logit_scale",'
+  - '        "text_model.embeddings.position_ids",'
+  - '        "vision_model.embeddings.position_ids",'
+  - '    ):'
+  - '        return True'
+  - '    if has_minicpmv and name in ["visual_projection.weight"]:'
+  - '        return True'
+  - '    if name.startswith("v") and not has_vision:'
+  - '        return True'
+  - '    if name.startswith("t") and not has_text:'
+  - '        return True'
+  - '    return False'
+  desc: Determines if a tensor should be skipped during export based on its name and
+    whether text/vision encoders or projector are present.
+  line: 355-373
+  name: should_skip_tensor
+- code:
+  - 'def get_tensor_name(name: str) -> str:'
+  - '    if "projection" in name:'
+  - '        return name'
+  - '    if "mm_projector" in name:'
+  - '        name = name.replace("model.mm_projector", "mm")'
+  - '        name = re.sub(r''mm\.mlp\.mlp'', ''mm.model.mlp'', name, count=1)'
+  - '        name = re.sub(r''mm\.peg\.peg'', ''mm.model.peg'', name, count=1)'
+  - '        return name'
+  - '    return name.replace("text_model", "t").replace("vision_model", "v").replace("encoder.layers",
+    "blk").replace("embeddings.", "").replace("_proj", "").replace("self_attn.", "attn_").replace("layer_norm",
+    "ln").replace("layernorm", "ln").replace("mlp.fc1", "ffn_down").replace("mlp.fc2",
+    "ffn_up").replace("embedding", "embd").replace("final", "post").replace("layrnorm",
+    "ln")'
+  desc: Transforms tensor names from framework format to GGUF-compatible format with
+    abbreviated prefixes and layer names.
+  line: 376-390
+  name: get_tensor_name
+- code:
+  - 'def bytes_to_unicode():'
+  - "    \"\"\"\n    Returns list of utf-8 byte and a corresponding list of unicode\
+    \ strings.\n    The reversible bpe codes work on unicode strings.\n    This means\
+    \ you need a large # of unicode characters in your vocab if you want to avoid\
+    \ UNKs.\n    When you're at something like a 10B token dataset you end up needing\
+    \ around 5K for decent coverage.\n    This is a significant percentage of your\
+    \ normal, say, 32K bpe vocab.\n    To avoid that, we want lookup tables between\
+    \ utf-8 bytes and unicode strings.\n    And avoids mapping to whitespace/control\
+    \ characters the bpe code barfs on.\n    \"\"\""
+  - '    bs = ('
+  - '        list(range(ord("!"), ord("~") + 1))'
+  - '        + list(range(ord("¡"), ord("¬") + 1))'
+  - '        + list(range(ord("®"), ord("ÿ") + 1))'
+  - '    )'
+  - '    cs = bs[:]'
+  - '    n = 0'
+  - '    for b in range(2**8):'
+  - '        if b not in bs:'
+  - '            bs.append(b)'
+  - '            cs.append(2**8 + n)'
+  - '            n += 1'
+  - '    cs = [chr(n) for n in cs]'
+  - '    return dict(zip(bs, cs))'
+  desc: Returns a mapping from bytes to unicode characters for BPE tokenization, avoiding
+    control characters and whitespace issues.
+  line: 392-413
+  name: bytes_to_unicode
+- code:
+  - 'def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):'
+  - "    \"\"\"\n    embed_dim: output dimension for each position\n    pos: a list\
+    \ of positions to be encoded: size (M,)\n    out: (M, D)\n    \"\"\""
+  - '    assert embed_dim % 2 == 0'
+  - '    omega = np.arange(embed_dim // 2, dtype=np.float32)'
+  - '    omega /= embed_dim / 2.'
+  - '    omega = 1. / 10000 ** omega  # (D/2,)'
+  - '    pos = pos.reshape(-1)  # (M,)'
+  - '    out = np.einsum(''m,d->md'', pos, omega)  # (M, D/2), outer product'
+  - '    emb_sin = np.sin(out)  # (M, D/2)'
+  - '    emb_cos = np.cos(out)  # (M, D/2)'
+  - '    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)'
+  - '    return emb'
+  desc: Generates 1D sinusoidal positional embeddings from a grid of positions.
+  line: 524-536
+  name: get_1d_sincos_pos_embed_from_grid
+- code:
+  - 'def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):'
+  - '    assert embed_dim % 2 == 0'
+  - '    # use half of dimensions to encode grid_h'
+  - '    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W,
+    D/2)'
+  - '    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W,
+    D/2)'
+  - '    emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)'
+  - '    return emb'
+  desc: Generates 2D sinusoidal positional embeddings by combining 1D embeddings for
+    height and width grids.
+  line: 538-545
+  name: get_2d_sincos_pos_embed_from_grid
+- code:
+  - 'def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):'
+  - "    \"\"\"\n    grid_size: int of the grid height and width\n    return:\n  \
+    \  pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim]\
+    \ (w/ or w/o cls_token)\n    \"\"\""
+  - '    if isinstance(grid_size, int):'
+  - '        grid_h_size, grid_w_size = grid_size, grid_size'
+  - '    else:'
+  - '        grid_h_size, grid_w_size = grid_size[0], grid_size[1]'
+  - '    grid_h = np.arange(grid_h_size, dtype=np.float32)'
+  - '    grid_w = np.arange(grid_w_size, dtype=np.float32)'
+  - '    grid = np.meshgrid(grid_w, grid_h)  # here w goes first'
+  - '    grid = np.stack(grid, axis=0)'
+  - '    grid = grid.reshape([2, 1, grid_h_size, grid_w_size])'
+  - '    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)'
+  - '    if cls_token:'
+  - '        pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)'
+  - '    return pos_embed'
+  desc: Creates 2D sinusoidal positional embeddings for a grid, optionally including
+    a class token.
+  line: 548-566
+  name: get_2d_sincos_pos_embed
+- code:
+  - 'def _replace_name_resampler(s, v):'
+  - '    if re.match("resampler.pos_embed", s):'
+  - '        return {'
+  - '            s: v,'
+  - '            re.sub("pos_embed", "pos_embed_k", s): torch.from_numpy(get_2d_sincos_pos_embed(emb_dim,
+    (70, 70))),'
+  - '        }'
+  - '    if re.match("resampler.proj", s):'
+  - '        return {'
+  - '            re.sub("proj", "pos_embed_k", s): torch.from_numpy(get_2d_sincos_pos_embed(emb_dim,
+    (70, 70))),'
+  - '            re.sub("proj", "proj.weight", s): v.transpose(-1, -2).contiguous(),'
+  - '        }'
+  - '    if re.match("resampler.attn.in_proj_.*", s):'
+  - '        return {'
+  - '            re.sub("attn.in_proj_", "attn.q.", s): v.chunk(3, dim=0)[0],'
+  - '            re.sub("attn.in_proj_", "attn.k.", s): v.chunk(3, dim=0)[1],'
+  - '            re.sub("attn.in_proj_", "attn.v.", s): v.chunk(3, dim=0)[2],'
+  - '        }'
+  - '    return {s: v}'
+  desc: Renames and transforms resampler projector tensors for GGUF export, splitting
+    in-projections and adding positional embeddings.
+  line: 568-583
+  name: _replace_name_resampler
+- code:
+  - 'def _replace_name(s, v):'
+  - '    s = "vision_model." + s'
+  - '    if re.match("vision_model.embeddings.position_embedding", s):'
+  - '        v = v.unsqueeze(0)'
+  - '        return {s: v}'
+  - '    return {s: v}'
+  desc: Renames vision model state dict keys by prefixing with 'vision_model.' and
+    unsqueezing position embedding weights.
+  line: 626-633
+  name: _replace_name
+- code:
+  - 'embeddings.position_embedding", s):'
+  - '    v = v.unsqueeze(0)'
+  - '    return {s: v}'
+  - ''
+  - '    return {s: v}'
+  - ''
+  - state_dict = model.state_dict()
+  - new_state_dict = {}
+  - 'for k, v in state_dict.items():'
+  - '    kvs = _replace_name(k, v)'
+  - '    for nk, nv in kvs.items():'
+  - '        new_state_dict[nk] = nv'
+  - state_dict = new_state_dict
+  - 'for name, data in state_dict.items():'
+  - '    if should_skip_tensor(name, has_text_encoder, has_vision_encoder, has_minicpmv_projector):'
+  - '        # we don''t need this'
+  - '        print(f"skipping parameter: {name}")'
+  - '        continue'
+  - ''
+  - '    name = get_tensor_name(name)'
+  - '    data = data.squeeze().numpy()'
+  - ''
+  - '    n_dims = len(data.shape)'
+  - ''
+  - '    # ftype == 0 -> float32, ftype == 1 -> float16'
+  - '    ftype_cur = 0'
+  - '    if n_dims == 4:'
+  - '        print(f"tensor {name} is always saved in f16")'
+  - '        data = data.astype(np.float16)'
+  - '        ftype_cur = 1'
+  - '    elif ftype == 1:'
+  - '        if name[-7:] == ".weight" and n_dims == 2:'
+  - '            print("  Converting to float16")'
+  - '            data = data.astype(np.float16)'
+  - '            ftype_cur = 1'
+  - '        else:'
+  - '            print("  Converting to float32")'
+  - '            data = data.astype(np.float32)'
+  - '            ftype_cur = 0'
+  - '    else:'
+  - '        if data.dtype != np.float32:'
+  - '            print("  Converting to float32")'
+  - '            data = data.astype(np.float32)'
+  - '            ftype_cur = 0'
+  - ''
+  - '    print(f"{name} - {ftype_str[ftype_cur]} - shape = {data.shape}")'
+  - '    fout.add_tensor(name, data)'
+  - ''
+  - ''
+  - fout.write_header_to_file()
+  - fout.write_kv_data_to_file()
+  - fout.write_tensors_to_file()
+  - fout.close()
+  - ''
+  - 'print("Done. Output file: " + fname_out)'
+  desc: 主执行流程，包括加载模型、转换权重、写入GGUF文件
+  line: 854-920
+  name: __main__
+- code:
+  - 'def should_skip_tensor(name, has_text_encoder, has_vision_encoder, has_minicpmv_projector):'
+  - '    # 根据编码器存在状态决定是否跳过'
+  - '    # 返回True或False'
+  desc: 判断张量是否应跳过导出
+  line: 未完整显示
+  name: should_skip_tensor
+- code:
+  - 'def get_tensor_name(name):'
+  - '    # 返回处理后的张量名'
+  desc: 获取张量名称
+  line: 未完整显示
+  name: get_tensor_name

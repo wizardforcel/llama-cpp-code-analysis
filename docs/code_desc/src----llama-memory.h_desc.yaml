@@ -1,0 +1,164 @@
+classes:
+- desc: 管理批处理过程中内存状态的上下文对象接口，负责消费ubatch并应用内存状态。
+  methods:
+  - code:
+    - virtual bool next() = 0;
+    desc: 消费当前ubatch并切换到下一个，返回false表示处理完成。
+    line: 47-48
+    name: next
+  - code:
+    - virtual bool apply() = 0;
+    desc: 将当前ubatch的内存状态应用到内存对象上，失败时返回false。
+    line: 52-53
+    name: apply
+  - code:
+    - virtual const llama_ubatch & get_ubatch() const = 0;
+    desc: 获取当前的ubatch对象引用。
+    line: 56-57
+    name: get_ubatch
+  - code:
+    - virtual llama_memory_status get_status() const = 0;
+    desc: 获取内存上下文的状态，用于错误处理和检查是否有待应用的更新。
+    line: 60-61
+    name: get_status
+  name: llama_memory_context_i
+- desc: LLM记忆的通用抽象接口，定义了记忆管理、批次处理、序列操作和状态持久化等核心操作。
+  methods:
+  - code:
+    - virtual llama_memory_context_ptr init_batch(
+    - '        llama_batch_allocr & balloc,'
+    - '        uint32_t n_ubatch,'
+    - '        bool embd_all) = 0;'
+    desc: 将输入批次拆分为ubatch集合并验证其能否进入缓存，返回包含处理所需状态的上下文对象。
+    line: 88-93
+    name: init_batch
+  - code:
+    - virtual llama_memory_context_ptr init_full() = 0;
+    desc: 模拟完整缓存，用于分配最坏情况下的计算缓冲区。
+    line: 96-97
+    name: init_full
+  - code:
+    - virtual llama_memory_context_ptr init_update(llama_context * lctx, bool optimize)
+      = 0;
+    desc: 准备待处理的内存更新操作（如移位、复制等），状态为LLAMA_MEMORY_STATUS_NO_UPDATE表示无更新。
+    line: 101-102
+    name: init_update
+  - code:
+    - virtual bool get_can_shift() const = 0;
+    desc: 获取内存是否支持移位操作的布尔值。
+    line: 105-106
+    name: get_can_shift
+  - code:
+    - virtual void clear(bool data) = 0;
+    desc: 清除内存数据，data为true时同时清除数据缓冲区和元数据。
+    line: 111-112
+    name: clear
+  - code:
+    - virtual bool seq_rm  (llama_seq_id seq_id,                              llama_pos
+      p0, llama_pos p1) = 0;
+    desc: 移除指定序列在位置区间内的数据。
+    line: 114-115
+    name: seq_rm
+  - code:
+    - virtual void seq_cp  (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos
+      p0, llama_pos p1) = 0;
+    desc: 复制指定序列的位置区间数据到目标序列。
+    line: 116-117
+    name: seq_cp
+  - code:
+    - virtual void seq_keep(llama_seq_id seq_id) = 0;
+    desc: 仅保留指定序列的数据，移除其他序列。
+    line: 118-119
+    name: seq_keep
+  - code:
+    - virtual void seq_add (llama_seq_id seq_id,                              llama_pos
+      p0, llama_pos p1, llama_pos shift) = 0;
+    desc: 将指定序列在位置区间内的数据整体移动指定偏移量。
+    line: 120-121
+    name: seq_add
+  - code:
+    - virtual void seq_div (llama_seq_id seq_id,                              llama_pos
+      p0, llama_pos p1, int d) = 0;
+    desc: 将指定序列在位置区间内的位置除以给定整数。
+    line: 122-123
+    name: seq_div
+  - code:
+    - virtual llama_pos seq_pos_min(llama_seq_id seq_id) const = 0;
+    desc: 获取指定序列的最小位置值。
+    line: 125-126
+    name: seq_pos_min
+  - code:
+    - virtual llama_pos seq_pos_max(llama_seq_id seq_id) const = 0;
+    desc: 获取指定序列的最大位置值。
+    line: 127-128
+    name: seq_pos_max
+  - code:
+    - virtual std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const
+      = 0;
+    desc: 返回内存占用按后端缓冲类型的分布映射。
+    line: 130-131
+    name: memory_breakdown
+  - code:
+    - virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0) const = 0;
+    desc: 将内存状态写入io对象，可指定序列和标志。
+    line: 135-136
+    name: state_write
+  - code:
+    - virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0) = 0;
+    desc: 从io对象读取内存状态，可指定序列和标志。
+    line: 137-138
+    name: state_read
+  name: llama_memory_i
+desc: 该文件定义了LLM内存管理的高级抽象接口，包括内存上下文接口（llama_memory_context_i）和通用内存接口（llama_memory_i），用于管理批处理过程中的KV缓存等记忆状态，支持内存的初始化、更新、清除、序列操作和状态读写等功能。
+file: src/llama-memory.h
+funcs:
+- code:
+  - llama_memory_status llama_memory_status_combine(llama_memory_status s0, llama_memory_status
+    s1);
+  desc: 组合两个内存状态的结果，用于实现混合内存类型的辅助函数。
+  line: 33-35
+  name: llama_memory_status_combine
+- code:
+  - bool llama_memory_status_is_fail(llama_memory_status status);
+  desc: 检查内存状态是否表示失败情况。
+  line: 38-39
+  name: llama_memory_status_is_fail
+- code:
+  - '#pragma once'
+  - ''
+  - '#include "llama.h"'
+  - ''
+  - '#include <map>'
+  - '#include <memory>'
+  - '#include <functional>'
+  - ''
+  - struct llama_ubatch;
+  - ''
+  - class llama_batch_allocr;
+  - ''
+  - class llama_io_write_i;
+  - class llama_io_read_i;
+  - ''
+  - struct llama_memory_params {
+  - '    // kv cache'
+  - '    ggml_type type_k;'
+  - '    ggml_type type_v;'
+  - ''
+  - '    // use full-size SWA cache'
+  - '    bool swa_full;'
+  - '};'
+  - ''
+  - enum llama_memory_status {
+  - '    LLAMA_MEMORY_STATUS_SUCCESS = 0,'
+  - '    LLAMA_MEMORY_STATUS_NO_UPDATE,'
+  - '    LLAMA_MEMORY_STATUS_FAILED_PREPARE,'
+  - '    LLAMA_MEMORY_STATUS_FAILED_COMPUTE,'
+  - '};'
+  - ''
+  - using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;
+  - using llama_memory_ptr = std::unique_ptr<llama_memory_i>;
+  desc: 文件全局代码，包括数据结构和类型定义。
+  line: 1-30
+  name: __main__

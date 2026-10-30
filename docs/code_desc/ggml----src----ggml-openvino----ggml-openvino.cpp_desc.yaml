@@ -1,0 +1,976 @@
+classes:
+- desc: 管理OpenVINO缓冲区上下文，负责为张量分配内存（主机或设备远程内存），并跟踪所有张量的附加信息以便统一清理。
+  methods:
+  - code:
+    - 'ggml_backend_openvino_buffer_context(int device, size_t size, bool is_remote
+      = false) :'
+    - '    device(device),'
+    - '    name(std::string(GGML_OPENVINO_NAME) + std::to_string(device)),'
+    - '    id([]() {'
+    - '        static std::atomic<size_t> next_id{1};'
+    - '        return next_id.fetch_add(1);'
+    - '    }()),'
+    - '    data(nullptr),'
+    - '    size(size),'
+    - '    is_remote(is_remote) {'
+    - '    if (size == 0) {'
+    - '        return;'
+    - '    }'
+    - '    const auto & device_name = ggml_openvino_get_device_name();'
+    - '    if (is_remote) {'
+    - '        GGML_ASSERT(device_name == "GPU");'
+    - '        auto remote_context = ggml_openvino_get_remote_context();'
+    - '        auto gpu_context = remote_context->as<ov::intel_gpu::ocl::ClContext>();'
+    - '        ov::intel_gpu::ocl::USMTensor usm_tensor ='
+    - '            gpu_context.create_usm_device_tensor(ov::element::u8, ov::Shape{size});'
+    - '        data = usm_tensor.get();'
+    - '        ov_buffer = std::make_shared<ov::intel_gpu::ocl::USMTensor>(std::move(usm_tensor));'
+    - '    } else {'
+    - '        data = ggml_aligned_malloc(size);'
+    - '        GGML_ASSERT(data);'
+    - '        memset(data, 0, size);'
+    - '        ov_buffer = std::make_shared<ov::Tensor>(ov::element::u8, ov::Shape{size},
+      data);'
+    - '    }'
+    - '    if (data == nullptr) {'
+    - '        GGML_LOG_ERROR("%s: failed to allocate %zu bytes\n", __func__, size);'
+    - '        return;'
+    - '    }'
+    - '    if (reinterpret_cast<uintptr_t>(data) % TENSOR_ALIGNMENT != 0) {'
+    - '        GGML_LOG_ERROR("%s: %s buffer is not aligned to %d bytes\n", __func__,
+      device_name.c_str(), TENSOR_ALIGNMENT);'
+    - '        GGML_ABORT("fatal error");'
+    - '    }'
+    - '}'
+    desc: 构造函数，分配缓冲区内存（普通或远程设备内存），并对齐性进行校验。
+    line: 75-123
+    name: ggml_backend_openvino_buffer_context
+  - code:
+    - ~ggml_backend_openvino_buffer_context() {
+    - '    for (auto & pair : tensor_extras) {'
+    - '        delete pair.second;'
+    - '    }'
+    - '    tensor_extras.clear();'
+    - '    if (!is_remote && data != nullptr) {'
+    - '        ggml_aligned_free(data, size);'
+    - '    }'
+    - '}'
+    desc: 析构函数，释放所有张量附加信息及底层内存。
+    line: 125-133
+    name: ~ggml_backend_openvino_buffer_context
+  name: ggml_backend_openvino_buffer_context
+- desc: 管理OpenVINO缓冲区类型上下文，存储设备编号和名称。
+  methods: []
+  name: ggml_backend_openvino_buffer_type_context
+- desc: 管理OpenVINO设备上下文，包含设备编号、名称和描述信息。
+  methods: []
+  name: ggml_backend_openvino_device_context
+- desc: 用于管理 OpenVINO 后端注册上下文的结构体，包含设备列表向量。
+  methods: []
+  name: ggml_backend_openvino_reg_context
+desc: 该文件实现了ggml后端中基于OpenVINO的设备支持，主要定义了缓冲区管理、设备信息查询和后端初始化等功能。它通过ov::Tensor和OpenCL
+  USM技术提供了CPU/GPU/NPU上的权重存储与数据拷贝能力，并为上层计算图执行预留接口。该文件是 ggml 库的 OpenVINO 后端实现，主要功能是向
+  ggml 库注册 OpenVINO 设备后端。它定义了一系列函数和数据结构来实现后端接口，包括设备操作支持检查、算子支持情况检查、后端注册等，以及与 OpenVINO
+  SDK 的集成，从而让 ggml 能够利用 OpenVINO 进行硬件加速推理。
+file: ggml/src/ggml-openvino/ggml-openvino.cpp
+funcs:
+- code:
+  - '#include "ggml-openvino.h"'
+  - '#include "ggml-backend-impl.h"'
+  - '#include "ggml-backend.h"'
+  - '#include "ggml-impl.h"'
+  - '#include "ggml-openvino-extra.h"'
+  - '#include "ggml-openvino/utils.h"'
+  - '#include "ggml-quants.h"'
+  - '#include "ggml.h"'
+  - '#include <atomic>'
+  - '#include <cstdlib>'
+  - '#include <cstdint>'
+  - '#include <cstring>'
+  - '#include <memory>'
+  - '#include <mutex>'
+  - '#include <openvino/core/type/element_type.hpp>'
+  - '#include <openvino/openvino.hpp>'
+  - '#include <openvino/runtime/allocator.hpp>'
+  - '#include <openvino/runtime/intel_gpu/ocl/ocl.hpp>'
+  - '#include <openvino/runtime/intel_npu/level_zero/level_zero.hpp>'
+  - '#include <openvino/runtime/tensor.hpp>'
+  - '#include <set>'
+  - '#include <string>'
+  - '#include <vector>'
+  - '#if defined(_WIN32)'
+  - '#    define WIN32_LEAN_AND_MEAN'
+  - '#    ifndef NOMINMAX'
+  - '#        define NOMINMAX'
+  - '#    endif'
+  - '#    include <windows.h>'
+  - '#else'
+  - '#    include <unistd.h>'
+  - '#endif'
+  desc: 文件全局作用域代码，引入各类头文件并定义宏和枚举。
+  line: 1-38
+  name: __main__
+- code:
+  - static void ggml_backend_openvino_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    delete ctx;'
+  - '}'
+  desc: 释放OpenVINO缓冲区上下文。
+  line: 145-148
+  name: ggml_backend_openvino_buffer_free_buffer
+- code:
+  - static void * ggml_backend_openvino_buffer_get_base(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    return ctx->data;'
+  - '}'
+  desc: 获取缓冲区基地址。
+  line: 150-153
+  name: ggml_backend_openvino_buffer_get_base
+- code:
+  - static enum ggml_status ggml_backend_openvino_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, ggml_tensor * tensor) {
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    if (strncmp(tensor->name, "cache_", 6) == 0 && !ctx->is_remote && ggml_openvino_get_device_name()
+    == "GPU" && !getenv("GGML_OPENVINO_STATEFUL_EXECUTION")) {'
+  - '        GGML_ASSERT(ctx->tensor_extras.empty());'
+  - '        auto device = ctx->device;'
+  - '        auto size = ctx->size;'
+  - '        auto * data_prev = ctx->data;'
+  - '        delete ctx;'
+  - '        ctx = new ggml_backend_openvino_buffer_context(device, size, true);'
+  - '        buffer->context = ctx;'
+  - '        tensor->data = (char *) ctx->data + ((char *) tensor->data - (char *)
+    data_prev);'
+  - '    }'
+  - '    if (tensor->view_src != nullptr) {'
+  - '        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);'
+  - '        if (tensor->view_src->extra != nullptr) {'
+  - '            tensor->extra = tensor->view_src->extra;'
+  - '        }'
+  - '        return GGML_STATUS_SUCCESS;'
+  - '    }'
+  - '    ctx = (ggml_backend_openvino_buffer_context *) buffer->context;'
+  - '    if (tensor->data != nullptr && !ggml_is_quantized(tensor->type)) {'
+  - '        ggml_openvino_tensor_extra * extra = ggml_openvino_create_tensor_extra(tensor,
+    ctx->is_remote);'
+  - '        if (extra != nullptr) {'
+  - '            auto it = ctx->tensor_extras.find(tensor);'
+  - '            if (it != ctx->tensor_extras.end()) {'
+  - '                delete it->second;'
+  - '            }'
+  - '            ctx->tensor_extras[tensor] = extra;'
+  - '            tensor->extra = extra;'
+  - '        }'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 初始化张量，若为KV缓存且平台为GPU则将其移至设备内存，并为非量化张量创建附加信息。
+  line: 155-195
+  name: ggml_backend_openvino_buffer_init_tensor
+- code:
+  - static void ggml_backend_openvino_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor != nullptr && tensor->data != nullptr);'
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    if (ctx->is_remote) {'
+  - '        cl_command_queue queue = ggml_openvino_get_cl_queue();'
+  - '        auto mem_fill_fn = ggml_openvino_get_clEnqueueMemFillINTEL();'
+  - '        if (queue != nullptr && mem_fill_fn != nullptr) {'
+  - '            uint8_t pattern = value;'
+  - '            cl_int err = mem_fill_fn(queue, (char *) tensor->data + offset, &pattern,
+    sizeof(pattern), size, 0, nullptr, nullptr);'
+  - '            if (err != CL_SUCCESS) {'
+  - '                GGML_LOG_ERROR("%s: clEnqueueMemFillINTEL failed with error %d\n",
+    __func__, err);'
+  - '            }'
+  - '            clFinish(queue);'
+  - '        } else {'
+  - '            GGML_LOG_ERROR("%s: no OpenCL queue or clEnqueueMemFillINTEL not
+    available for GPU buffer\n", __func__);'
+  - '        }'
+  - '    } else {'
+  - '        memset((char *) tensor->data + offset, value, size);'
+  - '    }'
+  - '}'
+  desc: 将张量数据区域填充为指定值，支持远程设备内存。
+  line: 197-216
+  name: ggml_backend_openvino_buffer_memset_tensor
+- code:
+  - static void ggml_backend_openvino_buffer_set_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor != nullptr && tensor->data != nullptr);'
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    bool is_weight_buffer = (buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);'
+  - '    bool is_full_tensor_set = (offset == 0 && size == ggml_nbytes(tensor) &&
+    tensor->view_src == nullptr);'
+  - '    bool is_2d = (tensor->ne[2] == 1 && tensor->ne[3] == 1);'
+  - '    if (is_weight_buffer && is_full_tensor_set && is_2d) {'
+  - '        try {'
+  - '            auto result = process_weight_tensor(tensor, data, tensor->data);'
+  - '            result.weight_node->set_friendly_name(tensor->name);'
+  - '            ggml_openvino_extra_base * extra;'
+  - '            if (result.is_quantized()) {'
+  - '                extra = new ggml_openvino_quantized_weight_extra(std::move(result.weights),
+    std::move(result.scales), std::move(result.zp), result.weight_node);'
+  - '            } else {'
+  - '                extra = new ggml_openvino_weight_extra(std::move(result.weights),
+    result.weight_node);'
+  - '            }'
+  - '            ctx->tensor_extras[tensor] = extra;'
+  - '            tensor->extra = extra;'
+  - '        } catch (const std::exception & e) {'
+  - '            GGML_LOG_ERROR("%s: failed to process weight tensor for %s: %s\n",
+    __func__, tensor->name, e.what());'
+  - '            memcpy((char *) tensor->data + offset, data, size);'
+  - '        }'
+  - '    } else {'
+  - '        if (ctx->is_remote) {'
+  - '            cl_command_queue queue = ggml_openvino_get_cl_queue();'
+  - '            auto mem_cpy_fn = ggml_openvino_get_clEnqueueMemcpyINTEL();'
+  - '            if (queue != nullptr && mem_cpy_fn != nullptr) {'
+  - '                cl_int err = mem_cpy_fn(queue, CL_TRUE, (char *) tensor->data
+    + offset, data, size, 0, nullptr, nullptr);'
+  - '                if (err != CL_SUCCESS) {'
+  - '                    GGML_LOG_ERROR("%s: clEnqueueMemcpyINTEL failed with error
+    %d\n", __func__, err);'
+  - '                }'
+  - '            } else {'
+  - '                GGML_LOG_ERROR("%s: no OpenCL queue or clEnqueueMemcpyINTEL not
+    available for GPU buffer\n", __func__);'
+  - '            }'
+  - '        } else {'
+  - '            memcpy((char *) tensor->data + offset, data, size);'
+  - '        }'
+  - '        ggml_openvino_tensor_extra * extra = ggml_openvino_create_tensor_extra(tensor,
+    ctx->is_remote);'
+  - '        if (extra == nullptr) {'
+  - '            return;'
+  - '        }'
+  - '        auto it = ctx->tensor_extras.find(tensor);'
+  - '        if (it != ctx->tensor_extras.end()) {'
+  - '            delete it->second;'
+  - '        }'
+  - '        ctx->tensor_extras[tensor] = extra;'
+  - '        tensor->extra = extra;'
+  - '    }'
+  - '}'
+  desc: 向张量数据区域写入数据；对于全量设置的2D权重张量，会尝试提取并转换权重数据，否则直接拷贝。
+  line: 218-270
+  name: ggml_backend_openvino_buffer_set_tensor
+- code:
+  - static void ggml_backend_openvino_buffer_get_tensor(ggml_backend_buffer_t buffer,
+    const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+  - '    GGML_ASSERT(tensor != nullptr && tensor->data != nullptr);'
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    if (ctx->is_remote) {'
+  - '        cl_command_queue queue = ggml_openvino_get_cl_queue();'
+  - '        auto mem_cpy_fn = ggml_openvino_get_clEnqueueMemcpyINTEL();'
+  - '        if (queue != nullptr && mem_cpy_fn != nullptr) {'
+  - '            cl_int err = mem_cpy_fn(queue, CL_TRUE, data, (const char *) tensor->data
+    + offset, size, 0, nullptr, nullptr);'
+  - '            if (err != CL_SUCCESS) {'
+  - '                GGML_LOG_ERROR("%s: clEnqueueMemcpyINTEL failed with error %d\n",
+    __func__, err);'
+  - '            }'
+  - '        } else {'
+  - '            GGML_LOG_ERROR("%s: no OpenCL queue or clEnqueueMemcpyINTEL not available
+    for GPU buffer\n", __func__);'
+  - '        }'
+  - '    } else {'
+  - '        memcpy(data, (const char *) tensor->data + offset, size);'
+  - '    }'
+  - '}'
+  desc: 从张量数据区域读取数据，支持远程设备内存。
+  line: 272-287
+  name: ggml_backend_openvino_buffer_get_tensor
+- code:
+  - static bool ggml_backend_openvino_buffer_cpy_tensor(ggml_backend_buffer_t buffer,
+    const ggml_tensor * src, ggml_tensor * dst) {
+  - '    GGML_ASSERT(src != nullptr && dst != nullptr);'
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    if (ctx->is_remote) {'
+  - '        cl_command_queue queue = ggml_openvino_get_cl_queue();'
+  - '        auto mem_cpy_fn = ggml_openvino_get_clEnqueueMemcpyINTEL();'
+  - '        if (queue == nullptr || mem_cpy_fn == nullptr) {'
+  - '            GGML_LOG_ERROR("%s: no OpenCL queue or clEnqueueMemcpyINTEL not available
+    for GPU buffer\n", __func__);'
+  - '            return false;'
+  - '        }'
+  - '        if (ggml_backend_buffer_is_host(src->buffer)) {'
+  - '            cl_int err = mem_cpy_fn(queue, CL_TRUE, dst->data, src->data, ggml_nbytes(src),
+    0, nullptr, nullptr);'
+  - '            if (err != CL_SUCCESS) {'
+  - '                GGML_LOG_ERROR("%s: clEnqueueMemcpyINTEL (host-to-device) failed
+    with error %d\n", __func__, err);'
+  - '                return false;'
+  - '            }'
+  - '            return true;'
+  - '        }'
+  - '        if (ggml_backend_buffer_is_openvino(src->buffer)) {'
+  - '            ggml_backend_openvino_buffer_context * src_ctx = (ggml_backend_openvino_buffer_context
+    *) src->buffer->context;'
+  - '            if (src_ctx->is_remote) {'
+  - '                cl_int err = mem_cpy_fn(queue, CL_TRUE, dst->data, src->data,
+    ggml_nbytes(src), 0, nullptr, nullptr);'
+  - '                if (err != CL_SUCCESS) {'
+  - '                    GGML_LOG_ERROR("%s: clEnqueueMemcpyINTEL (device-to-device)
+    failed with error %d\n", __func__, err);'
+  - '                    return false;'
+  - '                }'
+  - '                return true;'
+  - '            }'
+  - '        }'
+  - '        return false;'
+  - '    }'
+  - '    if (ggml_backend_buffer_is_host(src->buffer)) {'
+  - '        memcpy(dst->data, src->data, ggml_nbytes(src));'
+  - '        return true;'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 将源张量数据复制到目标张量，支持主机/远程设备间的拷贝。
+  line: 289-329
+  name: ggml_backend_openvino_buffer_cpy_tensor
+- code:
+  - static void ggml_backend_openvino_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    GGML_ASSERT(ctx->data != nullptr);'
+  - '    if (ctx->is_remote) {'
+  - '        cl_command_queue queue = ggml_openvino_get_cl_queue();'
+  - '        auto mem_fill_fn = ggml_openvino_get_clEnqueueMemFillINTEL();'
+  - '        if (queue != nullptr && mem_fill_fn != nullptr) {'
+  - '            uint8_t pattern = value;'
+  - '            cl_int err = mem_fill_fn(queue, ctx->data, &pattern, sizeof(pattern),
+    ctx->size, 0, nullptr, nullptr);'
+  - '            if (err != CL_SUCCESS) {'
+  - '                GGML_LOG_WARN("%s: clEnqueueMemFillINTEL failed with error %d\n",
+    __func__, err);'
+  - '            }'
+  - '            clFinish(queue);'
+  - '        } else {'
+  - '            GGML_LOG_WARN("%s: no OpenCL queue or clEnqueueMemFillINTEL not available
+    for GPU buffer clear\n", __func__);'
+  - '        }'
+  - '    } else {'
+  - '        memset(ctx->data, value, ctx->size);'
+  - '    }'
+  - '}'
+  desc: 将缓冲区全部填充为指定值，支持远程设备内存。
+  line: 331-346
+  name: ggml_backend_openvino_buffer_clear
+- code:
+  - static const char * ggml_backend_openvino_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_openvino_buffer_type_context * ctx = (ggml_backend_openvino_buffer_type_context
+    *) buft->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 获取缓冲区类型名称。
+  line: 389-392
+  name: ggml_backend_openvino_buffer_type_get_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_openvino_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    ggml_backend_openvino_buffer_type_context * buft_ctx = (ggml_backend_openvino_buffer_type_context
+    *) buft->context;'
+  - '    ggml_backend_openvino_buffer_context * ctx = new ggml_backend_openvino_buffer_context(buft_ctx->device,
+    size);'
+  - '    if (ctx->data == nullptr && size > 0) {'
+  - '        GGML_LOG_ERROR("%s: failed to allocate buffer of size %zu\n", __func__,
+    size);'
+  - '        delete ctx;'
+  - '        return nullptr;'
+  - '    }'
+  - '    return ggml_backend_buffer_init(buft, ggml_backend_openvino_buffer_interface,
+    ctx, size);'
+  - '}'
+  desc: 分配OpenVINO缓冲区。
+  line: 394-405
+  name: ggml_backend_openvino_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_openvino_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_UNUSED(buft);'
+  - '    return TENSOR_ALIGNMENT;'
+  - '}'
+  desc: 获取缓冲区对齐要求。
+  line: 407-410
+  name: ggml_backend_openvino_buffer_type_get_alignment
+- code:
+  - static size_t ggml_backend_openvino_buffer_type_get_max_size(ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_UNUSED(buft);'
+  - '    return SIZE_MAX;'
+  - '}'
+  desc: 获取缓冲区最大尺寸。
+  line: 412-415
+  name: ggml_backend_openvino_buffer_type_get_max_size
+- code:
+  - static size_t ggml_backend_openvino_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const ggml_tensor * tensor) {
+  - '    GGML_UNUSED(buft);'
+  - '    if (ggml_is_quantized(tensor->type) && tensor->ne[2] == 1 && tensor->ne[3]
+    == 1) {'
+  - '        ggml_openvino_extracted_layout layout = ggml_openvino_get_extracted_layout(tensor);'
+  - '        if (layout.total_size > 0) {'
+  - '            return layout.total_size;'
+  - '        }'
+  - '    }'
+  - '    return ggml_nbytes(tensor);'
+  - '}'
+  desc: 计算张量分配所需的大小，量化2D张量需要更多空间存储提取的数据。
+  line: 417-426
+  name: ggml_backend_openvino_buffer_type_get_alloc_size
+- code:
+  - GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_openvino_buffer_type(int
+    device) {
+  - '    GGML_ASSERT(device >= 0 && device < ggml_backend_openvino_get_device_count());'
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    static std::vector<ggml_backend_buffer_type> buffer_types;'
+  - '    static std::vector<ggml_backend_openvino_buffer_type_context> buffer_type_contexts;'
+  - '    if (buffer_types.empty()) {'
+  - '        int device_count = ggml_backend_openvino_get_device_count();'
+  - '        buffer_types.resize(device_count);'
+  - '        buffer_type_contexts.resize(device_count);'
+  - '        for (int i = 0; i < device_count; i++) {'
+  - '            buffer_type_contexts[i].device = i;'
+  - '            buffer_type_contexts[i].name = std::string(GGML_OPENVINO_NAME) +
+    std::to_string(i);'
+  - '            buffer_types[i] = ggml_backend_buffer_type{'
+  - '                /* .iface   = */ ggml_backend_openvino_buffer_type_interface,'
+  - '                /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_openvino_reg(),
+    i),'
+  - '                /* .context = */ &buffer_type_contexts[i],'
+  - '            };'
+  - '        }'
+  - '    }'
+  - '    return &buffer_types[device];'
+  - '}'
+  desc: 获取指定设备的缓冲区类型（全局函数，以API形式暴露）。
+  line: 450-466
+  name: ggml_backend_openvino_buffer_type
+- code:
+  - static const char * ggml_backend_openvino_host_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_openvino_buffer_type_context * ctx = (ggml_backend_openvino_buffer_type_context
+    *) buft->context;'
+  - '    static std::string name;'
+  - '    name = ctx->name + "_HOST";'
+  - '    return name.c_str();'
+  - '}'
+  desc: 获取主机缓冲区类型名称。
+  line: 472-478
+  name: ggml_backend_openvino_host_buffer_type_get_name
+- code:
+  - static bool ggml_backend_openvino_host_buffer_type_is_host(ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_UNUSED(buft);'
+  - '    return true;'
+  - '}'
+  desc: 判断是否为宿主缓冲区类型。
+  line: 480-483
+  name: ggml_backend_openvino_host_buffer_type_is_host
+- code:
+  - GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_openvino_host_buffer_type(int
+    device) {
+  - '    GGML_ASSERT(device >= 0 && device < ggml_backend_openvino_get_device_count());'
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    static std::vector<ggml_backend_buffer_type> buffer_types;'
+  - '    static std::vector<ggml_backend_openvino_buffer_type_context> buffer_type_contexts;'
+  - '    if (buffer_types.empty()) {'
+  - '        int device_count = ggml_backend_openvino_get_device_count();'
+  - '        buffer_types.resize(device_count);'
+  - '        buffer_type_contexts.resize(device_count);'
+  - '        for (int i = 0; i < device_count; i++) {'
+  - '            buffer_type_contexts[i].device = i;'
+  - '            buffer_type_contexts[i].name = std::string(GGML_OPENVINO_NAME) +
+    std::to_string(i);'
+  - '            buffer_types[i] = ggml_backend_buffer_type{'
+  - '                /* .iface   = */ ggml_backend_openvino_host_buffer_type_interface,'
+  - '                /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_openvino_reg(),
+    i),'
+  - '                /* .context = */ &buffer_type_contexts[i],'
+  - '            };'
+  - '        }'
+  - '    }'
+  - '    return &buffer_types[device];'
+  - '}'
+  desc: 获取指定设备的主机缓冲区类型（全局函数）。
+  line: 493-508
+  name: ggml_backend_openvino_host_buffer_type
+- code:
+  - bool ggml_backend_buffer_is_openvino(ggml_backend_buffer_t buffer) {
+  - '    return buffer->iface.free_buffer == ggml_backend_openvino_buffer_free_buffer;'
+  - '}'
+  desc: 判断缓冲区是否为OpenVINO缓冲区。
+  line: 510-512
+  name: ggml_backend_buffer_is_openvino
+- code:
+  - size_t ggml_backend_openvino_buffer_get_ctx_id(ggml_backend_buffer_t buffer) {
+  - '    if (!ggml_backend_buffer_is_openvino(buffer)) {'
+  - '        return 0;'
+  - '    }'
+  - '    ggml_backend_openvino_buffer_context * ctx = (ggml_backend_openvino_buffer_context
+    *) buffer->context;'
+  - '    return ctx->id;'
+  - '}'
+  desc: 获取缓冲区上下文ID。
+  line: 514-519
+  name: ggml_backend_openvino_buffer_get_ctx_id
+- code:
+  - void ggml_openvino_buffer_register_extra(ggml_tensor * tensor, ggml_openvino_extra_base
+    * extra) {
+  - '    GGML_ASSERT(tensor != nullptr);'
+  - '    GGML_ASSERT(tensor->buffer != nullptr);'
+  - '    GGML_ASSERT(ggml_backend_buffer_is_openvino(tensor->buffer));'
+  - '    auto * ctx = static_cast<ggml_backend_openvino_buffer_context *>(tensor->buffer->context);'
+  - '    auto it = ctx->tensor_extras.find(tensor);'
+  - '    if (it != ctx->tensor_extras.end()) {'
+  - '        delete it->second;'
+  - '    }'
+  - '    ctx->tensor_extras[tensor] = extra;'
+  - '    tensor->extra = extra;'
+  - '}'
+  desc: 为OpenVINO缓冲区的张量注册附加信息。
+  line: 521-533
+  name: ggml_openvino_buffer_register_extra
+- code:
+  - bool ggml_backend_buft_is_openvino(ggml_backend_buffer_type_t buft) {
+  - '    return buft->iface.get_name == ggml_backend_openvino_buffer_type_get_name;'
+  - '}'
+  desc: 判断缓冲区类型是否为OpenVINO类型。
+  line: 535-537
+  name: ggml_backend_buft_is_openvino
+- code:
+  - bool ggml_backend_buft_is_openvino_host(ggml_backend_buffer_type_t buft) {
+  - '    return buft->iface.get_name == ggml_backend_openvino_host_buffer_type_get_name;'
+  - '}'
+  desc: 判断缓冲区类型是否为主机OpenVINO类型。
+  line: 539-541
+  name: ggml_backend_buft_is_openvino_host
+- code:
+  - static void ggml_backend_openvino_free(ggml_backend_t backend) {
+  - '    ggml_backend_openvino_context * ctx = (ggml_backend_openvino_context *) backend->context;'
+  - '    delete ctx;'
+  - '    delete backend;'
+  - '}'
+  desc: 释放OpenVINO后端资源。
+  line: 546-549
+  name: ggml_backend_openvino_free
+- code:
+  - static const char * ggml_backend_openvino_get_name(ggml_backend_t backend) {
+  - '    return GGML_OPENVINO_NAME;'
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  desc: 获取OpenVINO后端名称。
+  line: 551-554
+  name: ggml_backend_openvino_get_name
+- code:
+  - static enum ggml_status ggml_backend_openvino_graph_compute(ggml_backend_t backend,
+    ggml_cgraph * cgraph) {
+  - '    return ov_graph_compute(cgraph, backend);'
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  desc: 执行OpenVINO图计算，委托给ov_graph_compute。
+  line: 556-559
+  name: ggml_backend_openvino_graph_compute
+- code:
+  - int ggml_backend_openvino_get_device_count() {
+  - '    return 1;'
+  - '}'
+  desc: 获取OpenVINO设备数量。
+  line: 576-578
+  name: ggml_backend_openvino_get_device_count
+- code:
+  - static ggml_guid_t ggml_backend_openvino_guid(void) {
+  - '    static ggml_guid guid = {0x12, 0xa8, 0xae, 0xf4, 0xc0, 0x1e, 0x61, 0x97,'
+  - '                             0x8f, 0xeb, 0x33, 0x04, 0xa1, 0x33, 0x51, 0x2d};'
+  - '    return &guid;'
+  - '}'
+  desc: 返回OpenVINO后端的全局唯一标识符。
+  line: 580-584
+  name: ggml_backend_openvino_guid
+- code:
+  - static std::shared_ptr<ov_runtime_context> get_ov_runtime_context_ptr() {
+  - '    static std::shared_ptr<ov_runtime_context> r_ctx = std::make_shared<ov_runtime_context>();'
+  - '    return r_ctx;'
+  - '}'
+  desc: 获取OpenVINO运行时上下文的单例智能指针。
+  line: 586-589
+  name: get_ov_runtime_context_ptr
+- code:
+  - GGML_BACKEND_API ggml_backend_t ggml_backend_openvino_init(int device) {
+  - '    if (device < 0 || device >= ggml_backend_openvino_get_device_count()) {'
+  - '        GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);'
+  - '        return nullptr;'
+  - '    }'
+  - '    ggml_backend_openvino_context * ctx = new ggml_backend_openvino_context;'
+  - '    if (ctx == nullptr) {'
+  - '        GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);'
+  - '        return nullptr;'
+  - '    }'
+  - '    ctx->runtime_context = get_ov_runtime_context_ptr();'
+  - '    if (ctx->runtime_context == nullptr) {'
+  - '        GGML_LOG_ERROR("%s: failed to allocate runtime context\n", __func__);'
+  - '        delete ctx;'
+  - '        return nullptr;'
+  - '    }'
+  - '    std::shared_ptr<ov_runtime_context> r_ctx = std::static_pointer_cast<ov_runtime_context>(ctx->runtime_context);'
+  - '    r_ctx->device = ggml_openvino_get_device_name();'
+  - '    r_ctx->stateful = getenv("GGML_OPENVINO_STATEFUL_EXECUTION") && !ggml_openvino_is_npu();'
+  - '    ggml_backend_t openvino_backend = new ggml_backend{'
+  - '        /* .guid      = */ ggml_backend_openvino_guid(),'
+  - '        /* .interface = */ ggml_backend_openvino_interface,'
+  - '        /* .device    = */ ggml_backend_reg_dev_get(ggml_backend_openvino_reg(),
+    device),'
+  - '        /* .context   = */ ctx,'
+  - '    };'
+  - '    return openvino_backend;'
+  - '}'
+  desc: 初始化OpenVINO后端（全局函数）。
+  line: 599-620
+  name: ggml_backend_openvino_init
+- code:
+  - GGML_BACKEND_API bool ggml_backend_is_openvino(ggml_backend_t backend) {
+  - '    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_openvino_guid());'
+  - '}'
+  desc: 判断后端是否为OpenVINO后端。
+  line: 622-624
+  name: ggml_backend_is_openvino
+- code:
+  - static const char * ggml_backend_openvino_device_get_name(ggml_backend_dev_t dev)
+    {
+  - '    ggml_backend_openvino_device_context * ctx = (ggml_backend_openvino_device_context
+    *) dev->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 获取OpenVINO设备名称。
+  line: 635-638
+  name: ggml_backend_openvino_device_get_name
+- code:
+  - static const char * ggml_backend_openvino_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_openvino_device_context * ctx = (ggml_backend_openvino_device_context
+    *) dev->context;'
+  - '    return ctx->description.c_str();'
+  - '}'
+  desc: 获取OpenVINO设备描述。
+  line: 640-643
+  name: ggml_backend_openvino_device_get_description
+- code:
+  - static void ggml_backend_openvino_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '#ifdef _WIN32'
+  - '    MEMORYSTATUSEX status;'
+  - '    status.dwLength = sizeof(status);'
+  - '    GlobalMemoryStatusEx(&status);'
+  - '    *total = status.ullTotalPhys;'
+  - '    *free = status.ullAvailPhys;'
+  - '#else'
+  - '    long pages = sysconf(_SC_PHYS_PAGES);'
+  - '    long page_size = sysconf(_SC_PAGE_SIZE);'
+  - '    *total = pages * page_size;'
+  - '    *free = *total;'
+  - '#endif'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 获取设备内存信息。
+  line: 645-659
+  name: ggml_backend_openvino_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_openvino_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    GGML_UNUSED(dev);'
+  - '    return GGML_BACKEND_DEVICE_TYPE_GPU;'
+  - '}'
+  desc: 获取设备类型，固定为GPU。
+  line: 661-664
+  name: ggml_backend_openvino_device_get_type
+- code:
+  - static void ggml_backend_openvino_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props
+    * props) {
+  - '    props->name = ggml_backend_openvino_device_get_name(dev);'
+  - '    props->description = ggml_backend_openvino_device_get_description(dev);'
+  - '    props->type = ggml_backend_openvino_device_get_type(dev);'
+  - '    ggml_backend_openvino_device_get_memory(dev, &props->memory_free, &props->memory_total);'
+  - '    props->caps = {'
+  - '        /* .async                 = */ false,'
+  - '        /* .host_buffer           = */ false,'
+  - '        /* .buffer_from_host_ptr  = */ false,'
+  - '        /* .events                = */ false,'
+  - '    };'
+  - '}'
+  desc: 获取设备属性。
+  line: 666-678
+  name: ggml_backend_openvino_device_get_props
+- code:
+  - static ggml_backend_t ggml_backend_openvino_device_init(ggml_backend_dev_t dev,
+    const char * params) {
+  - '    GGML_UNUSED(params);'
+  - '    ggml_backend_openvino_device_context * ctx = (ggml_backend_openvino_device_context
+    *) dev->context;'
+  - '    return ggml_backend_openvino_init(ctx->device);'
+  - '}'
+  desc: 初始化OpenVINO设备。
+  line: 680-684
+  name: ggml_backend_openvino_device_init
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_openvino_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_openvino_device_context * ctx = (ggml_backend_openvino_device_context
+    *) dev->context;'
+  - '    return ggml_backend_openvino_buffer_type(ctx->device);'
+  - '}'
+  desc: 获取OpenVINO设备的缓冲区类型。
+  line: 686-689
+  name: ggml_backend_openvino_device_get_buffer_type
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_openvino_device_get_host_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_openvino_device_context * ctx = (ggml_backend_openvino_device_context
+    *) dev->context;'
+  - '    return ggml_backend_openvino_host_buffer_type(ctx->device);'
+  - '}'
+  desc: 获取OpenVINO设备的主机缓冲区类型。
+  line: 691-694
+  name: ggml_backend_openvino_device_get_host_buffer_type
+- code:
+  - static bool has_view_op_input(const ggml_tensor * op) {
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        if (op->src[i] == nullptr) {'
+  - '            break;'
+  - '        }'
+  - '        if (op->src[i]->op == GGML_OP_VIEW) {'
+  - '            return true;'
+  - '        }'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 检查操作是否包含view类型的输入。
+  line: 696-706
+  name: has_view_op_input
+- code:
+  - static bool is_supported_flash_attn_pattern(const ggml_tensor * op) {
+  - '    for (int i = 0; i < 3; i++) {'
+  - '        const ggml_tensor * src = op->src[i];'
+  - '        if (src->op != GGML_OP_PERMUTE || src->src[0] == nullptr || src->src[0]->op
+    != GGML_OP_VIEW ||'
+  - '            src->src[0]->src[0] == nullptr || src->src[0]->src[0]->view_src !=
+    nullptr) {'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查是否支持指定的Flash Attention模式。
+  line: 708-719
+  name: is_supported_flash_attn_pattern
+- code:
+  - static bool is_op_unsupported_case(const ggml_tensor * op) {
+  - '    switch (op->op) {'
+  - '    case GGML_OP_GET_ROWS:'
+  - '    case GGML_OP_SET_ROWS: {'
+  - '        if (op->ne[3] != 1) {'
+  - '            return true;'
+  - '        }'
+  - '        break;'
+  - '    }'
+  - '    case GGML_OP_ADD:'
+  - '    case GGML_OP_MUL: {'
+  - '        if (op->src[1]->op == GGML_OP_PERMUTE) {'
+  - '            return true;'
+  - '        }'
+  - '        for (int i = 0; i < 4; i++) {'
+  - '            if (op->src[0]->ne[i] != op->src[1]->ne[i] && (op->src[0]->ne[i]
+    != 1 && op->src[1]->ne[i] != 1)) {'
+  - '                return true;'
+  - '            }'
+  - '        }'
+  - '        break;'
+  - '    }'
+  - '    case GGML_OP_SOFT_MAX: {'
+  - '        if (op->src[2] != nullptr) {'
+  - '            return true;'
+  - '        }'
+  - '        float scale = 1.0f;'
+  - '        float max_bias = 0.0f;'
+  - '        const auto * op_params = op->op_params;'
+  - '        memcpy(&scale, (const float *) op_params + 0, sizeof(float));'
+  - '        memcpy(&max_bias, (const float *) op_params + 1, sizeof(float));'
+  - '        if (max_bias > 0) {'
+  - '            return true;'
+  - '        }'
+  - '        break;'
+  - '    }'
+  - '    case GGML_OP_FLASH_ATTN_EXT: {'
+  - '        if (op->src[4] != nullptr) {'
+  - '            return true;'
+  - '        }'
+  - '        if (!is_supported_flash_attn_pattern(op)) {'
+  - '            return true;'
+  - '        }'
+  - '        float scale = 1.0f;'
+  - '        float max_bias = 0.0f;'
+  - '        float logit_softcap = 0.0f;'
+  - '        const auto * op_params = op->op_params;'
+  - '        memcpy(&scale, (const float *) op_params + 0, sizeof(float));'
+  - '        memcpy(&max_bias, (const float *) op_params + 1, sizeof(float));'
+  - '        memcpy(&logit_softcap, (const float *) op_params + 2, sizeof(float));'
+  - '        if (max_bias > 0) {'
+  - '            return true;'
+  - '        }'
+  - '        if (logit_softcap != 0) {'
+  - '            return true;'
+  - '        }'
+  - '    }'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 检查操作是否属于不支持的特定情况。
+  line: 721-772
+  name: is_op_unsupported_case
+- code:
+  - static bool is_op_unsupported_case(const ggml_tensor * op) {
+  - '    ...'
+  - '    switch (op->op) {'
+  - '    case GGML_OP_FLASH_ATTN_EXT: {'
+  - '        memcpy(&scale, (const float *) op_params + 0, sizeof(float));'
+  - '        ...'
+  - '        break;'
+  - '    }'
+  - '    ...'
+  - '    }'
+  - '    if (op->op == GGML_OP_GET_ROWS) {'
+  - '        ...'
+  - '        return true;'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 此函数用于检测指定的 ggml 操作是否属于当前 OpenVINO 后端不支持的情况。它会根据操作类型进行特定检查，如处理 FLASH_ATTN_EXT、PERMUTE、CPY、MUL_MAT、ROPE
+    等操作时，若存在当前后端无法支持的条件（如数据类型、参数模式等），则返回 true 表示不支持。
+  line: 836-1100
+  name: is_op_unsupported_case
+- code:
+  - static bool ggml_backend_openvino_device_supports_op(ggml_backend_dev_t dev, const
+    ggml_tensor * op) {
+  - '    GGML_ASSERT(dev->reg != nullptr);'
+  - '    static std::set<ggml_type> supported_types{GGML_TYPE_F32, ...};'
+  - '    static const std::set<ggml_op> supported_ops{GGML_OP_NONE, ...};'
+  - '    static const std::set<ggml_unary_op> supported_unary_ops{GGML_UNARY_OP_SILU};'
+  - '    static const std::set<ggml_glu_op> supported_glu_ops{GGML_GLU_OP_SWIGLU,
+    ...};'
+  - '    switch (op->op) {'
+  - '    case GGML_OP_UNARY: {'
+  - '        ...'
+  - '        break;'
+  - '    }'
+  - '    ...'
+  - '    }'
+  - '    if (supported_types.find(op->type) == supported_types.end()) {'
+  - '        return false;'
+  - '    }'
+  - '    ...'
+  - '    if (is_op_unsupported_case(op)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 此函数用于检查给定设备是否支持特定的 ggml 操作和张量类型。它定义了支持的操作类型、数据类型及一元/GLU 操作集合，并逐步验证操作类型、输入视图、张量类型等条件，最终返回是否支持该操作。
+  line: 1102-1238
+  name: ggml_backend_openvino_device_supports_op
+- code:
+  - static bool ggml_backend_openvino_device_supports_buft(ggml_backend_dev_t dev,
+    ggml_backend_buffer_type_t buft) {
+  - '    return ggml_backend_buft_is_openvino(buft) || ggml_backend_buft_is_host(buft);'
+  - '    GGML_UNUSED(dev);'
+  - '}'
+  desc: 此函数用于判断设备是否支持特定的缓冲区类型，主要是检查缓冲区类型是否为 OpenVINO 缓冲区或主机缓冲区。
+  line: 1240-1243
+  name: ggml_backend_openvino_device_supports_buft
+- code:
+  - static const char * ggml_backend_openvino_reg_get_name(ggml_backend_reg_t reg)
+    {
+  - '    return GGML_OPENVINO_NAME;'
+  - '    GGML_UNUSED(reg);'
+  - '}'
+  desc: 此函数返回 OpenVINO 后端的名称。
+  line: 1273-1277
+  name: ggml_backend_openvino_reg_get_name
+- code:
+  - static size_t ggml_backend_openvino_reg_get_device_count(ggml_backend_reg_t reg)
+    {
+  - '    GGML_UNUSED(reg);'
+  - '    return (size_t) ggml_backend_openvino_get_device_count();'
+  - '}'
+  desc: 此函数通过调用 ggml_backend_openvino_get_device_count 获取设备数量。
+  line: 1279-1283
+  name: ggml_backend_openvino_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_openvino_reg_get_device(ggml_backend_reg_t
+    reg, size_t index) {
+  - '    ggml_backend_openvino_reg_context * ctx = (ggml_backend_openvino_reg_context
+    *) reg->context;'
+  - '    GGML_ASSERT(index < ctx->devices.size());'
+  - '    return ctx->devices[index];'
+  - '}'
+  desc: 此函数根据索引从注册上下文中获取对应的设备句柄。
+  line: 1285-1290
+  name: ggml_backend_openvino_reg_get_device
+- code:
+  - static void ggml_openvino_init() {
+  - '    // Initialize device config singleton from env var'
+  - '    ggml_openvino_init_device_config();'
+  - '    GGML_LOG_INFO("OpenVINO: using device %s\n", ggml_openvino_get_device_name().c_str());'
+  - '}'
+  desc: 此函数用于初始化 OpenVINO 设备配置，从环境变量读取配置并记录日志。
+  line: 1308-1312
+  name: ggml_openvino_init
+- code:
+  - GGML_BACKEND_API ggml_backend_reg_t ggml_backend_openvino_reg(void) {
+  - '    static ggml_backend_reg reg;'
+  - '    static bool initialized = false;'
+  - '    {'
+  - '        static std::mutex mutex;'
+  - '        std::lock_guard<std::mutex> lock(mutex);'
+  - '        if (!initialized) {'
+  - '            ggml_openvino_init();'
+  - '            ggml_backend_openvino_reg_context * ctx = new ggml_backend_openvino_reg_context;'
+  - '            for (int i = 0; i < ggml_backend_openvino_get_device_count(); i++)
+    {'
+  - '                ...'
+  - '                ctx->devices.push_back(dev);'
+  - '            }'
+  - '            reg = ggml_backend_reg{...};'
+  - '        }'
+  - '        initialized = true;'
+  - '    }'
+  - '    return &reg;'
+  - '}'
+  desc: 此函数是 OpenVINO 后端的注册入口函数，负责初始化注册上下文，创建设备列表和注册结构体，并返回注册结果。它使用线程安全的初始化机制确保只初始化一次。
+  line: 1314-1341
+  name: ggml_backend_openvino_reg
+- code:
+  - static const struct ggml_backend_device_i ggml_backend_openvino_device_interface
+    = {
+  - '    ...'
+  - '};'
+  - ''
+  - static const struct ggml_backend_reg_i ggml_backend_openvino_reg_interface = {
+  - '    ...'
+  - '};'
+  desc: 全局代码部分，主要定义了设备接口和注册接口的静态常量结构体实例，用于后续注册。
+  line: 1245-1306
+  name: __main__

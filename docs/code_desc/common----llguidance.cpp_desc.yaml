@@ -1,0 +1,240 @@
+classes:
+- desc: 保存 LLGuidance 采样器所需的词表、语法配置、tokenizer 和 matcher 状态的结构体。
+  methods: []
+  name: llama_sampler_llg
+desc: 该文件实现了基于 LLGuidance 的 llama.cpp 语法约束采样器。在启用 LLAMA_USE_LLGUIDANCE 时，它负责创建和管理
+  LLGuidance tokenizer 与 matcher，将语法约束转换为 token 掩码并应用到候选 logits，支持 token 接收、状态重置、采样器克隆和资源释放；未启用该功能时，则提供一个返回空指针并输出警告的降级初始化函数。
+file: common/llguidance.cpp
+funcs:
+- code:
+  - static LlgMatcher * llama_sampler_llg_new(LlgTokenizer * tokenizer, const char
+    * grammar_kind,
+  - '                                          const char * grammar_data) {'
+  - '    LlgConstraintInit cinit;'
+  - '    llg_constraint_init_set_defaults(&cinit, tokenizer);'
+  - '    const char * log_level = getenv("LLGUIDANCE_LOG_LEVEL");'
+  - '    if (log_level && *log_level) {'
+  - '        cinit.log_stderr_level = atoi(log_level);'
+  - '    }'
+  - '    auto c = llg_new_matcher(&cinit, grammar_kind, grammar_data);'
+  - '    if (llg_matcher_get_error(c)) {'
+  - '        LOG_ERR("llg error: %s\n", llg_matcher_get_error(c));'
+  - '        llg_free_matcher(c);'
+  - '        return nullptr;'
+  - '    }'
+  - '    return c;'
+  - '}'
+  desc: 根据 tokenizer、语法类型和语法数据创建 LLGuidance matcher，并处理初始化错误。
+  line: 17-35
+  name: llama_sampler_llg_new
+- code:
+  - static const char * llama_sampler_llg_name(const llama_sampler * /*smpl*/) {
+  - '    return "llguidance";'
+  - '}'
+  desc: 返回采样器的名称 llguidance。
+  line: 37-39
+  name: llama_sampler_llg_name
+- code:
+  - static void llama_sampler_llg_accept_impl(llama_sampler * smpl, llama_token token)
+    {
+  - '    auto * ctx = (llama_sampler_llg *) smpl->ctx;'
+  - '    if (ctx->grammar) {'
+  - '        llg_matcher_consume_token(ctx->grammar, token);'
+  - '    }'
+  - '}'
+  desc: 将已接受的 token 传递给 LLGuidance matcher 以推进语法匹配状态。
+  line: 41-47
+  name: llama_sampler_llg_accept_impl
+- code:
+  - static void llama_sampler_llg_apply(llama_sampler * smpl, llama_token_data_array
+    * cur_p) {
+  - '    auto * ctx = (llama_sampler_llg *) smpl->ctx;'
+  - '    if (ctx->grammar) {'
+  - '        const uint32_t * mask = llg_matcher_get_mask(ctx->grammar);'
+  - '        if (mask == nullptr) {'
+  - '            if (llg_matcher_compute_mask(ctx->grammar) == 0) {'
+  - '                mask = llg_matcher_get_mask(ctx->grammar);'
+  - '            } else {'
+  - '                LOG_ERR("llg error: %s\n", llg_matcher_get_error(ctx->grammar));'
+  - '                llg_free_matcher(ctx->grammar);'
+  - '                ctx->grammar = nullptr;'
+  - '                return;'
+  - '            }'
+  - '        }'
+  - '        for (size_t i = 0; i < cur_p->size; ++i) {'
+  - '            auto token = cur_p->data[i].id;'
+  - '            if ((mask[token / 32] & (1 << (token % 32))) == 0) {'
+  - '                cur_p->data[i].logit = -INFINITY;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 计算并应用 LLGuidance 生成的 token 合法性掩码，将不符合语法的候选 token 的 logit 设为负无穷。
+  line: 49-73
+  name: llama_sampler_llg_apply
+- code:
+  - static void llama_sampler_llg_reset(llama_sampler * smpl) {
+  - '    auto * ctx = (llama_sampler_llg *) smpl->ctx;'
+  - '    if (ctx->grammar) {'
+  - '        llg_matcher_reset(ctx->grammar);'
+  - '    }'
+  - '}'
+  desc: 将 LLGuidance matcher 重置到初始匹配状态。
+  line: 75-81
+  name: llama_sampler_llg_reset
+- code:
+  - static llama_sampler * llama_sampler_llg_clone(const llama_sampler * smpl) {
+  - '    const auto * ctx = (const llama_sampler_llg *) smpl->ctx;'
+  - '    auto * result = llama_sampler_init_llg(ctx->vocab, nullptr, nullptr);'
+  - '    {'
+  - '        auto * result_ctx = (llama_sampler_llg *) result->ctx;'
+  - '        if (ctx->grammar) {'
+  - '            result_ctx->grammar_kind = ctx->grammar_kind;'
+  - '            result_ctx->grammar_data = ctx->grammar_data;'
+  - '            result_ctx->grammar      = llg_clone_matcher(ctx->grammar);'
+  - '            result_ctx->tokenizer    = llg_clone_tokenizer(ctx->tokenizer);'
+  - '        }'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 克隆 LLGuidance 采样器及其 grammar、tokenizer 和语法配置状态。
+  line: 83-101
+  name: llama_sampler_llg_clone
+- code:
+  - static void llama_sampler_llg_free(llama_sampler * smpl) {
+  - '    const auto * ctx = (const llama_sampler_llg *) smpl->ctx;'
+  - '    if (ctx->grammar) {'
+  - '        llg_free_matcher(ctx->grammar);'
+  - '        llg_free_tokenizer(ctx->tokenizer);'
+  - '    }'
+  - '    delete ctx;'
+  - '}'
+  desc: 释放 matcher、tokenizer 以及采样器上下文所占用的资源。
+  line: 103-113
+  name: llama_sampler_llg_free
+- code:
+  - static size_t llama_sampler_llg_tokenize_fn(const void * user_data, const uint8_t
+    * bytes, size_t bytes_len,
+  - '                                            uint32_t * output_tokens, size_t
+    output_tokens_len) {'
+  - '    const llama_vocab * vocab = (const llama_vocab *) user_data;'
+  - '    int r = 0;'
+  - '    try {'
+  - '        r = llama_tokenize(vocab, (const char *) bytes, bytes_len, (int32_t *)
+    output_tokens, output_tokens_len, false, true);'
+  - '    } catch (const std::exception & e) {'
+  - '        GGML_ABORT("llama_tokenize failed: %s\n", e.what());'
+  - '    }'
+  - '    if (r < 0) {'
+  - '        return -r;'
+  - '    }'
+  - '    return r;'
+  - '}'
+  desc: 将字节序列通过 llama.cpp 词表转换为 token 序列，供 LLGuidance tokenizer 调用。
+  line: 128-145
+  name: llama_sampler_llg_tokenize_fn
+- code:
+  - static LlgTokenizer * llama_sampler_llg_new_tokenizer(const llama_vocab * vocab)
+    {
+  - '    static const llama_vocab * vocab_cache;'
+  - '    static LlgTokenizer * tokenizer_cache;'
+  - '    if (vocab_cache == vocab) {'
+  - '        return llg_clone_tokenizer(tokenizer_cache);'
+  - '    }'
+  - '    auto tok_eos = llama_vocab_eot(vocab);'
+  - '    if (tok_eos == LLAMA_TOKEN_NULL) {'
+  - '        tok_eos = llama_vocab_eos(vocab);'
+  - '    }'
+  - '    size_t vocab_size = llama_vocab_n_tokens(vocab);'
+  - '    auto token_lens = new uint32_t[vocab_size];'
+  - '    auto token_bytes_size = vocab_size * 16 + 1024 * 1024;'
+  - '    auto token_bytes = new uint8_t[token_bytes_size];'
+  - '    size_t offset = 0;'
+  - '    for (size_t i = 0; i < vocab_size; i++) {'
+  - '        size_t max_token = 1024;'
+  - '        if (token_bytes_size - offset < max_token) {'
+  - '            GGML_ABORT("token_bytes buffer too small\n");'
+  - '        }'
+  - '        llama_token token = i;'
+  - '        auto dp = (char *) token_bytes + offset;'
+  - '        auto size = llama_detokenize(vocab, &token, 1, dp, max_token, false,
+    false);'
+  - '        if (size < 0) {'
+  - '            GGML_ABORT("llama_detokenize failed\n");'
+  - '        }'
+  - '        if (size == 0) {'
+  - '            size = llama_detokenize(vocab, &token, 1, dp + 1, max_token - 1,
+    false, true);'
+  - '            if (size < 0) {'
+  - '                GGML_ABORT("llama_detokenize failed\n");'
+  - '            }'
+  - '            if (size != 0) {'
+  - '                *dp = ''\xff'';'
+  - '                size += 1;'
+  - '            }'
+  - '        }'
+  - '        token_lens[i] = size;'
+  - '        offset += size;'
+  - '    }'
+  - '    LlgTokenizerInit tinit = { ... };'
+  - '    char error_buffer[1024];'
+  - '    LlgTokenizer * tokenizer = llg_new_tokenizer(&tinit, error_buffer, sizeof(error_buffer));'
+  - '    delete[] token_bytes;'
+  - '    delete[] token_lens;'
+  - '    if (tokenizer == nullptr) {'
+  - '        LOG_ERR("llg tokenizer error: %s\n", error_buffer);'
+  - '        return tokenizer;'
+  - '    }'
+  - '    if (tokenizer_cache) {'
+  - '        llg_free_tokenizer(tokenizer_cache);'
+  - '    }'
+  - '    vocab_cache = vocab;'
+  - '    tokenizer_cache = tokenizer;'
+  - '    return llg_clone_tokenizer(tokenizer_cache);'
+  - '}'
+  desc: 根据 llama_vocab 构建并缓存 LLGuidance tokenizer，包括 token 字节表示、长度和分词回调。
+  line: 147-220
+  name: llama_sampler_llg_new_tokenizer
+- code:
+  - llama_sampler * llama_sampler_init_llg(const llama_vocab * vocab, const char *
+    grammar_kind,
+  - '                                       const char * grammar_data) {'
+  - '    auto * ctx = new llama_sampler_llg;'
+  - '    if (grammar_kind != nullptr && grammar_kind[0] != ''\0'') {'
+  - '        auto tokenizer = llama_sampler_llg_new_tokenizer(vocab);'
+  - '        *ctx = {'
+  - '            /* .vocab        = */ vocab,'
+  - '            /* .grammar_kind = */ grammar_kind,'
+  - '            /* .grammar_data = */ grammar_data,'
+  - '            /* .tokenizer    = */ tokenizer,'
+  - '            /* .grammar      = */ llama_sampler_llg_new(tokenizer, grammar_kind,
+    grammar_data),'
+  - '        };'
+  - '        if (ctx->grammar) {'
+  - '            GGML_ASSERT(((size_t) llama_vocab_n_tokens(vocab) + 31) / 32 * 4
+    =='
+  - '                        llg_matcher_get_mask_byte_size(ctx->grammar));'
+  - '        }'
+  - '    } else {'
+  - '        *ctx = {'
+  - '            /* .vocab        = */ vocab,'
+  - '            /* .grammar_kind = */ {},'
+  - '            /* .grammar_data = */ {},'
+  - '            /* .tokenizer    = */ nullptr,'
+  - '            /* .grammar      = */ nullptr,'
+  - '        };'
+  - '    }'
+  - '    return llama_sampler(&llama_sampler_llg_i, ctx);'
+  - '}'
+  desc: 初始化 LLGuidance 采样器，根据语法配置创建 tokenizer 和 matcher，并注册采样器接口。
+  line: 222-257
+  name: llama_sampler_init_llg
+- code:
+  - llama_sampler * llama_sampler_init_llg(const llama_vocab *, const char *, const
+    char *) {
+  - '    LOG_WRN("llguidance (cmake -DLLAMA_LLGUIDANCE=ON) is not enabled");'
+  - '    return nullptr;'
+  - '}'
+  desc: 在未启用 LLGuidance 编译选项时输出警告并返回空指针。
+  line: 261-264
+  name: llama_sampler_init_llg

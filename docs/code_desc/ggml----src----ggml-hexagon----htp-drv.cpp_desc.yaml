@@ -1,0 +1,427 @@
+classes:
+- desc: 该文件的主体标识符，包含所有全局函数、全局变量、类型定义以及文件内部逻辑。
+  methods: []
+  name: __main__
+desc: 该文件是 ggml 项目中用于 Qualcomm Hexagon 数字信号处理器（DSP）的驱动接口实现，其核心功能是通过动态加载系统库（在 Windows
+  上为 libcdsprpc.dll，在 Linux 上为 libcdsprpc.so）来获取并封装 FastRPC、rpcmem 和 dspqueue 等驱动程序
+  API。该文件提供了三个主要功能模块：RPCMem 内存分配与释放接口、FastRPC 远程进程调用接口、DSP 队列通信接口，并通过 htpdrv_init
+  函数进行驱动加载和符号解析，为上层 ggml-hex 后端提供与 Hexagon DSP 通信的统一访问层。
+file: ggml/src/ggml-hexagon/htp-drv.cpp
+funcs:
+- code:
+  - void * rpcmem_alloc(int heapid, uint32_t flags, int size) {
+  - '    return rpcmem_alloc_pfn(heapid, flags, size);'
+  - '}'
+  desc: 该函数是 rpcmem_alloc_pfn 函数指针的封装，用于在 Hexagon DSP 上分配指定大小的内存，并返回指向该内存的指针。
+  line: 97-99
+  name: rpcmem_alloc
+- code:
+  - void * rpcmem_alloc2(int heapid, uint32_t flags, size_t size) {
+  - '    if (rpcmem_alloc2_pfn) {'
+  - '        return rpcmem_alloc2_pfn(heapid, flags, size);'
+  - '    } else {'
+  - '        GGML_LOG_INFO("ggml-hex: rpcmem_alloc2 not found, falling back to rpcmem_alloc\n");'
+  - '        return rpcmem_alloc_pfn(heapid, flags, size);'
+  - '    }'
+  - '}'
+  desc: 该函数是 rpcmem_alloc2_pfn 函数指针的封装，用于在 Hexagon DSP 上分配指定大小的内存。若系统中没有 rpcmem_alloc2
+    符号，它会自动回退到 rpcmem_alloc 函数作为兼容性处理。
+  line: 101-108
+  name: rpcmem_alloc2
+- code:
+  - void rpcmem_free(void * po) {
+  - '    return rpcmem_free_pfn(po);'
+  - '}'
+  desc: 该函数是 rpcmem_free_pfn 函数指针的封装，用于释放之前通过 rpcmem_alloc 或 rpcmem_alloc2 分配的内存。
+  line: 110-112
+  name: rpcmem_free
+- code:
+  - int rpcmem_to_fd(void * po) {
+  - '    return rpcmem_to_fd_pfn(po);'
+  - '}'
+  desc: 该函数是 rpcmem_to_fd_pfn 函数指针的封装，用于将 rpcmem 分配的内存对象转换为文件描述符（fd），以便进行后续的文件操作或与外部进程共享。
+  line: 114-116
+  name: rpcmem_to_fd
+- code:
+  - HTPDRV_API int fastrpc_mmap(int domain, int fd, void * addr, int offset, size_t
+    length, enum fastrpc_map_flags flags) {
+  - '    return fastrpc_mmap_pfn(domain, fd, addr, offset, length, flags);'
+  - '}'
+  desc: 该函数是 fastrpc_mmap_pfn 函数指针的封装，用于在 Hexagon DSP 上创建文件描述符与内存地址之间的映射，以便实现跨进程内存共享。
+  line: 118-120
+  name: fastrpc_mmap
+- code:
+  - HTPDRV_API int fastrpc_munmap(int domain, int fd, void * addr, size_t length)
+    {
+  - '    return fastrpc_munmap_pfn(domain, fd, addr, length);'
+  - '}'
+  desc: 该函数是 fastrpc_munmap_pfn 函数指针的封装，用于解除由 fastrpc_mmap 创建的 DSP 内存映射。
+  line: 122-124
+  name: fastrpc_munmap
+- code:
+  - AEEResult dspqueue_create(int                 domain,
+  - '                          uint32_t            flags,'
+  - '                          uint32_t            req_queue_size,'
+  - '                          uint32_t            resp_queue_size,'
+  - '                          dspqueue_callback_t packet_callback,'
+  - '                          dspqueue_callback_t error_callback,'
+  - '                          void *              callback_context,'
+  - '                          dspqueue_t *        queue) {'
+  - '    return dspqueue_create_pfn(domain, flags, req_queue_size, resp_queue_size,
+    packet_callback, error_callback,'
+  - '                               callback_context, queue);'
+  - '}'
+  desc: 该函数是 dspqueue_create_pfn 函数指针的封装，用于在 DSP 上创建一个队列，供主机与 DSP 之间进行异步通信。
+  line: 126-138
+  name: dspqueue_create
+- code:
+  - AEEResult dspqueue_close(dspqueue_t queue) {
+  - '    return dspqueue_close_pfn(queue);'
+  - '}'
+  desc: 该函数是 dspqueue_close_pfn 函数指针的封装，用于关闭并释放之前通过 dspqueue_create 创建的 DSP 队列。
+  line: 140-142
+  name: dspqueue_close
+- code:
+  - AEEResult dspqueue_export(dspqueue_t queue, uint64_t * queue_id) {
+  - '    return dspqueue_export_pfn(queue, queue_id);'
+  - '}'
+  desc: 该函数是 dspqueue_export_pfn 函数指针的封装，用于将一个 DSP 队列导出为唯一的标识符，以便在其他平台或上下文中引用该队列。
+  line: 144-146
+  name: dspqueue_export
+- code:
+  - AEEResult dspqueue_write(dspqueue_t               queue,
+  - '                         uint32_t                 flags,'
+  - '                         uint32_t                 num_buffers,'
+  - '                         struct dspqueue_buffer * buffers,'
+  - '                         uint32_t                 message_length,'
+  - '                         const uint8_t *          message,'
+  - '                         uint32_t                 timeout_us) {'
+  - '    return dspqueue_write_pfn(queue, flags, num_buffers, buffers, message_length,
+    message, timeout_us);'
+  - '}'
+  desc: 该函数是 dspqueue_write_pfn 函数指针的封装，用于向指定的 DSP 队列写入消息和数据缓冲区，实现主机到 DSP 的数据发送。
+  line: 148-156
+  name: dspqueue_write
+- code:
+  - AEEResult dspqueue_read(dspqueue_t               queue,
+  - '                        uint32_t *               flags,'
+  - '                        uint32_t                 max_buffers,'
+  - '                        uint32_t *               num_buffers,'
+  - '                        struct dspqueue_buffer * buffers,'
+  - '                        uint32_t                 max_message_length,'
+  - '                        uint32_t *               message_length,'
+  - '                        uint8_t *                message,'
+  - '                        uint32_t                 timeout_us) {'
+  - '    return dspqueue_read_pfn(queue, flags, max_buffers, num_buffers, buffers,
+    max_message_length, message_length,'
+  - '                             message, timeout_us);'
+  - '}'
+  desc: 该函数是 dspqueue_read_pfn 函数指针的封装，用于从指定的 DSP 队列中读取消息和数据缓冲区，实现 DSP 到主机的数据接收。
+  line: 158-167
+  name: dspqueue_read
+- code:
+  - HTPDRV_API int remote_handle64_open(const char * name, remote_handle64 * ph) {
+  - '    return remote_handle64_open_pfn(name, ph);'
+  - '}'
+  desc: 该函数是 remote_handle64_open_pfn 函数指针的封装，用于打开一个远程句柄，建立与 DSP 上服务的连接。
+  line: 169-171
+  name: remote_handle64_open
+- code:
+  - HTPDRV_API int remote_handle64_invoke(remote_handle64 h, uint32_t dwScalars, remote_arg
+    * pra) {
+  - '    return remote_handle64_invoke_pfn(h, dwScalars, pra);'
+  - '}'
+  desc: 该函数是 remote_handle64_invoke_pfn 函数指针的封装，用于通过远程句柄在 DSP 上调用 FastRPC 服务的方法。
+  line: 173-175
+  name: remote_handle64_invoke
+- code:
+  - HTPDRV_API int remote_handle64_close(remote_handle64 h) {
+  - '    return remote_handle64_close_pfn(h);'
+  - '}'
+  desc: 该函数是 remote_handle64_close_pfn 函数指针的封装，用于关闭之前通过 remote_handle64_open 打开的远程句柄，并释放相关资源。
+  line: 177-179
+  name: remote_handle64_close
+- code:
+  - HTPDRV_API int remote_handle_control(uint32_t req, void * data, uint32_t datalen)
+    {
+  - '    return remote_handle_control_pfn(req, data, datalen);'
+  - '}'
+  desc: 该函数是 remote_handle_control_pfn 函数指针的封装，用于向 DSP 设备发送控制命令，适用于 FastRPC 设备级的控制操作。
+  line: 181-183
+  name: remote_handle_control
+- code:
+  - HTPDRV_API int remote_handle64_control(remote_handle64 h, uint32_t req, void *
+    data, uint32_t datalen) {
+  - '    return remote_handle64_control_pfn(h, req, data, datalen);'
+  - '}'
+  desc: 该函数是 remote_handle64_control_pfn 函数指针的封装，用于向指定 DSP 服务的句柄发送控制命令，适用于服务的控制配置以及架构版本等信息的获取。
+  line: 185-187
+  name: remote_handle64_control
+- code:
+  - HTPDRV_API int remote_session_control(uint32_t req, void * data, uint32_t datalen)
+    {
+  - '    return remote_session_control_pfn(req, data, datalen);'
+  - '}'
+  desc: 该函数是 remote_session_control_pfn 函数指针的封装，用于向 DSP 会话发送控制命令，进行会话级别的配置和管理。
+  line: 189-191
+  name: remote_session_control
+- code:
+  - static std::string wstr_to_str(std::wstring_view wstr) {
+  - '    std::string result;'
+  - '    if (wstr.empty()) {'
+  - '        return result;'
+  - '    }'
+  - '    auto bytes_needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,'
+  - '                                            wstr.data(), (int) wstr.size(),'
+  - '                                            nullptr, 0, nullptr, nullptr);'
+  - '    if (bytes_needed == 0) {'
+  - '        GGML_LOG_ERROR("ggml-hex: WideCharToMultiByte failed. Error %lu\n", GetLastError());'
+  - '        throw std::runtime_error("Invalid wstring input");'
+  - '    }'
+  - ''
+  - '    result.resize(bytes_needed, ''\0'');'
+  - '    int bytes_written = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,'
+  - '                                            wstr.data(), (int) wstr.size(),'
+  - '                                            result.data(), bytes_needed,'
+  - '                                            nullptr, nullptr);'
+  - '    if (bytes_written == 0) {'
+  - '        GGML_LOG_ERROR("ggml-hex: WideCharToMultiByte failed. Error %lu\n", GetLastError());'
+  - '        throw std::runtime_error("Wstring conversion failed");'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 该函数用于将宽字符串（std::wstring_view）转换为 UTF-8 编码的标准字符串（std::string），主要用于 Windows
+    平台下处理驱动路径等宽字符信息。
+  line: 193-216
+  name: wstr_to_str
+- code:
+  - static std::string get_driver_path() {
+  - '    std::wstring serviceName = L"qcnspmcdm";'
+  - '    std::string result;'
+  - ''
+  - '    // Get a handle to the SCM database.'
+  - '    SC_HANDLE schSCManager = OpenSCManagerW(NULL, NULL, STANDARD_RIGHTS_READ);'
+  - '    if (nullptr == schSCManager) {'
+  - '        GGML_LOG_ERROR("ggml-hex: Failed to open SCManager. Error: %lu\n", GetLastError());'
+  - '        return result;'
+  - '    }'
+  - ''
+  - '    // Get a handle to the service.'
+  - '    SC_HANDLE schService = OpenServiceW(schSCManager,           // SCM database'
+  - '                                        serviceName.c_str(),    // name of service'
+  - '                                        SERVICE_QUERY_CONFIG);  // need query
+    config access'
+  - ''
+  - '    if (nullptr == schService) {'
+  - '        GGML_LOG_ERROR("ggml-hex: Failed to open qcnspmcdm service. Error: %lu\n",
+    GetLastError());'
+  - '        CloseServiceHandle(schSCManager);'
+  - '        return result;'
+  - '    }'
+  - ''
+  - '    // Store the size of buffer used as an output.'
+  - '    DWORD bufferSize;'
+  - '    if (!QueryServiceConfigW(schService, NULL, 0, &bufferSize) &&'
+  - '        (GetLastError() != ERROR_INSUFFICIENT_BUFFER)) {'
+  - '        GGML_LOG_ERROR("ggml-hex: Failed to query service config. Error: %lu\n",
+    GetLastError());'
+  - '        CloseServiceHandle(schService);'
+  - '        CloseServiceHandle(schSCManager);'
+  - '        return result;'
+  - '    }'
+  - '    // Get the configuration of the service.'
+  - '    LPQUERY_SERVICE_CONFIGW serviceConfig ='
+  - '        static_cast<LPQUERY_SERVICE_CONFIGW>(LocalAlloc(LMEM_FIXED, bufferSize));'
+  - '    if (!QueryServiceConfigW(schService, serviceConfig, bufferSize, &bufferSize))
+    {'
+  - '        fprintf(stderr, "ggml-hex: Failed to query service config. Error: %lu\n",
+    GetLastError());'
+  - '        LocalFree(serviceConfig);'
+  - '        CloseServiceHandle(schService);'
+  - '        CloseServiceHandle(schSCManager);'
+  - '        return result;'
+  - '    }'
+  - ''
+  - '    // Read the driver file path get its parent directory'
+  - '    std::wstring driverPath = std::wstring(serviceConfig->lpBinaryPathName);'
+  - '    driverPath = driverPath.substr(0, driverPath.find_last_of(L"\\"));'
+  - ''
+  - '    // Clean up resources'
+  - '    LocalFree(serviceConfig);'
+  - '    CloseServiceHandle(schService);'
+  - '    CloseServiceHandle(schSCManager);'
+  - ''
+  - '    // Driver path would contain invalid path string, like:'
+  - '    // \SystemRoot\System32\DriverStore\FileRepository\qcadsprpc8280.inf_arm64_c2b9460c9a072f37'
+  - '    // "\SystemRoot" should be replace with a correct one (e.g. C:\Windows)'
+  - '    const std::wstring systemRootPlaceholder = L"\\SystemRoot";'
+  - '    if (0 != driverPath.compare(0, systemRootPlaceholder.length(), systemRootPlaceholder))
+    {'
+  - '        GGML_LOG_ERROR("ggml-hex: String pattern not found in driver path.\n");'
+  - '        return result;'
+  - '    }'
+  - ''
+  - '    // Replace \SystemRoot with an absolute path from system ENV windir'
+  - '    const std::wstring systemRootEnv = L"windir";'
+  - ''
+  - '    // Query the number of wide characters this variable requires'
+  - '    DWORD numWords = GetEnvironmentVariableW(systemRootEnv.c_str(), NULL, 0);'
+  - '    if (numWords == 0) {'
+  - '        GGML_LOG_ERROR("ggml-hex: Failed get systemRoot environment variable\n");'
+  - '        return result;'
+  - '    }'
+  - ''
+  - '    // Query the actual system root name from environment variable'
+  - '    std::vector<wchar_t> systemRoot(numWords + 1);'
+  - '    numWords = GetEnvironmentVariableW(systemRootEnv.c_str(), systemRoot.data(),
+    numWords + 1);'
+  - '    if (numWords == 0) {'
+  - '        GGML_LOG_ERROR("ggml-hex: Failed to read windir environment variable\n");'
+  - '        return result;'
+  - '    }'
+  - '    driverPath.replace(0, systemRootPlaceholder.length(), std::wstring(systemRoot.data()));'
+  - ''
+  - '    return wstr_to_str(driverPath);'
+  - '}'
+  desc: 该函数用于在 Windows 平台上获取 Qualcomm DSP 驱动（qcnspmcdm）所在的服务路径，并在此基础上补充完整的系统根目录前缀，从而得到有效的驱动加载目录。
+  line: 218-280
+  name: get_driver_path
+- code:
+  - int htpdrv_init() {
+  - '    static dl_handle_ptr lib_cdsp_rpc_handle = nullptr;'
+  - '    static bool initialized = false;'
+  - '#ifdef _WIN32'
+  - '    std::string drv_path = get_driver_path() + "\\" + "libcdsprpc.dll";'
+  - '#else'
+  - '    std::string drv_path = "libcdsprpc.so";'
+  - '#endif'
+  - '    if (initialized) {'
+  - '        GGML_LOG_INFO("ggml-hex: Driver already loaded\n");'
+  - '        return AEE_SUCCESS;'
+  - '    }'
+  - '    GGML_LOG_INFO("ggml-hex: Loading driver %s\n", drv_path.c_str());'
+  - ''
+  - '    fs::path path{ drv_path.c_str() };'
+  - '    dl_handle_ptr handle { dl_load_library(path) };'
+  - '    if (!handle) {'
+  - '        GGML_LOG_ERROR("ggml-hex: failed to load %s: %s\n", path.u8string().c_str(),
+    dl_error());'
+  - '        return AEE_EUNABLETOLOAD;'
+  - '    }'
+  - ''
+  - '#define dlsym(drv, type, pfn, symbol, ignore)                               \'
+  - '    do {                                                                    \'
+  - '        pfn = (type) dl_get_sym(drv, #symbol);                              \'
+  - '        if (!ignore && nullptr == pfn) {                                    \'
+  - '            GGML_LOG_ERROR("ggml-hex: failed to dlsym %s\n", #symbol);      \'
+  - '            return AEE_EUNABLETOLOAD;                                       \'
+  - '        }                                                                   \'
+  - '    } while (0)'
+  - ''
+  - '    dlsym(handle.get(), rpcmem_alloc_pfn_t, rpcmem_alloc_pfn, rpcmem_alloc, false);'
+  - '    dlsym(handle.get(), rpcmem_alloc2_pfn_t, rpcmem_alloc2_pfn, rpcmem_alloc2,
+    true);'
+  - '    dlsym(handle.get(), rpcmem_free_pfn_t, rpcmem_free_pfn, rpcmem_free, false);'
+  - '    dlsym(handle.get(), rpcmem_to_fd_pfn_t, rpcmem_to_fd_pfn, rpcmem_to_fd, false);'
+  - '    dlsym(handle.get(), fastrpc_mmap_pfn_t, fastrpc_mmap_pfn, fastrpc_mmap, false);'
+  - '    dlsym(handle.get(), fastrpc_munmap_pfn_t, fastrpc_munmap_pfn, fastrpc_munmap,
+    false);'
+  - '    dlsym(handle.get(), dspqueue_create_pfn_t, dspqueue_create_pfn, dspqueue_create,
+    false);'
+  - '    dlsym(handle.get(), dspqueue_close_pfn_t, dspqueue_close_pfn, dspqueue_close,
+    false);'
+  - '    dlsym(handle.get(), dspqueue_export_pfn_t, dspqueue_export_pfn, dspqueue_export,
+    false);'
+  - '    dlsym(handle.get(), dspqueue_write_pfn_t, dspqueue_write_pfn, dspqueue_write,
+    false);'
+  - '    dlsym(handle.get(), dspqueue_read_pfn_t, dspqueue_read_pfn, dspqueue_read,
+    false);'
+  - '    dlsym(handle.get(), remote_handle64_open_pfn_t, remote_handle64_open_pfn,
+    remote_handle64_open, false);'
+  - '    dlsym(handle.get(), remote_handle64_invoke_pfn_t, remote_handle64_invoke_pfn,
+    remote_handle64_invoke, false);'
+  - '    dlsym(handle.get(), remote_handle_control_pfn_t, remote_handle_control_pfn,
+    remote_handle_control, false);'
+  - '    dlsym(handle.get(), remote_handle64_control_pfn_t, remote_handle64_control_pfn,
+    remote_handle64_control, false);'
+  - '    dlsym(handle.get(), remote_session_control_pfn_t, remote_session_control_pfn,
+    remote_session_control, false);'
+  - '    dlsym(handle.get(), remote_handle64_close_pfn_t, remote_handle64_close_pfn,
+    remote_handle64_close, false);'
+  - ''
+  - '    lib_cdsp_rpc_handle = std::move(handle);'
+  - '    initialized         = true;'
+  - ''
+  - '    return AEE_SUCCESS;'
+  - '}'
+  desc: 该函数是驱动初始化的核心函数，用于查找并加载 libcdsprpc 驱动库，并从库中解析出所有封装的 FastRPC 和队列函数指针，赋值给相应的函数指针变量，确保上层应用可正常调用。
+  line: 287-327
+  name: htpdrv_init
+- code:
+  - domain * get_domain(int domain_id) {
+  - '    int i    = 0;'
+  - '    int size = sizeof(supported_domains) / sizeof(domain);'
+  - ''
+  - '    for (i = 0; i < size; i++) {'
+  - '        if (supported_domains[i].id == domain_id) {'
+  - '            return &supported_domains[i];'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return NULL;'
+  - '}'
+  desc: 该函数用于根据给定的域 ID 在系统支持的域列表中查找并返回对应的 domain 结构体指针，若查找失败则返回空指针。
+  line: 329-343
+  name: get_domain
+- code:
+  - int get_hex_arch_ver(int domain, int * arch) {
+  - '    if (!remote_handle_control_pfn) {'
+  - '        GGML_LOG_ERROR("ggml-hex: remote_handle_control is not supported on this
+    device\n");'
+  - '        return AEE_EUNSUPPORTEDAPI;'
+  - '    }'
+  - ''
+  - '    struct remote_dsp_capability arch_ver;'
+  - '    arch_ver.domain       = (uint32_t) domain;'
+  - '    arch_ver.attribute_ID = ARCH_VER;'
+  - '    arch_ver.capability   = (uint32_t) 0;'
+  - ''
+  - '    int err = remote_handle_control(DSPRPC_GET_DSP_INFO, &arch_ver, sizeof(arch_ver));'
+  - '    if ((err & 0xff) == (AEE_EUNSUPPORTEDAPI & 0xff)) {'
+  - '        GGML_LOG_ERROR("ggml-hex: FastRPC capability API is not supported on
+    this device\n");'
+  - '        return AEE_EUNSUPPORTEDAPI;'
+  - '    }'
+  - ''
+  - '    if (err != AEE_SUCCESS) {'
+  - '        GGML_LOG_ERROR("ggml-hex: FastRPC capability query failed (err %d)\n",
+    err);'
+  - '        return err;'
+  - '    }'
+  - ''
+  - '    switch (arch_ver.capability & 0xff) {'
+  - '        case 0x68:'
+  - '            *arch = 68;'
+  - '            return 0;'
+  - '        case 0x69:'
+  - '            *arch = 69;'
+  - '            return 0;'
+  - '        case 0x73:'
+  - '            *arch = 73;'
+  - '            return 0;'
+  - '        case 0x75:'
+  - '            *arch = 75;'
+  - '            return 0;'
+  - '        case 0x79:'
+  - '            *arch = 79;'
+  - '            return 0;'
+  - '        case 0x81:'
+  - '            *arch = 81;'
+  - '            return 0;'
+  - '    }'
+  - '    return -1;'
+  - '}'
+  desc: 该函数用于通过远程控制接口查询 DSP 的架构版本信息，并根据返回的能力值将具体的架构版本（如 68、69、73、75、79、81）写入输出参数，同时检查并妥善处理不支持的
+    API 情况。
+  line: 345-380
+  name: get_hex_arch_ver

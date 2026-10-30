@@ -1,0 +1,189 @@
+classes: []
+desc: 此文件为 llama.cpp 的服务器提供 JavaScript 客户端功能，封装了对 /completion 端点的调用，并提供了三种使用模式：异步生成器（llama）、事件目标（llamaEventTarget）和基于
+  Promise 的获取最终结果（llamaPromise）。同时包含一个获取模型信息的函数（llamaModelInfo）以及一个已被弃用的回调函数（llamaComplete），实现了流式响应的解析、中断控制及错误处理。
+file: tools/server/public_legacy/completion.js
+funcs:
+- code:
+  - export async function* llama(prompt, params = {}, config = {}) {
+  - '  let controller = config.controller;'
+  - '  const api_url = config.api_url?.replace(/\/+$/, '''') || "";'
+  - ''
+  - '  if (!controller) {'
+  - '    controller = new AbortController();'
+  - '  }'
+  - ''
+  - '  const completionParams = { ...paramDefaults, ...params, prompt };'
+  - ''
+  - '  const response = await fetch(`${api_url}${config.endpoint || ''/completion''}`,
+    {'
+  - '    method: ''POST'','
+  - '    body: JSON.stringify(completionParams),'
+  - '    headers: {'
+  - '      ''Connection'': ''keep-alive'','
+  - '      ''Content-Type'': ''application/json'','
+  - '      ''Accept'': ''text/event-stream'','
+  - '      ...(params.api_key ? {''Authorization'': `Bearer ${params.api_key}`} :
+    {})'
+  - '    },'
+  - '    signal: controller.signal,'
+  - '  });'
+  - ''
+  - '  const reader = response.body.getReader();'
+  - '  const decoder = new TextDecoder();'
+  - ''
+  - '  let content = "";'
+  - '  let leftover = ""; // Buffer for partially read lines'
+  - ''
+  - '  try {'
+  - '    let cont = true;'
+  - ''
+  - '    while (cont) {'
+  - '      const result = await reader.read();'
+  - '      if (result.done) {'
+  - '        break;'
+  - '      }'
+  - ''
+  - '      // Add any leftover data to the current chunk of data'
+  - '      const text = leftover + decoder.decode(result.value);'
+  - ''
+  - '      // Check if the last character is a line break'
+  - '      const endsWithLineBreak = text.endsWith(''\n'');'
+  - ''
+  - '      // Split the text into lines'
+  - '      let lines = text.split(''\n'');'
+  - ''
+  - '      // If the text doesn''t end with a line break, then the last line is incomplete'
+  - '      // Store it in leftover to be added to the next chunk of data'
+  - '      if (!endsWithLineBreak) {'
+  - '        leftover = lines.pop();'
+  - '      } else {'
+  - '        leftover = ""; // Reset leftover if we have a line break at the end'
+  - '      }'
+  - ''
+  - '      // Parse all sse events and add them to result'
+  - '      const regex = /^(\S+):\s(.*)$/gm;'
+  - '      for (const line of lines) {'
+  - '        const match = regex.exec(line);'
+  - '        if (match) {'
+  - '          result[match[1]] = match[2];'
+  - '          if (result.data === ''[DONE]'') {'
+  - '            cont = false;'
+  - '            break;'
+  - '          }'
+  - ''
+  - '          // since we know this is llama.cpp, let''s just decode the json in
+    data'
+  - '          if (result.data) {'
+  - '            result.data = JSON.parse(result.data);'
+  - '            content += result.data.content;'
+  - ''
+  - '            // yield'
+  - '            yield result;'
+  - ''
+  - '            // if we got a stop token from server, we will break here'
+  - '            if (result.data.stop) {'
+  - '              if (result.data.generation_settings) {'
+  - '                generation_settings = result.data.generation_settings;'
+  - '              }'
+  - '              cont = false;'
+  - '              break;'
+  - '            }'
+  - '          }'
+  - '          if (result.error) {'
+  - '            try {'
+  - '              result.error = JSON.parse(result.error);'
+  - '              if (result.error.message.includes(''slot unavailable'')) {'
+  - '                // Throw an error to be caught by upstream callers'
+  - '                throw new Error(''slot unavailable'');'
+  - '              } else {'
+  - '                console.error(`llama.cpp error [${result.error.code} - ${result.error.type}]:
+    ${result.error.message}`);'
+  - '              }'
+  - '            } catch(e) {'
+  - '              console.error(`llama.cpp error ${result.error}`)'
+  - '            }'
+  - '          }'
+  - '        }'
+  - '      }'
+  - '    }'
+  - '  } catch (e) {'
+  - '    if (e.name !== ''AbortError'') {'
+  - '      console.error("llama error: ", e);'
+  - '    }'
+  - '    throw e;'
+  - '  }'
+  - '  finally {'
+  - '    controller.abort();'
+  - '  }'
+  - ''
+  - '  return content;'
+  - '}'
+  desc: 异步生成器函数：发送请求至指定端口，解析 SSE 流并逐块（chunk）返回结果，支持通过 AbortController 中断，并在遇到停止令牌或
+    [DONE] 标记时终止循环。
+  line: 23-139
+  name: llama
+- code:
+  - export const llamaEventTarget = (prompt, params = {}, config = {}) => {
+  - '  const eventTarget = new EventTarget();'
+  - '  (async () => {'
+  - '    let content = "";'
+  - '    for await (const chunk of llama(prompt, params, config)) {'
+  - '      if (chunk.data) {'
+  - '        content += chunk.data.content;'
+  - '        eventTarget.dispatchEvent(new CustomEvent("message", { detail: chunk.data
+    }));'
+  - '      }'
+  - '      if (chunk.data.generation_settings) {'
+  - '        eventTarget.dispatchEvent(new CustomEvent("generation_settings", { detail:
+    chunk.data.generation_settings }));'
+  - '      }'
+  - '      if (chunk.data.timings) {'
+  - '        eventTarget.dispatchEvent(new CustomEvent("timings", { detail: chunk.data.timings
+    }));'
+  - '      }'
+  - '    }'
+  - '    eventTarget.dispatchEvent(new CustomEvent("done", { detail: { content } }));'
+  - '  })();'
+  - '  return eventTarget;'
+  - '}'
+  desc: 基于 llama 函数的封装，返回一个 EventTarget 对象，并通过自定义事件（message、generation_settings、timings、done）传递流式数据块及最终结果。
+  line: 158-180
+  name: llamaEventTarget
+- code:
+  - export const llamaPromise = (prompt, params = {}, config = {}) => {
+  - '  return new Promise(async (resolve, reject) => {'
+  - '    let content = "";'
+  - '    try {'
+  - '      for await (const chunk of llama(prompt, params, config)) {'
+  - '        content += chunk.data.content;'
+  - '      }'
+  - '      resolve(content);'
+  - '    } catch (error) {'
+  - '      reject(error);'
+  - '    }'
+  - '  });'
+  - '};'
+  desc: 基于 llama 函数的封装，返回一个 Promise 对象，该 Promise 在流式接收完成后解析为完整的文本内容，或在出错时进入拒绝状态。
+  line: 191-203
+  name: llamaPromise
+- code:
+  - export const llamaComplete = async (params, controller, callback) => {
+  - '  for await (const chunk of llama(params.prompt, params, { controller })) {'
+  - '    callback(chunk);'
+  - '  }'
+  - '}'
+  desc: 已被弃用的函数，用于通过回调函数处理 llama 生成的每个数据块，与 llamaEventTarget 类似但使用回调方式。
+  line: 211-215
+  name: llamaComplete
+- code:
+  - export const llamaModelInfo = async (config = {}) => {
+  - '  if (!generation_settings) {'
+  - '    const api_url = config.api_url?.replace(/\/+$/, '''') || "";'
+  - '    const props = await fetch(`${api_url}/props`).then(r => r.json());'
+  - '    generation_settings = props.default_generation_settings;'
+  - '  }'
+  - '  return generation_settings;'
+  - '}'
+  desc: 异步获取模型信息，优先从内存缓存返回 generation_settings，否则从服务端的 /props 端点请求并缓存。
+  line: 220-227
+  name: llamaModelInfo

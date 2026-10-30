@@ -1,0 +1,99 @@
+classes: []
+desc: 该文件是用于QDC（Qualcomm Device Cloud或Qualcomm开发板）上llama.cpp库的功能验收测试脚本，通过adb工具在Android设备上安装二进制文件，并分别以CPU、GPU（OpenCL）和NPU（HTP0）三种设备后端运行llama-cli和llama-bench，验证LLM推理的基本功能和性能，测试用例之间通过pytest-dependency插件设置了安装依赖关系。
+file: scripts/snapdragon/qdc/tests/test_bench.py
+funcs:
+- code:
+  - import pytest
+  - import subprocess
+  - import sys
+  - ''
+  - tmp_path='/data/local/tmp'
+  - pkg_path=f'{tmp_path}/llama.cpp'
+  - lib_path=f'{pkg_path}/lib'
+  - bin_path=f'{pkg_path}/bin'
+  - ''
+  - model='../gguf/Llama-3.2-1B-Instruct-Q4_0.gguf'
+  - cli_pref=f'cd {pkg_path} && LD_LIBRARY_PATH={lib_path} ADSP_LIBRARY_PATH={lib_path}
+    {bin_path}'
+  - ''
+  - '@pytest.mark.dependency()'
+  - 'def test_install():'
+  - '    run_cmd([''adb'', ''push'', ''llama.cpp'', f''{tmp_path}''])'
+  - '    run_cmd([''adb'', ''shell'', f''chmod 755 {bin_path}/*''])'
+  desc: 全局代码区，定义了测试所需的路径变量、模型路径、adb命令前缀，以及通过pytest.mark装饰的测试入口点，是整个脚本的初始化与测试编排入口。
+  line: 1-22
+  name: __main__
+- code:
+  - 'def run_cmd(cmd):'
+  - '    p = subprocess.run(cmd, text = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)'
+  - '    sys.stdout.write(p.stdout)'
+  - '    assert(p.returncode == 0)'
+  desc: 通用命令执行函数，接收命令列表，使用subprocess在本地执行并捕获输出到stdout，同时断言进程返回码必须为0，用于统一处理adb命令的执行与错误检查。
+  line: 24-28
+  name: run_cmd
+- code:
+  - '@pytest.mark.dependency()'
+  - 'def test_install():'
+  - '    run_cmd([''adb'', ''push'', ''llama.cpp'', f''{tmp_path}''])'
+  - '    run_cmd([''adb'', ''shell'', f''chmod 755 {bin_path}/*''])'
+  desc: pytest测试用例，依赖前序无依赖项，负责将本地的llama.cpp目录通过adb推送到Android设备的临时目录，并赋予二进制目录下所有文件可执行权限，是所有其他测试用例的安装前置条件。
+  line: 30-33
+  name: test_install
+- code:
+  - 'def run_llama_cli(dev, opts):'
+  - '    prompt=''what is the most popular cookie in the world?\nPlease provide a
+    very brief bullet point summary.\nBegin your answer with **BEGIN**.'''
+  - '    opts = ''--batch-size 128 -n 128 -no-cnv --seed 42 '' + opts'
+  - '    run_cmd([''adb'', ''shell'', f''{cli_pref}/llama-cli -m {model} --device
+    {dev} -ngl 99 -t 4 {opts} -p "{prompt}"''])'
+  desc: 内部辅助函数，接受设备类型和设备相关选项字符串，构造固定的提示词（关于最流行饼干的问题），组合通用CLI参数（批量大小、生成长度等），并通过adb
+    shell在设备上执行llama-cli命令进行推理测试。
+  line: 35-38
+  name: run_llama_cli
+- code:
+  - '@pytest.mark.dependency(depends=[''test_install''])'
+  - 'def test_llama_cli_cpu():'
+  - '    run_llama_cli(''none'', ''-ctk q8_0 -ctv q8_0 -fa on'')'
+  desc: pytest测试用例，依赖test_install，使用CPU设备（device=none）并启用量化键/值缓存（q8_0）和flash attention，执行llama-cli的命令行交互测试。
+  line: 40-42
+  name: test_llama_cli_cpu
+- code:
+  - '@pytest.mark.dependency(depends=[''test_install''])'
+  - 'def test_llama_cli_gpu():'
+  - '    run_llama_cli(''GPUOpenCL'', ''-fa on'')'
+  desc: pytest测试用例，依赖test_install，使用GPU设备（GPUOpenCL）并启用flash attention，执行llama-cli的GPU后端命令行推理测试。
+  line: 44-46
+  name: test_llama_cli_gpu
+- code:
+  - '@pytest.mark.dependency(depends=[''test_install''])'
+  - 'def test_llama_cli_npu():'
+  - '    run_llama_cli(''HTP0'', ''-ctk q8_0 -ctv q8_0 -fa on'')'
+  desc: pytest测试用例，依赖test_install，使用NPU设备（HTP0）并启用量化键/值缓存（q8_0）和flash attention，验证NPU上的llama-cli命令行推理能力。
+  line: 48-50
+  name: test_llama_cli_npu
+- code:
+  - 'def run_llama_bench(dev):'
+  - '    run_cmd([''adb'', ''shell'', f''{cli_pref}/llama-bench -m {model} --device
+    {dev} -ngl 99 --batch-size 128 -t 4 -p 128 -n 32''])'
+  desc: 内部辅助函数，接受设备类型，构造固定的性能测试参数（批量大小128、线程数4、提示词长度128、生成长度32），通过adb shell在设备上执行llama-bench进行模型推理性能基准测试。
+  line: 52-53
+  name: run_llama_bench
+- code:
+  - '@pytest.mark.dependency(depends=[''test_install''])'
+  - 'def test_llama_bench_cpu():'
+  - '    run_llama_bench(''none'')'
+  desc: pytest测试用例，依赖test_install，在CPU（device=none）上运行llama-bench性能测试，评估CPU推理吞吐量。
+  line: 55-57
+  name: test_llama_bench_cpu
+- code:
+  - 'def test_llama_bench_gpu():'
+  - '    run_llama_bench(''GPUOpenCL'')'
+  desc: pytest测试用例，无显式依赖标注（暗示依赖安装），在GPU（GPUOpenCL）上运行llama-bench性能测试，评估GPU推理性能。
+  line: 59-60
+  name: test_llama_bench_gpu
+- code:
+  - 'def test_llama_bench_npu():'
+  - '    run_llama_bench(''HTP0'')'
+  desc: pytest测试用例，无显式依赖标注（暗示依赖安装），在NPU（HTP0）上运行llama-bench性能测试，评估NPU推理性能。
+  line: 62-63
+  name: test_llama_bench_npu

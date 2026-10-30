@@ -1,0 +1,845 @@
+code_map:
+- tools/
+- ├── llama-bench/
+- │   └── llama-bench.cpp
+- │       ├── 参数解析层
+- '│       │   ├── parse_int_range()          # 正则范围解析（253-285）'
+- '│       │   ├── parse_devices_arg()        # 设备参数解析（122-150）'
+- '│       │   ├── register_rpc_server_list()  # RPC设备注册（152-171）'
+- '│       │   ├── cmd_params struct          # CLI参数容器'
+- '│       │   ├── cmd_params_instance struct # 单次测试实例'
+- '│       │   │   ├── to_llama_mparams()     # → llama_model_params（1128-1178）'
+- '│       │   │   ├── to_llama_cparams()     # → llama_context_params（1191-1204）'
+- '│       │   │   └── equal_mparams()        # 模型参数相等性（1180-1189）'
+- '│       │   ├── parse_cmd_params()         # 主参数解析（727-1012）'
+- '│       │   └── get_cmd_params_instances() # 笛卡尔积展开（1206-1507）'
+- │       ├── 测试数据模型
+- │       │   ├── test struct
+- '│       │   │   ├── test()                 # 构造：采样元数据（1520-1566）'
+- '│       │   │   ├── get_ts()               # 吞吐量计算（1572-1579）'
+- '│       │   │   ├── avg_ts() / stdev_ts()  # 统计计算'
+- '│       │   │   ├── avg_ns() / stdev_ns()  # 耗时统计'
+- '│       │   │   ├── get_backend()          # 后端名称汇总（1585-1602）'
+- '│       │   │   ├── get_fields()           # 字段列表（1604-1613）'
+- '│       │   │   ├── get_field_type()       # 字段类型（1615-1630）'
+- '│       │   │   ├── get_values()           # 值序列化（1632-1698）'
+- '│       │   │   └── get_map()              # 键值映射（1700-1707）'
+- '│       │   └── ctx_state struct           # KV缓存状态（含depth缓）'
+- │       ├── 输出格式层（策略模式）
+- '│       │   ├── printer（抽象基类）          # 1710-1725'
+- '│       │   │   ├── print_header()         # 打印表头'
+- '│       │   │   ├── print_test()           # 打印单行（纯虚）'
+- '│       │   │   └── print_footer()         # 打印尾部'
+- '│       │   ├── csv_printer                # CSV转义+行输出（1667-1679）'
+- '│       │   ├── json_printer               # JSON数组输出（1710-1735）'
+- '│       │   ├── jsonl_printer              # JSONL逐行输出（1743-1758）'
+- '│       │   ├── markdown_printer           # Markdown表格+动态列（1772-1945）'
+- '│       │   │   ├── get_field_width()      # 字段宽度计算'
+- '│       │   │   ├── get_field_display_name() # 字段缩写'
+- '│       │   │   ├── print_header()         # 动态字段选择+表头生成（1848-1899）'
+- '│       │   │   └── print_test()           # 单行Markdown（1901-1940）'
+- '│       │   └── sql_printer                # SQL建表+INSERT（1951-1982）'
+- '│       │       ├── get_sql_field_type()   # 类型映射'
+- '│       │       ├── print_header()         # CREATE TABLE'
+- '│       │       └── print_test()           # INSERT INTO'
+- │       ├── 测试执行函数
+- '│       │   ├── test_prompt()              # Prompt处理基准（1999-2022）'
+- │       │   │   ├── 随机Token生成
+- '│       │   │   ├── llama_batch_get_one()  # 构造临时batch'
+- '│       │   │   └── llama_decode()         # 解码执行'
+- '│       │   ├── test_gen()                 # 文本生成基准（2025-2041）'
+- │       │   │   ├── 单Token循环
+- │       │   │   ├── llama_decode()
+- '│       │   │   └── llama_synchronize()    # 同步确保计时准确'
+- '│       │   └── llama_synchronize()        # 计算同步原语'
+- '│       └── main()                         # 程序入口（2068-2233）'
+- '│           ├── ggml_backend_load_all()     # 加载所有后端'
+- '│           ├── parse_cmd_params()          # 解析参数'
+- '│           ├── get_cmd_params_instances()  # 生成实例列表'
+- '│           ├── create_printer()            # 创建输出格式器（2050-2064）'
+- │           ├── llama_model_load_from_file()# 加载模型
+- '│           ├── llama_init_from_model()     # 创建上下文'
+- '│           ├── llama_params_fit()          # 内存适配'
+- │           ├── warmup + 重复测试循环
+- '│           │   ├── test_prompt()           # Prompt处理'
+- '│           │   ├── test_gen()              # Token生成'
+- '│           │   └── llama_perf_context_print() # 性能统计'
+- │           └── 资源释放（llama_free / llama_model_free）
+- ├── batched-bench/
+- │   └── batched-bench.cpp
+- '│       ├── print_usage()                  # 使用示例打印（12-17）'
+- '│       └── main()                         # 主流程（19-223）'
+- │           ├── 参数解析（-c -b -ub -npp -nt -npl）
+- │           ├── 模型加载与上下文创建
+- '│           ├── decode_helper()            # 批量拆分+同步控制（lambda）'
+- │           ├── 三维参数循环（i_pp × i_tg × i_pl）
+- │           │   ├── PP阶段：公共前缀 + 共享优化
+- '│           │   ├── is_pp_shared ? kv_unified复制 : 独立序列'
+- '│           │   │   ├── llama_memory_seq_cp() # KV序列复制'
+- │           │   │   └── dummy token触发（非kv_unified时）
+- │           │   ├── TG阶段：独立/交错两种模式
+- '│           │   │   ├── is_tg_separate=true: 逐序列生成'
+- '│           │   │   └── is_tg_separate=false: 批量交错生成'
+- │           │   ├── 计时（ggml_time_us）
+- │           │   ├── 速度计算（t_pp/s_pp/t_tg/s_tg/t/s）
+- │           │   └── 表格/JSONL输出
+- '│           └── llama_perf_context_print() # 上下文性能统计'
+- ├── perplexity/
+- │   └── perplexity.cpp
+- │       ├── 工具函数
+- '│       │   ├── softmax()                  # Softmax概率分布（18-35）'
+- '│       │   ├── log_softmax(v1)            # 单token log_softmax（37-48）'
+- '│       │   ├── log_softmax(v2)            # log_softmax+uint16量化（58-85）'
+- '│       │   └── nearest_int()              # 快速取整（50-56）'
+- │       ├── 数据模型
+- '│       │   ├── results_perplexity         # PPL结果容器'
+- '│       │   ├── results_log_softmax        # 单token logprob记录'
+- '│       │   ├── kl_divergence_result       # KLD统计聚合'
+- '│       │   ├── multiple_choice_answers    # 选择题答案集合'
+- '│       │   │   └── deserialize()          # 反序列化（434-445）'
+- '│       │   ├── multiple_choice_task       # 选择题任务'
+- '│       │   │   └── deserialize()          # 反序列化（465-468）'
+- '│       │   └── winogrande_entry           # Winogrande任务'
+- │       ├── 主流程模式
+- '│       │   ├── perplexity()               # 标准PPL计算（560-700）'
+- │       │   │   ├── tokenize+BOS插入
+- │       │   │   ├── 分块处理（n_ctx长度）
+- │       │   │   ├── 多序列并行（n_seq = n_batch/n_ctx）
+- │       │   │   ├── llama_decode() 批量推理
+- │       │   │   ├── process_logits()多线程NLL计算
+- │       │   │   ├── logit_history / prob_history记录
+- │       │   │   └── PPL输出+ETA估算
+- '│       │   ├── perplexity_v2()            # 滑窗PPL计算（430-558）'
+- │       │   │   ├── stride步长控制
+- │       │   │   ├── 逐token logit/prob记录
+- │       │   │   ├── 单序列模式（n_seq=1）
+- │       │   │   └── 逐chunk PPL输出
+- '│       │   └── kl_divergence()            # KL散度对比（713-803）'
+- │       │       ├── 读取基线logits文件（.bin格式）
+- │       │       ├── 重新推理当前模型
+- │       │       ├── log_softmax+KL统计计算
+- '│       │       ├── mean_and_uncertainty() # 统计计算'
+- '│       │       └── covariance()           # 协方差计算'
+- │       ├── 评估任务
+- '│       │   ├── hellaswag_score()          # HellaSwag评分（776-1000）'
+- │       │   │   ├── 任务加载（6行格式）
+- │       │   │   ├── common_prefix计算
+- │       │   │   ├── 4序列批量构造
+- │       │   │   ├── decode_helper()批量解码
+- │       │   │   ├── eval_pairs + compute_logprobs()
+- │       │   │   └── acc_norm评分+置信区间
+- '│       │   ├── winogrande_score()         # Winogrande评分（280-424）'
+- '│       │   │   ├── load_winogrande_from_csv() # CSV解析（213-278）'
+- │       │   │   ├── choice前缀计算
+- │       │   │   ├── skip_choice逻辑
+- │       │   │   ├── 2序列批量评分
+- │       │   │   └── 准确率+标准差输出
+- '│       │   └── multiple_choice_score()    # 多选题评分（519-711）'
+- │       │       ├── 二进制任务反序列化（deserialize_string）
+- │       │       ├── 随机采样（seek到task_pos）
+- │       │       ├── 多线程并行准备（K_TOKEN_CHUNK）
+- │       │       ├── common_prefix优化
+- │       │       ├── batch构造+decode_helper
+- │       │       ├── eval_pairs + compute_logprobs
+- │       │       └── label=1正确性判定+统计输出
+- │       └── 多线程计算核心
+- '│           ├── process_logits(v1)         # 多线程NLL计算（90-121）'
+- '│           ├── process_logits(v2)         # 带量化输出（123-147）'
+- '│           ├── process_logits(kld)        # KL散度多线程（397-428）'
+- '│           ├── decode_helper()            # 大batch拆分+同步（702-730）'
+- '│           └── compute_logprobs()         # 统一logprob计算（733-774）'
+- '│       └── main()                         # 程序入口与模式分发（2941-3020）'
+- │           ├── 命令行参数解析
+- │           ├── 模型初始化与加载
+- │           ├── 模式选择（ppl/kld/hellaswag/winogrande/multiple-choice）
+- │           └── 资源清理与性能统计
+- └── results/
+- '    └── results.cpp'
+- '        ├── nmse()                      # 归一化均方误差（18-32）'
+- '        ├── get_logits()                # 全量logits提取（35-58）'
+- '        └── main()                      # 主流程（61-212）'
+- '            ├── 参数解析（--out-file, --check）'
+- '            ├── 模型加载与推理'
+- '            ├── get_logits() 计算当前logits'
+- '            ├── check=false: GGUF写入'
+- '            │   ├── gguf_init_empty()'
+- '            │   ├── 构造tokens张量（I32, 1D）+ logits张量（F32, 2D）'
+- '            │   └── gguf_add_tensor + gguf_write_to_file'
+- '            └── check=true: 一致性验证'
+- '                ├── 读取tokens/logits张量'
+- '                ├── 逐token比对（GGML_ASSERT）'
+- '                ├── nmse()计算NMSE'
+- '                └── 1e-6阈值判定OK/FAIL'
+exercises:
+- contents:
+  - 阅读 `tools/llama-bench/llama-bench.cpp` 第253-285行的 `parse_int_range()` 函数。
+  - 回答以下问题：
+  - '- 正则表达式 `^(\d+)(?:(\d+)(?:([\+|\*])(\d+))?)?(?:,|$)` 中每个捕获组（group）分别代表什么？'
+  - '- 当输入为 `512-2048+512` 时，各捕获组的匹配结果是什么？'
+  - '- 为什么要在循环中检查 `i <= prev_i`？这防御了什么类型的错误输入？'
+  - '- 如果用户输入 `1-10*2,15,20-30+5`，输出结果是什么？'
+  'no': 1
+  title: 分析 parse_int_range 的正则表达式
+- contents:
+  - 阅读 `tools/llama-bench/llama-bench.cpp` 中的 printer 继承体系（1710-1982行）。
+  - 回答以下问题：
+  - '- `escape_csv()` 和 `escape_json()` 分别处理了哪些特殊字符？为什么 JSON 需要处理 ≤ 0x1f 的控制字符而 CSV
+    不需要？'
+  - '- `markdown_printer::print_header()` 中的字段过滤逻辑（对比默认值）如何减少输出噪音？用 `n_gpu_layers`
+    举例说明。'
+  - '- `sql_printer::get_sql_field_type()` 将哪些 C++ 类型映射为 `REAL`？为什么 `avg_ts` 是 FLOAT
+    而 `avg_ns` 是 INT？'
+  - '- 如果 `cmd_params.output_format = JSON` 但 `output_format_stderr = CSV`，运行一次测试会输出几个文件/流？内容有何不同？'
+  'no': 2
+  title: 对比 printer 各子类的输出差异
+- contents:
+  - 阅读 `tools/llama-bench/llama-bench.cpp` 的 `main()` 函数（2068-2233行）和 `test` 类（1520-1698行）。
+  - 以 `llama-bench -m model.gguf -p 512 -n 128` 为例，追踪以下数据流向：
+  - 1. 命令行参数 `512,128` 如何流入 `cmd_params` 的 `n_prompt` 和 `n_gen` 字段？
+  - 2. `get_cmd_params_instances()` 如何将其展开为 `cmd_params_instance`？（简述嵌套循环的排列逻辑）
+  - 3. `cmd_params_instance.to_llama_cparams()` 设置了哪些关键值？`cparams.n_ctx` 是如何计算的？
+  - 4. `test` 构造函数从 `inst` 和 `lmodel` 中提取了哪些信息？`get_ts()` 的数学公式是什么？
+  - 5. `samples_ns` 在循环中被 `t_ns` 填充了 `reps` 次。若 `reps=5`，`avg_ts()` 返回什么？
+  'no': 3
+  title: 追踪 llama-bench 单次测试的完整数据流
+- contents:
+  - 阅读 `tools/batched-bench/batched-bench.cpp` 的 `main()` 函数（19-223行），重点分析 PP 阶段。
+  - 回答以下问题：
+  - '- 当 `is_pp_shared=true` 且 `kv_unified=false` 时，代码执行了哪三步来完成 KV 共享？（提示：decode →
+    seq_cp → dummy token）'
+  - '- 为什么需要「dummy token」？`llama_memory_seq_rm(mem, 0, pp, -1)` 这行代码的作用是什么？'
+  - '- `speed_pp` 和 `speed_tg` 的计算公式有何不同？为什么 `is_pp_shared=true` 时分子是 `pp` 而不是 `pl*pp`？'
+  - '- 若 `pp=512, tg=128, pl=4`，且 `is_pp_shared=true`，`n_ctx_req` 如何计算？何时会触发 `continue`
+    跳过测试？'
+  'no': 4
+  title: 理解 batched-bench 的共享前缀优化
+- contents:
+  - 阅读 `tools/perplexity/perplexity.cpp` 的 `process_logits()`（v1版本，90-121行）和 `perplexity()`
+    主函数（560-700行）。
+  - 回答以下问题：
+  - '- `process_logits()` 中 `std::mutex` 保护的 `counter` 变量起什么作用？为什么使用 `std::unique_lock`
+    而非 `std::lock_guard`？'
+  - '- `local_nll` 和 `local_nll2` 为何先在线程局部累加，最后才一次性加到全局 `nll`/`nll2`？这种设计叫什么模式？'
+  - '- `perplexity()` 中 `first = n_ctx / 2` 的含义是什么？为什么只计算后半部分的 log-likelihood？'
+  - '- 若 `n_ctx=512, n_batch=2048`，则 `n_seq` 是多少？一次循环最多并行处理几个序列？'
+  'no': 5
+  title: 分析 perplexity 的多线程 NLL 计算
+- contents:
+  - 阅读 `tools/perplexity/perplexity.cpp` 的 `log_softmax()`（349-395行）和 `kl_divergence()`（713-803行）。
+  - 回答以下问题：
+  - '- `kl_divergence_result` 结构体中，`sum_kld`、`sum_p_diff`、`sum_p_diff2`、`sum_p_diff4`
+    分别代表什么统计量？'
+  - '- 为何 `base_log_prob` 使用 `uint16_t` 存储而非 `float`？`scale` 和 `min_log_prob` 的编码原理是什么？'
+  - '- `n_same_top` 计数的是什么事件？它与模型的 top-1 accuracy 有何异同？'
+  - '- `imax` 和 `imax_base` 分别代表什么？若 `imax == imax_base` 但 `p_diff` 很大，说明什么问题？'
+  'no': 6
+  title: 解读 KL 散度的多维度统计指标
+- contents:
+  - 基于你对 HellaSwag（776-1000行）和 Winogrande（280-424行）的理解，设计一个「4选1古诗词接龙」评估任务的伪代码框架。
+  - 要求实现以下功能点：
+  - '- 加载任务数据（每题4个选项，1个正确）'
+  - '- 计算 common_prefix 以优化共享计算'
+  - '- 使用 `decode_helper()` 进行批量推理'
+  - '- 使用 `compute_logprobs()` 或 `eval_pairs` 计算各选项得分'
+  - '- 输出准确率及95%置信区间'
+  - 无需写完整代码，但需要标注关键函数调用点和数据结构流转伪代码。
+  'no': 7
+  title: 设计一个自定义评估任务
+- contents:
+  - 基于 `tools/results/results.cpp` 的 `main()` 函数（61-212行）和 `nmse()` 函数（18-32行）。
+  - 理解 `--check` 模式的验证流程：
+  - 1. 如何读取 GGUF 文件中的 `tokens` 和 `logits` 张量？
+  - 2. `NMSE` 的数学公式是什么？为什么用 `Σ(a-b)²/Σ(a²)` 而非简单的 MSE？
+  - 3. 为什么要逐 token 比对 `tokens_disk` 和 `tokens_calc`（使用 GGML_ASSERT）？
+  - 4. 编写一个 Python 脚本，读取保存的 `.gguf` 结果文件，提取 logits 并计算与参考值的 NMSE。
+  'no': 8
+  title: 实现一个简单的 results 验证脚本
+- contents:
+  - 阅读 `tools/perplexity/perplexity.cpp` 的 `main()` 函数（约2941-3020行）。
+  - 回答以下问题：
+  - '- main() 函数如何通过 `params.mode` 或命令行参数决定调用哪个评估函数？'
+  - '- 解析 `--hellaswag`、`--winogrande`、`--multiple-choice`、`--kl-divergence` 等参数后，程序流程有何不同？'
+  - '- 为什么在调用评估函数前需要 `common_init_from_params(params)`？这个函数做了什么初始化？'
+  - '- 如果同时指定多个评估模式，程序会按什么顺序执行？是否有互斥逻辑？'
+  'no': 9
+  title: 分析 perplexity main() 的模式分发逻辑
+learning_targets:
+- 理解 llama-bench 参数体系：cmd_params 与 cmd_params_instance 的双层分离设计
+- 掌握 parse_int_range 的正则范围解析（first-last、+step、*mult）
+- 理解 get_cmd_params_instances 的笛卡尔积展开与智能排序策略
+- 掌握 test 类如何封装性能数据（samples_ns、avg_ts、stdev_ts）
+- 理解 printer 继承体系的策略模式：csv/json/jsonl/markdown/sql 五种输出
+- 掌握 test_prompt 与 test_gen 的预热、batch 拆分与同步机制
+- 理解 fit_target 模式如何通过 llama_params_fit 实现自动内存适配
+- 掌握 llama-bench 的 KV 缓存复用与 context depth 管理
+- 理解 batched-bench 三维参数空间枚举（npp/ntg/npl）与 PP/TG 阶段分离计时
+- 掌握 perplexity 的块处理、多线程 log_softmax 计算与统计（NLL/NLL2）
+- 理解 perplexity_v2 的 stride 滑窗机制与逐token PPL 计算
+- 掌握 KL 散度计算：基线logits对比、top-1一致率、概率差值矩统计
+- 理解 HellaSwag/Winogrande 的公共前缀优化、批量构造与 acc_norm 评分
+- 掌握 multiple_choice（ARC/MMLU/TruthfulQA）的任务反序列化与批量评分
+- 理解 results 工具的 NMSE 验证、GGUF 持久化与数字指纹概念
+- 掌握 perplexity main() 的命令行解析与评估模式分发逻辑
+- 能阅读并分析性能评估工具的参数解析、批处理、计时、输出全链路
+life_analogy:
+- 想象性能评估工具链是一座**精密钟表匠工坊**：
+- '- **llama-bench** = 钟表匠手中的**精密测时仪**，用统一的标准测量不同「机芯」（模型/配置）的转速'
+- '  - **cmd_params** = 试验配方清单（如「测试温度从-20°C到+50°C，每5°C一档」）'
+- '  - **cmd_params_instance** = 单次实验的精确设置卡（温度=25°C，湿度=45%）'
+- '  - **get_cmd_params_instances()** = 按配方清单排列组合，生成所有试管的分配方案'
+- '  - **parse_int_range()** = 能快速写出「1-10, 12-20+2, 100-1000*10」的速记员'
+- '  - **printer家族** = 不同语言的记录员（CSV会计、JSON翻译、Markdown排版、SQL档案员）'
+- '  - **test_prompt/test_gen** = 标准动作测试员（上发条看转速 vs 摘下发条看惯性）'
+- '- **batched-bench** = **多车道高速 traffic simulator**，同时安排多辆车在不同车道测试通行效率'
+- '  - **PP阶段** = 车辆进入收费站加速过程（共享入口=多车道共用一个闸机）'
+- '  - **TG阶段** = 车辆在高速上持续巡航（独立巡航 vs 编队巡航）'
+- '- **perplexity** = **品酒师盲品会**，不知酒名（token）品尝味道（概率），评估一致性'
+- '  - **perplexity_v2** = 快速小口品鉴（stride大步长）而非一饮而尽'
+- '  - **KL散度** = 两位品酒师对同一瓶酒打分差异的量化'
+- '- **HellaSwag/Winogrande** = **多选题快判官**，先看问题主干（common_prefix）一次，然后快速翻看多个选项打分'
+- '- **results** = **指纹比对仪**，将本次「签名」（logits）与档案指纹（.bin）对比，差异超过阈值即报警'
+- 正如钟表匠不会用同一把钥匙开所有锁，评估工具也根据不同场景（吞吐/延迟/精度/一致性）选择不同的测量策略和精度标准。
+'no': 69
+summary:
+- concept: cmd_params / cmd_params_instance
+  desc: 双层参数设计：CLI层存列表，实例层存单值，支持笛卡尔积展开
+- concept: parse_int_range()
+  desc: 支持 first-last、first-last+step、first-last*mult 的正则范围解析器
+- concept: get_cmd_params_instances()
+  desc: 笛卡尔积展开生成所有测试实例，智能排序减少模型重载
+- concept: cmd_params_instance.to_llama_mparams/cparams
+  desc: 将内部表示转换为llama模型/上下文参数，桥接CLI与推理引擎
+- concept: test class
+  desc: 性能数据封装：元数据 + samples_ns + 统计方法（avg_ts/stdev_ts）
+- concept: printer继承体系
+  desc: 策略模式：csv/json/jsonl/markdown/sql五种输出格式的统一抽象
+- concept: escape_csv / escape_json
+  desc: 特殊字符转义函数，确保输出格式正确性
+- concept: test_prompt()
+  desc: Prompt处理基准：批量推理+同步计时，可指定BOS首token
+- concept: test_gen()
+  desc: 文本生成基准：逐token循环解码，每次同步确保精度
+- concept: fit_target / llama_params_fit()
+  desc: 自动内存适配模式，根据设备内存计算最优ngl/tensor_split
+- concept: ctx_state
+  desc: KV缓存快照结构，实现跨测试的depth上下文复用
+- concept: batched-bench三维枚举
+  desc: npp×ntg×npl三重循环，系统性探索批处理参数空间
+- concept: is_pp_shared / kv_unified
+  desc: 共享前缀优化：只计算一次prompt，通过KV复制到多序列
+- concept: is_tg_separate
+  desc: 独立生成模式：逐序列完成所有token，便于单序列性能分析
+- concept: llama_memory_seq_cp()
+  desc: KV缓存序列复制，实现共享前缀的高效分发
+- concept: decode_helper()
+  desc: 批量拆分辅助：大batch按n_batch拆分+选择性同步
+- concept: process_logits（v1/v2/kld）
+  desc: 多线程NLL/KLD计算：mutex保护counter分摊任务，累加nll/nll2/kld
+- concept: log_softmax+uint16
+  desc: log概率量化存储：scale+min_log_prob编码，支持KL对比
+- concept: kl_divergence_result
+  desc: KL散度统计聚合：sum_kld/sum_p_diff矩/top-1一致率
+- concept: hellaswag_score()
+  desc: 4选项常识推理：common_prefix共享+批量构造+acc_norm评分
+- concept: winogrande_score()
+  desc: 2选项推理：CSV解析+choice跳过+批量评分+置信区间
+- concept: multiple_choice_score()
+  desc: N选项学术评测：任务反序列化+多线程准备+label匹配
+- concept: compute_logprobs()
+  desc: 统一logprob引擎：多线程分块+atomic取任务
+- concept: common_prefix优化
+  desc: 多序列共享前缀只计算一次logits，大幅降低评估成本
+- concept: eval_pairs
+  desc: (logits_offset, target_token)对，精确指定需计算的logprob位置
+- concept: results nmse()
+  desc: 归一化均方误差：Σ(a-b)²/Σ(a²)，阈值1e-6判定一致性
+- concept: GGUF持久化
+  desc: tokens+I32 + logits+F32 → GGUF格式，支持check模式验证
+- concept: mean_and_uncertainty()
+  desc: 统计计算：sum/n, sqrt(sum2/n - mean²)/(n-1)
+- concept: covariance()
+  desc: 协方差计算：(sum_xy - sum_x*sum_y/n) / (n-1)
+- concept: create_printer()
+  desc: 工厂函数：根据output_format枚举创建对应printer子类实例
+- concept: devices_to_string() / parse_devices_arg()
+  desc: 设备列表双向转换：字符串 ↔ ggml_backend_dev_t向量
+- concept: print_usage()
+  desc: 帮助信息打印：列出所有支持的命令行参数及默认值
+- concept: perplexity main()
+  desc: 命令行入口：解析参数、初始化模型、分发到各种评估模式
+- concept: KL divergence file format
+  desc: 二进制格式：_logits_魔数+n_ctx+n_vocab+n_chunk+tokens+量化的log_probs
+units:
+- codes:
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1128-1178
+    method_or_func: cmd_params_instance.to_llama_mparams()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1191-1204
+    method_or_func: cmd_params_instance.to_llama_cparams()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1180-1189
+    method_or_func: cmd_params_instance.equal_mparams()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1206-1507
+    method_or_func: get_cmd_params_instances()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 253-285
+    method_or_func: parse_int_range()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 727-1012
+    method_or_func: parse_cmd_params()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 122-150
+    method_or_func: parse_devices_arg()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 152-171
+    method_or_func: register_rpc_server_list()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 173-191
+    method_or_func: devices_to_string()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 243-247
+    method_or_func: pair_str()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 232-241
+    method_or_func: split_mode_str()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 702-725
+    method_or_func: ggml_type_from_name()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 197-212
+    method_or_func: output_format_str()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 214-230
+    method_or_func: output_format_from_str()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 30-43
+    method_or_func: tensor_buft_override_equal()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 45-53
+    method_or_func: vec_tensor_buft_override_equal()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 55-63
+    method_or_func: vec_vec_tensor_buft_override_equal()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 643-700
+    method_or_func: print_usage()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 2068-2233
+    method_or_func: main()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 835-1126
+    method_or_func: __main__
+  name: llama-bench 参数体系与测试实例工厂 —— 性能实验的「参数矩阵发生器」
+  'no': 1
+  points:
+  - '**为什么需要 cmd_params 与 cmd_params_instance 分离？**'
+  - '- cmd_params 是 CLI 层：支持逗号分隔列表（如 `-p 512,1024`）和 range 语法（`512-2048+512`）'
+  - '- cmd_params_instance 是执行层：每个实例代表一次具体测试（如 pp512 + tg128）'
+  - '- get_cmd_params_instances() 完成笛卡尔积展开，并智能排序减少模型重载'
+  - '**parse_int_range() 的正则魔法**'
+  - '- 支持 `first-last`、`first-last+step`、`first-last*mult` 三种格式'
+  - '- 使用 std::regex_search 循环匹配逗号分隔的多个 range'
+  - '- 验证 step/monotonicity，防止非法输入导致死循环'
+  - '**设备与张量切分的灵活配置**'
+  - '- parse_devices_arg() 支持 `auto`/`none`/具体设备列表（如 `CUDA0/CUDA1`）'
+  - '- register_rpc_server_list() 通过 RPC 后端动态注册远程设备'
+  - '- tensor_buft_overrides 支持正则表达式到 buffer type 的映射（如 `\.ffn_.*_exps\.weight=CPU`）'
+  - '**fit_params_target 模式：自动内存适配**'
+  - '- 调用 llama_params_fit() 根据设备内存自动计算 n_gpu_layers、tensor_split'
+  - '- margins 数组为每个设备预留安全余量（fit_target MiB）'
+  - '- cparams.n_ctx 动态计算为 fit_min_ctx 与实际需求的最大值'
+- codes:
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 25-28
+    method_or_func: get_time_ns()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 100-109
+    method_or_func: get_cpu_info()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 111-120
+    method_or_func: get_gpu_info()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 65-73
+    method_or_func: join()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 75-80
+    method_or_func: transform_to_str()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 82-88
+    method_or_func: avg()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 90-98
+    method_or_func: stdev()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1653-1666
+    method_or_func: escape_csv()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1687-1701
+    method_or_func: escape_json()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1703-1709
+    method_or_func: format_json_value()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 2050-2064
+    method_or_func: create_printer()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 2043-2048
+    method_or_func: llama_null_log_callback()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1520-1566
+    method_or_func: test.test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1572-1579
+    method_or_func: test.get_ts()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1581-1581
+    method_or_func: test.avg_ts()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1583-1583
+    method_or_func: test.stdev_ts()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1568-1568
+    method_or_func: test.avg_ns()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1570-1570
+    method_or_func: test.stdev_ns()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1585-1602
+    method_or_func: test.get_backend()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1604-1613
+    method_or_func: test.get_fields()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1615-1630
+    method_or_func: test.get_field_type()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1632-1698
+    method_or_func: test.get_values()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1700-1707
+    method_or_func: test.get_map()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1717-1717
+    method_or_func: printer.printer()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1721-1721
+    method_or_func: printer.print_header()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1723-1723
+    method_or_func: printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1725-1725
+    method_or_func: printer.print_footer()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1667-1672
+    method_or_func: csv_printer.print_header()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1674-1679
+    method_or_func: csv_printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1732-1743
+    method_or_func: csv_printer.escape_csv()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1710-1713
+    method_or_func: json_printer.print_header()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1715-1721
+    method_or_func: json_printer.print_fields()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1723-1733
+    method_or_func: json_printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1735-1735
+    method_or_func: json_printer.print_footer()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1743-1748
+    method_or_func: jsonl_printer.print_fields()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1750-1758
+    method_or_func: jsonl_printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1772-1807
+    method_or_func: markdown_printer.get_field_width()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1809-1846
+    method_or_func: markdown_printer.get_field_display_name()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1848-1899
+    method_or_func: markdown_printer.print_header()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1901-1940
+    method_or_func: markdown_printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1942-1945
+    method_or_func: markdown_printer.print_footer()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1951-1963
+    method_or_func: sql_printer.get_sql_field_type()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1965-1973
+    method_or_func: sql_printer.print_header()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1975-1982
+    method_or_func: sql_printer.print_test()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 1999-2022
+    method_or_func: test_prompt()
+  - file: tools/llama-bench/llama-bench.cpp
+    line: 2025-2041
+    method_or_func: test_gen()
+  name: llama-bench 测试执行与多格式输出 —— 性能数据的「格式化印刷厂」
+  'no': 2
+  points:
+  - '**test 类：单次测试的完整快照**'
+  - '- 从 cmd_params_instance + llama_model + llama_context 提取所有元数据'
+  - '- 记录 model_size、n_params、硬件信息（CPU/GPU 描述字符串）'
+  - '- samples_ns 存储每次重复的纳秒耗时，支持 avg_ts() / stdev_ts() 统计'
+  - '**printer 继承体系：策略模式的典型应用**'
+  - '- 抽象基类定义 print_header/print_test/print_footer 三段式接口'
+  - '- csv_printer：escape_csv() 处理特殊字符（逗号、换行、引号）'
+  - '- json_printer / jsonl_printer：escape_json() 处理 Unicode 控制字符（< 0x1f）'
+  - '- markdown_printer：动态字段选择（仅显示非默认值）、字段缩写（如 `n_gpu_layers` → `ngl`）、model_size
+    自动格式化（MiB/GiB）'
+  - '- sql_printer：生成 CREATE TABLE IF NOT EXISTS + INSERT 语句，字段类型映射（STRING → TEXT）'
+  - '**test_prompt() 与 test_gen() 双模式**'
+  - '- test_prompt()：批量提交 n_prompt 个随机 token，首个 token 可能是 BOS'
+  - '- test_gen()：循环 n_gen 次单 token decode，每次同步（llama_synchronize）'
+  - '- 两者均通过 llama_batch_get_one() 构造临时 batch'
+  - '**warmup 与 depth（上下文深度）支持**'
+  - '- 可选的 warmup 运行避免首次 JIT/缓存cold start 影响'
+  - '- n_depth 表示预填充长度，使用 ctx_state 缓存 KV 避免重复计算'
+  - '- llama_state_seq_set_data / llama_state_seq_get_data 实现 KV 跨测试复用'
+- codes:
+  - file: tools/batched-bench/batched-bench.cpp
+    line: 12-17
+    method_or_func: print_usage()
+  - file: tools/batched-bench/batched-bench.cpp
+    line: 19-223
+    method_or_func: main()
+  name: batched-bench 多序列批量解码测试 —— 并发推理的「交通流量模拟器」
+  'no': 3
+  points:
+  - '**三维参数空间的枚举**'
+  - '- n_pp（prompt 长度）、n_tg（生成长度）、n_pl（并行序列数）三重循环'
+  - '- n_ctx_req 计算：考虑 is_pp_shared 时，prompt 阶段只需一份 KV，但根据 kv_unified 策略可能需 pl * pp'
+  - '- 超出 n_kv_max 的组合自动跳过'
+  - '**PP 阶段的共享前缀优化**'
+  - '- is_pp_shared = true：只 decode 一次 prompt（seq_id = 0），然后通过 llama_memory_seq_cp
+    复制到其他序列'
+  - '- 若 kv_unified = false，需运行一次 dummy token 触发复制生效，再删除临时 token'
+  - '- 大幅降低多序列相同前缀场景的计算量'
+  - '**TG 阶段的两种调度模式**'
+  - '- is_tg_separate = true：每个序列独立生成（seq0 完成 tg 次、seq1 完成 tg 次……）'
+  - '- is_tg_separate = false：所有序列交错生成（每次 batch 包含所有序列的一步）'
+  - '- 后者更接近真实并发场景，前者便于逐序列分析'
+  - '**decode_helper() 的批量拆分与同步**'
+  - '- 将大 batch 按 n_batch 拆分为多个小 batch_view'
+  - '- synchronize 参数控制是否在每批后调用 llama_synchronize()（影响吞吐与延迟测量）'
+  - '**性能指标计算**'
+  - '- t_pp：prompt 处理耗时，速度 = (is_pp_shared ? pp : pl*pp) / t_pp'
+  - '- t_tg：生成耗时，速度 = pl * tg / t_tg'
+  - '- 总速度考虑共享与非共享的不同分子'
+  - '- 输出表格（Markdown 风格）或 JSONL'
+- codes:
+  - file: tools/perplexity/perplexity.cpp
+    line: 18-35
+    method_or_func: softmax()
+  - file: tools/perplexity/perplexity.cpp
+    line: 37-48
+    method_or_func: log_softmax(int, const float*, int)
+  - file: tools/perplexity/perplexity.cpp
+    line: 58-85
+    method_or_func: log_softmax(int, const float*, uint16_t*, int)
+  - file: tools/perplexity/perplexity.cpp
+    line: 50-56
+    method_or_func: nearest_int()
+  - file: tools/perplexity/perplexity.cpp
+    line: 90-121
+    method_or_func: process_logits(int, const float*, const int*, int, std::vector<std::thread>&,
+      double&, double&, float*, float*)
+  - file: tools/perplexity/perplexity.cpp
+    line: 123-147
+    method_or_func: process_logits(std::ostream&, int, const float*, const int*, int,
+      std::vector<std::thread>&, std::vector<uint16_t>&, double&, double&)
+  - file: tools/perplexity/perplexity.cpp
+    line: 560-700
+    method_or_func: perplexity()
+  name: perplexity 工具核心：标准困惑度计算 —— 语言模型质量的「标尺」
+  'no': 4
+  points:
+  - '**处理流程：分块 + 多序列并行**'
+  - '- 输入文本 tokenize 后按 n_ctx 分块，每块内首 token 替换为 BOS'
+  - '- n_seq = n_batch / n_ctx，一次 decode 处理多个序列（KV 独立）'
+  - '- first = n_ctx / 2：只计算后半部分的 log-likelihood（确保上下文充足）'
+  - '**process_logits() 的多线程 NLL 计算**'
+  - '- 将 n_ctx 后半部分的 logits 分配给多个 worker 线程'
+  - '- 每个线程调用 log_softmax() 计算指定 token 的 log 概率'
+  - '- 累加 nll（负对数似然）与 nll2（平方和）用于均值与标准差'
+  - '- 可选的 logits_file 输出：将 log_softmax 量化为 uint16 存储（scale + min_log_prob 编码）'
+  - '**输出与统计**'
+  - '- 实时打印累计 PPL（exp(nll/count)），支持两种格式（ppl_output_type 0/1）'
+  - '- 最终输出 PPL 及标准误差（基于 nll2 计算）'
+  - '- ETA 估算：首个 chunk 耗时 * n_chunk 除以 n_seq'
+- codes:
+  - file: tools/perplexity/perplexity.cpp
+    line: 430-558
+    method_or_func: perplexity_v2()
+  - file: tools/perplexity/perplexity.cpp
+    line: 349-395
+    method_or_func: log_softmax(int, const float*, const uint16_t*, int, kl_divergence_result&)
+  - file: tools/perplexity/perplexity.cpp
+    line: 397-428
+    method_or_func: process_logits(int, const float*, const int*, int, std::vector<std::thread>&,
+      const std::vector<uint16_t>&, kl_divergence_result&, float*, float*)
+  - file: tools/perplexity/perplexity.cpp
+    line: 1961-1970
+    method_or_func: mean_and_uncertainty()
+  - file: tools/perplexity/perplexity.cpp
+    line: 1971-1977
+    method_or_func: covariance()
+  - file: tools/perplexity/perplexity.cpp
+    line: 713-803
+    method_or_func: kl_divergence()
+  name: perplexity_v2 与 KL 散度计算 —— 滑窗策略与模型对比的「精细显微镜」
+  'no': 5
+  points:
+  - '**stride 滑窗机制**'
+  - '- ppl_stride 控制每次向前移动的 token 数（可远小于 n_ctx）'
+  - '- calc_chunk = n_ctx，每次处理一个完整上下文窗口'
+  - '- start 从 0 到 n_chunk_max - 1，每次 +stride'
+  - '**单序列模式，无 batch 并行**'
+  - '- 与标准 perplexity 不同，v2 每次只处理一个序列（n_seq = 1）'
+  - '- 逐 token 计算 log_softmax 并存储到 logit_history / prob_history'
+  - '- 适用于需要逐 token PPL 曲线的场景'
+  - '**KL 散度：量化模型间的输出差异**'
+  - '- 输入：之前 perplexity 保存的 logits_file（二进制格式，包含 tokens + uint16 压缩的 log_probs）'
+  - '- 重新运行模型，对比当前 logits 与基线 log_probs'
+  - '- log_softmax(int, const float*, const uint16_t*, int, kl_divergence_result&)
+    计算：'
+  - '  - sum_nll / sum_nll_base：当前与基线的 NLL 统计'
+  - '  - sum_kld：逐 token KL 散度（当前模型视角）'
+  - '  - sum_p_diff：概率差值（当前 p - 基线 p）及其二阶、四阶矩'
+  - '  - n_same_top：两模型 top-1 预测一致率'
+  - '- mean_and_uncertainty() 与 covariance() 计算统计指标'
+- codes:
+  - file: tools/perplexity/perplexity.cpp
+    line: 702-730
+    method_or_func: decode_helper()
+  - file: tools/perplexity/perplexity.cpp
+    line: 733-774
+    method_or_func: compute_logprobs()
+  - file: tools/perplexity/perplexity.cpp
+    line: 776-1000
+    method_or_func: hellaswag_score()
+  - file: tools/perplexity/perplexity.cpp
+    line: 280-424
+    method_or_func: winogrande_score()
+  - file: tools/perplexity/perplexity.cpp
+    line: 213-278
+    method_or_func: load_winogrande_from_csv()
+  name: HellaSwag 与 Winogrande：多选项任务的批量加速评分 —— 常识推理的「快速考官」
+  'no': 6
+  points:
+  - '**公共前缀优化**'
+  - '- 每个任务包含 question/context 与多个答案/结尾，序列化后计算 common_prefix'
+  - '- common_prefix 部分只需 decode 一次（多序列共享 seq_id），后续分支各自独立'
+  - '- required_tokens = common_prefix + Σ(seq_len - common_prefix)，判断能否放入 n_ctx'
+  - '**批量构造**'
+  - '- 一次 batch 尽可能塞入多个任务（受 n_ctx 与 max_seq 限制）'
+  - '- HellaSwag：每任务 4 个结尾 → seq_id s0 + 0..3'
+  - '- Winogrande：每任务 2 个选择 → seq_id s0 + 0..1'
+  - '- logits 只保留每序列末尾非公共部分及公共前缀最后一 token'
+  - '**compute_logprobs() 统一计算 log 概率**'
+  - '- eval_pairs 存储 (logits_offset, target_token) 对'
+  - '- 多线程计算 log_softmax，按 K_TOKEN_CHUNK 分块减少线程竞争'
+  - '**HellaSwag 的 acc_norm 评分**'
+  - '- 对每个结尾计算其所有 token 的 logprob 之和并除以 token 数'
+  - '- 选择平均分最高的结尾，对比 gold_ending_idx'
+  - '**Winogrande 的特色**'
+  - '- load_winogrande_from_csv() 解析 CSV 格式（处理引号、逗号）'
+  - '- skip_choice 逻辑：若结尾足够长（> k_min_trailing_ctx），跳过共同前缀后的 choice 部分评分'
+  - '- 输出逐任务得分及最终总体准确率与置信区间'
+- codes:
+  - file: tools/perplexity/perplexity.cpp
+    line: 428-432
+    method_or_func: deserialize_string()
+  - file: tools/perplexity/perplexity.cpp
+    line: 434-445
+    method_or_func: multiple_choice_answers.deserialize()
+  - file: tools/perplexity/perplexity.cpp
+    line: 465-468
+    method_or_func: multiple_choice_task.deserialize()
+  - file: tools/perplexity/perplexity.cpp
+    line: 480-517
+    method_or_func: multiple_choice_prepare_one_task()
+  - file: tools/perplexity/perplexity.cpp
+    line: 519-711
+    method_or_func: multiple_choice_score()
+  name: 多选题评分：ARC/MMLU/TruthfulQA —— 标准学术评估的「自动化流水线」
+  'no': 7
+  points:
+  - '**任务序列化与随机采样**'
+  - '- 输入为二进制格式：n_task + task_pos 数组 + 序列化的 multiple_choice_task'
+  - '- multiple_choice_task.deserialize() 读取 question + mc1（答案集）'
+  - '- multiple_choice_answers.deserialize() 读取答案字符串列表与 labels'
+  - '- 支持 simply sequential（小任务数）或 seek 到 task_pos 随机采样'
+  - '**multiple_choice_prepare_one_task() 的预处理**'
+  - '- tokenize「question + '' '' + answer」'
+  - '- 计算跨所有答案的 common_prefix'
+  - '- required_tokens 用于批量可行性判断'
+  - '- 大任务数时启用多线程并行准备（fetch_add 分块）'
+  - '**评分逻辑与 TruthfulQA 标签**'
+  - '- 使用首个非公共 token 的 softmax 概率作为基准（common_prefix 最后一 token 的 logits）'
+  - '- 累加后续所有 token 的 logprob，除以 token 数得到平均 log_prob'
+  - '- 在 mc1.labels 中找到 label == 1 的索引作为正确答案'
+  - '- 输出：总正确率、随机基线（1/n_answers）及标准差'
+- codes:
+  - file: tools/perplexity/perplexity.cpp
+    line: 2941-3020
+    method_or_func: main()
+  name: perplexity 主程序与评估模式分发 —— 多模态评估的「总控开关」
+  'no': 8
+  points:
+  - '**命令行参数解析与配置**'
+  - '- main() 使用 common_params_parse 解析命令行参数与预设文件'
+  - '- 自动设置合理默认值：n_ctx=512, n_batch=512, ppl_stride=0 等'
+  - '- 支持 --hellaswag、--winogrande、--multiple-choice、--kl-divergence 等专用参数'
+  - '**模型初始化与上下文创建**'
+  - '- 调用 common_init() 和 common_init_from_params() 初始化推理环境'
+  - '- 加载模型并创建 llama_context，确保资源充足（n_ctx、n_batch 验证）'
+  - '- 打印系统信息和配置摘要'
+  - '**评估模式的路由分发**'
+  - '- 根据 params 中的模式标志（hellaswag_score 等）选择对应的评估函数'
+  - '- 支持多种评估的串行执行（如先 perplexity 再 hellaswag）'
+  - '- 每个评估函数独立运行，共享同一模型上下文'
+  - '**资源管理与性能统计**'
+  - '- 评估完成后调用 llama_perf_context_print() 打印性能统计'
+  - '- 释放模型与上下文资源，确保无内存泄漏'
+  - '- 支持日志输出开关（verbose/quiet）'
+- codes:
+  - file: tools/results/results.cpp
+    line: 18-32
+    method_or_func: nmse()
+  - file: tools/results/results.cpp
+    line: 35-58
+    method_or_func: get_logits()
+  - file: tools/results/results.cpp
+    line: 61-212
+    method_or_func: main()
+  name: results 工具：logits 快照与 NMSE 验证 —— 推理一致性的「数字指纹」
+  'no': 9
+  points:
+  - '**get_logits() 全量提取**'
+  - '- 将所有 token 加入单个 batch（logits = true），适用 n_tokens ≤ n_ctx'
+  - '- 通过 llama_get_logits_ith 逐位置提取，拼成大向量'
+  - '**GGUF 持久化**'
+  - '- 创建 ggml_context 构造两个张量：tokens (I32, 1D) 与 logits (F32, 2D)'
+  - '- 使用 GGUFWriter 同款的 gguf_add_tensor 流程，但这里直接用 gguf C API'
+  - '- path_model 元数据记录模型路径，确保验证时匹配'
+  - '**check 模式的逐字段校验**'
+  - '- 读取 tokens 张量，与当前 tokenize 结果 GGML_ASSERT 比对'
+  - '- 读取 logits 张量，调用 nmse() 计算与当前推理的差异'
+  - '- nmse = Σ(a-b)² / Σ(a²)，阈值 1e-6 判定 PASS/FAIL'
+  - '- 彩色输出（ANSI \033[1;32m OK / \033[1;31m FAIL）'

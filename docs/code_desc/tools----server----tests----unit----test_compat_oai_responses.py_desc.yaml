@@ -1,0 +1,97 @@
+classes: []
+desc: 该文件是 OpenLLM 测试套件中的一个单元测试模块，针对 /v1/responses 端点进行兼容性测试，确保其与 OpenAI 的 Responses
+  API 行为一致。它通过 OpenAI 官方 SDK 发起同步和流式请求，验证响应 ID、消息 ID、文本输出等字段的格式与内容符合预期。
+file: tools/server/tests/unit/test_compat_oai_responses.py
+funcs:
+- code:
+  - import pytest
+  - from openai import OpenAI
+  - from utils import *
+  - ''
+  - 'server: ServerProcess'
+  - ''
+  - '@pytest.fixture(autouse=True)'
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.tinyllama2()'
+  desc: 模块级代码，主要定义全局变量 server，并注册一个 autouse 的 pytest fixture 用于初始化测试服务器（TinyLlama2）实例。
+  line: 1-11
+  name: __main__
+- code:
+  - 'def create_server():'
+  - '    global server'
+  - '    server = ServerPreset.tinyllama2()'
+  desc: pytest 自动使用的 fixture，负责启动测试所需的 TinyLlama2 服务器实例，并赋值给全局变量 server。
+  line: 7-11
+  name: create_server
+- code:
+  - 'def test_responses_with_openai_library():'
+  - '    global server'
+  - '    server.start()'
+  - '    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")'
+  - '    res = client.responses.create('
+  - '        model="gpt-4.1",'
+  - '        input=['
+  - '            {"role": "system", "content": "Book"},'
+  - '            {"role": "user", "content": "What is the best book"},'
+  - '        ],'
+  - '        max_output_tokens=8,'
+  - '        temperature=0.8,'
+  - '    )'
+  - '    assert res.id.startswith("resp_")'
+  - '    assert res.output[0].id is not None'
+  - '    assert res.output[0].id.startswith("msg_")'
+  - '    assert match_regex("(Suddenly)+", res.output_text)'
+  desc: 同步测试函数：启动服务器后，通过 OpenAI 客户端向 Responses API 发送非流式请求，并验证响应 ID 以 'resp_' 开头、输出消息
+    ID 以 'msg_' 开头，且输出文本包含正则匹配的 '(Suddenly)+' 模式。
+  line: 13-29
+  name: test_responses_with_openai_library
+- code:
+  - 'def test_responses_stream_with_openai_library():'
+  - '    global server'
+  - '    server.start()'
+  - '    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")'
+  - '    stream = client.responses.create('
+  - '        model="gpt-4.1",'
+  - '        input=['
+  - '            {"role": "system", "content": "Book"},'
+  - '            {"role": "user", "content": "What is the best book"},'
+  - '        ],'
+  - '        max_output_tokens=8,'
+  - '        temperature=0.8,'
+  - '        stream=True,'
+  - '    )'
+  - ''
+  - '    gathered_text = '''''
+  - '    resp_id = '''''
+  - '    msg_id = '''''
+  - '    for r in stream:'
+  - '        if r.type == "response.created":'
+  - '            assert r.response.id.startswith("resp_")'
+  - '            resp_id = r.response.id'
+  - '        if r.type == "response.in_progress":'
+  - '            assert r.response.id == resp_id'
+  - '        if r.type == "response.output_item.added":'
+  - '            assert r.item.id is not None'
+  - '            assert r.item.id.startswith("msg_")'
+  - '            msg_id = r.item.id'
+  - '        if (r.type == "response.content_part.added" or'
+  - '            r.type == "response.output_text.delta" or'
+  - '            r.type == "response.output_text.done" or'
+  - '            r.type == "response.content_part.done"):'
+  - '            assert r.item_id == msg_id'
+  - '        if r.type == "response.output_item.done":'
+  - '            assert r.item.id == msg_id'
+  - ''
+  - '        if r.type == "response.output_text.delta":'
+  - '            gathered_text += r.delta'
+  - '        if r.type == "response.completed":'
+  - '            assert r.response.id.startswith("resp_")'
+  - '            assert r.response.output[0].id is not None'
+  - '            assert r.response.output[0].id.startswith("msg_")'
+  - '            assert gathered_text == r.response.output_text'
+  - '            assert match_regex("(Suddenly)+", r.response.output_text)'
+  desc: 流式测试函数：启动服务器后，通过 OpenAI 客户端发起流式请求，遍历所有服务器事件，验证事件顺序和 ID 一致性（如 response.created
+    产生 resp_id、response.output_item.added 产生 msg_id），并检查最终输出文本与增量拼接的文本一致，且匹配正则 '(Suddenly)+'。
+  line: 31-66
+  name: test_responses_stream_with_openai_library

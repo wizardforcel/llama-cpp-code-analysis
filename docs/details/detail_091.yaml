@@ -1,0 +1,541 @@
+code_map:
+- README.md
+- '└── 项目总览                        # llama.cpp 定位、支持模型、工具矩阵'
+- ''
+- examples/simple/simple.cpp
+- '├── print_usage()                   # 命令行用法说明（8-12行）'
+- '└── main()                          # 主流程（14-150行）'
+- '    ├── 参数解析                    # -m 模型路径 / -n 预测长度 / -ngl GPU层数'
+- '    ├── 后端与模型初始化            # ggml_backend_load_all + llama_model_load_from_file'
+- '    ├── 两阶段 tokenization         # 先探测数量，再填充 token 数组'
+- '    ├── 上下文创建                  # llama_context_default_params + llama_init_from_model'
+- '    ├── 采样器组装                  # llama_sampler_chain_init + llama_sampler_init_greedy'
+- '    ├── prompt 回显                 # llama_token_to_piece 打印输入 token'
+- '    ├── encoder-decoder 分支        # llama_model_has_encoder → llama_encode → decoder_start_token_id'
+- '    ├── 生成循环                    # llama_decode → llama_sampler_sample → llama_vocab_is_eog'
+- '    ├── 流式输出                    # llama_token_to_piece + printf + fflush'
+- '    ├── 性能统计                    # ggml_time_us + llama_perf_sampler_print + llama_perf_context_print'
+- '    └── 资源释放                    # llama_sampler_free → llama_free → llama_model_free'
+- ''
+- examples/simple-chat/simple-chat.cpp
+- '├── print_usage()                   # 命令行用法说明（9-13行）'
+- '└── main()                          # 主流程（15-157行）'
+- '    ├── 参数解析                    # -m 模型路径 / -c 上下文大小 / -ngl GPU层数'
+- '    ├── 日志过滤                    # llama_log_set 仅输出 ERROR 级别'
+- '    ├── 模型与上下文初始化          # llama_model_load_from_file + llama_init_from_model'
+- '    ├── 采样器链组装                # Min-P → Temperature → Distribution 概率采样链'
+- '    ├── generate lambda             # 生成单轮回复'
+- '    │   ├── 首 token 判断           # llama_memory_seq_pos_max == -1 判定是否首轮'
+- '    │   ├── tokenization            # is_first 控制 add_bos'
+- '    │   ├── 上下文溢出检测          # n_ctx_used + batch.n_tokens > n_ctx → 退出'
+- '    │   ├── 解码循环                # llama_decode → llama_sampler_sample → llama_vocab_is_eog'
+- '    │   └── 流式输出                # printf + fflush 逐 token 输出'
+- '    ├── 消息历史管理                # std::vector<llama_chat_message> + strdup'
+- '    ├── 聊天模板渲染                # llama_chat_apply_template（增量渲染 via prev_len）'
+- '    ├── 交互式输入循环              # std::getline + ANSI 颜色码'
+- '    └── 资源释放                    # free(msg.content) → llama_sampler_free → llama_free
+  → llama_model_free'
+- ''
+- examples/eval-callback/eval-callback.cpp
+- '├── __main__                        # 头文件依赖与全局设置（1-10行）'
+- '├── base_callback_data              # 回调数据结构（继承自 debug.h）'
+- '├── run()                           # 单次推理流程（14-35行）'
+- '│   ├── tokenization                # common_tokenize'
+- '│   └── llama_decode                # 触发回调的计算图执行'
+- '└── main()                          # 主流程（37-72行）'
+- '    ├── 回调注册                    # params.cb_eval = common_debug_cb_eval<false>'
+- '    ├── 用户数据绑定                # params.cb_eval_user_data = &cb_data'
+- '    ├── 跳过预热                    # params.warmup = false'
+- '    └── 性能打印                    # llama_perf_context_print'
+- ''
+- examples/idle/idle.cpp
+- '├── print_usage()                   # 命令行用法说明（13-17行）'
+- '└── main()                          # 主流程（19-81行）'
+- '    ├── 单 token prompt             # llama_vocab_bos 构造最小输入'
+- '    ├── 上下文配置                  # n_ctx = 512, n_batch = 512, no_perf = false'
+- '    ├── 预热解码                    # llama_decode + llama_memory_clear + llama_synchronize'
+- '    ├── 空闲时长扫描                # t_pause_ms: 0 → 4000ms，步长 800ms'
+- '    ├── 迭代测试                    # 每组执行 n_iters = 3 次'
+- '    ├── 同步计时                    # llama_time_us → llama_decode → llama_synchronize
+  → llama_time_us'
+- '    └── 统计输出                    # 平均值 ± 标准差（ms）'
+- ''
+- examples/debug/debug.cpp
+- '├── print_usage()                   # 带模板替换的用法说明（10-24行）'
+- '├── has_pooling()                   # 检测上下文是否启用 pooling（26-34行）'
+- '├── class output_data               # 输出数据封装（70-112行）'
+- '│   └── output_data()               # 构造函数：根据是否 embedding 分别收集 logits 或 embeddings'
+- '│       ├── tokenization            # common_tokenize 获取输入 token'
+- '│       ├── embedding 分支          # has_pooling 判定序列级 / 逐 token'
+- '│       │   ├── llama_get_embeddings_seq  # 序列级向量'
+- '│       │   ├── llama_get_embeddings      # 逐 token 向量'
+- '│       │   └── common_embd_normalize     # 可选 L2 归一化'
+- '│       └── logits 分支             # llama_get_logits_ith 获取最后位置 logits'
+- '├── save_output_data()              # 保存数据到文件（115-158行）'
+- '│   ├── 二进制数据                  # .bin 文件（float 数组 / token ID 数组）'
+- '│   ├── 文本数据                    # .txt 文件（索引: 值）'
+- '│   └── prompt 信息                 # -prompt.txt（原始文本 + token 列表）'
+- '├── print_tokenized_prompt()        # 打印 token 化结果（161-177行）'
+- '├── run()                           # 核心执行函数（180-204行）'
+- '│   ├── tokenization                # common_tokenize'
+- '│   ├── llama_decode                # 单次解码'
+- '│   ├── print_tokenized_prompt      # 打印 token 信息'
+- '│   └── 条件保存                    # params.save_logits → output_data → save_output_data'
+- '└── main()                          # 主流程（207-237行）'
+- '    ├── 参数解析                    # LLAMA_EXAMPLE_DEBUG 类别'
+- '    ├── 回调数据                    # base_callback_data + params.tensor_filter'
+- '    ├── common_init_from_params     # 一体化初始化'
+- '    └── llama_perf_context_print    # 性能统计'
+exercises:
+- contents:
+  - 基于 `examples/simple/simple.cpp`，扩展命令行参数支持以下采样配置：
+  - 1. `--temp <float>`：温度采样（替换贪心采样）
+  - 2. `--top-k <int>`：Top-K 采样
+  - 3. `--top-p <float>`：Top-P（nucleus）采样
+  - 要求：
+  - '- 当指定任一采样参数时，替换默认的 `llama_sampler_init_greedy()`'
+  - '- 采样器链按 Top-K → Top-P → Temperature → Distribution 的顺序组装'
+  - '- 输出每次采样后的实际概率值（使用 `llama_sampler_get_logit_bias` 或其他 API 观测）'
+  - 思考问题：
+  - '- 为什么 Temperature 必须放在 Top-K/Top-P 之后？'
+  - '- 如何将采样器配置序列化保存到文件，实现推理可复现？'
+  'no': 1
+  title: 修改 simple 示例：支持自定义采样参数
+- contents:
+  - 基于 `examples/eval-callback/eval-callback.cpp`，实现以下功能：
+  - 1. 在 `common_debug_cb_eval` 回调中检测所有包含 `attn` 或 `attention` 的张量名称
+  - 2. 当检测到注意力矩阵（形状通常为 `[n_head, n_tokens, n_tokens]`）时：
+  - '   - 打印该张量的形状、类型、前 8 个元素值'
+  - '   - 将完整注意力矩阵保存为 CSV 文件（行=查询位置，列=键位置）'
+  - 3. 增加 `--save-attention <dir>` 命令行参数控制输出目录
+  - 进阶挑战：
+  - '- 使用 ASCII 热力图在终端可视化注意力权重（例如 `@#*+=~-.` 映射强度）'
+  - '- 统计各层注意力熵值，判断哪些头更「聚焦」、哪些更「分散」'
+  - 思考问题：
+  - '- 回调中如何区分前向计算与反向计算？'
+  - '- 如何避免回调开销掩盖了真实的推理性能？'
+  'no': 2
+  title: 扩展 eval-callback：实现注意力权重可视化
+- contents:
+  - 基于 `examples/simple-chat/simple-chat.cpp`，实现对话历史持久化：
+  - 1. 每轮对话结束后，将 `messages` 数组序列化为 JSON 文件（`chat_history.json`）
+  - 2. 程序启动时检测是否存在历史文件，若存在则自动加载并恢复对话
+  - 3. 增加 `--reset` 参数清空历史记录，重新开始对话
+  - 4. 增加 `--export <file>` 将对话历史导出为 markdown 格式（带时间戳与角色标记）
+  - 进阶挑战：
+  - '- 结合 KV 缓存保存/恢复功能（`llama_state_save_file/load_file`），实现断点续聊'
+  - '- 对比「重新 tokenization 全部历史」与「恢复 KV 缓存」两种方案的首 token 延迟差异'
+  - 思考问题：
+  - '- 当上下文窗口接近极限时，应该如何裁剪历史消息？有哪些策略？'
+  - '- 如何保证恢复后的上下文与原始生成完全一致（确定性）？'
+  'no': 3
+  title: 基于 simple-chat 构建多轮对话状态持久化工具
+- contents:
+  - 基于 `examples/idle/idle.cpp`，探究 GPU 空闲唤醒与批处理大小的交互影响：
+  - 1. 修改代码支持扫描两个维度：
+  - '   - 空闲时间：0ms, 100ms, 500ms, 1000ms, 2000ms, 4000ms'
+  - '   - 批大小：1, 4, 16, 64, 128, 256 token'
+  - 2. 对每个组合执行 5 次测试，记录均值、标准差、P95 延迟
+  - 3. 输出 CSV 格式结果，便于用 pandas/matplotlib 绘制热力图
+  - 4. 增加 `--gpu-wait` 参数：在 decode 之间插入 `ggml_backend_synchronize` 确保 GPU 完全空闲
+  - 思考问题：
+  - '- 为什么在某些硬件上，大批次反而在空闲后首次执行时延迟更低？'
+  - '- 如何区分「GPU 唤醒延迟」与「计算图编译/预处理延迟」？'
+  - '- 在生产部署中，应该选择「常驻 GPU」还是「按需唤醒」？如何量化决策？'
+  'no': 4
+  title: 扩展 idle 示例：GPU 唤醒延迟与批大小的关系
+- contents:
+  - 基于 `examples/debug/debug.cpp`，实现一个模型量化前后对比工具：
+  - 1. 接受两个模型路径参数：`-m baseline.gguf -m2 quantized.gguf`
+  - 2. 对相同 prompt 分别执行推理，保存两个模型的 logits（二进制格式）
+  - 3. 计算并输出以下指标：
+  - '   - 余弦相似度（cosine similarity）'
+  - '   - 归一化均方误差（NMSE）'
+  - '   - Top-1 token 是否一致'
+  - '   - Top-5 token 重叠率'
+  - '   - KL 散度（Kullback–Leibler divergence）'
+  - 4. 将对比结果输出为 JSON 报告
+  - 进阶挑战：
+  - '- 支持批量 prompt 对比（从文件读取多行输入）'
+  - '- 增加分层对比：仅比较某一层输出（利用 eval-callback）'
+  - 思考问题：
+  - '- 为什么 NMSE 比 MSE 更适合衡量模型输出的相对差异？'
+  - '- 当 Top-1 token 改变但整体分布相似时，对下游任务可能有何影响？'
+  'no': 5
+  title: 基于 debug 示例构建 logits 差异分析工具
+- contents:
+  - 基于 `examples/debug/debug.cpp` 的 `print_tokenized_prompt()` 和 `run()` 函数，构建交互式调试器：
+  - 1. 在 `print_tokenized_prompt()` 基础上，增加逐 token 的概率分布打印（Top-10 tokens + 概率值）
+  - 2. 实现 `--interactive` 模式：每生成一个 token 暂停，等待用户输入命令：
+  - '   - `continue`：继续生成下一个 token'
+  - '   - `inspect <layer>`：使用 eval-callback 打印指定层的激活值'
+  - '   - `sampling <temp>`：动态修改当前采样温度'
+  - '   - `save`：保存当前 logits/embeddings（复用 `save_output_data()`）'
+  - 3. 利用 `has_pooling()` 自动检测 embedding 模式，在非 pooling 模式下显示逐 token 嵌入向量范数
+  - 思考问题：
+  - '- 如何在交互式调试中保持 KV 缓存一致性？'
+  - '- 为什么动态修改采样器参数需要重建 sampler 而非原地修改？'
+  'no': 6
+  title: 扩展 debug 示例：实现逐 token 交互式调试器
+learning_targets:
+- 掌握 llama.cpp 示例程序的统一骨架：后端初始化 → 模型加载 → 上下文创建 → 推理执行 → 资源释放的完整生命周期
+- 理解 simple 示例中两阶段 tokenization、贪心采样与自回归生成循环的实现机制
+- 理解 simple-chat 示例中聊天模板增量渲染、消息历史管理与上下文溢出检测的工程实践
+- 掌握 eval-callback 示例中通过 cb_eval 回调挂钩计算图执行过程的观测手段
+- 理解 idle 示例中 GPU 空闲状态性能测试的设计思路与统计方法（均值、标准差）
+- 掌握 debug 示例中 logits/embeddings 数据的提取、归一化与二进制/文本双格式保存流程
+- 理解 debug 示例中 has_pooling 检测、print_tokenized_prompt 调试输出与 print_usage 模板化用法说明的辅助函数设计
+- 能够基于示例骨架开发自定义推理应用（如指定层输出、自定义采样策略、性能剖析）
+life_analogy:
+- 把 llama.cpp 的推理流程想象成一家**咖啡店的点单-制作-出餐流水线**：
+- '- **模型加载** = 打开咖啡机电源并放入咖啡豆（权重文件），机器自检完成'
+- '- **tokenization** = 把顾客的自然语言点单翻译成配方编号（token ID）'
+- '- **llama_decode** = 按配方执行萃取、打奶泡等工序（计算图前向传播）'
+- '- **采样器** = 口味偏好选择器：贪心 = 永远选招牌推荐；Min-P + Temperature = 根据心情随机微调'
+- '- **llama_sampler_sample → batch 反馈** = 上一道工序的产出决定下一道工序的输入（自回归）'
+- '- **llama_vocab_is_eog** = 出餐完成标志（遇到 EOG token 停止接单）'
+- '- **eval-callback** = 后厨监控摄像头：实时观察每道工序的中间产物（张量）'
+- '- **idle 测试** = 测量咖啡机从休眠到唤醒再到出品的时间，评估电源管理策略'
+- '- **debug 示例** = 把每一杯的配方、萃取参数、出品照片（logits/embeddings）存档用于复盘'
+- 就像咖啡师需要理解从豆到杯的每个环节，开发者也只有掌握这条流水线，才能稳定、高效地驾驭 llama.cpp。
+'no': 90
+summary:
+- concept: 示例程序骨架
+  desc: 统一遵循「后端初始化→模型加载→上下文创建→推理→采样→资源释放」六步流程
+- concept: ggml_backend_load_all()
+  desc: 动态加载所有可用硬件后端（CPU/CUDA/Metal/Vulkan），为推理选择最优执行路径
+- concept: llama_model_load_from_file()
+  desc: 从 GGUF 文件加载模型权重与元数据，支持 GPU 卸载层数配置（n_gpu_layers）
+- concept: 两阶段 tokenization
+  desc: 先 `llama_tokenize(..., NULL, 0, ...)` 探测 token 数量，再分配数组实际填充，避免二次内存分配
+- concept: llama_context_params
+  desc: 配置上下文窗口（n_ctx）、批大小（n_batch）、性能统计开关（no_perf）
+- concept: llama_init_from_model()
+  desc: 基于模型和参数创建推理上下文（KV 缓存、计算图预留、后端绑定）
+- concept: llama_batch_get_one()
+  desc: 快速构造单序列批次，内部自动处理 token/pos/seq_id/logits 标志
+- concept: llama_decode()
+  desc: 执行一次前向计算，驱动计算图从输入 token 生成 logits
+- concept: llama_sampler 采样器链
+  desc: 通过 `llama_sampler_chain_add` 组合贪心、Min-P、温度、分布采样等策略，按顺序依次作用
+- concept: llama_sampler_sample()
+  desc: 从指定位置（通常 -1 即最后一个）采样下一个 token，并自动接受该 token 更新内部状态
+- concept: llama_vocab_is_eog()
+  desc: 判断采样结果是否为 End-Of-Generation token，用于终止生成循环
+- concept: llama_token_to_piece()
+  desc: 将 token ID 转换回文本片段，用于流式输出与用户展示
+- concept: Encoder-Decoder 分支
+  desc: 通过 `llama_model_has_encoder()` 检测 T5/BART 类模型，先 `llama_encode()` 再从 decoder_start_token
+    开始生成
+- concept: llama_chat_apply_template()
+  desc: 将消息历史渲染为模型期望的对话格式字符串，支持增量渲染（prev_len）避免重复编码
+- concept: 增量渲染优化
+  desc: 利用 `prev_len` 与前一次渲染结果，仅处理新增对话部分，显著降低长对话的 tokenization 开销
+- concept: llama_memory_seq_pos_max()
+  desc: 查询 KV 缓存中指定序列的最大位置，用于上下文溢出检测与生成状态判断
+- concept: common_debug_cb_eval
+  desc: 评估回调函数，在计算图每个节点执行时被触发，用于观测中间张量、调试 NaN、收集统计
+- concept: params.cb_eval / cb_eval_user_data
+  desc: 回调函数指针与用户数据指针，通过 common_params 传递给后端调度器
+- concept: params.warmup = false
+  desc: 跳过预热推理，让回调在真实数据上立即生效
+- concept: llama_synchronize()
+  desc: 阻塞等待所有后端计算完成，确保计时与数据读取的准确性
+- concept: llama_time_us()
+  desc: 微秒级时间戳，用于手动性能测量（idle/debug 示例）
+- concept: 空闲性能测试
+  desc: 通过不同 sleep 时长模拟 GPU 空闲，测量唤醒延迟与解码时间的相关性
+- concept: output_data 结构体
+  desc: 封装 logits/embeddings 数据指针、大小、类型后缀，支持可选归一化与多格式导出
+- concept: llama_get_logits_ith()
+  desc: 获取第 i 个位置的 logits 数组（未归一化概率分布），长度为词表大小
+- concept: llama_get_embeddings() / llama_get_embeddings_seq()
+  desc: 分别获取逐 token 嵌入矩阵与序列级池化嵌入向量
+- concept: has_pooling()
+  desc: 通过 `llama_pooling_type()` 判断上下文是否启用池化，决定 embedding 输出形状
+- concept: common_embd_normalize()
+  desc: 对 embedding 向量执行 L2/p 范数归一化，提升语义相似度计算的稳定性
+- concept: print_tokenized_prompt()
+  desc: 将输入文本的 token ID 序列与文本片段逐一打印，用于调试分词正确性
+- concept: print_usage()
+  desc: 打印示例程序的命令行用法说明，支持模板替换（{prog} 替换为实际程序名）
+- concept: llama_perf_context_print()
+  desc: 打印上下文维度性能统计：prompt 处理速度、生成速度、各阶段耗时
+- concept: llama_perf_sampler_print()
+  desc: 打印采样器性能统计：采样次数、耗时
+- concept: 资源释放顺序
+  desc: 遵循逆序释放原则：sampler → context → model → backend，防止悬垂指针与资源泄漏
+- concept: llama_log_set()
+  desc: 日志回调函数设置，过滤不同级别日志输出（simple-chat 仅保留 ERROR 级别）
+- concept: strdup / free 消息管理
+  desc: simple-chat 中消息内容的深拷贝与手动释放，体现 C API 与 C++ 代码混用的资源管理实践
+- concept: llama_batch_get_one 的自回归反馈
+  desc: 每次采样后将新 token 包装为单 token batch 回喂模型，循环驱动生成过程
+- concept: eval-callback __main__ 作用域
+  desc: 头文件依赖引入与全局区域设置（std::setlocale），为回调机制提供基础设施
+units:
+- codes:
+  - file: examples/simple/simple.cpp
+    line: 14-150
+    method_or_func: main()
+  - file: examples/simple-chat/simple-chat.cpp
+    line: 15-157
+    method_or_func: main()
+  name: 示例程序全景概览 —— 走进大模型推理的「代码样本库」
+  'no': 1
+  points:
+  - '**llama.cpp 示例生态的分层设计**'
+  - '- **simple**：最纯粹的推理流程展示，约150行代码完成加载→分词→生成'
+  - '- **simple-chat**：多轮对话交互示例，引入聊天模板和消息历史管理'
+  - '- **eval-callback**：展示如何通过回调机制观测计算图执行过程'
+  - '- **idle**：基准测试工具，测量不同空闲时间后的解码性能'
+  - '- **debug**：调试辅助工具，支持保存 logits/embeddings 到文件'
+  - '**示例程序的共性骨架**'
+  - '- 参数解析：`common_params_parse()` 或手动 argv 解析'
+  - '- 后端初始化：`llama_backend_init()` + `llama_numa_init()`'
+  - '- 模型加载：`llama_model_load_from_file()`'
+  - '- 上下文创建：`llama_init_from_model()`'
+  - '- 推理执行：`llama_decode()` / `llama_encode()`'
+  - '- 资源释放：`llama_free()` → `llama_model_free()` → `llama_backend_free()`'
+- codes:
+  - file: examples/simple/simple.cpp
+    line: 14-150
+    method_or_func: main()
+  - file: examples/simple/simple.cpp
+    line: 8-12
+    method_or_func: print_usage()
+  name: simple 示例：推理四步曲 —— 加载模型如同「唤醒沉睡的大脑」
+  'no': 2
+  points:
+  - '**Step 1: 后端初始化与模型加载**'
+  - '- `ggml_backend_load_all()` 动态加载所有可用后端（CUDA/Metal/Vulkan等）'
+  - '- `llama_model_params` 配置 GPU 层数（`n_gpu_layers`）'
+  - '- `llama_model_load_from_file()` 加载 GGUF 模型文件'
+  - '- 错误处理：模型加载失败立即返回'
+  - '**Step 2: 输入分词（Tokenization）**'
+  - '- `llama_model_get_vocab()` 获取模型词汇表'
+  - '- 两阶段 tokenization：先探测 token 数量（`-llama_tokenize(..., NULL, 0, ...)`），再实际填充'
+  - '- `add_bos=true` 自动添加句首标记'
+  - '**Step 3: 上下文配置与初始化**'
+  - '- `llama_context_params.n_ctx`：上下文窗口大小（prompt + predict）'
+  - '- `n_batch`：批处理大小（通常等于 prompt 长度）'
+  - '- `no_perf=false`：启用性能统计'
+  - '**Step 4: 生成循环**'
+  - '- `llama_batch_get_one()` 构造单序列批次'
+  - '- `llama_decode()` 执行前向计算'
+  - '- `llama_sampler_sample()` 采样下一个 token'
+  - '- `llama_vocab_is_eog()` 检测结束标记'
+  - '- 每个 token 即时打印（流式输出）'
+  - '**特殊场景：编码器-解码器模型**'
+  - '- `llama_model_has_encoder()` 检测 T5/BART 等模型'
+  - '- 编码器先执行 `llama_encode()`'
+  - '- 解码器从 `decoder_start_token_id` 开始生成'
+- codes:
+  - file: examples/simple/simple.cpp
+    line: 60-130
+    method_or_func: main()
+  name: 贪心采样与采样器链 —— 决定下一个 Token 的「指挥官」
+  'no': 3
+  points:
+  - '**采样器链的组装**'
+  - '- `llama_sampler_chain_init()` 创建采样器链'
+  - '- `llama_sampler_chain_add()` 按顺序添加采样器'
+  - '- simple 示例：仅使用 `llama_sampler_init_greedy()`（贪心采样）'
+  - '- simple-chat 示例：Min-P → Temperature → Distribution（概率采样链）'
+  - '**贪心采样的确定性**'
+  - '- 每次选择概率最高的 token'
+  - '- 适合调试和确定性输出场景'
+  - '- 无需温度/Top-P 等参数调节'
+  - '**采样器执行时机**'
+  - '- 每次 `llama_decode()` 后调用'
+  - '- `llama_sampler_sample(smpl, ctx, -1)` 从最后一个位置采样'
+  - '- 返回的 `llama_token` 是下一个要输入的 token'
+  - '**采样器与计算图的关系**'
+  - '- 采样器作用在模型输出的 logits 上'
+  - '- 可以在 CPU 或 GPU 上执行（取决于后端支持）'
+  - '- 采样结果通过新的 batch 反馈给模型（自回归生成）'
+- codes:
+  - file: examples/simple-chat/simple-chat.cpp
+    line: 15-157
+    method_or_func: main()
+  - file: examples/simple-chat/simple-chat.cpp
+    line: 9-13
+    method_or_func: print_usage()
+  name: simple-chat：聊天模板的魔法 —— 让模型「听懂人话」
+  'no': 4
+  points:
+  - '**聊天模板的作用**'
+  - '- 将用户消息包装成模型期望的格式（如 `<|user|>...<|assistant|>...`)'
+  - '- `llama_model_chat_template()` 获取模型自带的 Jinja 模板'
+  - '- 不同模型有不同的模板风格（ChatML、Alpaca、Llama3 等）'
+  - '**消息历史管理**'
+  - '- `std::vector<llama_chat_message>` 存储对话历史'
+  - '- 每轮对话添加 `{"user", ...}` 和 `{"assistant", ...}`'
+  - '- `llama_chat_apply_template()` 将消息列表渲染成提示字符串'
+  - '**增量渲染优化**'
+  - '- `prev_len` 记录已渲染长度'
+  - '- 只处理新增部分，避免重复编码历史对话'
+  - '- 第一次渲染后，后续渲染使用 `nullptr` 获取长度以预分配缓冲区'
+  - '**交互式输入循环**'
+  - '- `std::getline(std::cin, user)` 读取用户输入'
+  - '- 空输入退出循环'
+  - '- ANSI 颜色码区分用户提示（绿色）与模型回复（黄色）'
+  - '**上下文溢出检测**'
+  - '- `llama_memory_seq_pos_max()` 获取 KV 缓存中已用位置'
+  - '- 超过 `n_ctx` 时打印错误并退出'
+- codes:
+  - file: examples/eval-callback/eval-callback.cpp
+    line: 37-72
+    method_or_func: main()
+  - file: examples/eval-callback/eval-callback.cpp
+    line: 14-35
+    method_or_func: run()
+  - file: examples/eval-callback/eval-callback.cpp
+    line: 1-10
+    method_or_func: __main__
+  name: eval-callback：推理过程的「透视镜」
+  'no': 5
+  points:
+  - '**评估回调机制**'
+  - '- `params.cb_eval = common_debug_cb_eval<false>` 注册回调函数'
+  - '- 每个计算图节点执行时触发回调'
+  - '- 可用于打印中间张量、收集统计信息、注入自定义逻辑'
+  - '**回调数据传递**'
+  - '- `cb_eval_user_data` 指向用户自定义数据结构'
+  - '- `base_callback_data` 基类封装回调所需上下文'
+  - '- 支持在回调中访问模型参数、张量名称、计算结果'
+  - '**全局环境设置（__main__ 作用域）**'
+  - '- 头文件引入：`arg.h`/`common.h`/`debug.h`/`llama.h` 等基础设施'
+  - '- `std::setlocale(LC_NUMERIC, "C")` 确保数值解析的一致性'
+  - '**应用场景**'
+  - '- 调试：检查某一层是否产生 NaN'
+  - '- 可视化：记录注意力权重分布'
+  - '- 性能分析：统计各算子执行时间'
+  - '- 科研：提取中间层特征用于下游任务'
+  - '**与非回调模式的性能对比**'
+  - '- 回调会增加少量开销（函数调用 + 数据拷贝）'
+  - '- 生产环境可通过 `params.cb_eval = nullptr` 禁用'
+  - '- 示例中 `params.warmup = false` 跳过预热以快速进入回调观测'
+- codes:
+  - file: examples/idle/idle.cpp
+    line: 19-81
+    method_or_func: main()
+  - file: examples/idle/idle.cpp
+    line: 13-17
+    method_or_func: print_usage()
+  name: idle 示例：空闲性能的「压力测试」
+  'no': 6
+  points:
+  - '**GPU 空闲状态的影响**'
+  - '- GPU 从空闲到唤醒存在延迟（电源管理、时钟频率调整）'
+  - '- 长时间无任务后首次推理可能显著变慢'
+  - '- 持续高负载与间歇性推理的性能差异'
+  - '**测试设计**'
+  - '- 使用 `llama_vocab_bos()` 构造单 token prompt'
+  - '- `llama_memory_clear()` 清空 KV 缓存'
+  - '- `llama_synchronize()` 确保计算完成'
+  - '- 不同 `t_pause_ms`（0~4000ms）模拟不同空闲时长'
+  - '**性能统计**'
+  - '- `llama_time_us()` 微秒级时间戳'
+  - '- 计算平均值与标准差（`t_sum2_us` 用于方差）'
+  - '- 每组参数执行 3 次取平均，减少随机误差'
+  - '**实际应用价值**'
+  - '- 服务端部署时评估冷启动延迟'
+  - '- 边缘设备（手机/IoT）的功耗-性能权衡'
+  - '- 决定是否保持 GPU 常驻或按需唤醒'
+- codes:
+  - file: examples/debug/debug.cpp
+    line: 70-112
+    method_or_func: output_data.output_data()
+  - file: examples/debug/debug.cpp
+    line: 115-158
+    method_or_func: save_output_data()
+  - file: examples/debug/debug.cpp
+    line: 180-204
+    method_or_func: run()
+  - file: examples/debug/debug.cpp
+    line: 10-24
+    method_or_func: print_usage()
+  - file: examples/debug/debug.cpp
+    line: 26-34
+    method_or_func: has_pooling()
+  - file: examples/debug/debug.cpp
+    line: 161-177
+    method_or_func: print_tokenized_prompt()
+  - file: examples/debug/debug.cpp
+    line: 207-237
+    method_or_func: main()
+  name: debug 示例：模型输出的「显微镜」
+  'no': 7
+  points:
+  - '**核心功能：保存推理内部数据**'
+  - '- 支持保存 logits（未归一化概率分布）'
+  - '- 支持保存 embeddings（向量表示）'
+  - '- 同时输出二进制（`.bin`）与文本（`.txt`）格式'
+  - '**print_usage()：模板化帮助信息**'
+  - '- 使用原始字符串字面量定义多行用法说明'
+  - '- `std::regex_replace` 替换 `{prog}` 占位符为实际程序名'
+  - '- 展示打印张量、保存 logits、启用 embedding 等典型用法'
+  - '**has_pooling()：上下文能力检测**'
+  - '- 调用 `llama_pooling_type(ctx)` 查询池化类型'
+  - '- `LLAMA_POOLING_TYPE_NONE/UNSPECIFIED` 返回 false'
+  - '- 其他类型（MEAN/CLS/LAST 等）返回 true'
+  - '- 决定 embeddings 输出形状：[n_tokens, n_embd] vs [n_embd]'
+  - '**print_tokenized_prompt()：分词结果可视化**'
+  - '- 打印原始 prompt 文本'
+  - '- 打印 token ID 列表（从 `tokens` 向量）'
+  - '- 通过 `llama_token_to_piece()` 将每个 ID 转换回可读文本片段'
+  - '- 输出格式：`piece(id)` 序列，便于调试分词正确性'
+  - '**output_data 结构体**'
+  - '- 封装输出数据指针、大小、类型后缀'
+  - '- 自动检测模型是否启用 pooling（`has_pooling()`）'
+  - '- 支持 embedding 归一化（`common_embd_normalize()`）'
+  - '**logits 保存流程**'
+  - '- `llama_get_logits_ith(ctx, tokens.size() - 1)` 获取最后一个位置的 logits'
+  - '- 大小为 `llama_vocab_n_tokens()`（词表大小）'
+  - '- 用于分析模型对下一个 token 的预测分布'
+  - '**embeddings 保存流程**'
+  - '- 检测是否启用 pooling：`has_pooling()`'
+  - '- 启用：`llama_get_embeddings_seq(ctx, 0)`（序列级向量）'
+  - '- 未启用：`llama_get_embeddings()`（逐 token 向量矩阵）'
+  - '- 可选 L2 归一化（用于语义相似度计算）'
+  - '**token 信息保存**'
+  - '- 保存原始 prompt 文本'
+  - '- 保存 token ID 列表（文本与二进制两种格式）'
+  - '- 便于复现问题或离线分析'
+  - '**主流程协调（main + run）**'
+  - '- `main()` 负责参数解析、回调配置、上下文创建'
+  - '- `run()` 执行 tokenization → decoding → 打印 → 条件保存'
+  - '- 错误处理：tokenization 失败 / decode 失败 / 文件写入失败'
+- codes:
+  - file: examples/simple/simple.cpp
+    line: 130-150
+    method_or_func: main()
+  - file: examples/idle/idle.cpp
+    line: 70-81
+    method_or_func: main()
+  - file: examples/eval-callback/eval-callback.cpp
+    line: 60-72
+    method_or_func: main()
+  name: 性能统计与资源管理 —— 推理引擎的「体检报告」
+  'no': 8
+  points:
+  - '**性能统计接口**'
+  - '- `llama_perf_context_print(ctx)`：打印上下文性能统计'
+  - '  - Prompt 处理速度（tokens/sec）'
+  - '  - 生成速度（tokens/sec）'
+  - '  - 各阶段耗时（采样、矩阵乘等）'
+  - '- `llama_perf_sampler_print(smpl)`：采样器性能统计'
+  - '- 输出示例：`decoded 32 tokens in 1.23 s, speed: 26.02 t/s`'
+  - '**手动计时的必要性**'
+  - '- `ggml_time_us()` 获取微秒级时间戳'
+  - '- simple 示例手动计算总耗时与速度'
+  - '- 排除初始化与销毁开销'
+  - '**资源释放顺序**'
+  - '- 逆序释放：sampler → context → model → backend'
+  - '- `llama_sampler_free()` → `llama_free()` → `llama_model_free()` → `llama_backend_free()`'
+  - '- 错误顺序可能导致未定义行为'
+  - '**内存泄漏检测**'
+  - '- simple-chat 中消息历史使用 `strdup()` 分配内存'
+  - '- 退出前循环 `free()` 每条消息的 `content` 字段'
+  - '- RAII 与手动内存管理并存'

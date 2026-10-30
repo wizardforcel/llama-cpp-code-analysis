@@ -1,0 +1,61 @@
+classes: []
+desc: 该文件实现了OpenVINO推理后端中`set_rows`算子的翻译逻辑，用于将多维张量中指定行索引的数据行（如KV缓存中的缓存行）更新或覆盖到目标张量上，同时处理状态流（KV缓存）与普通张量两种场景的差异。
+file: ggml/src/ggml-openvino/openvino/op/set_rows.cpp
+funcs:
+- code:
+  - OutputVector translate_set_rows(const NodeContext & context) {
+  - '    num_inputs_check(context, 3, 3);'
+  - ''
+  - '    auto data = context.get_input(0);'
+  - '    auto indices = context.get_input(1);'
+  - '    auto dst = context.get_input(2);'
+  - ''
+  - '    data = std::make_shared<ov::op::v0::Convert>(data, context.get_output_type());'
+  - ''
+  - '    auto dst_shape = context.get_output_shape().to_shape();'
+  - ''
+  - '    auto ind_squeezed ='
+  - '        std::make_shared<ov::op::v0::Squeeze>(indices, ov::op::v0::Constant::create(ov::element::i64,
+    {3}, {0, 1, 2}));'
+  - '    auto data_reshaped = std::make_shared<ov::op::v1::Reshape>('
+  - '        data,'
+  - '        ov::op::v0::Constant::create(ov::element::i64, {4},'
+  - '                                     {(int64_t) 1, (int64_t) 1, (int64_t) -1,
+    (int64_t) dst_shape[3]}),'
+  - '        false);'
+  - '    auto axes = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {2});'
+  - ''
+  - '    Output<Node> res;'
+  - '    if (context.is_stateful()) {'
+  - '        int concat_axis = 1;'
+  - '        int64_t dim2 = dst.get_partial_shape()[2].get_length();'
+  - '        int64_t dim3 = dst.get_partial_shape()[3].get_length();'
+  - '        data = std::make_shared<ov::op::v1::Reshape>('
+  - '            data, ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t)
+    1, (int64_t) -1, dim2, dim3}), false);'
+  - '        res = std::make_shared<ov::op::v0::Concat>(OutputVector{dst, data}, concat_axis);'
+  - '    } else {'
+  - '        res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed,
+    data_reshaped, axes);'
+  - '    }'
+  - ''
+  - '    if (auto dst_reshape = std::dynamic_pointer_cast<ov::op::v1::Reshape>(dst.get_node_shared_ptr()))
+    {'
+  - '        // Fix the case of multiple sequences, reshape back to original shape
+    [1, n_seq, ctx_per_seq, emb]'
+  - '        // ctx_per_seq is not fixed due to llama-bench compatibility'
+  - '        auto dst_shape_partial = dst_reshape->get_input_partial_shape(0);'
+  - '        std::vector<int64_t> dst_shape = {dst_shape_partial[0].get_length(),
+    dst_shape_partial[1].get_length(),'
+  - '                                          dst_shape_partial[2].is_static() ?
+    dst_shape_partial[2].get_length() : -1,'
+  - '                                          dst_shape_partial[3].get_length()};'
+  - '        res = std::make_shared<ov::op::v1::Reshape>(res, ov::op::v0::Constant::create(ov::element::i64,
+    {4}, dst_shape),'
+  - '                                                    false);'
+  - '    }'
+  - '    return rename_outputs_with_suffix({res}, context.get_name());'
+  - '}'
+  desc: OpenVINO算子翻译函数，将GGML的set_rows操作转换为OpenVINO内部图，通过ScatterUpdate（非状态流）或Concat（状态流）实现行更新，并处理形状兼容性。
+  line: 33-83
+  name: translate_set_rows

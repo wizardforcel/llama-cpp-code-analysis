@@ -1,0 +1,639 @@
+code_map:
+- common/chat.h
+- ├── 核心数据结构
+- '│   ├── struct common_chat_tool_call           # 工具调用：name + arguments + id（L17-23）'
+- '│   │   └── operator==()                       # 相等比较'
+- '│   ├── struct common_chat_msg_content_part    # 内容片段：type + text（L31-37）'
+- │   │   └── operator==()
+- '│   ├── struct common_chat_template            # Jinja 模板封装（L44-64）'
+- '│   │   ├── common_chat_template()             # 构造：词法分析+语法解析+caps提取'
+- │   │   ├── source() / bos_token() / eos_token()
+- '│   │   └── original_caps()                    # 原始能力集'
+- '│   ├── struct common_chat_msg                 # 聊天消息主体（L66-107）'
+- '│   │   ├── to_json_oaicompat()                # OpenAI JSON 序列化（声明 L78）'
+- '│   │   ├── empty()                            # 空消息检测（L80-83）'
+- '│   │   ├── set_tool_call_ids()                # 工具调用 ID 设置（L85-98）'
+- '│   │   └── operator==/!=()                    # 比较运算符（L100-106）'
+- '│   ├── struct common_chat_msg_diff             # 增量差异（L109-121）'
+- '│   │   ├── compute_diffs()                    # 差异计算入口（L115-116）'
+- '│   │   └── operator==()                       # 相等比较（L118-121）'
+- '│   ├── struct common_chat_templates            # 模板集合（默认+tool_use变体）'
+- '│   ├── struct common_chat_templates_deleter    # 自定义删除器（L178）'
+- '│   │   └── operator()                         # 调用 common_chat_templates_free'
+- '│   ├── struct common_chat_templates_inputs     # 模板应用输入'
+- '│   ├── struct common_chat_params               # 模板应用输出（含 parser、generation_prompt）'
+- '│   └── struct common_chat_parser_params        # 解析参数（L226-230）'
+- '│       ├── common_chat_parser_params()          # 默认构造'
+- '│       └── common_chat_parser_params(const common_chat_params &)  # 从 chat_params
+  派生'
+- ├── OpenAI 兼容接口
+- '│   ├── common_chat_msgs_parse_oaicompat()      # JSON → 消息数组'
+- '│   ├── common_chat_msgs_to_json_oaicompat()    # 消息数组 → JSON'
+- '│   ├── common_chat_tools_parse_oaicompat()     # 工具解析'
+- '│   ├── common_chat_tools_to_json_oaicompat()   # 工具序列化'
+- │   ├── common_chat_tool_choice_parse_oaicompat()
+- │   └── common_chat_msg_diff_to_json_oaicompat()
+- ├── 模板管理接口
+- '│   ├── common_chat_templates_init()            # 模板初始化'
+- '│   ├── common_chat_templates_apply()           # 模板应用入口'
+- '│   ├── common_chat_templates_free()            # 资源释放'
+- '│   ├── common_chat_templates_was_explicit()    # 显式标记查询'
+- '│   ├── common_chat_templates_source()          # 模板源码获取'
+- '│   ├── common_chat_templates_get_caps()        # 能力查询'
+- '│   ├── common_chat_verify_template()           # 模板验证'
+- '│   ├── common_chat_format_single()             # 单条消息格式化'
+- '│   ├── common_chat_format_example()            # 格式化示例生成'
+- '│   ├── common_chat_format_name()               # 格式名称转换'
+- '│   ├── common_reasoning_format_name()          # 推理格式名称'
+- '│   ├── common_reasoning_format_from_name()     # 名称转推理格式'
+- │   ├── common_chat_templates_support_enable_thinking()
+- '│   ├── common_chat_template_direct_apply()     # 直接模板渲染'
+- '│   └── common_chat_try_specialized_template()  # 专用模板分发'
+- └── 解析接口
+- '    ├── common_chat_parse()                     # 解析入口'
+- '    └── common_chat_peg_parse()                 # PEG 解析执行'
+- ''
+- common/chat.cpp
+- ├── 基础工具层（1-700行）
+- '│   ├── format_time()                           # 时间格式化'
+- '│   ├── safe_args_parse()                       # 安全 JSON 解析'
+- '│   ├── string_diff()                           # 前缀增量计算（45-57）'
+- '│   ├── has_content_or_tool_calls()             # 内容或工具调用检测'
+- '│   ├── common_chat_tool_choice_parse_oaicompat() # 工具选择解析'
+- '│   ├── common_chat_templates_support_enable_thinking() # 思维支持检测'
+- '│   ├── common_chat_msgs_parse_oaicompat()      # OpenAI JSON 解析（226-317）'
+- '│   ├── render_message_to_json()                # 消息渲染为 JSON'
+- '│   ├── common_chat_msgs_to_json_oaicompat()    # 消息数组序列化'
+- │   ├── common_chat_tools_parse/to_json_oaicompat()
+- │   ├── common_chat_msg_diff_to_json_oaicompat()
+- '│   ├── common_chat_verify_template()           # 模板验证（437-465）'
+- '│   ├── common_chat_format_single()             # 单条消息格式化（467-494）'
+- '│   ├── common_chat_templates_free()            # 资源释放'
+- '│   ├── common_chat_templates_was_explicit()    # 显式标记查询'
+- '│   ├── common_chat_templates_source()          # 模板源码获取'
+- '│   ├── common_chat_templates_init()            # 模板工厂（544-630）'
+- '│   ├── common_chat_format_name()               # 格式名称转换'
+- '│   ├── common_reasoning_format_name()          # 推理格式名称'
+- '│   ├── common_reasoning_format_from_name()     # 名称转推理格式'
+- '│   ├── foreach_function()                      # 工具函数遍历'
+- '│   ├── foreach_parameter()                     # 参数遍历'
+- '│   ├── common_chat_template_direct_apply_impl() # Jinja 直接渲染（702-754）'
+- '│   └── common_chat_template_direct_apply()     # 简化渲染入口'
+- ├── 专用模板初始化函数族（762-1511+行）
+- '│   ├── common_chat_params_init_ministral_3()    # Ministral-3（762-789）'
+- '│   ├── common_chat_params_init_gpt_oss()        # GPT-OSS（约851-1000）'
+- '│   ├── common_chat_params_init_gemma4()         # Gemma 4（约1001-1135）'
+- '│   ├── common_chat_params_init_functionary_v3_2() # Functionary（约1136-1240）'
+- '│   ├── common_chat_params_init_kimi_k2()        # Kimi K2（约1241-1360）'
+- '│   ├── common_chat_params_init_lfm2()           # LFM2（约1361-1435）'
+- '│   ├── common_chat_params_init_lfm2_5()         # LFM2.5（约1436-1510）'
+- '│   └── common_chat_params_init_gigachat_v3()    # GigaChat v3（约1511+）'
+- '├── __main__                                    # 全局代码与 thinking 块构造逻辑（851-约950）'
+- ├── 模板变通层（1791-2027行）
+- '│   ├── workaround::map_developer_role_to_system()   # developer→system（1791-1799）'
+- '│   ├── workaround::system_message_not_supported()   # 系统消息合并（1806-1819）'
+- '│   ├── workaround::requires_non_null_content()      # 强制非空 content（1822-1829）'
+- '│   ├── workaround::func_args_not_string()           # 参数反序列化（1996-2015）'
+- '│   ├── gemma4_model_turn_builder                    # Gemma4 回合构建器（1870-1970）'
+- '│   │   ├── gemma4_model_turn_builder()              # 构造函数'
+- '│   │   ├── collect()                                # 收集助手消息+工具调用'
+- '│   │   ├── collect_result()                         # 工具响应解析与配对'
+- '│   │   ├── build()                                  # 组装最终消息'
+- '│   │   ├── has_content()                            # 内容检测'
+- '│   │   └── has_tool_calls()                         # 工具调用检测'
+- '│   └── common_chat_extra_context()                  # 额外上下文（2018-2027）'
+- └── 模板应用与解析（2030-2303行）
+- '    ├── common_chat_try_specialized_template()  # 特征检测分发（2030-2082）'
+- '    ├── common_chat_templates_apply_jinja()     # Jinja 路径（2085-2168）'
+- '    ├── common_chat_templates_apply_legacy()    # Legacy 路径（2171-2224）'
+- '    ├── common_chat_templates_apply()           # 顶层入口（2226-2231）'
+- '    ├── common_chat_parse()                     # 解析入口（2233-2238）'
+- '    ├── common_chat_peg_parse()                 # PEG 解析执行（2240-2297）'
+- '    └── common_chat_templates_get_caps()        # 能力查询（2299-2303）'
+exercises:
+- contents:
+  - 阅读 `common/chat.cpp` 第 55-118 行的 `common_chat_msg::to_json_oaicompat()` 方法，回答：
+  - 1. 当 `content` 和 `content_parts` 同时存在时，代码如何处理？这体现了什么设计约束？
+  - 2. `concat_typed_text` 参数为 true 时，`media_marker` 前后为什么不加 `\n`？这种设计对多模态消息有何意义？
+  - 3. `tool_calls` 中的 `arguments` 字段为什么以字符串而非 JSON 对象存储？这种设计在解析时带来了什么挑战？
+  'no': 1
+  title: 阅读 common_chat_msg 的 OpenAI 兼容序列化
+- contents:
+  - 阅读 `common/chat.cpp` 第 45-57 行的 `string_diff` 函数和第 120-181 行的 `compute_diffs`
+    方法，回答：
+  - 1. `string_diff` 在什么情况下返回空字符串？什么情况下抛出异常？
+  - 2. `compute_diffs` 为什么用 `reserve()` 预分配 `tool_calls.size() - prv.tool_calls.size()
+    + 3` 容量？
+  - 3. 流式推理中，如果新消息的工具调用数量比旧消息少（`<`），代码如何处理？这对应什么非法场景？
+  'no': 2
+  title: 分析流式差异计算 string_diff
+- contents:
+  - 阅读 `common/chat.cpp` 第 544-630 行的 `common_chat_templates_init()` 函数，回答：
+  - 1. 模板来源的优先级顺序是什么？（chat_template_override → 模型元数据 → CHATML_TEMPLATE_SRC）
+  - 2. `has_explicit_template` 标记在什么情况下为 true？这个标记对后续处理有何影响？
+  - 3. 代码中 `GGML_ASSERT(model != nullptr)` 出现在什么条件下？这表明了什么设计假设？
+  'no': 3
+  title: 追踪模板初始化的回退链
+- contents:
+  - 阅读 `common/chat.cpp` 中以下函数的实现（约 762-1511 行），完成对比表格：
+  - '- `common_chat_params_init_ministral_3()`（762-789）'
+  - '- `common_chat_params_init_gpt_oss()`（约 851-1000）'
+  - '- `common_chat_params_init_gemma4()`（约 1001-1135）'
+  - '- `common_chat_params_init_kimi_k2()`（约 1241-1360）'
+  - 对比维度：
+  - 1. 思维内容（reasoning/thinking）的处理方式有何不同？
+  - 2. `preserved_tokens` 列表中分别包含哪些特殊标记？这些标记的作用是什么？
+  - 3. 工具调用的 PEG 解析规则在四个模型中有何结构差异？
+  'no': 4
+  title: 对比七大专用模板适配器的处理策略
+- contents:
+  - 阅读 `common/chat.cpp` 第 1870-1970 行的 `gemma4_model_turn_builder` 类，回答：
+  - 1. `collect()` 方法如何将 assistant(tool_calls) → tool → assistant(content) 的消息序列折叠为单条消息？
+  - 2. `collect_result()` 在配对工具调用与响应时，优先使用什么字段？fallback 到什么字段？
+  - 3. `build()` 方法返回的消息对象包含哪些字段？什么时候会包含 `tool_responses` 字段？
+  - 4. `convert_tool_responses_gemma4()`（1973-1993）作为驱动函数，如何遍历并转换所有符合条件的的消息？
+  'no': 5
+  title: 理解 Gemma 4 模型回合的构建过程
+- contents:
+  - 阅读 `common/chat.cpp` 第 21-61 行的基础工具函数，回答：
+  - 1. `format_time()` 函数如何将 `std::chrono::system_clock::time_point` 转换为本地时间字符串？
+  - 2. `safe_args_parse()` 在处理带引号的字符串时做了什么特殊处理？为什么要这样做？
+  - 3. `has_content_or_tool_calls()` 的判断逻辑是什么？这个函数在哪些场景下会被使用？
+  'no': 6
+  title: 探索基础工具函数的设计
+- contents:
+  - 阅读 `common/chat.cpp` 第 672-700 行的 `foreach_function()` 和 `foreach_parameter()`
+    函数，回答：
+  - 1. `foreach_function()` 如何过滤有效的工具定义？哪些字段是必需的？
+  - 2. `foreach_parameter()` 如何检测参数的必需性？`required` 集合是如何构建的？
+  - 3. 这两个函数在 PEG 解析器构建中扮演什么角色？它们如何支持工具调用的自动解析？
+  'no': 7
+  title: 分析工具和参数遍历机制
+learning_targets:
+- 理解聊天消息（common_chat_msg）的核心字段设计：role、content、content_parts、reasoning_content、tool_calls
+  的职责划分与互斥规则
+- 掌握 OpenAI 兼容 JSON 格式的双向转换机制：消息解析（common_chat_msgs_parse_oaicompat）与序列化（to_json_oaicompat）
+- 理解流式场景下的增量差异计算：string_diff 前缀提取逻辑与 compute_diffs 的完整流程
+- 掌握 common_chat_template 的构造与能力检测：词法分析、语法解析、bos/eos_token 存取与 original_caps 查询
+- 理解 Jinja 模板直接渲染机制：common_chat_template_direct_apply_impl 的上下文构造、override 参数注入
+- 掌握七大模型专用模板适配策略：Ministral-3 的思维块封装、GPT-OSS 的通道标记、Gemma 4 的回合构建器等
+- 理解模板变通（workaround）机制：map_developer_role_to_system、system_message_not_supported、requires_non_null_content、func_args_not_string
+  四大适配器的触发条件
+- 掌握 PEG 解析器的分层设计：build_chat_peg_parser 的组合子构建、通用与 Gemma4 特化 mapper 的差异、partial parse
+  的流式恢复
+- 理解 common_chat_parser_params 的双构造函数职责：默认构造与从 common_chat_params 派生 format/generation_prompt
+- 掌握消息验证与格式化接口：common_chat_verify_template、common_chat_format_single、common_chat_format_example、common_chat_template_direct_apply
+  等
+- 理解 common_chat_templates_deleter 的 RAII 资源管理设计及其与 common_chat_templates_free 的协作
+- 理解 __main__ 全局代码中关于 thinking 内容块的构造逻辑与消息转换责任
+life_analogy:
+- 想象 llama.cpp 的聊天系统是一家**国际快递公司**：
+- '- **common_chat_msg** = 标准化的快递面单：包含收件人（role）、物品清单（content）、分包明细（content_parts）、特殊备注（reasoning_content）、附加服务单（tool_calls）'
+- '- **to_json_oaicompat** = 面单打印机：把内部数据结构「翻译」成 OpenAI 标准格式的物流标签'
+- '- **string_diff** = 快递追踪系统的增量上报：只发送「新增了什么」而非全量重新投递'
+- '- **七大专用模板** = 七个不同国家的海关申报系统：每个国家（Ministral/GPT-OSS/Gemma4等）有自己的申报规则，需要专门的「翻译官」进行格式转换'
+- '- **workaround 适配器** = 清关时的特殊处理通道：如果模板不支持 system 角色，就把系统消息「贴」到下一条消息上；如果参数是字符串，就先解析成
+  JSON'
+- '- **gemma4_model_turn_builder** = 快递分拣机器人：把「助手下单→工具响应→助手确认」三段流程合并成一个完整的包裹'
+- '- **__main__ 中的 thinking 块构造** = 特殊的「海关申报单填制说明」：指导如何把 reasoning_content 打包成 {type:
+  thinking} 的标准格式'
+- '- **common_chat_parser_params** = 分拣机器人的「工作手册」：记录输出格式规范（format）和生成起始标记（generation_prompt），指导
+  PEG 解析器如何拆解模型输出'
+- '- **foreach_function/foreach_parameter** = 快递单审核员：逐个检查每个工具调用的参数是否完整、必需字段是否齐全'
+- 正如国际快递需要处理不同国家的海关规则，llama.cpp 的聊天系统也需要为每个模型「翻译」其特有的消息格式，确保无论是 Jinja 模板渲染还是 PEG 解析输出，最终都能准确提取
+  'assistant在想什么' 和 '要调用什么工具'。
+'no': 45
+summary:
+- concept: common_chat_msg
+  desc: 聊天消息标准载体，支持纯文本、分段内容、工具调用和推理内容四种信息形态
+- concept: to_json_oaicompat
+  desc: OpenAI 兼容序列化：处理 content 与 content_parts 互斥，media_marker 不加换行
+- concept: common_chat_msg::empty
+  desc: 空消息检测：content、content_parts、tool_calls、reasoning_content、tool_name、tool_call_id
+    全为空
+- concept: common_chat_msg::set_tool_call_ids
+  desc: 工具调用 ID 管理：复用缓存 ID 或调用生成器填充，确保跨消息 ID 一致
+- concept: string_diff
+  desc: 前缀增量计算，流式场景只返回新增部分，大幅节省带宽
+- concept: compute_diffs
+  desc: 消息差异计算：检测 content、reasoning_content、tool_calls 变化，工具调用减少时抛异常
+- concept: common_chat_template
+  desc: Jinja 模板封装：构造时执行词法分析与语法解析，缓存 caps 能力集与 bos/eos token
+- concept: common_chat_parser_params
+  desc: 解析参数载体：双构造函数支持默认初始化和从 common_chat_params 派生 format 与 generation_prompt
+- concept: common_chat_templates_deleter
+  desc: 自定义删除器：为 unique_ptr 提供 common_chat_templates_free 调用，实现 RAII 管理
+- concept: common_chat_templates_init
+  desc: 模板工厂：优先用覆盖参数，否则从模型提取，最后用 CHATML 默认模板
+- concept: common_chat_template_direct_apply_impl
+  desc: Jinja 直接渲染：构造上下文→注入变量→执行 runtime→收集字符串结果
+- concept: common_chat_params_init_ministral_3
+  desc: 'Ministral-3 适配：将 reasoning_content 转换为 {type: thinking} 内容块'
+- concept: common_chat_params_init_gpt_oss
+  desc: GPT-OSS 适配：处理 <|channel|> 等通道标记，工具调用时清除冗余 content
+- concept: gemma4_model_turn_builder
+  desc: Gemma4 回合构建器：将 (assistant→tool→assistant) 序列合并为单条消息
+- concept: common_chat_params_init_functionary_v3_2
+  desc: Functionary v3.2 适配：解析 >>>all 普通内容与 >>>${recipient} 工具调用
+- concept: common_chat_params_init_kimi_k2
+  desc: Kimi K2 适配：处理 <|tool_calls_section_begin|> 区段与 functions.<name>:<index> 调用
+    ID
+- concept: workaround 四大适配器
+  desc: 模板能力补偿：developer→system 映射、system 消息合并、强制非空 content、参数字符串转 JSON
+- concept: common_chat_try_specialized_template
+  desc: 专用模板分发：通过源码特征标记（如 [SYSTEM_PROMPT]、<|channel|>）识别七大模型
+- concept: common_chat_templates_apply_jinja
+  desc: Jinja 应用主路径：生成两份 prompt 并计算差值作为 generation_prompt
+- concept: common_chat_peg_parse
+  desc: PEG 解析执行：支持 partial parse、流式恢复、通用与 Gemma4 双 mapper AST 映射
+- concept: common_chat_params
+  desc: 聊天参数集合：包含 prompt、format、parser、generation_prompt、supports_thinking 等
+- concept: supports_thinking / enable_thinking
+  desc: 思维链能力标记：通过模板试渲染检测，控制 reasoning 内容提取
+- concept: format_time
+  desc: 时间格式化工具：将系统时间转换为指定格式的本地时间字符串
+- concept: safe_args_parse
+  desc: 安全参数解析：尝试 JSON 解析，失败时返回原始字符串
+- concept: has_content_or_tool_calls
+  desc: 消息有效性检测：判断是否包含内容或工具调用
+- concept: render_message_to_json
+  desc: 消息渲染辅助：根据模板能力将消息数组转换为 JSON 格式
+- concept: foreach_function / foreach_parameter
+  desc: 工具遍历器：逐个处理工具定义和参数，支持必需参数检测
+- concept: common_chat_verify_template
+  desc: 模板验证：通过试渲染检测模板是否能成功应用
+- concept: common_chat_format_single
+  desc: 单条消息格式化：通过差值提取计算新消息的增量文本
+- concept: common_chat_format_example
+  desc: 格式化示例生成：基于模板生成格式化示例用于调试与展示
+- concept: common_chat_template_direct_apply
+  desc: 直接模板应用：使用默认参数渲染聊天模板的简化接口
+- concept: common_chat_templates_free / was_explicit / source
+  desc: 模板资源管理与元信息查询接口
+- concept: common_chat_format_name / reasoning_format 转换
+  desc: 格式枚举与字符串的双向转换工具
+- concept: has_content / has_tool_calls
+  desc: Gemma4 构建器辅助：静态方法检测消息内容和工具调用
+- concept: __main__ thinking 块构造
+  desc: '将 reasoning_content 转换为 {type: thinking} 块并合并 content 数组的全局逻辑'
+units:
+- codes:
+  - file: common/chat.h
+    line: 17-37
+    method_or_func: common_chat_tool_call、common_chat_msg、common_chat_msg_diff、common_chat_msg_content_part
+  - file: common/chat.h
+    line: 21-23
+    method_or_func: common_chat_tool_call::operator==()
+  - file: common/chat.h
+    line: 80-106
+    method_or_func: common_chat_msg::empty()、common_chat_msg::set_tool_call_ids()、common_chat_msg::operator==/!=
+  - file: common/chat.h
+    line: 78-78
+    method_or_func: common_chat_msg::to_json_oaicompat()
+  - file: common/chat.h
+    line: 115-121
+    method_or_func: common_chat_msg_diff::compute_diffs()、common_chat_msg_diff::operator==
+  - file: common/chat.h
+    line: 219-219
+    method_or_func: common_chat_msgs_parse_oaicompat()
+  - file: common/chat.h
+    line: 222-222
+    method_or_func: common_chat_msgs_to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 55-118
+    method_or_func: common_chat_msg::to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 226-317
+    method_or_func: common_chat_msgs_parse_oaicompat()
+  - file: common/chat.cpp
+    line: 120-181
+    method_or_func: common_chat_msg_diff::compute_diffs()
+  - file: common/chat.cpp
+    line: 45-57
+    method_or_func: string_diff()
+  - file: common/chat.cpp
+    line: 59-61
+    method_or_func: has_content_or_tool_calls()
+  name: 聊天消息数据结构 —— 对话信息的「标准化集装箱」
+  'no': 1
+  points:
+  - '**从零散字段到结构化对象**'
+  - '- `role`、`content`、`content_parts`、`reasoning_content`、`tool_calls` 等字段如何组织一条完整消息'
+  - '- 为什么需要同时支持纯文本 `content` 和分段 `content_parts` 两种形式'
+  - '- `common_chat_msg::empty()` 方法如何判断消息是否为空：所有字段都为空的联合检测'
+  - '- `common_chat_msg::set_tool_call_ids()` 如何通过 ID 缓存与生成器函数复用或创建工具调用 ID'
+  - '- `common_chat_tool_call` 与 `common_chat_msg_content_part` 的 `operator==` 比较语义'
+  - '**OpenAI 兼容的双向转换**'
+  - '- `common_chat_msg::to_json_oaicompat` 如何处理「字符串内容」与「分段内容」的互斥校验'
+  - '- 分段内容拼接时的换行逻辑：为什么 `media_marker` 前后不加换行'
+  - '- `common_chat_msgs_parse_oaicompat` 如何将 OpenAI JSON 数组解析为内部 `common_chat_msg`
+    列表'
+  - '**工具调用的 JSON 序列化**'
+  - '- `tool_calls` 数组如何映射为 OpenAI 的 `function` 调用格式'
+  - '- `arguments` 字段为什么以 JSON 字符串而非对象形式存储'
+  - '**流式差异的核心价值**'
+  - '- 为什么需要 `string_diff` 计算前缀增量而非全量对比'
+  - '- 工具调用差异如何通过 `tool_call_index` 定位到具体调用'
+  - '- `common_chat_msg_diff::compute_diffs` 如何处理「工具调用减少」的非法状态并抛出异常'
+  - '- `common_chat_msg_diff::operator==` 如何利用差异比较验证两条 diff 序列的等价性'
+- codes:
+  - file: common/chat.h
+    line: 44-64
+    method_or_func: common_chat_template::common_chat_template()、common_chat_template::source()、common_chat_template::bos_token()、common_chat_template::eos_token()、common_chat_template::original_caps()
+  - file: common/chat.h
+    line: 178-178
+    method_or_func: common_chat_templates_deleter::operator()
+  - file: common/chat.h
+    line: 183-186
+    method_or_func: common_chat_templates_init()
+  - file: common/chat.h
+    line: 168-168
+    method_or_func: common_chat_verify_template()
+  - file: common/chat.h
+    line: 195-199
+    method_or_func: common_chat_format_single()
+  - file: common/chat.h
+    line: 202-204
+    method_or_func: common_chat_format_example()
+  - file: common/chat.h
+    line: 214-214
+    method_or_func: common_chat_tool_choice_parse_oaicompat()
+  - file: common/chat.h
+    line: 232-234
+    method_or_func: common_chat_template_direct_apply()
+  - file: common/chat.h
+    line: 170-189
+    method_or_func: common_chat_templates_free、common_chat_templates_was_explicit、common_chat_templates_source
+  - file: common/chat.h
+    line: 224-225
+    method_or_func: common_chat_tools_parse_oaicompat()、common_chat_tools_to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 21-29
+    method_or_func: format_time()
+  - file: common/chat.cpp
+    line: 31-43
+    method_or_func: safe_args_parse()
+  - file: common/chat.cpp
+    line: 319-347
+    method_or_func: render_message_to_json()
+  - file: common/chat.cpp
+    line: 544-630
+    method_or_func: common_chat_templates_init()
+  - file: common/chat.cpp
+    line: 349-354
+    method_or_func: common_chat_msgs_to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 356-387
+    method_or_func: common_chat_tools_parse_oaicompat()
+  - file: common/chat.cpp
+    line: 389-407
+    method_or_func: common_chat_tools_to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 197-207
+    method_or_func: common_chat_tool_choice_parse_oaicompat()
+  - file: common/chat.cpp
+    line: 409-435
+    method_or_func: common_chat_msg_diff_to_json_oaicompat()
+  - file: common/chat.cpp
+    line: 672-700
+    method_or_func: foreach_function()、foreach_parameter()
+  - file: common/chat.cpp
+    line: 702-754
+    method_or_func: common_chat_template_direct_apply_impl()
+  - file: common/chat.cpp
+    line: 756-760
+    method_or_func: common_chat_template_direct_apply()
+  - file: common/chat.cpp
+    line: 437-494
+    method_or_func: common_chat_verify_template()、common_chat_format_single()
+  - file: common/chat.cpp
+    line: 522-524
+    method_or_func: common_chat_templates_free()
+  - file: common/chat.cpp
+    line: 526-528
+    method_or_func: common_chat_templates_was_explicit()
+  - file: common/chat.cpp
+    line: 530-542
+    method_or_func: common_chat_templates_source()
+  name: 模板封装与 OpenAI 兼容转换 —— 多格式消息的「翻译与装配车间」
+  'no': 2
+  points:
+  - '**基础工具函数的支撑作用**'
+  - '- `format_time()` 如何为模板提供当前时间上下文'
+  - '- `safe_args_parse()` 如何在 JSON 解析失败时优雅降级'
+  - '- `render_message_to_json()` 如何根据模板能力调整消息格式'
+  - '**Jinja 模板封装：common_chat_template**'
+  - '- `common_chat_template()` 构造函数如何执行词法分析、语法解析并提取能力集（caps）'
+  - '- `source()`、`bos_token()`、`eos_token()` 访问器的职责'
+  - '- `original_caps()` 如何返回模板的原始能力集合'
+  - '- `common_chat_templates_deleter` 如何通过自定义删除器实现 RAII 资源管理'
+  - '**模板对象的创建工厂**'
+  - '- `common_chat_templates_init` 如何从模型元数据或覆盖参数中提取模板源码'
+  - '- 默认模板回退机制：当模型未提供模板时如何使用内置 `CHATML_TEMPLATE_SRC`'
+  - '- BOS/EOS token 的覆盖逻辑与显式模板标记'
+  - '**OpenAI JSON 格式的双向解析与生成**'
+  - '- `common_chat_tools_parse_oaicompat` 和 `common_chat_tools_to_json_oaicompat`
+    的工具定义双向转换'
+  - '- `foreach_function` 与 `foreach_parameter` 如何遍历工具定义并校验必需参数'
+  - '- 工具选择枚举的转换：`auto`/`none`/`required` 的映射与非法值处理'
+  - '**Jinja 执行环境的直接渲染**'
+  - '- `common_chat_template_direct_apply_impl` 如何构造 Jinja context 并注入消息、工具、额外上下文'
+  - '- `messages_override` 和 `tools_override` 参数如何支持模板调试场景'
+  - '- `common_chat_template_direct_apply` 作为简化入口的封装逻辑'
+  - '**模板验证与单条消息格式化**'
+  - '- `common_chat_verify_template` 如何通过试渲染验证模板合法性'
+  - '- `common_chat_format_single` 如何通过「全量渲染-历史渲染」的差值提取新增内容'
+  - '- `common_chat_format_example` 如何辅助生成格式化示例'
+  - '**资源管理与查询接口**'
+  - '- `common_chat_templates_free` 的资源释放职责'
+  - '- `common_chat_templates_was_explicit` 的显式标记查询'
+  - '- `common_chat_templates_source` 的模板源码获取（支持变体）'
+- codes:
+  - file: common/chat.cpp
+    line: 851-约 950
+    method_or_func: __main__
+  - file: common/chat.cpp
+    line: 762-789
+    method_or_func: common_chat_params_init_ministral_3()
+  - file: common/chat.cpp
+    line: 约 851-1000
+    method_or_func: common_chat_params_init_gpt_oss()
+  - file: common/chat.cpp
+    line: 1870-1970
+    method_or_func: gemma4_model_turn_builder
+  - file: common/chat.cpp
+    line: 1870-1879
+    method_or_func: gemma4_model_turn_builder::gemma4_model_turn_builder()
+  - file: common/chat.cpp
+    line: 1881-1902
+    method_or_func: gemma4_model_turn_builder::collect()
+  - file: common/chat.cpp
+    line: 1904-1933
+    method_or_func: gemma4_model_turn_builder::collect_result()
+  - file: common/chat.cpp
+    line: 1935-1951
+    method_or_func: gemma4_model_turn_builder::build()
+  - file: common/chat.cpp
+    line: 1953-1970
+    method_or_func: gemma4_model_turn_builder::has_content()、gemma4_model_turn_builder::has_tool_calls()
+  - file: common/chat.cpp
+    line: 约 1001-1135
+    method_or_func: common_chat_params_init_gemma4()
+  - file: common/chat.cpp
+    line: 约 1136-1240
+    method_or_func: common_chat_params_init_functionary_v3_2()
+  - file: common/chat.cpp
+    line: 约 1241-1360
+    method_or_func: common_chat_params_init_kimi_k2()
+  - file: common/chat.cpp
+    line: 约 1361-1435
+    method_or_func: common_chat_params_init_lfm2()
+  - file: common/chat.cpp
+    line: 约 1436-1510
+    method_or_func: common_chat_params_init_lfm2_5()
+  - file: common/chat.cpp
+    line: 约 1511-片段末尾
+    method_or_func: common_chat_params_init_gigachat_v3()
+  name: 专用聊天模板适配 —— 七大主流模型的「方言翻译官」
+  'no': 3
+  points:
+  - '**__main__ 全局代码：thinking 块的构造逻辑**'
+  - '- 如何将 `reasoning_content` 转换为 `{type: thinking, thinking: ...}` 的标准内容块'
+  - '- 如何处理 `content` 字段为字符串或数组的两种情况，将其合并到统一的内容数组中'
+  - '- 为什么需要 `adjusted.erase("reasoning_content")` 来清理原始字段'
+  - '**Ministral-3：思考内容的类型化封装**'
+  - '- 为什么将 `reasoning_content` 转换为 `{type: thinking, thinking: ...}` 的内容块'
+  - '- 内容与推理分离后如何重新组装进消息数组'
+  - '**GPT-OSS：通道标记与内容清除策略**'
+  - '- `<|channel|>` 等保留 token 的作用：标记思维、约束、消息的边界'
+  - '- 当存在工具调用时为什么需要清除 `content` 字段以避免重复输出'
+  - '**Gemma 4：模型回合的重构艺术**'
+  - '- `gemma4_model_turn_builder` 如何将 (assistant -> tool -> assistant) 序列合并为单条消息'
+  - '- `collect()` 方法的完整流程：从初始 assistant 消息到后续 tool 和 assistant 消息'
+  - '- `collect_result()` 的配对策略：按索引顺序匹配，fallback 到 `tool_call_id`'
+  - '- `build()` 方法如何组装最终的消息对象，何时包含 `tool_responses` 字段'
+  - '- 辅助方法 `has_content()` 和 `has_tool_calls()` 的静态检测逻辑'
+  - '**Functionary v3.2：`>>>` 前缀的解析协议**'
+  - '- `>>>all` 与 `>>>${recipient}` 如何区分普通内容与工具调用'
+  - '**Kimi K2：分段包裹的思维与工具**'
+  - '- `<think>`、`<tool_call>` 等标记的层次结构'
+  - '- `<|tool_calls_section_begin|>` 区段的开始与结束标记'
+  - '**LFM2 与 LFM2.5：简化与增强**'
+  - '- LFM2 的 `<|tool_call_start|>` 包裹机制'
+  - '- LFM2.5 相比 LFM2 的简化：可选起始标记与裸 Python 风格调用'
+  - '**GigaChat v3：自定义分隔符的极简设计**'
+  - '- `<|role_sep|>` 与 `<|message_sep|>` 构成的扁平化消息协议'
+- codes:
+  - file: common/chat.h
+    line: 207-207
+    method_or_func: common_chat_parse
+  - file: common/chat.h
+    line: 208-208
+    method_or_func: common_chat_peg_parse
+  - file: common/chat.h
+    line: 230-230
+    method_or_func: common_chat_templates_get_caps()
+  - file: common/chat.h
+    line: 216-216
+    method_or_func: common_chat_templates_support_enable_thinking()
+  - file: common/chat.h
+    line: 226-230
+    method_or_func: common_chat_parser_params::common_chat_parser_params()（两个构造函数）
+  - file: common/chat.h
+    line: 206-206
+    method_or_func: common_chat_format_name()
+  - file: common/chat.h
+    line: 211-212
+    method_or_func: common_reasoning_format_name()、common_reasoning_format_from_name()
+  - file: common/chat.h
+    line: 191-192
+    method_or_func: common_chat_templates_apply()
+  - file: common/chat.h
+    line: 227-227
+    method_or_func: common_chat_msg_diff_to_json_oaicompat()
+  - file: common/chat.h
+    line: 236-239
+    method_or_func: common_chat_try_specialized_template()
+  - file: common/chat.cpp
+    line: 632-643
+    method_or_func: common_chat_format_name()
+  - file: common/chat.cpp
+    line: 645-656
+    method_or_func: common_reasoning_format_name()
+  - file: common/chat.cpp
+    line: 658-670
+    method_or_func: common_reasoning_format_from_name()
+  - file: common/chat.cpp
+    line: 209-224
+    method_or_func: common_chat_templates_support_enable_thinking()
+  - file: common/chat.cpp
+    line: 2299-2303
+    method_or_func: common_chat_templates_get_caps()
+  - file: common/chat.cpp
+    line: 2085-2168
+    method_or_func: common_chat_templates_apply_jinja()
+  - file: common/chat.cpp
+    line: 1791-1799
+    method_or_func: map_developer_role_to_system()
+  - file: common/chat.cpp
+    line: 1806-1819
+    method_or_func: system_message_not_supported()
+  - file: common/chat.cpp
+    line: 1822-1829
+    method_or_func: requires_non_null_content()
+  - file: common/chat.cpp
+    line: 1996-2015
+    method_or_func: func_args_not_string()
+  - file: common/chat.cpp
+    line: 1973-1993
+    method_or_func: convert_tool_responses_gemma4()
+  - file: common/chat.cpp
+    line: 2018-2027
+    method_or_func: common_chat_extra_context()
+  - file: common/chat.cpp
+    line: 2030-2082
+    method_or_func: common_chat_try_specialized_template()
+  - file: common/chat.cpp
+    line: 2171-2224
+    method_or_func: common_chat_templates_apply_legacy()
+  - file: common/chat.cpp
+    line: 2226-2231
+    method_or_func: common_chat_templates_apply()
+  - file: common/chat.cpp
+    line: 2233-2238
+    method_or_func: common_chat_parse()
+  - file: common/chat.cpp
+    line: 2240-2297
+    method_or_func: common_chat_peg_parse()
+  name: 聊天模板应用与内容解析 —— 从模板到消息的「最后一公里」
+  'no': 4
+  points:
+  - '**格式与推理格式的名称转换**'
+  - '- `common_chat_format_name()` 和 `common_reasoning_format_name()` 的枚举到字符串映射'
+  - '- `common_reasoning_format_from_name()` 的反向解析与异常处理'
+  - '**模板能力检测与思维支持**'
+  - '- `common_chat_templates_support_enable_thinking()` 如何通过试渲染检测思维链支持'
+  - '- `common_chat_templates_get_caps()` 如何返回模板的能力集合'
+  - '**解析参数的双重构造**'
+  - '- `common_chat_parser_params` 两个构造函数的适用场景：默认构造与从 `common_chat_params` 派生'
+  - '- `format` 与 `generation_prompt` 字段如何驱动 PEG 解析器行为'
+  - '**自动解析器路径：Jinja 模板能力检测**'
+  - '- `common_chat_templates_apply_jinja` 如何根据 `caps.supports_typed_content` 决定消息渲染方式'
+  - '- 模板变通（workaround）机制：`map_developer_role_to_system`、`system_message_not_supported`、`requires_non_null_content`、`func_args_not_string`
+    四大适配器的作用时机'
+  - '**Gemma4 工具响应转换的驱动逻辑**'
+  - '- `convert_tool_responses_gemma4()` 如何遍历消息数组并调用 builder 转换符合条件的序列'
+  - '**生成提示词的差异提取**'
+  - '- 为什么需要计算「无生成提示」与「有生成提示」两次渲染的差值'
+  - '- `calculate_diff_split` 如何提取 assistant 起始标记作为 `generation_prompt`'
+  - '**专用模板的分发与自动解析**'
+  - '- `common_chat_try_specialized_template` 如何通过模板源码特征标记识别模型类型'
+  - '- 通用路径失败时如何 fallback 到 `autoparser::autoparser` 自动生成解析器'
+  - '**Legacy 路径：无 Jinja 的传统模板处理**'
+  - '- `common_chat_templates_apply_legacy` 如何调用 `llama_chat_apply_template` C 接口'
+  - '- 动态缓冲区策略：首次尝试后根据返回大小重新分配'
+  - '**输出解析：PEG 解析器的运行与映射**'
+  - '- `common_chat_parse` 与 `common_chat_peg_parse` 的分层设计'
+  - '- 流式场景的部分解析恢复：如何在解析失败时利用已消费前缀构造不完整消息'
+  - '- `common_chat_peg_mapper` 与 `common_chat_peg_gemma4_mapper` 的格式特化：Gemma4 格式需处理
+    tool_responses 结构'

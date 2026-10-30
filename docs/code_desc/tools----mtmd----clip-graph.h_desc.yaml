@@ -1,0 +1,90 @@
+classes:
+- desc: 类型为clip_graph的类/结构体，作为构建CLIP视觉模型计算图的中心组件。它持有模型参数、输入图像和GGML上下文，并提供了构建不同模型组件（如ViT后端、输入补丁、注意力层和自定义操作）的方法。它使用虚函数设计以允许子类提供特定于模型的自定义行为。
+  methods:
+  - code:
+    - clip_graph(clip_ctx * ctx, const clip_image_f32 & img);
+    desc: 构造函数：通过从提供的clip_ctx上下文中提取相关参数（如前/后细节），并使用提供的输入图像构建对象的inner状态，同时初始化指向新GGML上下文和计算图（cgraph）的指针。
+    line: 33-33
+    name: clip_graph
+  - code:
+    - virtual ggml_cgraph * build() = 0;
+    desc: 纯虚函数，定义构建完整计算图的操作。每个实现该类的子类都必须覆盖此方法，以指定构建模型的具体计算图结构。
+    line: 37-37
+    name: build
+  - code:
+    - virtual ggml_tensor * build_mm(ggml_tensor * w, ggml_tensor * x) const;
+    desc: 虚函数，作为ggml_mul_mat函数的包装器。它允许进行额外的处理（如LoRA适配或权重裁剪），并在输入张量w（权重）和x（输入）上执行矩阵乘法。返回结果张量。
+    line: 42-42
+    name: build_mm
+  - code:
+    - void cb(ggml_tensor * cur0, const char * name, int il) const;
+    desc: 回调方法，用于在图中设置张量的名字和层级索引，主要用于调试和检查目的。
+    line: 48-48
+    name: cb
+  - code:
+    - ggml_tensor * resize_position_embeddings(uint32_t interpolation_mode = DEFAULT_INTERPOLATION_MODE);
+    desc: 实现siglip2 naflex的2D位置嵌入大小调整方法。它根据给定的插值模式（默认双线性+反锯齿）重新计算位置嵌入张量，以支持动态分辨率图像输入。
+    line: 51-51
+    name: resize_position_embeddings
+  - code:
+    - "ggml_tensor * build_vit(\n        ggml_tensor * inp,\n        int64_t n_pos,\n\
+      \        norm_type norm_t,\n        ffn_op_type ffn_t,\n        ggml_tensor\
+      \ * learned_pos_embd,\n        std::function<ggml_tensor *(ggml_tensor *, const\
+      \ clip_layer &)> add_pos);"
+    desc: 构建视觉Transformer（ViT）计算图的通用方法。它接收输入张量、位置嵌入数量、归一化类型、前馈网络类型、学习到的位置嵌入以及一个用于添加位置偏置的自定义函数，并返回构建的嵌入张量。
+    line: 57-61
+    name: build_vit
+  - code:
+    - ggml_tensor * build_inp();
+    desc: 构建输入补丁张量。该函数处理原始图像数据（在卷积之后），将其转换为补丁序列，返回形状为[n_embd, n_patches]的张量。
+    line: 65-65
+    name: build_inp
+  - code:
+    - ggml_tensor * build_inp_raw(int channels = 3);
+    desc: 构建原始输入图像张量，接受通道数作为参数，处理初始的图像预处理和通道转换。
+    line: 67-67
+    name: build_inp_raw
+  - code:
+    - "ggml_tensor * build_norm(\n        ggml_tensor * cur,\n        ggml_tensor\
+      \ * mw,\n        ggml_tensor * mb,\n        norm_type type,\n        float norm_eps,\n\
+      \        int il) const;"
+    desc: 构建归一化层，根据指定的类型（如LayerNorm、RMSNorm等）和epsilon值，对输入张量应用归一化操作，返回归一化后的张量。
+    line: 73-78
+    name: build_norm
+  - code:
+    - "ggml_tensor * build_ffn(\n        ggml_tensor * cur,\n        ggml_tensor *\
+      \ up,\n        ggml_tensor * up_b,\n        ggml_tensor * gate,\n        ggml_tensor\
+      \ * gate_b,\n        ggml_tensor * down,\n        ggml_tensor * down_b,\n  \
+      \      ffn_op_type type_op,\n        int il) const;"
+    desc: 构建前馈神经网络（FFN）层。接受输入张量以及上投影、门控和下投影的权重和偏差张量，根据指定的操作类型应用一系列线性变换和激活函数，返回输出张量。
+    line: 85-93
+    name: build_ffn
+  - code:
+    - "ggml_tensor * build_attn(\n        ggml_tensor * wo,\n        ggml_tensor *\
+      \ wo_b,\n        ggml_tensor * q_cur,\n        ggml_tensor * k_cur,\n      \
+      \  ggml_tensor * v_cur,\n        ggml_tensor * kq_mask,\n        float kq_scale,\n\
+      \        int il) const;"
+    desc: 构建多头注意力层。接受输出投影权重、查询、键、值张量、注意力掩码和缩放因子，计算注意力分数并整合多个头，返回注意力机制的输出张量。
+    line: 99-106
+    name: build_attn
+  - code:
+    - "ggml_tensor * build_rope_2d(\n    ggml_context * ctx0,\n    ggml_tensor * cur,\n\
+      \    ggml_tensor * pos_a, // first half\n    ggml_tensor * pos_b, // second\
+      \ half\n    const float freq_base,\n    const bool interleave_freq\n);"
+    desc: 实现2D旋转位置编码（RoPE）的方法，不引入新的GGML操作符。它接受两个位置嵌变量（前半部分和后半部分）以及频率基数和交叠模式，通过计算正弦/余弦值将位置信息注入张量。
+    line: 112-116
+    name: build_rope_2d
+  - code:
+    - ggml_tensor * build_patch_merge_permute(ggml_tensor * cur, int scale_factor);
+    desc: 实现像素重排（pixel_shuffle/unshuffle）操作，支持动态分辨率下的补丁合并。此方法通过转置和重排操作将输入张量重整为适合进一步处理的格式。
+    line: 124-124
+    name: build_patch_merge_permute
+  - code:
+    - ggml_tensor * build_stack(ggml_tensor * cur, int32_t stack_factor, int32_t n_embed);
+    desc: 通用音频帧堆叠函数，通过堆叠因子将输入特征重塑为更高维度的格式，抽象化了ultravox模型中的StackAudioFrames逻辑。
+    line: 127-127
+    name: build_stack
+  name: clip_graph
+desc: 该文件定义了clip_graph结构体，这是CLIP（Contrastive Language-Image Pre-training）视觉模型在推理图中的核心构建器。它封装了创建视觉Transformer（ViT）计算图所需的所有状态和辅助方法，包括处理图像输入、构建卷积层、位置嵌入、注意力层、前馈网络以及2D旋转位置编码（RoPE）等。该结构体通过多态设计支持不同模型变体的定制化构建过程。
+file: tools/mtmd/clip-graph.h
+funcs: []

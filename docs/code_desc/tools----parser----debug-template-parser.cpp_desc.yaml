@@ -1,0 +1,513 @@
+classes:
+- desc: 结构体，用于存储命令行解析得到的调试选项配置，包括模板路径、各类开关标志、输出模式和输入消息类型。
+  methods: []
+  name: debug_options
+desc: 该文件是llama.cpp中用于调试聊天模板解析器（debug template parser）的命令行工具。它加载模板（可以是普通文件或GGUF格式的模型文件），提供多种选项来控制渲染和解析过程，能够输出模板渲染结果、生成的PEG解析器、语法规则等调试信息，并支持多种预定义的输入消息场景（如普通内容、思考内容、工具调用等）以测试模板行为。它通过调用common_chat_template、autoparser等内部组件，帮助开发者分析和调试聊天模板的处理流程。
+file: tools/parser/debug-template-parser.cpp
+funcs:
+- code:
+  - static std::string read_file(const std::string & path) {
+  - '    std::ifstream fin(path, std::ios::binary);'
+  - '    if (!fin.is_open()) {'
+  - '        throw std::runtime_error("Could not open file: " + path);'
+  - '    }'
+  - '    std::ostringstream buf;'
+  - '    buf << fin.rdbuf();'
+  - '    return buf.str();'
+  - '}'
+  desc: 读取指定路径的文件内容为字符串，若无法打开文件则抛出运行时错误。
+  line: 63-70
+  name: read_file
+- code:
+  - static std::string read_gguf_chat_template(const std::string & path) {
+  - '    struct gguf_init_params params = { /*no_alloc =*/true,  // We only need metadata,
+    not tensor data'
+  - '                                       /*ctx=*/nullptr };'
+  - ''
+  - '    struct gguf_context * ctx = gguf_init_from_file(path.c_str(), params);'
+  - '    if (ctx == nullptr) {'
+  - '        throw std::runtime_error("Could not open GGUF file: " + path);'
+  - '    }'
+  - ''
+  - '    const char * key    = "tokenizer.chat_template";'
+  - '    int64_t      key_id = gguf_find_key(ctx, key);'
+  - ''
+  - '    if (key_id == -1) {'
+  - '        gguf_free(ctx);'
+  - '        throw std::runtime_error("GGUF file does not contain chat template key:
+    " + std::string(key));'
+  - '    }'
+  - ''
+  - '    const char * template_str = gguf_get_val_str(ctx, key_id);'
+  - '    if (template_str == nullptr) {'
+  - '        gguf_free(ctx);'
+  - '        throw std::runtime_error("GGUF file contains chat template key but value
+    is null");'
+  - '    }'
+  - ''
+  - '    std::string result = template_str;'
+  - '    gguf_free(ctx);'
+  - '    return result;'
+  - '}'
+  desc: 从GGUF格式的文件中读取名为'tokenizer.chat_template'的聊天模板内容，若文件无法打开或缺少该键则抛出运行时错误。
+  line: 72-99
+  name: read_gguf_chat_template
+- code:
+  - static void print_usage(const char * program_name) {
+  - '    LOG_ERR("Usage: %s <template_or_gguf_path> [options]\n", program_name);'
+  - '    LOG_ERR("\nOptions:\n");'
+  - '    LOG_ERR("  --no-tools              Disable tool definitions\n");'
+  - '    LOG_ERR("  --force-tool-call       Set tool calls to forced\n");'
+  - '    LOG_ERR("  --generation-prompt=0|1 Set add_generation_prompt (default: 1)\n");'
+  - '    LOG_ERR("  --enable-reasoning=0|1  Enable reasoning parsing (default: 1)\n");'
+  - '    LOG_ERR("  --output=MODE           Output mode: analysis, template, both
+    (default: both)\n");'
+  - '    LOG_ERR("  --debug-jinja           Enable Jinja fine-grained debug\n");'
+  - '    LOG_ERR("  --input-message=TYPE    Message type to render:\n");'
+  - '    LOG_ERR("                          content_only, reasoning_content, tool_call_only,\n");'
+  - '    LOG_ERR("                          content_tool_call, reasoning_tool_call,\n");'
+  - '    LOG_ERR("                          content_fake_tool_call, all\n");'
+  - '    LOG_ERR("\nExamples:\n");'
+  - '    LOG_ERR("  %s template.jinja --input-message=all --generation-prompt=1\n",
+    program_name);'
+  - '    LOG_ERR("  %s template.jinja --output=template --input-message=tool_call_only\n",
+    program_name);'
+  - '}'
+  desc: 打印程序的命令行使用说明和所有可用选项的详细信息。
+  line: 101-116
+  name: print_usage
+- code:
+  - static bool parse_bool_option(const std::string & value) {
+  - '    return value == "1" || value == "true" || value == "yes";'
+  - '}'
+  desc: 将字符串转换为布尔值，接受'1'、'true'或'yes'作为true。
+  line: 118-120
+  name: parse_bool_option
+- code:
+  - static bool parse_options(int argc, char ** argv, debug_options & opts) {
+  - '    if (argc < 2) {'
+  - '        print_usage(argv[0]);'
+  - '        return false;'
+  - '    }'
+  - ''
+  - '    opts.template_path = argv[1];'
+  - ''
+  - '    for (int i = 2; i < argc; ++i) {'
+  - '        std::string arg = argv[i];'
+  - ''
+  - '        if (arg == "--force-tool-call") {'
+  - '            opts.force_tool_call = true;'
+  - '        } else if (arg == "--debug-jinja") {'
+  - '            opts.debug_jinja = true;'
+  - '        } else if (arg == "--no-tools") {'
+  - '            opts.with_tools = false;'
+  - '        } else if (arg.rfind("--generation-prompt=", 0) == 0) {'
+  - '            opts.generation_prompt = parse_bool_option(arg.substr(20));'
+  - '        } else if (arg.rfind("--enable-reasoning=", 0) == 0) {'
+  - '            opts.enable_reasoning = parse_bool_option(arg.substr(19));'
+  - '        } else if (arg.rfind("--output=", 0) == 0) {'
+  - '            std::string mode = arg.substr(9);'
+  - '            if (mode == "analysis") {'
+  - '                opts.mode = output_mode::ANALYSIS;'
+  - '            } else if (mode == "template") {'
+  - '                opts.mode = output_mode::TEMPLATE;'
+  - '            } else if (mode == "both") {'
+  - '                opts.mode = output_mode::BOTH;'
+  - '            } else {'
+  - '                LOG_ERR("Unknown output mode: %s\n", mode.c_str());'
+  - '                return false;'
+  - '            }'
+  - '        } else if (arg.rfind("--input-message=", 0) == 0) {'
+  - '            std::string type = arg.substr(16);'
+  - '            if (type == "content_only") {'
+  - '                opts.input_message = input_message_type::CONTENT_ONLY;'
+  - '            } else if (type == "reasoning_content") {'
+  - '                opts.input_message = input_message_type::REASONING_CONTENT;'
+  - '            } else if (type == "tool_call_only") {'
+  - '                opts.input_message = input_message_type::TOOL_CALL_ONLY;'
+  - '            } else if (type == "content_tool_call") {'
+  - '                opts.input_message = input_message_type::CONTENT_TOOL_CALL;'
+  - '            } else if (type == "reasoning_tool_call") {'
+  - '                opts.input_message = input_message_type::REASONING_TOOL_CALL;'
+  - '            } else if (type == "content_fake_tool_call") {'
+  - '                opts.input_message = input_message_type::CONTENT_FAKE_TOOL_CALL;'
+  - '            } else if (type == "all") {'
+  - '                opts.input_message = input_message_type::ALL;'
+  - '            } else {'
+  - '                LOG_ERR("Unknown input message type: %s\n", type.c_str());'
+  - '                return false;'
+  - '            }'
+  - '        } else {'
+  - '            LOG_ERR("Unknown option: %s\n", arg.c_str());'
+  - '            print_usage(argv[0]);'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return true;'
+  - '}'
+  desc: 解析命令行参数，填充debug_options结构体，返回布尔值表示解析是否成功。
+  line: 122-190
+  name: parse_options
+- code:
+  - static json build_user_message() {
+  - '    return json{'
+  - '        { "role",    "user"                               },'
+  - '        { "content", "Hello, please help me with a task." }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个简化的用户消息JSON对象。
+  line: 192-197
+  name: build_user_message
+- code:
+  - static json build_content_only_message() {
+  - '    return json{'
+  - '        { "role",    "assistant"                                   },'
+  - '        { "content", "Hello! I''m here to help you with your task." }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个仅包含内容的助手消息JSON对象。
+  line: 199-204
+  name: build_content_only_message
+- code:
+  - static json build_reasoning_content_message() {
+  - '    return json{'
+  - '        { "role",              "assistant"                                                               },'
+  - '        { "content",           "Hello! I''m here to help you with your task."                             },'
+  - '        { "reasoning_content", "The user is greeting me and asking for help.
+    I should respond politely." }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个包含思考内容和内容的助手消息JSON对象。
+  line: 206-212
+  name: build_reasoning_content_message
+- code:
+  - static json build_tool_call_only_message() {
+  - '    return json{'
+  - '        { "role",       "assistant"      },'
+  - '        { "content",    nullptr          },'
+  - '        { "tool_calls",'
+  - '         json::array({ json{'
+  - '              { "type", "function" },'
+  - '              { "function", json{ { "name", "test_function_name" },'
+  - '                                  { "arguments", json::object({ { "param1", "value1"
+    }, { "param2", "value2" } }) } } },'
+  - '              { "id", "123456789" } } }) }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个仅包含工具调用字段的助手消息JSON对象。
+  line: 214-225
+  name: build_tool_call_only_message
+- code:
+  - static json build_content_tool_call_message() {
+  - '    return json{'
+  - '        { "role",       "assistant"                                                                              },'
+  - '        { "content",    "I''ll help you by calling a function."                                                   },'
+  - '        { "tool_calls",'
+  - '         json::array({ json{'
+  - '              { "type", "function" },'
+  - '              { "function",'
+  - '                json{ { "name", "test_function_name" },'
+  - '                      { "arguments", json::object({ { "param1", "value1" }, {
+    "param2", "value2" } }) } } } } }) }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个同时包含内容和工具调用字段的助手消息JSON对象。
+  line: 227-238
+  name: build_content_tool_call_message
+- code:
+  - static json build_reasoning_tool_call_message() {
+  - '    return json{'
+  - '        { "role",              "assistant"                                                                       },'
+  - '        { "content",           nullptr                                                                           },'
+  - '        { "reasoning_content", "I need to call a function to help with this task."                               },'
+  - '        { "tool_calls",'
+  - '         json::array({ json{'
+  - '              { "type", "function" },'
+  - '              { "function",'
+  - '                json{ { "name", "test_function_name" },'
+  - '                      { "arguments", json::object({ { "param1", "value1" }, {
+    "param2", "value2" } }) } } } } }) }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个同时包含思考内容、内容和工具调用字段的助手消息JSON对象。
+  line: 240-252
+  name: build_reasoning_tool_call_message
+- code:
+  - static json build_content_fake_tool_call_message() {
+  - '    // This message has content but NO tool_calls field'
+  - '    // It''s used to test if a template renders tool definitions but not tool
+    calls'
+  - '    return json{'
+  - '        { "role",    "assistant"                            },'
+  - '        { "content", "I''ll help you by calling a function." }'
+  - '    };'
+  - '}'
+  desc: 构造并返回一个仅包含内容但不含tool_calls字段的助手消息JSON对象，用于测试模板渲染工具定义但不渲染工具调用的场景。
+  line: 254-261
+  name: build_content_fake_tool_call_message
+- code:
+  - static json build_tools_definition() {
+  - '    json parameters_schema                    = json::object();'
+  - '    parameters_schema["type"]                 = "object";'
+  - '    parameters_schema["properties"]           = json::object();'
+  - '    parameters_schema["properties"]["param1"] = json::object({'
+  - '        { "type",        "string"          },'
+  - '        { "description", "First parameter" }'
+  - '    });'
+  - '    parameters_schema["properties"]["param2"] = json::object({'
+  - '        { "type",        "string"           },'
+  - '        { "description", "Second parameter" }'
+  - '    });'
+  - '    parameters_schema["required"]             = json::array({ "param1" });'
+  - ''
+  - '    return json::array({'
+  - '        json{ { "type", "function" },'
+  - '             { "function", json{ { "name", "test_function_name" },'
+  - '                                  { "description", "A test function for debugging"
+    },'
+  - '                                  { "parameters", parameters_schema } } } }'
+  - '    });'
+  - '}'
+  desc: 构造并返回一个包含单个测试函数定义的工具定义JSON数组。
+  line: 263-285
+  name: build_tools_definition
+- code:
+  - static void render_scenario(const common_chat_template & tmpl,
+  - '                            const std::string &          scenario_name,'
+  - '                            const json &                 messages,'
+  - '                            const json &                 tools,'
+  - '                            bool                         add_generation_prompt,'
+  - '                            bool                         enable_thinking) {'
+  - '    LOG_ERR("\n=== Scenario: %s ===\n", scenario_name.c_str());'
+  - '    LOG_ERR("add_generation_prompt: %s, enable_thinking: %s\n", add_generation_prompt
+    ? "true" : "false",'
+  - '            enable_thinking ? "true" : "false");'
+  - ''
+  - '    // When add_generation_prompt is true, add a trailing user message to trigger
+    the prompt'
+  - '    json final_messages = messages;'
+  - '    if (add_generation_prompt && !messages.empty() && messages.back().value("role",
+    "") == "assistant") {'
+  - '        final_messages.push_back(json{'
+  - '            { "role",    "user"                                       },'
+  - '            { "content", "Now please continue with another response." }'
+  - '        });'
+  - '    }'
+  - ''
+  - '    LOG_ERR("Messages:\n%s\n", final_messages.dump(2).c_str());'
+  - ''
+  - '    try {'
+  - '        autoparser::generation_params inputs;'
+  - '        inputs.messages                         = final_messages;'
+  - '        inputs.add_generation_prompt            = add_generation_prompt;'
+  - '        inputs.extra_context["enable_thinking"] = enable_thinking;'
+  - ''
+  - '        if (!tools.is_null() && tools.is_array() && !tools.empty()) {'
+  - '            inputs.tools = tools;'
+  - '        }'
+  - ''
+  - '        std::string output = common_chat_template_direct_apply(tmpl, inputs);'
+  - ''
+  - '        LOG_ERR("\n--- Rendered Output ---\n");'
+  - '        LOG_ERR("%s\n", output.c_str());'
+  - '        LOG_ERR("--- End Output (length: %zu) ---\n", output.length());'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Rendering failed: %s\n", e.what());'
+  - '    }'
+  - '}'
+  desc: 渲染单个消息场景，将消息传递给common_chat_template_direct_apply进行模板渲染，并输出渲染结果。
+  line: 287-326
+  name: render_scenario
+- code:
+  - static void render_all_scenarios(const common_chat_template & tmpl,
+  - '                                 const json &                 tools,'
+  - '                                 bool                         add_generation_prompt,'
+  - '                                 bool                         enable_thinking,'
+  - '                                 input_message_type           message_type) {'
+  - '    json user_msg = build_user_message();'
+  - ''
+  - '    auto render_if = [&](input_message_type type, const std::string & name, const
+    json & assistant_msg) {'
+  - '        if (message_type == input_message_type::ALL || message_type == type)
+    {'
+  - '            json messages = json::array({ user_msg, assistant_msg });'
+  - '            render_scenario(tmpl, name, messages, tools, add_generation_prompt,
+    enable_thinking);'
+  - '        }'
+  - '    };'
+  - ''
+  - '    render_if(input_message_type::CONTENT_ONLY, "content_only", build_content_only_message());'
+  - '    render_if(input_message_type::REASONING_CONTENT, "reasoning_content", build_reasoning_content_message());'
+  - '    render_if(input_message_type::TOOL_CALL_ONLY, "tool_call_only", build_tool_call_only_message());'
+  - '    render_if(input_message_type::CONTENT_TOOL_CALL, "content_tool_call", build_content_tool_call_message());'
+  - '    render_if(input_message_type::REASONING_TOOL_CALL, "reasoning_tool_call",
+    build_reasoning_tool_call_message());'
+  - '    render_if(input_message_type::CONTENT_FAKE_TOOL_CALL, "content_fake_tool_call",'
+  - '              build_content_fake_tool_call_message());'
+  - ''
+  - '    // Also render with add_generation_prompt=true to show the prompt ending'
+  - '    if (message_type == input_message_type::ALL) {'
+  - '        LOG_ERR("\n\n=== Generation Prompt Scenarios (add_generation_prompt=true)
+    ===\n");'
+  - ''
+  - '        json prompt_messages = json::array({ user_msg });'
+  - '        render_scenario(tmpl, "generation_prompt_only", prompt_messages, tools,
+    true, enable_thinking);'
+  - ''
+  - '        // With enable_thinking toggled'
+  - '        render_scenario(tmpl, "generation_prompt_thinking_disabled", prompt_messages,
+    tools, true, false);'
+  - '    }'
+  - '}'
+  desc: 根据指定的消息类型，渲染所有相应的模板场景（包括仅生成提示和执行思考开关切换的场景）。
+  line: 328-358
+  name: render_all_scenarios
+- code:
+  - static autoparser::generation_params prepare_params(const debug_options & opts,
+    const json & tools) {
+  - '    autoparser::generation_params params;'
+  - '    params.messages         = json::array({ build_user_message() });'
+  - '    params.reasoning_format = opts.enable_reasoning ? COMMON_REASONING_FORMAT_DEEPSEEK
+    : COMMON_REASONING_FORMAT_NONE;'
+  - '    params.enable_thinking  = opts.enable_reasoning;'
+  - '    params.add_generation_prompt = opts.generation_prompt;'
+  - ''
+  - '    if (opts.with_tools) {'
+  - '        params.tools       = tools;'
+  - '        params.tool_choice = opts.force_tool_call ? COMMON_CHAT_TOOL_CHOICE_REQUIRED
+    : COMMON_CHAT_TOOL_CHOICE_AUTO;'
+  - '    } else {'
+  - '        params.tools       = json();'
+  - '        params.tool_choice = COMMON_CHAT_TOOL_CHOICE_NONE;'
+  - '    }'
+  - '    params.parallel_tool_calls = false;'
+  - '    return params;'
+  - '}'
+  desc: 根据调试选项构建autoparser::generation_params参数结构体，设置消息、推理格式、工具调用等配置。
+  line: 360-375
+  name: prepare_params
+- code:
+  - int main(int argc, char ** argv) {
+  - '    // Set log level to most verbose to capture all debug output'
+  - '    common_log_set_verbosity_thold(99);'
+  - ''
+  - '    debug_options opts;'
+  - '    if (!parse_options(argc, argv, opts)) {'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    if (opts.debug_jinja || std::getenv("LLAMA_DEBUG_JINJA") != nullptr) {'
+  - '        jinja::enable_debug(true);'
+  - '    }'
+  - ''
+  - '    std::string template_source;'
+  - '    try {'
+  - '        // Check if the file is a GGUF file'
+  - '        if (opts.template_path.size() >= 5 &&'
+  - '            opts.template_path.compare(opts.template_path.size() - 5, 5, ".gguf")
+    == 0) {'
+  - '            template_source = read_gguf_chat_template(opts.template_path);'
+  - '        } else {'
+  - '            template_source = read_file(opts.template_path);'
+  - '        }'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Error reading template: %s\n", e.what());'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    LOG_ERR("Analyzing template: %s\n", opts.template_path.c_str());'
+  - '    LOG_ERR("Options: with_tools=%s, generation_prompt=%s, enable_reasoning=%s\n",
+    opts.with_tools ? "true" : "false",'
+  - '            opts.generation_prompt ? "true" : "false", opts.enable_reasoning
+    ? "true" : "false");'
+  - ''
+  - '    try {'
+  - '        common_chat_template chat_template(template_source, "", "");'
+  - ''
+  - '        json tools = opts.with_tools ? build_tools_definition() : json();'
+  - ''
+  - '        autoparser::generation_params params = prepare_params(opts, tools);'
+  - '        common_chat_params            parser_data;'
+  - '        if (std::optional<common_chat_params> spec_tmpl ='
+  - '                common_chat_try_specialized_template(chat_template, template_source,
+    params)) {'
+  - '            LOG_ERR("\n");'
+  - '            LOG_ERR("This template uses a specialized parser, analysis results
+    will not be available.");'
+  - '            parser_data = *spec_tmpl;'
+  - '        } else {'
+  - '            // Render template scenarios if requested'
+  - '            if (opts.input_message != input_message_type::NONE &&'
+  - '                (opts.mode == output_mode::TEMPLATE || opts.mode == output_mode::BOTH))
+    {'
+  - '                LOG_ERR("\n");'
+  - '                LOG_ERR("================================================================================\n");'
+  - '                LOG_ERR("                         TEMPLATE RENDERING OUTPUT\n");'
+  - '                LOG_ERR("================================================================================\n");'
+  - ''
+  - '                render_all_scenarios(chat_template, tools, opts.generation_prompt,
+    opts.enable_reasoning,'
+  - '                                     opts.input_message);'
+  - '            }'
+  - ''
+  - '            // Output analysis if requested'
+  - '            if (opts.mode == output_mode::ANALYSIS || opts.mode == output_mode::BOTH)
+    {'
+  - '                LOG_ERR("\n");'
+  - '                LOG_ERR("================================================================================\n");'
+  - '                LOG_ERR("                           TEMPLATE ANALYSIS\n");'
+  - '                LOG_ERR("================================================================================\n");'
+  - ''
+  - '                autoparser::autoparser analysis;'
+  - '                analysis.analyze_template(chat_template);'
+  - ''
+  - '                // Generate Parser'
+  - '                parser_data = autoparser::peg_generator::generate_parser(chat_template,
+    params, analysis);'
+  - '            }'
+  - ''
+  - '            LOG_ERR("\n=== Generated Parser ===\n");'
+  - '            common_peg_arena arena;'
+  - '            arena.load(parser_data.parser);'
+  - '            LOG_ERR("%s\n", arena.dump(arena.root()).c_str());'
+  - ''
+  - '            LOG_ERR("\n=== Generated Grammar ===\n");'
+  - '            LOG_ERR("%s\n", parser_data.grammar.c_str());'
+  - ''
+  - '            LOG_ERR("\n=== Generated Lazy Grammar ===\n");'
+  - '            LOG_ERR("%d\n", parser_data.grammar_lazy);'
+  - ''
+  - '            LOG_ERR("\n=== Generated Grammar Triggers ===\n");'
+  - '            for (const common_grammar_trigger & cgt : parser_data.grammar_triggers)
+    {'
+  - '                LOG_ERR("Token: %d | Type: %d | Value: %s\n", cgt.token, cgt.type,
+    cgt.value.c_str());'
+  - '            }'
+  - ''
+  - '            LOG_ERR("\n=== Preserved Tokens ===\n");'
+  - '            for (const std::string & token : parser_data.preserved_tokens) {'
+  - '                LOG_ERR("  ''%s''\n", token.c_str());'
+  - '            }'
+  - ''
+  - '            if (!parser_data.grammar.empty()) {'
+  - '                LOG_ERR("\n=== Verifying created grammar ===\n");'
+  - '                auto * grammar = llama_grammar_init_impl(nullptr, parser_data.grammar.c_str(),
+    "root",'
+  - '                                                         parser_data.grammar_lazy,
+    nullptr, 0, nullptr, 0);'
+  - '                if (grammar != nullptr) {'
+  - '                    LOG_ERR("\n=== Grammar successfully created ===\n");'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Analysis failed: %s\n", e.what());'
+  - '        return 1;'
+  - '    }'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 程序入口函数，负责解析参数、加载模板、执行模板渲染或分析，并输出调试信息。
+  line: 377-500
+  name: main

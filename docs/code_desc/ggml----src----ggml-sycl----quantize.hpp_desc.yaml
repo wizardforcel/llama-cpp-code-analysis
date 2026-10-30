@@ -1,0 +1,165 @@
+classes:
+- desc: A no-op functor (struct with operator()) that does nothing, used to control
+    code paths by providing a quantization functor that performs no operation.
+  methods:
+  - code:
+    - void operator()(const float *, void *, int, int, const sycl::nd_item<1> &) const
+      {}
+    desc: Function call operator that is a no-op; takes a float pointer, void pointer,
+      two ints, and nd_item reference, but performs no actions.
+    line: 71-72
+    name: operator()
+  name: no_quantize_q8_1
+- desc: A functor that quantizes float data to q8_1 format and reorders the output
+    into a SoA (Structure of Arrays) layout, per row, for use in specific matrix multiplication
+    operations.
+  methods:
+  - code:
+    - __dpct_inline__ void operator()(const float * __restrict__ x, void * reordered_q8_tensor,
+      const int kx,
+    - '                                    const int kx_padded, const sycl::nd_item<1>
+      & it) const {'
+    - '        /*'
+    - '        Quantizes and reorders the resultant q8 tensor in a per row fashion'
+    - '        Each sub-group calculates one quant block. i.e. QK8_1 quant values
+      and the d and sum values'
+    - '    */'
+    - '        auto subgroup_id = it.get_group(0);'
+    - '        auto wi_id       = it.get_local_id(0);'
+    - ''
+    - '        sycl::vec<int8_t, ElementsPerWI> quantized_values;'
+    - '        float                            d   = 0.0f;'
+    - '        float                            sum = 0.0f;'
+    - '        quantize_q8_1_impl<ElementsPerWI>(x, quantized_values, d, sum, it);'
+    - ''
+    - '        const int num_blocks_per_row = kx / QK8_1;'
+    - '        auto      row                = subgroup_id / num_blocks_per_row;'
+    - '        auto      col                = subgroup_id % num_blocks_per_row;'
+    - '        auto      row_offset         = row * (kx_padded / QK8_1) * sizeof(block_q8_1);'
+    - '        auto      col_offset         = QK8_1 * col + wi_id * ElementsPerWI;'
+    - ''
+    - '        auto quant_ptr = (int8_t *) ((char *) reordered_q8_tensor + row_offset
+      + col_offset);'
+    - '        *reinterpret_cast<sycl::vec<int8_t, ElementsPerWI> *>(quant_ptr) =
+      quantized_values;'
+    - ''
+    - '        auto ds_ptr = (sycl::half2 *) ((char *) reordered_q8_tensor + row_offset
+      + kx + col * sizeof(sycl::half2));'
+    - '        if (wi_id == 0) {'
+    - '            *ds_ptr = sycl::half2(sycl::half(d), sycl::half(sum));'
+    - '        }'
+    - '    }'
+    desc: Function call operator that quantizes the input x array, reorders the quantized
+      tensor in a SoA layout per row, and writes the result to reordered_q8_tensor
+      including scales and sums.
+    line: 77-103
+    name: operator()
+  name: quantize_and_reorder_q8_1_soa
+- desc: A functor that quantizes float data to q8_1 format and writes the output in
+    a standard block layout (AoS), per row, into the q8_tensor buffer.
+  methods:
+  - code:
+    - __dpct_inline__ void operator()(const float * __restrict__ x, void * q8_tensor,
+      const int kx, const int kx_padded,
+    - '                                    const sycl::nd_item<1> & it) const {'
+    - '        auto subgroup_id = it.get_group(0);'
+    - '        auto wi_id       = it.get_local_id(0);'
+    - ''
+    - '        const int num_blocks_per_row = kx / QK8_1;'
+    - '        auto      row                = subgroup_id / num_blocks_per_row;'
+    - '        const int pitch              = kx_padded / QK8_1;'
+    - ''
+    - '        sycl::vec<int8_t, ElementsPerWI> quantized_values;'
+    - '        float                            d   = 0.0f;'
+    - '        float                            sum = 0.0f;'
+    - '        quantize_q8_1_impl<ElementsPerWI>(x, quantized_values, d, sum, it);'
+    - ''
+    - '        block_q8_1 * quant_ptr = (block_q8_1 *) q8_tensor;'
+    - '        auto         block_id  = subgroup_id % num_blocks_per_row + row * pitch;'
+    - ''
+    - '        int8_t * qs                                               = &(quant_ptr[block_id].qs[wi_id
+      * ElementsPerWI]);'
+    - '        *reinterpret_cast<sycl::vec<int8_t, ElementsPerWI> *>(qs) = quantized_values;'
+    - '        if (wi_id == 0) {'
+    - '            quant_ptr[block_id].ds = sycl::half2(sycl::half(d), sycl::half(sum));'
+    - '        }'
+    - '    }'
+    desc: Function call operator that quantizes the input x array, writes quantized
+      values to q8_tensor in block_q8_1 format, and computes/writes the scale (d)
+      and sum for each block.
+    line: 109-127
+    name: operator()
+  name: quantize_q8_1
+desc: The file defines quantization functions for the SYCL backend, providing implementations
+  for quantizing float data to 8-bit integer (q8_1) format, including a templated
+  helper for actual quantization math, three functor types to control quantization
+  behavior (no-op, reordering, standard), and a template function that dispatches
+  work to SYCL kernels. It targets GPU/SYCL execution, using subgroup operations (work-group
+  reductions) for parallel reductions and requires FP16 support.
+file: ggml/src/ggml-sycl/quantize.hpp
+funcs:
+- code:
+  - template <int ElementsPerWI>
+  - __dpct_inline__ static void quantize_q8_1_impl(const float * __restrict__ x,
+  - '                                               sycl::vec<int8_t, ElementsPerWI>
+    & quantized_values, float & d,'
+  - '                                               float & sum, const sycl::nd_item<1>
+    & it) {'
+  - '    auto subgroup_id = it.get_group(0);'
+  - '    auto wi_id       = it.get_local_id(0);'
+  - ''
+  - '    sycl::vec<float, ElementsPerWI> wi_f32_vals;'
+  - ''
+  - '    auto float_ptr_offset = subgroup_id * QK8_1 + ElementsPerWI * wi_id;'
+  - '    wi_f32_vals           = *reinterpret_cast<const sycl::vec<float, ElementsPerWI>
+    *>(x + float_ptr_offset);'
+  - ''
+  - '    float amax = 0.0f;'
+  - ''
+  - '#pragma unroll(ElementsPerWI)'
+  - '    for (int i = 0; i < ElementsPerWI; i++) {'
+  - '        sum += wi_f32_vals[i];'
+  - '        amax                = sycl::fmax(amax, sycl::fabs(wi_f32_vals[i]));'
+  - '        quantized_values[i] = 0;'
+  - '    }'
+  - '    sum  = sycl::reduce_over_group(it.get_sub_group(), sum, sycl::plus<float>());'
+  - '    amax = sycl::reduce_over_group(it.get_sub_group(), amax, sycl::maximum<float>());'
+  - '    d    = amax == 0 ? 1 : amax / 127;'
+  - ''
+  - '#pragma unroll(ElementsPerWI)'
+  - '    for (int i = 0; i < ElementsPerWI; i++) {'
+  - '        quantized_values[i] = sycl::round(wi_f32_vals[i] / d);'
+  - '    }'
+  - ''
+  - '    d = amax == 0 ? 0 : d;'
+  - '}'
+  desc: 'Templated helper function that performs the core q8_1 quantization for a
+    single work-item: loads float values, computes the max absolute value and sum,
+    reduces them across the subgroup, calculates the scale d, and produces quantized
+    int8 values.'
+  line: 57-77
+  name: quantize_q8_1_impl
+- code:
+  - template <template <int> typename quantize_f>
+  - void quantize_row_q8_1_sycl(const float * x, void * vy, const int kx, const int
+    ky, const int kx_padded,
+  - '                            dpct::queue_ptr stream) {'
+  - '    static_assert(QK8_1 % WARP_SIZE == 0);'
+  - '    auto local_range      = std::size_t(WARP_SIZE);'
+  - '    auto num_quant_blocks = ky * (kx / QK8_1);'
+  - '    auto global_range     = num_quant_blocks * local_range;'
+  - '    dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16 });'
+  - ''
+  - '    stream->parallel_for(sycl::nd_range<1>({ global_range }, { local_range }),'
+  - '                         [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+    {'
+  - '                             quantize_f<QK8_1 / WARP_SIZE>()(x, vy, kx, kx_padded,
+    it);'
+  - '                         });'
+  - '}'
+  desc: Template function that dispatches the quantization work to a SYCL kernel.
+    It sets up the parallel-for with nd_range based on WARP_SIZE and number of quant
+    blocks, checks FP16 capability of the device, and invokes the provided quantization
+    functor.
+  line: 130-143
+  name: quantize_row_q8_1_sycl

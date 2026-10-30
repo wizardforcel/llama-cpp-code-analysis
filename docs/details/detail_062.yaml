@@ -1,0 +1,210 @@
+code_map:
+- gguf-py/gguf/metadata.py
+- ├── class Metadata
+- '│   ├── @staticmethod load(metadata_override_path, model_path, model_name, total_params)  #
+  155-238：总调度入口，串行调用各加载器、启发式与覆盖逻辑'
+- '│   ├── @staticmethod load_metadata_override(metadata_override_path)                     #
+  240-247：读取 JSON 覆盖文件'
+- '│   ├── @staticmethod load_model_card(model_path)                                        #
+  249-290：解析 README.md YAML frontmatter'
+- '│   ├── @staticmethod load_hf_parameters(model_path)                                     #
+  292-303：读取 config.json'
+- '│   ├── @staticmethod load_generation_config(model_path)                                 #
+  305-318：读取 generation_config.json'
+- '│   ├── @staticmethod id_to_title(string)                                                #
+  322-324：短横线命名转标题'
+- '│   ├── @staticmethod get_model_id_components(model_id, total_params)                   #
+  326-421：解析 <org>/<name>，标注 basename/size_label/finetune/version'
+- '│   ├── @staticmethod apply_metadata_heuristic(metadata, model_card, hf_params,
+  model_path, total_params)  # 423-565：按优先级填冲各字段'
+- '│   └── set_gguf_meta_model(gguf_writer)                                                 #
+  567-587：将字段写入 GGUFWriter'
+- '└── __main__ / 模块级逻辑                                                                #
+  649-731：遍历 base_models/datasets/tags/languages 等批量写入'
+exercises:
+- contents:
+  - 参考 `Metadata.load_model_card()`（249-290 行），在不运行整个 gguf-py 的前提下，用 Python 编写一个独立函数
+    `extract_frontmatter(readme_path)`。
+  - 要求：
+  - 1. 仅当文件首行为 `---` 时提取 YAML 区
+  - 2. 复现 Norway 问题修复（`- no` → `- "no"`）和 Tab 转空格
+  - 3. 若解析结果不是 dict，打印警告并返回空字典
+  - 完成后，随便找一个 Hugging Face 模型 README，观察你提取到的字段与原始 YAML 是否一致。
+  'no': 1
+  title: 动手实现一个简化版 frontmatter 解析器
+- contents:
+  - 阅读 `get_model_id_components()`（326-421 行），准备以下测试字符串：
+  - '- `meta-llama/Llama-3-8B-Instruct`'
+  - '- `Qwen/Qwen2.5-7B`'
+  - '- `bloom-7b1`'
+  - '- `./my-model-v1.2`'
+  - '- `TheBloke/Mistral-7B-Instruct-v0.2-GGUF`'
+  - 手动写出每个 ID 的 name/org/basename/finetune/version/size_label 推导结果，再写脚本调用 `Metadata.get_model_id_components()`
+    验证你的推断。
+  - 思考题：为什么 `bloom-7b1` 会被拆为 `7.1B`？为什么 `./xxx` 的组织名被丢弃？
+  'no': 2
+  title: 解析并归类一组真实模型 ID
+- contents:
+  - 在 `get_model_id_components()` 中，size_label 的正则同时会匹配 `128K`、`4K` 这类上下文长度写法。
+  - 任务：
+  - 1. 构造一个假想的模型目录（或修改临时 Metadata 对象），让 `total_params` 为 7_000_000_000（7B），传入模型 ID
+    `MyModel-128K-Instruct`
+  - 2. 观察代码命中哪一段 `if` 分支，`128K` 最终被标为 `size_label` 还是 `finetune`？
+  - 3. 反过来把 `total_params` 设为 0，观察结果变化。
+  - 用注释或日志记录你的追踪过程，理解 `total_params` 在启发式中的兜底作用。
+  'no': 3
+  title: 追踪 size_label 的“上下文长度误判”场景
+- contents:
+  - 查看 `Metadata.load()`（155-238 行）中覆盖文件的应用位置，编写一个最小的 `override.json`，至少包含以下键：`general.name`、`general.author`、`general.sampling.top_p`、`general.tags`。
+  - 接着：
+  - 1. 用 `Metadata.load(metadata_override_path=..., model_path=...)` 加载一个本地模型目录
+  - 2. 打印最终 Metadata 实例，确认哪些字段被 override 修改、哪些仍保留启发式结果
+  - 3. 对比不传 override 文件时的输出，列出优先级链：模型卡 / config / generation_config → heuristic →
+    override → CLI model_name
+  'no': 4
+  title: 设计一份 metadata_override.json 并验证覆盖顺序
+- contents:
+  - 精读 `set_gguf_meta_model()`（567-587 行）以及模块末尾的扩展字段写入逻辑（649-731 行）。
+  - 任务：
+  - 1. 列出所有被调用的 `gguf_writer.add_*` 方法及其触发条件
+  - 2. 对比 `license`、`base_models`、`datasets` 三种字段在写入前的特殊处理（字符串拼接、count 前缀、循环编号）
+  - 3. 用伪代码或流程图描述 “Metadata → GGUF KV” 的完整写入流水线，并思考：为什么必须在入口处 `assert self.name is
+    not None`？
+  'no': 5
+  title: 梳理 set_gguf_meta_model 的写入路径并绘制调用图
+learning_targets:
+- 掌握 Metadata 数据类的设计思路，理解其作为模型元数据中枢的职责与全貌
+- 熟悉四种元数据加载来源（模型卡、HF 配置、生成配置、覆盖文件）及其解析与合并流程
+- 理解基于 Hugging Face 模型 ID 的启发式推断算法，能手动追踪 get_model_id_components 的字段标注过程
+- 掌握 size_label 的智能判定、base_models/datasets 的多形态解析与去重逻辑
+- 了解 set_gguf_meta_model 如何把内存中的 Metadata 字段规范化写入 GGUFWriter
+life_analogy:
+- 把 Hugging Face 模型仓库想象成一位**求职者的应聘材料袋**，而 `Metadata` 就是档案管理员手中的**标准员工档案表**：
+- '- **模型卡（README.md）** = 求职者的个人简历（自我介绍，YAML frontmatter 是简历最上方的摘要栏）'
+- '- **config.json** = 学历证明（官方出具的技术参数凭证）'
+- '- **generation_config.json** = 工作偏好表（期望的采样参数、惩罚策略等“入职偏好”）'
+- '- **metadata_override.json + CLI 参数** = HR 手工批注/更正（具有最高优先级，直接覆盖前面所有信息）'
+- '- **get_model_id_components** = 人事专员根据工号规则拆解员工编号：哪些是部门（org）、姓名（name）、职级（version）、岗位类型（finetune/size_label）'
+- '**档案整理顺序**：先把简历、学历、偏好都按表格栏位誊写一遍，发现空缺就通过工号规则推测填补，最后再用 HR 批注一次性覆盖校准——保证落盘的 GGUF 档案既完整又准确。'
+'no': 61
+summary:
+- concept: '`Metadata` 数据类'
+  desc: 聚合采样参数、作者、License、base_models 等全部模型元数据的中枢仓库
+- concept: '`Metadata.load()`'
+  desc: 静态工厂方法：依次加载模型卡、HF 配置、生成配置，再经启发式推断与覆盖文件修正，最终产出完整 Metadata
+- concept: '`load_metadata_override()`'
+  desc: 读取用户自定义 JSON 覆盖文件，为最终写入提供最高优先级的修正
+- concept: '`load_model_card()`'
+  desc: 解析 README.md 的 YAML frontmatter，修复 Norway 问题与 Tab 缩进，产出模型自述信息
+- concept: '`load_hf_parameters()`'
+  desc: 直接透传 config.json 内容，获取官方架构与训练参数
+- concept: '`load_generation_config()`'
+  desc: 容错读取 generation_config.json，提取推荐采样参数
+- concept: '`id_to_title()`'
+  desc: 把短横线字符串转为标题格式，但保留缩写、版本号、数字开头串
+- concept: '`get_model_id_components()`'
+  desc: 将 HuggingFace 风格模型 ID 拆解为 name、org、basename、finetune、version、size_label 六元组
+- concept: size_label 启发式
+  desc: 支持 7B/7b1/small 等形式，并结合 total_params 判断究竟是模型尺寸还是上下文长度
+- concept: '`apply_metadata_heuristic()`'
+  desc: 按“模型卡 → HF 参数 → 目录名”优先级填充 name/author/version 等缺失字段，并解析 base_models/datasets
+- concept: '`set_gguf_meta_model()`'
+  desc: 断言 name 非空后，将各字段安全地写入 GGUFWriter，空值自动跳过，列表型字段统一编号展开
+units:
+- codes:
+  - file: gguf-py/gguf/metadata.py
+    line: 155-238
+    method_or_func: Metadata.load()
+  name: Metadata 数据类 —— 模型卡片的“中枢仓库”
+  'no': 1
+  points:
+  - '**为什么需要 Metadata？** 把散落的模型信息集中管理'
+  - '- Hugging Face 仓库里元数据散落在 README、config、generation_config 等多处'
+  - '- GGUF 需要一个统一容器，把这些信息一次性收集、规范化、写入 KV'
+  - '**数据类职责一览**'
+  - '- 采样参数：top_k/top_p/min_p/temp/mirostat 系列'
+  - '- 作者与版权：author、version、organization、license_*'
+  - '- 身份标识：name、basename、finetune、size_label、uuid、repo_url'
+  - '- 生态纽带：base_models、datasets、tags、languages'
+  - '**类比：模型户籍科**'
+  - '- 每个模型都有一张“户口本”，每条字段可独立填写或留白'
+  - '- 写入 GGUF 前可以覆盖、补充，保证最终档案准确'
+- codes:
+  - file: gguf-py/gguf/metadata.py
+    line: 155-238
+    method_or_func: Metadata.load()
+  - file: gguf-py/gguf/metadata.py
+    line: 240-247
+    method_or_func: Metadata.load_metadata_override()
+  - file: gguf-py/gguf/metadata.py
+    line: 249-290
+    method_or_func: Metadata.load_model_card()
+  - file: gguf-py/gguf/metadata.py
+    line: 292-303
+    method_or_func: Metadata.load_hf_parameters()
+  - file: gguf-py/gguf/metadata.py
+    line: 305-318
+    method_or_func: Metadata.load_generation_config()
+  name: 多源加载 —— 收集模型档案的“三条情报线”
+  'no': 2
+  points:
+  - '**四条加载流水线**'
+  - '- load_model_card：解析 README.md 的 YAML frontmatter，拿到模型自述信息'
+  - '- load_hf_parameters：读取 config.json，拿到 Hugging Face 的“出生证明”'
+  - '- load_generation_config：优先读取 generation_config.json，补全采样参数'
+  - '- load_metadata_override：允许开发者用 JSON 覆盖最终写入字段'
+  - '**YAML frontmatter 处理细节**'
+  - '- 要求第一行必须是 `---`，否则判定为无 frontmatter'
+  - '- 处理“Norway 问题”（`- no` 会被误解为布尔）和制表符缩进'
+  - '- 用 yaml.safe_load 反序列化，非 dict 则记日志并置空'
+  - '**生成配置与覆盖策略**'
+  - '- generation_config 中每个采样键都映射到 metadata.sampling_*'
+  - '- metadata_override 使用 Keys.General 常量做精确键匹配，最终再应用 CLI 传入的 model_name'
+- codes:
+  - file: gguf-py/gguf/metadata.py
+    line: 322-324
+    method_or_func: Metadata.id_to_title()
+  - file: gguf-py/gguf/metadata.py
+    line: 326-421
+    method_or_func: Metadata.get_model_id_components()
+  - file: gguf-py/gguf/metadata.py
+    line: 423-565
+    method_or_func: Metadata.apply_metadata_heuristic()
+  name: 启发式推断 —— 把 HuggingFace ID 翻译成结构化元数据
+  'no': 3
+  points:
+  - '**id_to_title：命名风格转换器**'
+  - '- 将短横线拆成单词并标题化，但保留纯缩写、版本号、数字开头串'
+  - '**get_model_id_components 解析策略**'
+  - '- 处理三种情况：缺失 ID、自然语言名字、标准 `<org>/<name>` 形式'
+  - '- 撤销 `./`、`../` 这类伪组织名，避免把路径当 org'
+  - '- 用正则给每个分段打标签：version/type/size_label/finetune/basename'
+  - '**尺寸标签的聪明判定**'
+  - '- 支持 `small|mini|medium|large|7B|7b1` 等写法，统一为小写或规范化形式'
+  - '- 结合 total_params 估算参数量，如果标签与模型实际尺寸差太远则视为上下文长度'
+  - '- 对重复的 size_label 去重，只剩纯字母标签时剔除'
+  - '**应用启发式的整体流程**'
+  - '- apply_metadata_heuristic 先尝试模型卡（name/author/version/source_*）'
+  - '- base_models / datasets 支持字符串、URL、字典三种形式，统一解析后追加'
+  - '- 最后用 hf_params 与目录名兜底填充 name/organization/basename/version 等字段'
+- codes:
+  - file: gguf-py/gguf/metadata.py
+    line: 567-587
+    method_or_func: Metadata.set_gguf_meta_model()
+  - file: gguf-py/gguf/metadata.py
+    line: 649-731
+    method_or_func: __main__
+  name: 写入 GGUF —— 元数据落盘的“最后一公里”
+  'no': 4
+  points:
+  - '**set_gguf_meta_model 的职责**'
+  - '- 遍历 Metadata 字段，将非 None 的值转交给 GGUFWriter 的 add_* 系列'
+  - '- 采样参数（top_k/top_p/min_p/xtc/temp/mirostat）逐项写入'
+  - '- 关键身份字段（name/author/version/organization/finetune/basename）按序写入'
+  - '**扩展字段处理**'
+  - '- license 支持列表合并成逗号分隔字符串'
+  - '- base_models 与.datasets 均先写总数，再循环写每个条目的 name/author/version/repo_url'
+  - '- tags 与 languages 直接交给 add_tags/add_languages'
+  - '**防护与断言**'
+  - '- 方法入口断言 `self.name is not None`，确保 GGUF 文件至少有核心名称'
+  - '- 空字段自动跳过，避免写入 None 导致污染 KV'

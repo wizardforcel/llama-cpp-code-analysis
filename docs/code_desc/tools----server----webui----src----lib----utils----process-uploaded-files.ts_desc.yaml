@@ -1,0 +1,151 @@
+classes: []
+desc: The file defines a TypeScript utility module responsible for processing uploaded
+  files in a web UI context, converting various file types (images, PDFs, audio, and
+  text) into a standardized `ChatUploadedFile` format with appropriate previews and
+  metadata. It handles format normalization (converting SVG and WebP to PNG), extracts
+  text content from PDFs, generates base64 previews for images and audio, and provides
+  a fallback text extraction for unknown file types. Additionally, it includes user
+  interaction logic to suggest enabling PDF-to-image conversion when a vision-capable
+  model is selected.
+file: tools/server/webui/src/lib/utils/process-uploaded-files.ts
+funcs:
+- code:
+  - import { isSvgMimeType, svgBase64UrlToPngDataURL } from './svg-to-png';
+  - import { isWebpMimeType, webpBase64UrlToPngDataURL } from './webp-to-png';
+  - import { FileTypeCategory } from '$lib/enums';
+  - import { modelsStore } from '$lib/stores/models.svelte';
+  - import { settingsStore } from '$lib/stores/settings.svelte';
+  - import { toast } from 'svelte-sonner';
+  - import { getFileTypeCategory } from '$lib/utils';
+  - import { convertPDFToText } from './pdf-processing';
+  desc: Module-level imports and initialization, importing utility functions for SVG/WebP
+    conversion, file type categorization, PDF processing, and Svelte store integrations
+    for model and settings management.
+  line: 1-8
+  name: __main__
+- code:
+  - 'function readFileAsDataURL(file: File): Promise<string> {'
+  - "\treturn new Promise((resolve, reject) => {"
+  - "\t\tconst reader = new FileReader();"
+  - "\t\treader.onload = () => resolve(reader.result as string);"
+  - "\t\treader.onerror = () => reject(reader.error);"
+  - "\t\treader.readAsDataURL(file);"
+  - "\t});"
+  - '}'
+  desc: Asynchronously reads a File object as a base64-encoded data URL using the
+    FileReader API.
+  line: 15-23
+  name: readFileAsDataURL
+- code:
+  - 'function readFileAsUTF8(file: File): Promise<string> {'
+  - "\treturn new Promise((resolve, reject) => {"
+  - "\t\tconst reader = new FileReader();"
+  - "\t\treader.onload = () => resolve(reader.result as string);"
+  - "\t\treader.onerror = () => reject(reader.error);"
+  - "\t\treader.readAsText(file);"
+  - "\t});"
+  - '}'
+  desc: Asynchronously reads a File object as plain UTF-8 text content using the FileReader
+    API.
+  line: 31-39
+  name: readFileAsUTF8
+- code:
+  - export async function processFilesToChatUploaded(
+  - "\tfiles: File[],"
+  - "\tactiveModelId?: string"
+  - '): Promise<ChatUploadedFile[]> {'
+  - "\tconst results: ChatUploadedFile[] = [];"
+  - ''
+  - "\tfor (const file of files) {"
+  - "\t\tconst id = Date.now().toString() + Math.random().toString(36).substr(2, 9);"
+  - "\t\tconst base: ChatUploadedFile = {"
+  - "\t\t\tid,"
+  - "\t\t\tname: file.name,"
+  - "\t\t\tsize: file.size,"
+  - "\t\t\ttype: file.type,"
+  - "\t\t\tfile"
+  - "\t\t};"
+  - ''
+  - "\t\ttry {"
+  - "\t\t\tif (getFileTypeCategory(file.type) === FileTypeCategory.IMAGE) {"
+  - "\t\t\t\tlet preview = await readFileAsDataURL(file);"
+  - ''
+  - "\t\t\t\t// Normalize SVG and WebP to PNG in previews"
+  - "\t\t\t\tif (isSvgMimeType(file.type)) {"
+  - "\t\t\t\t\ttry {"
+  - "\t\t\t\t\t\tpreview = await svgBase64UrlToPngDataURL(preview);"
+  - "\t\t\t\t\t} catch (err) {"
+  - "\t\t\t\t\t\tconsole.error('Failed to convert SVG to PNG:', err);"
+  - "\t\t\t\t\t}"
+  - "\t\t\t\t} else if (isWebpMimeType(file.type)) {"
+  - "\t\t\t\t\ttry {"
+  - "\t\t\t\t\t\tpreview = await webpBase64UrlToPngDataURL(preview);"
+  - "\t\t\t\t\t} catch (err) {"
+  - "\t\t\t\t\t\tconsole.error('Failed to convert WebP to PNG:', err);"
+  - "\t\t\t\t\t}"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tresults.push({ ...base, preview });"
+  - "\t\t\t} else if (getFileTypeCategory(file.type) === FileTypeCategory.PDF) {"
+  - "\t\t\t\t// Extract text content from PDF for preview"
+  - "\t\t\t\ttry {"
+  - "\t\t\t\t\tconst textContent = await convertPDFToText(file);"
+  - "\t\t\t\t\tresults.push({ ...base, textContent });"
+  - "\t\t\t\t} catch (err) {"
+  - "\t\t\t\t\tconsole.warn('Failed to extract text from PDF, adding without content:',\
+    \ err);"
+  - "\t\t\t\t\tresults.push(base);"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\t// Show suggestion toast if vision model is available but PDF as image\
+    \ is disabled"
+  - "\t\t\t\tconst hasVisionSupport = activeModelId"
+  - "\t\t\t\t\t? modelsStore.modelSupportsVision(activeModelId)"
+  - "\t\t\t\t\t: false;"
+  - "\t\t\t\tconst currentConfig = settingsStore.config;"
+  - "\t\t\t\tif (hasVisionSupport && !currentConfig.pdfAsImage) {"
+  - "\t\t\t\t\ttoast.info(`You can enable parsing PDF as images with vision models.`,\
+    \ {"
+  - "\t\t\t\t\t\tduration: 8000,"
+  - "\t\t\t\t\t\taction: {"
+  - "\t\t\t\t\t\t\tlabel: 'Enable PDF as Images',"
+  - "\t\t\t\t\t\t\tonClick: () => {"
+  - "\t\t\t\t\t\t\t\tsettingsStore.updateConfig('pdfAsImage', true);"
+  - "\t\t\t\t\t\t\t\ttoast.success('PDF parsing as images enabled!', {"
+  - "\t\t\t\t\t\t\t\t\tduration: 3000"
+  - "\t\t\t\t\t\t\t\t});"
+  - "\t\t\t\t\t\t\t}"
+  - "\t\t\t\t\t\t}"
+  - "\t\t\t\t\t});"
+  - "\t\t\t\t}"
+  - "\t\t\t} else if (getFileTypeCategory(file.type) === FileTypeCategory.AUDIO) {"
+  - "\t\t\t\t// Generate preview URL for audio files"
+  - "\t\t\t\tconst preview = await readFileAsDataURL(file);"
+  - "\t\t\t\tresults.push({ ...base, preview });"
+  - "\t\t\t} else {"
+  - "\t\t\t\t// Fallback: treat unknown files as text"
+  - "\t\t\t\ttry {"
+  - "\t\t\t\t\tconst textContent = await readFileAsUTF8(file);"
+  - "\t\t\t\t\tresults.push({ ...base, textContent });"
+  - "\t\t\t\t} catch (err) {"
+  - "\t\t\t\t\tconsole.warn('Failed to read file as text, adding without content:',\
+    \ err);"
+  - "\t\t\t\t\tresults.push(base);"
+  - "\t\t\t\t}"
+  - "\t\t\t}"
+  - "\t\t} catch (error) {"
+  - "\t\t\tconsole.error('Error processing file', file.name, error);"
+  - "\t\t\tresults.push(base);"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn results;"
+  - '}'
+  desc: Main exported function that processes an array of File objects into ChatUploadedFile
+    format. It categorizes files by type (image, PDF, audio, or text), generates appropriate
+    previews (base64 data URLs), normalizes SVG/WebP images to PNG format, extracts
+    text content from PDFs and text files, and displays a toast notification suggesting
+    PDF-to-image conversion when a vision-capable model is active but the feature
+    is disabled.
+  line: 54-128
+  name: processFilesToChatUploaded

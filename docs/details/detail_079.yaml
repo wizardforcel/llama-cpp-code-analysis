@@ -1,0 +1,769 @@
+code_map:
+- README.md
+- '└── 项目入口说明、服务端功能概述 # 帮助理解服务端在 llama.cpp 中的角色'
+- tools/server/server.cpp
+- '├── __main__ # 全局作用域基础设施'
+- '│   ├── shutdown_handler 声明                 # 全局退出处理器指针'
+- '│   ├── is_terminating 标志                   # 原子标志防止重复终止'
+- '│   ├── signal_handler()                      # 信号处理：区分首次/二次中断'
+- '│   └── ex_wrapper()                          # 路由异常统一包装器'
+- '└── main()                                    # 服务端启动总入口'
+- '    ├── 参数解析与配置校验'
+- '    ├── HTTP 上下文初始化 (ctx_http.init)'
+- '    ├── 路由注册（单模型/路由器模式）'
+- '    ├── 模型加载与主循环启动'
+- '    └── 优雅退出清理逻辑'
+- tools/server/server-common.h
+- '├── __main__ # 全局工具函数与类型定义'
+- '│   ├── json_value()                          # JSON 安全取值模板'
+- '│   ├── format_error_response()               # 统一错误响应格式化'
+- '│   ├── random_string() / gen_chatcmplid() / gen_tool_call_id()  # 随机 ID 生成'
+- '│   ├── json_is_array_of_*() / json_get_nested_values()  # JSON 数据校验工具'
+- '│   ├── base64_decode()                       # Base64 解码'
+- '│   ├── tokenize_mixed() / tokenize_input_prompts()  # 混合输入分词'
+- '│   ├── validate_utf8() / is_valid_utf8()     # UTF-8 校验'
+- '│   ├── fnv_hash()                            # FNV 哈希算法'
+- '│   ├── lora_all_alora() / lora_should_clear_cache() / parse_lora_request() / are_lora_equal()
+  / lora_get_enabled_ids() # LoRA 管理工具'
+- '│   ├── oaicompat_completion_params_parse() / oaicompat_chat_params_parse()  #
+  OpenAI 参数解析'
+- '│   ├── convert_responses_to_chatcmpl() / convert_anthropic_to_oai()  # 协议转换'
+- '│   ├── format_embeddings_response_oaicompat() / format_response_rerank()  # 响应格式化'
+- '│   ├── format_oai_sse() / format_oai_resp_sse() / format_anthropic_sse()  # SSE
+  格式化'
+- '│   ├── get_token_probabilities() / safe_json_to_str() / tokens_to_str() / tokens_to_output_formatted_string()  #
+  输出工具'
+- '│   ├── format_prompt_infill() / format_prompt_rerank()  # 提示词格式化'
+- '│   └── server_grammar_trigger                # 语法触发器封装'
+- '│       ├── server_grammar_trigger()          # 构造函数'
+- '│       └── to_json()                         # JSON 序列化'
+- '├── server_tokens                             # 文本 token + 多模态 chunk 容器'
+- '│   ├── server_tokens() / ~server_tokens()    # 构造与析构'
+- '│   ├── server_tokens(const server_tokens&) = delete / operator=(const server_tokens&)
+  = delete  # 拷贝控制'
+- '│   ├── server_tokens(server_tokens&&) / operator=(server_tokens&&)  # 移动语义'
+- '│   ├── operator[] / size() / empty() / clear()  # 基础容器操作'
+- '│   ├── pos_next() / size_up_to_pos()         # 位置换算'
+- '│   ├── push_back() (llama_token/chunk/server_tokens) / insert()  # 多态插入'
+- '│   ├── keep_first() / get_common_prefix()    # 缓存与截断管理'
+- '│   ├── detokenize() / validate() / clone()   # 输出与验证'
+- '│   ├── str() / find_chunk()                  # 调试与查找'
+- '│   ├── get_text_tokens() / set_token()       # 投机解码支持'
+- '│   └── process_chunk()                       # 处理单个多模态块'
+- '├── server_chat_params                        # 聊天请求公共参数'
+- '└── server_http_req / server_http_res         # HTTP 请求响应抽象'
+- tools/server/server-common.cpp
+- '├── __main__ # 基础工具函数实现'
+- '│   ├── format_error_response()               # 错误响应格式化实现'
+- │   ├── random_string() / gen_chatcmplid() / gen_tool_call_id()
+- '│   ├── base64_decode() (static inline)       # Base64 解码'
+- │   ├── json_is_array_of_numbers() 等 JSON 校验
+- '│   ├── json_get_nested_values()              # 嵌套 JSON 提取'
+- '│   ├── tokenize_mixed() / tokenize_input_subprompt() / tokenize_input_prompts()  #
+  分词实现'
+- '│   ├── validate_utf8() / is_valid_utf8() / fnv_hash()  # 编码与哈希'
+- '│   ├── process_mtmd_prompt() / handle_media()  # 多模态处理'
+- '│   ├── lora_all_alora() / lora_should_clear_cache() / parse_lora_request() / are_lora_equal()
+  / lora_get_enabled_ids()  # LoRA 工具'
+- '│   ├── oaicompat_completion_params_parse() / oaicompat_chat_params_parse()  #
+  参数解析'
+- '│   ├── convert_responses_to_chatcmpl() / convert_anthropic_to_oai()  # 协议转换实现'
+- '│   ├── format_embeddings_response_oaicompat() / format_response_rerank()  # 响应格式化实现'
+- '│   ├── get_token_probabilities() / safe_json_to_str() / tokens_to_str() / tokens_to_output_formatted_string()  #
+  输出实现'
+- '│   ├── format_oai_sse() / format_oai_resp_sse() / format_anthropic_sse() / format_openai_sse()  #
+  SSE 实现'
+- '│   └── format_prompt_infill() / format_prompt_rerank()  # 提示词实现'
+- └── server_tokens 实现
+- '    ├── server_tokens() (各种构造函数)'
+- '    ├── pos_next() / size_up_to_pos()'
+- '    ├── push_back() (单token/chunk/另一个tokens)'
+- '    ├── insert() / get_text_tokens() / set_token()'
+- '    ├── keep_first() / get_common_prefix()'
+- '    ├── detokenize() / validate() / clone()'
+- '    ├── str() / find_chunk()'
+- '    └── process_chunk()                       # 调用 mtmd_helper_eval_chunk_single'
+- tools/server/server-http.h
+- '├── server_http_req                           # HTTP 请求封装'
+- '│   └── get_param()                           # 参数获取'
+- '├── server_http_res                           # HTTP 响应封装'
+- '│   └── is_stream()                           # 流式响应判断'
+- '└── server_http_context                       # HTTP 上下文'
+- '    ├── server_http_context() / ~server_http_context()  # 构造析构'
+- '    ├── init() / start() / stop()             # 生命周期'
+- '    └── get() / post()                        # 路由注册'
+- tools/server/server-http.cpp
+- '├── __main__ # 实现细节'
+- '│   ├── Impl 类 (Pimpl 模式)                  # 内部实现封装'
+- '│   ├── log_server_request()                  # AI 语聊日志'
+- '│   ├── get_params() / get_headers() / build_query_string() # 请求解析'
+- '│   └── set_headers()                         # 响应头设置'
+- └── server_http_context 实现
+- '    ├── server_http_context() / ~server_http_context()  # 构造析构实现'
+- '    ├── init()                                # SSL/中间件/静态资源配置'
+- '    ├── start() / stop()                      # 启动停止'
+- '    ├── get() / post()                        # 路由实现'
+- '    └── process_handler_response()            # 响应处理（含流式）'
+exercises:
+- contents:
+  - 阅读 `tools/server/server.cpp` 第 1-50 行（全局作用域）与 `main()` 函数中的信号注册部分：
+  - 1. `shutdown_handler` 与 `is_terminating` 的声明与初始化
+  - 2. `signal_handler` 函数的实现逻辑：第一次信号与第二次信号的行为差异
+  - 3. `main()` 中 `sigaction` / `SetConsoleCtrlHandler` 的调用位置
+  - 回答问题：
+  - '- 为什么需要 `is_terminating` 这个原子标志？直接调用 `shutdown_handler` 会有什么风险？'
+  - '- `signal_handler` 为什么要调用 `exit(1)` 而不是继续执行？'
+  - '- 在 router 模式和单模型模式下，`shutdown_handler` 被赋值的 lambda 表达式有何不同？'
+  'no': 1
+  title: 分析 server.cpp 的全局信号处理机制
+- contents:
+  - 聚焦 `server.cpp` 中 `ex_wrapper` 函数的实现（约第 20-50 行）：
+  - 1. 它捕获了哪些类型的异常（`std::invalid_argument` / `std::exception` / 未知异常）？
+  - 2. 如何将异常转换为 `format_error_response` 格式的 JSON 响应？
+  - 3. 为什么 `res->status` 要从 `json_value` 中再次提取 `code` 字段？
+  - 回答问题：
+  - '- 如果路由处理函数抛出非标准异常（如整数或字符串），`ex_wrapper` 能否捕获？'
+  - '- 为什么要在 `ex_wrapper` 内部使用 `SRV_WRN` 记录警告日志？这对调试有什么帮助？'
+  'no': 2
+  title: 研究 ex_wrapper 的异常转换逻辑
+- contents:
+  - 阅读 `server.cpp` 中 `main()` 函数（第 60-337 行），重点观察：
+  - 1. `common_params_parse` 之后对 `n_parallel` 和 `model_alias` 的修正逻辑
+  - 2. `ctx_http.init()` 与 `ctx_http.start()` 之间插入 `is_router_server` 判断的意义
+  - 3. 单模型模式下 `ctx_server.load_model()` 与 `ctx_server.start_loop()` 的调用顺序
+  - 回答问题：
+  - '- 为什么要在 `ctx_http.start()` 之后才加载模型（`load_model`）？'
+  - '- Router 模式下为什么直接设置 `ctx_http.is_ready` 而不等待模型加载？'
+  - '- `main()` 结尾处的 `ctx_http.thread.join()` 和 `monitor_thread.join()` 分别在什么条件下执行？'
+  'no': 3
+  title: 追踪 main() 的启动时序与模式分支
+- contents:
+  - 结合 `server-common.h` 与 `server-common.cpp` 中 `server_tokens` 的实现：
+  - 1. 查看 `process_chunk()` 如何调用 `mtmd_helper_eval_chunk_single`
+  - 2. 分析 `push_back(const mtmd_input_chunk*)` 中图像/音频块与文本块的处理差异
+  - 3. 理解 `validate()` 如何确保媒体块占位符（LLAMA_TOKEN_NULL）与映射表的一致性
+  - 回答问题：
+  - '- `process_chunk()` 返回的 `n_tokens_out` 与 `mtmd_input_chunk_get_n_tokens()` 的关系是什么？'
+  - '- 当 `has_mtmd` 为 false 时，`pos_next()` 与 `size_up_to_pos()` 为何可以直接使用 token 数量代替位置？'
+  - '- `keep_first()` 在截断时如何保护媒体块不被破坏？'
+  'no': 4
+  title: 验证 server_tokens 的多模态处理完整性
+- contents:
+  - 阅读 `server-http.cpp` 中 `server_http_context::init()` 与 `process_handler_response()`：
+  - 1. `init()` 中如何配置 SSL 证书、API 密钥中间件和静态资源服务？
+  - 2. `get()`/`post()` 路由如何把 `httplib` 的请求响应对象转换为 `server_http_req`/`server_http_res`？
+  - 3. `process_handler_response()` 如何区分普通响应和流式响应（chunked transfer）？
+  - 回答问题：
+  - '- 为什么使用 Pimpl（Pointer to Implementation）模式封装 `httplib::Server`？'
+  - '- 在 `process_handler_response()` 中，流式响应的 `on_complete` 回调做了什么资源清理工作？'
+  'no': 5
+  title: 探究 HTTP 上下文的初始化与请求处理流程
+- contents:
+  - 阅读 `server-common.cpp` 中的 `convert_anthropic_to_oai()` 和 `convert_responses_to_chatcmpl()`：
+  - 1. 分析 `convert_anthropic_to_oai()` 如何处理 thinking 块、tool_use 块和 tool_result 块的转换
+  - 2. 追踪 `convert_responses_to_chatcmpl()` 中 `input` 数组的多类型处理逻辑（input_text、input_image、function_call
+    等）
+  - 3. 理解 `format_anthropic_sse()` 与 `format_oai_sse()` 在 SSE 事件格式上的差异
+  - 回答问题：
+  - '- 为什么 Anthropic 的 `thinking` 块需要转换为 `reasoning_content` 字段？'
+  - '- `convert_responses_to_chatcmpl()` 中的 `merge_prev` 逻辑在什么情况下触发，解决了什么问题？'
+  - '- SSE 格式化中为什么 `data: ` 前缀和双换行符是必需的？'
+  'no': 6
+  title: 解析 OpenAI 与 Anthropic 协议转换
+- contents:
+  - 阅读 `server-common.cpp` 中的基础工具函数：
+  - 1. `base64_decode()` 如何处理非标准长度和填充字符
+  - 2. `validate_utf8()` 与 `is_valid_utf8()` 在截断判断逻辑上的差异
+  - 3. `tokenize_mixed()` 如何混合处理字符串、token ID 数组和多模态对象
+  - 4. `fnv_hash()` 的算法原理及其在媒体缓存中的作用
+  - 回答问题：
+  - '- `base64_decode()` 中 `char_array_4` 和 `char_array_3` 的位移操作实现了什么转换？'
+  - '- 为什么 `validate_utf8()` 只检查末尾的字节序列，而 `is_valid_utf8()` 检查整个字符串？'
+  - '- 在 `tokenize_mixed()` 中，`add_special` 参数对第一个元素和后续元素的处理有何不同？'
+  'no': 7
+  title: 掌握基础工具函数的工程实现
+learning_targets:
+- 理解 server.cpp 全局作用域中信号处理与异常封装机制的设计意图
+- 掌握 `signal_handler` 与 `ex_wrapper` 在服务端稳定性保障中的角色分工
+- 理解 `main()` 函数如何利用这些全局基础设施协调 HTTP 服务与推理引擎的生命周期
+- 掌握 server_tokens 类中 `process_chunk` 与 MTMD 上下文的交互细节以及 LoRA 适配器动态管理工具链
+- 能够分析服务端启动时优雅退出与错误响应的实现原理
+- 掌握 HTTP 上下文初始化过程中 SSL、中间件、静态资源与线程池的配置逻辑
+- 掌握 server_tokens 容器完整生命周期管理（构造、移动、销毁）与多模态媒体块的映射维护机制
+- 理解 OpenAI/Anthropic 协议转换层的参数解析、SSE 流式格式化与跨协议转换原理
+- 掌握服务端基础工具函数（Base64、UTF-8、FNV 哈希、JSON 校验）在请求处理管道中的支撑作用
+life_analogy:
+- 想象 llama-server 的 `server.cpp` 是一家**高可用银行**的应急指挥中心：
+- '- **`signal_handler`** = 双重警报系统，第一次警报启动有序疏散（优雅退出），第二次警报触发紧急破门（立即终止）'
+- '- **`ex_wrapper`** = 每位柜台的防弹玻璃罩，无论内部业务（路由处理函数）发生什么爆炸（异常），都能将其转化为标准错误回执单（HTTP 500
+  响应），不让柜台外的客户看到火光'
+- '- **`main()`** = 行长，依靠这些安全设施，才能在早晨大胆开门营业（启动服务），在晚上安心拉闸（清理资源）'
+- 这些全局保护机制让 HTTP 路由层可以专注于业务逻辑，而不必每个端点都手写 try-catch 和信号处理。
+- 而 `server_tokens` 则是这家银行的**智能运钞车与多币种金库管理系统**：
+- '- **`pos_next()` / `size_up_to_pos()`** = 精确计算运输路线长度（位置）与实际货币箱数（token），特别是处理外币（多模态块）时汇率换算（token数与位置数不一致）'
+- '- **`push_back()` 家族** = 三种入库方式：普通钞票（单token）、整箱外币（chunk）、整辆运钞车（另一个server_tokens）'
+- '- **`keep_first()` / `get_common_prefix()`** = 库存优化算法，保留最常用的货币面额，快速识别重复运钞路线'
+- '- **`process_chunk()`** = 外币兑换窗口，将黄金、珠宝（图像/音频）按汇率折算成标准货币单位（token embedding）'
+- '`server-http.cpp` 则是银行的**大堂经理与安保系统**：'
+- '- **`init()`** = 营业时间前的准备工作：开启保险库（SSL）、安装监控（中间件）、安排大堂布局（静态资源）'
+- '- **`get()` / `post()`** = 设立不同业务窗口（路由），有的办理取款（GET），有的办理存款（POST）'
+- '- **`process_handler_response()`** = 快递打包台，根据客户要求选择普通包裹（普通响应）或冷链物流（流式响应）'
+- 协议转换层（`convert_*` 系列）则是**多语言翻译中心**：
+- '- **`convert_responses_to_chatcmpl()`** = 将 Responses API 的''外文单据''翻译成内部统一的''标准票据''（Chat
+  Completion格式）'
+- '- **`convert_anthropic_to_oai()`** = Anthropic 格式与 OpenAI 格式之间的''双语词典''，处理思考块、工具调用等特殊语法'
+- '- **`format_*_sse()`** 系列 = 实时翻译耳机，将内部推理结果转换成不同协议驱动的''语音流''（SSE）'
+- 基础工具函数（Base64/UTF-8/JSON 校验）则是**精密测量工具组**：
+- '- **`validate_utf8()` / `is_valid_utf8()`** = 货币验钞机，确保每一张''文本钞票''都不是残次品（非法编码）'
+- '- **`fnv_hash()`** = 金库条形码机，给每批多模态数据打上唯一标识'
+- '- **`json_value()` / `json_is_array_of_*()`** = 票据格式校验器，确保 incoming requests 符合标准格式'
+'no': 78
+summary:
+- concept: '`__main__` (server.cpp)'
+  desc: 全局作用域基础设施，包含 shutdown handler 声明、原子终止标志和信号处理函数
+- concept: '`signal_handler()`'
+  desc: 信号处理函数，利用 `is_terminating` 原子标志实现首次 SIGINT/SIGTERM 优雅退出、二次信号立即终止的双重机制
+- concept: '`ex_wrapper()`'
+  desc: 路由处理函数的异常安全包装器，将各种 C++ 异常转换为带状态码的 JSON 错误响应
+- concept: '`main()`'
+  desc: 服务端总入口，组织参数解析、HTTP 初始化、双模式路由注册、模型加载与启动主循环
+- concept: '`server_tokens` 类'
+  desc: 统一文本 token 与多模态媒体块的容器，支撑提示词处理与 KV 缓存管理，含完整的构造、移动、验证生命周期
+- concept: '`server_tokens.process_chunk()`'
+  desc: 调用 MTMD 辅助器编码单个图像或音频块，是多模态输入进入推理前的关键处理节点
+- concept: '`server_tokens.push_back()` 家族'
+  desc: 多态插入接口，支持单 token、media chunk 或整个 server_tokens 对象的合并，自动维护索引映射
+- concept: '`server_tokens.get_common_prefix()`'
+  desc: 计算两个 token 序列的公共前缀长度，用于 KV 缓存复用优化，特别处理多模态 chunk ID 比对
+- concept: '`server_http_context`'
+  desc: HTTP 服务器上下文，基于 Pimpl 模式封装 cpp-httplib，管理 SSL、中间件和路由
+- concept: '`server_http_context.init()`'
+  desc: HTTP 初始化方法，配置 API 密钥校验、CORS、静态资源服务和线程池
+- concept: '`format_error_response()`'
+  desc: 将内部错误类型转换为标准化 JSON 错误响应，统一 API 错误格式
+- concept: '`lora_should_clear_cache()`'
+  desc: LoRA 动态切换时判断是否需清空 KV 缓存，确保生成结果一致性
+- concept: '`oaicompat_chat_params_parse()`'
+  desc: OpenAI 兼容聊天补全请求的参数解析器，提取模型、消息、工具、流式等参数
+- concept: '`convert_responses_to_chatcmpl()`'
+  desc: 将 OpenAI Responses API 请求体转换为 Chat Completion 格式，处理输入项、工具调用和推理内容
+- concept: '`convert_anthropic_to_oai()`'
+  desc: Anthropic Messages API 到 OpenAI 格式的转换器，处理系统提示、 thinking 块、工具结果等特殊结构
+- concept: '`format_oai_sse()` / `format_anthropic_sse()`'
+  desc: Server-Sent Events 格式化器，分别处理 OpenAI 和 Anthropic 风格的流式响应编码
+- concept: '`tokenize_mixed()` / `tokenize_input_prompts()`'
+  desc: 混合输入分词器，支持字符串、token 数组、多模态混合输入的解析
+- concept: '`validate_utf8()` / `is_valid_utf8()`'
+  desc: UTF-8 编码校验工具，确保输入文本不会因乱码导致处理异常
+- concept: '`fnv_hash()`'
+  desc: FNV-1a 哈希算法实现，为多模态数据生成唯一标识符
+- concept: '`json_value()` / `json_is_array_of_*()`'
+  desc: JSON 安全访问与类型校验工具集，提供带默认值的提取和数组类型检查
+- concept: '`base64_decode()`'
+  desc: Base64 解码工具，处理多模态传输中的媒体数据解码
+- concept: '`format_prompt_infill()` / `format_prompt_rerank()`'
+  desc: 专用提示词格式化器，分别用于填充任务和重排序任务的 prompt 构造
+- concept: '`server_grammar_trigger`'
+  desc: 语法触发器封装，支持 JSON 序列化与反序列化，用于结构化输出控制
+- concept: '`process_handler_response()`'
+  desc: 统一响应处理函数，区分普通响应与流式响应，管理 chunked transfer 编码
+- concept: '`process_mtmd_prompt()`'
+  desc: 多模态提示词处理器，将 base64 媒体数据与文本提示结合生成 server_tokens
+units:
+- codes:
+  - file: tools/server/server.cpp
+    line: 1-60
+    method_or_func: __main__
+  - file: tools/server/server.cpp
+    line: 60-337
+    method_or_func: main()
+  name: 服务端基础设施与优雅退出 —— server.cpp 全局作用域的'安全气囊'
+  'no': 1
+  points:
+  - '**server.cpp 的全局保护机制**'
+  - '- `shutdown_handler` 函数指针作为''总电闸''，由 `main()` 在启动时安装，在信号到来时触发'
+  - '- `signal_handler()` 使用 `is_terminating` 原子标志实现双重检测：首次 SIGINT/SIGTERM 触发优雅退出（停止
+    HTTP、释放模型），二次信号直接 `exit(1)` 强制终止'
+  - '- 这种设计避免了用户在服务无响应时疯狂按 Ctrl+C 导致的资源泄漏'
+  - '**异常到 HTTP 响应的统一转换**'
+  - '- `ex_wrapper()` 是一个高阶函数，为每个路由处理函数戴上''防毒面具'''
+  - '- 它将 `std::invalid_argument` 映射为 400（客户端错误），其他异常映射为 500（服务器错误）'
+  - '- 通过 `format_error_response` 生成符合 OpenAI/Anthropic 风格的 JSON 错误体，确保 API 调用方总能收到结构化响应而非
+    HTML 错误页'
+  - '**main() 函数如何依赖这些基础设施**'
+  - '- `main()` 在启动阶段即注册信号处理器，确保从模型加载到主循环退出的全生命周期都可被安全中断'
+  - '- 通过 `ex_wrapper` 包装所有路由处理器，使路由注册代码保持简洁，无需在每个端点重复错误处理逻辑'
+- codes:
+  - file: tools/server/server-common.h
+    line: 118-136
+    method_or_func: server_tokens
+  - file: tools/server/server-common.h
+    line: 132-133
+    method_or_func: server_tokens.operator[]
+  - file: tools/server/server-common.h
+    line: '166'
+    method_or_func: server_tokens.size
+  - file: tools/server/server-common.h
+    line: '168'
+    method_or_func: server_tokens.empty
+  - file: tools/server/server-common.h
+    line: 170-174
+    method_or_func: server_tokens.clear
+  - file: tools/server/server-common.h
+    line: 149-155
+    method_or_func: server_tokens.push_back
+  - file: tools/server/server-common.h
+    line: '142'
+    method_or_func: server_tokens.pos_next()
+  - file: tools/server/server-common.h
+    line: '145'
+    method_or_func: server_tokens.size_up_to_pos()
+  - file: tools/server/server-common.h
+    line: '158'
+    method_or_func: server_tokens.insert
+  - file: tools/server/server-common.h
+    line: '161'
+    method_or_func: server_tokens.get_text_tokens
+  - file: tools/server/server-common.h
+    line: '164'
+    method_or_func: server_tokens.set_token
+  - file: tools/server/server-common.h
+    line: '176'
+    method_or_func: server_tokens.keep_first()
+  - file: tools/server/server-common.h
+    line: '178'
+    method_or_func: server_tokens.detokenize
+  - file: tools/server/server-common.h
+    line: '180'
+    method_or_func: server_tokens.get_common_prefix()
+  - file: tools/server/server-common.h
+    line: '183'
+    method_or_func: server_tokens.validate
+  - file: tools/server/server-common.h
+    line: 186-193
+    method_or_func: server_tokens.process_chunk()
+  - file: tools/server/server-common.h
+    line: '195'
+    method_or_func: server_tokens.clone
+  - file: tools/server/server-common.h
+    line: '139'
+    method_or_func: server_tokens.str
+  - file: tools/server/server-common.h
+    line: '147'
+    method_or_func: server_tokens.find_chunk
+  - file: tools/server/server-common.cpp
+    line: 195-196
+    method_or_func: server_tokens.server_tokens
+  - file: tools/server/server-common.cpp
+    line: 200-248
+    method_or_func: server_tokens.pos_next()
+  - file: tools/server/server-common.cpp
+    line: 250-281
+    method_or_func: server_tokens.size_up_to_pos()
+  - file: tools/server/server-common.cpp
+    line: 283-300
+    method_or_func: server_tokens.str()
+  - file: tools/server/server-common.cpp
+    line: 302-309
+    method_or_func: server_tokens.find_chunk()
+  - file: tools/server/server-common.cpp
+    line: 311-359
+    method_or_func: server_tokens.push_back
+  - file: tools/server/server-common.cpp
+    line: 361-364
+    method_or_func: server_tokens.insert()
+  - file: tools/server/server-common.cpp
+    line: 366-369
+    method_or_func: server_tokens.get_text_tokens()
+  - file: tools/server/server-common.cpp
+    line: 371-375
+    method_or_func: server_tokens.set_token()
+  - file: tools/server/server-common.cpp
+    line: 377-400
+    method_or_func: server_tokens.keep_first()
+  - file: tools/server/server-common.cpp
+    line: 402-413
+    method_or_func: server_tokens.detokenize()
+  - file: tools/server/server-common.cpp
+    line: 415-459
+    method_or_func: server_tokens.get_common_prefix()
+  - file: tools/server/server-common.cpp
+    line: 461-481
+    method_or_func: server_tokens.validate()
+  - file: tools/server/server-common.cpp
+    line: 483-508
+    method_or_func: server_tokens.process_chunk()
+  - file: tools/server/server-common.cpp
+    line: 510-522
+    method_or_func: server_tokens.clone()
+  name: 统一令牌容器与提示词处理 —— server_tokens 这座'多模态装箱工厂'
+  'no': 2
+  points:
+  - '**server_tokens 的完整生命周期管理**'
+  - '- 构造函数支持从 `mtmd::input_chunks` 批量导入或从纯文本 token 列表初始化，拷贝操作被显式删除（`= delete`），移动操作默认启用，确保资源所有权清晰'
+  - '- 析构函数默认实现，依赖智能指针自动管理 `mtmd::input_chunk_ptr` 资源'
+  - '- `operator[]`、`size()`、`empty()`、`clear()` 提供标准容器接口，`clear()` 同时清空 token 列表和媒体映射表'
+  - '**多态插入与位置映射机制**'
+  - '- `push_back(llama_token)` 添加普通文本 token，拒绝空 token；`push_back(const mtmd_input_chunk*)`
+    处理媒体块，自动插入占位符并记录索引映射；`push_back(server_tokens&)` 合并另一个容器，重建索引映射'
+  - '- `insert()` 仅在非多模态模式下批量插入 token 列表'
+  - '- `pos_next()` 与 `size_up_to_pos()` 实现 token 索引与推理位置（position）的双向换算，处理多模态场景下
+    token 数与位置数不一致的问题（一个图像块可能对应多个 position）'
+  - '**缓存优化与验证机制**'
+  - '- `get_common_prefix()` 计算两个 server_tokens 的公共前缀长度，多模态模式下比较 chunk ID 和 token
+    数量，用于 KV 缓存复用'
+  - '- `keep_first()` 在截断时保护媒体块完整性，确保不在 chunk 中间切断，防止越界访问'
+  - '- `validate()` 确保媒体占位符（LLAMA_TOKEN_NULL）与媒体块映射一致，所有文本 token 在词汇表范围内'
+  - '- `clone()` 深拷贝整个对象，复制所有媒体块'
+  - '**投机解码与调试支持**'
+  - '- `get_text_tokens()` 和 `set_token()` 支持投机解码场景下的 token 访问与修改'
+  - '- `str()` 生成调试字符串，展示 token 序列和媒体索引分布'
+  - '- `find_chunk()` 根据索引查找媒体块，抛出异常处理未找到的情况'
+- codes:
+  - file: tools/server/server-common.h
+    line: '291'
+    method_or_func: oaicompat_completion_params_parse
+  - file: tools/server/server-common.h
+    line: 294-298
+    method_or_func: oaicompat_chat_params_parse
+  - file: tools/server/server-common.h
+    line: '301'
+    method_or_func: convert_responses_to_chatcmpl
+  - file: tools/server/server-common.h
+    line: '304'
+    method_or_func: convert_anthropic_to_oai
+  - file: tools/server/server-common.h
+    line: 308-312
+    method_or_func: format_embeddings_response_oaicompat
+  - file: tools/server/server-common.h
+    line: 315-321
+    method_or_func: format_response_rerank
+  - file: tools/server/server-common.h
+    line: '339'
+    method_or_func: format_oai_sse
+  - file: tools/server/server-common.h
+    line: '341'
+    method_or_func: format_oai_resp_sse
+  - file: tools/server/server-common.h
+    line: '344'
+    method_or_func: format_anthropic_sse
+  - file: tools/server/server-common.h
+    line: '335'
+    method_or_func: tokens_to_output_formatted_string
+  - file: tools/server/server-common.h
+    line: 355-365
+    method_or_func: format_prompt_infill
+  - file: tools/server/server-common.h
+    line: 368-374
+    method_or_func: format_prompt_rerank
+  - file: tools/server/server-common.h
+    line: '104'
+    method_or_func: lora_all_alora
+  - file: tools/server/server-common.h
+    line: 107-110
+    method_or_func: lora_should_clear_cache
+  - file: tools/server/server-common.h
+    line: '112'
+    method_or_func: parse_lora_request
+  - file: tools/server/server-common.h
+    line: 114-117
+    method_or_func: are_lora_equal
+  - file: tools/server/server-common.h
+    line: '120'
+    method_or_func: lora_get_enabled_ids
+  - file: tools/server/server-common.h
+    line: '235'
+    method_or_func: process_mtmd_prompt
+  - file: tools/server/server-common.h
+    line: 249-255
+    method_or_func: tokenize_input_prompts
+  - file: tools/server/server-common.cpp
+    line: 762-793
+    method_or_func: oaicompat_completion_params_parse()
+  - file: tools/server/server-common.cpp
+    line: 840-872
+    method_or_func: oaicompat_chat_params_parse()
+  - file: tools/server/server-common.cpp
+    line: 795-835
+    method_or_func: handle_media()
+  - file: tools/server/server-common.cpp
+    line: 1126-1547
+    method_or_func: convert_responses_to_chatcmpl()
+  - file: tools/server/server-common.cpp
+    line: 1549-1794
+    method_or_func: convert_anthropic_to_oai()
+  - file: tools/server/server-common.cpp
+    line: 1796-1844
+    method_or_func: format_embeddings_response_oaicompat()
+  - file: tools/server/server-common.cpp
+    line: 1846-1894
+    method_or_func: format_response_rerank()
+  - file: tools/server/server-common.cpp
+    line: 1974-1993
+    method_or_func: format_oai_sse()
+  - file: tools/server/server-common.cpp
+    line: 1995-2013
+    method_or_func: format_oai_resp_sse()
+  - file: tools/server/server-common.cpp
+    line: 1905-1925
+    method_or_func: format_anthropic_sse()
+  - file: tools/server/server-common.cpp
+    line: 1884-1903
+    method_or_func: format_openai_sse()
+  - file: tools/server/server-common.cpp
+    line: 1957-2047
+    method_or_func: format_prompt_infill()
+  - file: tools/server/server-common.cpp
+    line: 2049-2079
+    method_or_func: format_prompt_rerank()
+  - file: tools/server/server-common.cpp
+    line: 1956-1972
+    method_or_func: tokens_to_output_formatted_string()
+  - file: tools/server/server-common.cpp
+    line: 82-94
+    method_or_func: lora_all_alora()
+  - file: tools/server/server-common.cpp
+    line: 100-116
+    method_or_func: lora_should_clear_cache()
+  - file: tools/server/server-common.cpp
+    line: 118-129
+    method_or_func: parse_lora_request()
+  - file: tools/server/server-common.cpp
+    line: 131-145
+    method_or_func: are_lora_equal()
+  - file: tools/server/server-common.cpp
+    line: 147-159
+    method_or_func: lora_get_enabled_ids()
+  - file: tools/server/server-common.cpp
+    line: 667-696
+    method_or_func: process_mtmd_prompt()
+  - file: tools/server/server-common.cpp
+    line: 706-736
+    method_or_func: tokenize_input_subprompt()
+  - file: tools/server/server-common.cpp
+    line: 738-755
+    method_or_func: tokenize_input_prompts()
+  name: 协议翻译与格式转换 —— OpenAI、Anthropic 与 SSE 的'联合国翻译官'
+  'no': 3
+  points:
+  - '**OpenAI 兼容参数解析**'
+  - '- `oaicompat_completion_params_parse()` 处理 /completions 端点，解析 prompt、stop、max_tokens
+    等参数，处理不支持的 best_of 和 suffix 参数报错'
+  - '- `oaicompat_chat_params_parse()` 处理 /chat/completions，支持多模态内容（图像 URL、base64）、工具调用、JSON
+    schema 响应格式'
+  - '- `handle_media()` 统一处理 HTTP URL、本地文件（file://）和 base64 数据三种媒体来源，带安全校验'
+  - '**跨协议转换引擎**'
+  - '- `convert_responses_to_chatcmpl()` 将 OpenAI Responses API 转换为 Chat Completion
+    格式，处理 input_text、input_image、function_call、reasoning 等复杂输入项，合并连续的 assistant 消息'
+  - '- `convert_anthropic_to_oai()` 将 Anthropic Messages API 转换为 OpenAI 格式，处理 system
+    提示、thinking 块转 reasoning_content、tool_use 转 tool_calls、tool_result 处理等'
+  - '- 两者都处理工具定义的格式差异，确保函数调用能力跨协议兼容'
+  - '**响应格式化与 SSE 编码**'
+  - '- `format_embeddings_response_oaicompat()` 生成 OpenAI 风格的嵌入响应，支持 base64 编码的 embedding
+    返回'
+  - '- `format_response_rerank()` 格式化重排序结果，支持 TEI 格式和 OpenAI 格式，按分数排序并截断 top_n'
+  - '- `format_oai_sse()` 生成 OpenAI 标准 SSE 格式（`data: {...}\n\n`），`format_anthropic_sse()`
+    和 `format_oai_resp_sse()` 处理带 `event:` 类型的 SSE 格式'
+  - '- `tokens_to_output_formatted_string()` 处理不完整 UTF-8 字节的特殊格式化，显示为 `byte: \xXX`'
+  - '**专用提示词构造**'
+  - '- `format_prompt_infill()` 构造 FIM（Fill-In-Middle）提示，处理前缀、后缀、额外上下文，支持 SPM 和 FIM
+    两种模式，控制 token 数量在 n_batch 限制内'
+  - '- `format_prompt_rerank()` 构造重排序提示，支持自定义模板或默认的 [BOS]query[EOS][SEP]doc[EOS] 格式'
+  - '**LoRA 适配器动态管理**'
+  - '- `lora_all_alora()` 检查是否所有启用的 LoRA 都是 Alora 类型'
+  - '- `lora_should_clear_cache()` 判断切换 LoRA 时是否需要清空 KV 缓存，基于当前和目标的 Alora 状态'
+  - '- `parse_lora_request()` 解析 JSON 请求中的 LoRA 配置'
+  - '- `are_lora_equal()` 和 `lora_get_enabled_ids()` 提供 LoRA 集合的比较与查询'
+- codes:
+  - file: tools/server/server-common.h
+    line: 52-63
+    method_or_func: json_value
+  - file: tools/server/server-common.h
+    line: '90'
+    method_or_func: format_error_response
+  - file: tools/server/server-common.h
+    line: '96'
+    method_or_func: random_string
+  - file: tools/server/server-common.h
+    line: '97'
+    method_or_func: gen_chatcmplid
+  - file: tools/server/server-common.h
+    line: '98'
+    method_or_func: gen_tool_call_id
+  - file: tools/server/server-common.h
+    line: '212'
+    method_or_func: json_is_array_of_numbers
+  - file: tools/server/server-common.h
+    line: '215'
+    method_or_func: json_is_array_of_mixed_numbers_strings
+  - file: tools/server/server-common.h
+    line: '218'
+    method_or_func: json_is_array_and_contains_numbers
+  - file: tools/server/server-common.h
+    line: '221'
+    method_or_func: json_get_nested_values
+  - file: tools/server/server-common.h
+    line: '227'
+    method_or_func: tokenize_mixed
+  - file: tools/server/server-common.h
+    line: '232'
+    method_or_func: validate_utf8
+  - file: tools/server/server-common.h
+    line: '346'
+    method_or_func: is_valid_utf8
+  - file: tools/server/server-common.h
+    line: '329'
+    method_or_func: safe_json_to_str
+  - file: tools/server/server-common.h
+    line: 331-332
+    method_or_func: tokens_to_str
+  - file: tools/server/server-common.h
+    line: 66-86
+    method_or_func: server_grammar_trigger
+  - file: tools/server/server-common.cpp
+    line: 18-47
+    method_or_func: format_error_response()
+  - file: tools/server/server-common.cpp
+    line: 53-66
+    method_or_func: random_string()
+  - file: tools/server/server-common.cpp
+    line: 68-71
+    method_or_func: gen_chatcmplid()
+  - file: tools/server/server-common.cpp
+    line: 73-76
+    method_or_func: gen_tool_call_id()
+  - file: tools/server/server-common.cpp
+    line: 166-196
+    method_or_func: base64_decode()
+  - file: tools/server/server-common.cpp
+    line: 528-538
+    method_or_func: json_is_array_of_numbers()
+  - file: tools/server/server-common.cpp
+    line: 540-556
+    method_or_func: json_is_array_of_mixed_numbers_strings()
+  - file: tools/server/server-common.cpp
+    line: 558-570
+    method_or_func: json_is_array_and_contains_numbers()
+  - file: tools/server/server-common.cpp
+    line: 572-594
+    method_or_func: json_get_nested_values()
+  - file: tools/server/server-common.cpp
+    line: 596-629
+    method_or_func: tokenize_mixed()
+  - file: tools/server/server-common.cpp
+    line: 631-651
+    method_or_func: validate_utf8()
+  - file: tools/server/server-common.cpp
+    line: 653-665
+    method_or_func: fnv_hash()
+  - file: tools/server/server-common.cpp
+    line: 1927-1955
+    method_or_func: is_valid_utf8()
+  - file: tools/server/server-common.cpp
+    line: 1934-1936
+    method_or_func: safe_json_to_str()
+  - file: tools/server/server-common.cpp
+    line: 1938-1954
+    method_or_func: tokens_to_str()
+  name: 基础工具与数据编码 —— 服务端运行的'精密仪器库'
+  'no': 4
+  points:
+  - '**JSON 安全访问与校验**'
+  - '- `json_value()` 模板函数提供带默认值的 JSON 安全提取，自动处理类型不匹配并记录警告日志'
+  - '- `json_is_array_of_numbers()`、`json_is_array_of_mixed_numbers_strings()`、`json_is_array_and_contains_numbers()`
+    提供快速的 JSON 数组类型检查'
+  - '- `json_get_nested_values()` 支持路径式（如 `key1/key2`）的嵌套 JSON 值提取'
+  - '**Base64 与哈希工具**'
+  - '- `base64_decode()` 实现标准的 Base64 解码，处理填充字符 `=` 和非标准长度，将 4 字符组转换为 3 字节'
+  - '- `fnv_hash()` 实现 FNV-1a 哈希算法，为二进制数据生成 64 位哈希字符串，用于媒体内容唯一标识'
+  - '**UTF-8 编码验证**'
+  - '- `validate_utf8()` 检查字符串末尾的 UTF-8 序列完整性，返回最后一个完整字符的位置，用于流式处理中截断不完整的字符'
+  - '- `is_valid_utf8()` 检查整个字符串的 UTF-8 有效性，验证 1-4 字节序列的格式正确性'
+  - '**ID 生成与随机数**'
+  - '- `random_string()` 生成 32 字符的随机字母数字字符串，使用 `std::random_device` 和 `std::mt19937`'
+  - '- `gen_chatcmplid()` 生成带 `chatcmpl-` 前缀的聊天完成 ID'
+  - '- `gen_tool_call_id()` 生成随机的工具调用 ID'
+  - '**错误标准化与字符串工具**'
+  - '- `format_error_response()` 将内部错误类型（ERROR_TYPE_INVALID_REQUEST、ERROR_TYPE_AUTHENTICATION
+    等）映射为标准的 JSON 错误响应，包含 code、message、type 字段，符合 OpenAI 错误格式'
+  - '- `safe_json_to_str()` 使用 `error_handler_t::replace` 安全地将 JSON 序列化为字符串，处理非法 UTF-8'
+  - '- `tokens_to_str()` 系列函数将 token 序列转换回文本字符串'
+  - '**多模态提示词处理**'
+  - '- `process_mtmd_prompt()` 处理包含 base64 媒体数据的提示词，调用 MTMD 库进行图像/音频编码，生成 server_tokens'
+  - '- `tokenize_mixed()` 处理字符串、token ID 数组或混合数组的输入分词'
+  - '- `tokenize_input_prompts()` 处理多个子提示，支持批量处理'
+  - '**语法触发器封装**'
+  - '- `server_grammar_trigger` 类封装 `common_grammar_trigger`，提供 JSON 序列化和反序列化能力，用于结构化输出控制'
+- codes:
+  - file: tools/server/server-http.h
+    line: 40-45
+    method_or_func: server_http_req
+  - file: tools/server/server-http.h
+    line: 22-24
+    method_or_func: server_http_res
+  - file: tools/server/server-http.h
+    line: 55-65
+    method_or_func: server_http_context
+  - file: tools/server/server-http.cpp
+    line: 1-46
+    method_or_func: __main__
+  - file: tools/server/server-http.cpp
+    line: '39'
+    method_or_func: server_http_context::Impl
+  - file: tools/server/server-http.cpp
+    line: 47-61
+    method_or_func: log_server_request()
+  - file: tools/server/server-http.cpp
+    line: 41-45
+    method_or_func: server_http_context.server_http_context
+  - file: tools/server/server-http.cpp
+    line: 63-286
+    method_or_func: server_http_context.init()
+  - file: tools/server/server-http.cpp
+    line: 288-329
+    method_or_func: server_http_context.start()
+  - file: tools/server/server-http.cpp
+    line: 331-334
+    method_or_func: server_http_context.stop()
+  - file: tools/server/server-http.cpp
+    line: 418-431
+    method_or_func: server_http_context.get()
+  - file: tools/server/server-http.cpp
+    line: 433-446
+    method_or_func: server_http_context.post()
+  - file: tools/server/server-http.cpp
+    line: 373-416
+    method_or_func: process_handler_response()
+  - file: tools/server/server-http.cpp
+    line: 342-350
+    method_or_func: get_params()
+  - file: tools/server/server-http.cpp
+    line: 352-358
+    method_or_func: get_headers()
+  - file: tools/server/server-http.cpp
+    line: 360-369
+    method_or_func: build_query_string()
+  - file: tools/server/server-http.cpp
+    line: 336-340
+    method_or_func: set_headers()
+  name: HTTP 服务与启动编排 —— server.cpp 与 server-http.cpp 如何搭起'前台大厅'
+  'no': 5
+  points:
+  - '**server.cpp 是整台服务器的导演**'
+  - '- 先解析命令行参数、初始化日志与后端，再创建 `server_http_context`'
+  - '- 然后按模式选择''单模型直连''还是''router 代理多模型''，利用单元 1 中的全局异常包装器保护所有端点'
+  - '- 最后把一整套 REST 端点逐个注册进 HTTP 服务，并在退出时优雅收尾'
+  - '**server-http.cpp 把网络细节收进一个干净壳子里**'
+  - '- `server_http_context::init()` 负责 SSL、API key 校验、服务就绪检查、线程池和静态资源挂载，是服务启动前的''安检门''，配置
+    CORS 中间件处理 OPTIONS 预检请求'
+  - '- `server_http_context::get()` / `post()` 把路由注册成统一回调，屏蔽 httplib 的复杂度，自动完成请求/响应对象转换（`server_http_req`/`server_http_res`）'
+  - '- `process_handler_response()` 同时支持普通响应与流式响应（chunked transfer），让聊天补全、嵌入、工具输出都能复用同一套输出机制，流式响应通过
+    lambda 捕获保持请求和响应对象的生命周期'
+  - '**从工程角度看，这一层解决的是''可运维性''**'
+  - '- 它把鉴权、健康检查、CORS、日志、异常兜底等都放在门口处理'
+  - '- 让上层业务逻辑专注推理本身，不必反复处理网络层边角问题'
+  - '- 这也是 llama.cpp 服务端能同时服务本地调试、WebUI 和外部集成的关键'
+  - '**请求响应的抽象封装**'
+  - '- `server_http_req` 封装路径参数、查询参数、请求头、请求体，提供 `get_param()` 便捷访问'
+  - '- `server_http_res` 区分普通响应（data 字段）和流式响应（next 回调），`is_stream()` 判断响应类型'
+  - '- Pimpl 模式（`Impl` 类）隐藏 `httplib::Server` 实现细节，便于未来替换底层 HTTP 库'

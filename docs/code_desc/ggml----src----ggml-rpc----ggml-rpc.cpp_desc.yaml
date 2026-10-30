@@ -1,0 +1,2246 @@
+classes:
+- desc: 跨平台封装的 socket 类，负责管理 socket 文件描述符的生命周期，在析构时自动关闭连接。
+  methods: []
+  name: socket_t
+- desc: 用于缓存最近执行的图（cgraph）的节点信息，通过比较节点数量和张量内容判断图是否重复，以支持图的复用和重计算优化。
+  methods:
+  - code:
+    - bool is_cached(const ggml_cgraph * cgraph) {
+    - '    if ((int)last_graph.size() != cgraph->n_nodes) {'
+    - '        return false;'
+    - '    }'
+    - '    for (int i = 0; i < cgraph->n_nodes; i++) {'
+    - '        if (memcmp(&last_graph[i], cgraph->nodes[i], sizeof(ggml_tensor)) !=
+      0) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 检查传入的图是否与缓存中的图完全一致（节点数量和每个节点的张量内容相同）。
+    line: 273-283
+    name: is_cached
+  - code:
+    - void add(const ggml_cgraph * cgraph) {
+    - '    last_graph.resize(cgraph->n_nodes);'
+    - '    for (int i = 0; i < cgraph->n_nodes; i++) {'
+    - '        memcpy(&last_graph[i], cgraph->nodes[i], sizeof(ggml_tensor));'
+    - '    }'
+    - '}'
+    desc: 将传入图的所有节点张量内容复制到缓存中，用于后续的图比较。
+    line: 285-291
+    name: add
+  name: graph_cache
+- desc: RPC 缓冲类型上下文结构体，存储端点、设备号、名称以及远程缓冲区对齐和最大大小信息。
+  methods: []
+  name: ggml_backend_rpc_buffer_type_context
+- desc: RPC 后端上下文结构体，存储端点、设备号、名称以及图缓存对象。
+  methods: []
+  name: ggml_backend_rpc_context
+- desc: RPC 缓冲上下文结构体，存储对应的 socket 指针、本地基地址指针和远程缓冲区地址。
+  methods: []
+  name: ggml_backend_rpc_buffer_context
+- desc: RPC 服务器类，实现所有 RPC 命令的服务器端处理逻辑，包括缓冲区管理、张量操作和图计算等。
+  methods:
+  - code:
+    - rpc_server(std::vector<ggml_backend_t> all_backends, const char * cache_dir)
+    - '    : backends(std::move(all_backends)), cache_dir(cache_dir) {'
+    - '    stored_graphs.resize(backends.size());'
+    - '}'
+    desc: 构造函数，初始化后端列表和图缓存数组。
+    line: 843-847
+    name: rpc_server
+  - code:
+    - ~rpc_server();
+    desc: 析构函数，用于清理服务器资源（具体实现在文件后部）。
+    line: '848'
+    name: ~rpc_server
+  name: rpc_server
+- desc: RPC服务器核心类，封装了所有远程操作的后端处理逻辑，管理后端设备、缓冲区缓存和存储的计算图。
+  methods:
+  - code:
+    - void rpc_server::hello(rpc_msg_hello_rsp & response) {
+    - '    response.major = RPC_PROTO_MAJOR_VERSION;'
+    - '    response.minor = RPC_PROTO_MINOR_VERSION;'
+    - '    response.patch = RPC_PROTO_PATCH_VERSION;'
+    - '    LOG_DBG("[%s] version: %d.%d.%d\n", __func__, response.major, response.minor,
+      response.patch);'
+    - '}'
+    desc: 处理客户端握手请求，返回协议版本号。
+    line: 104-109
+    name: hello
+  - code:
+    - bool rpc_server::get_alloc_size(const rpc_msg_get_alloc_size_req & request,
+      rpc_msg_get_alloc_size_rsp & response) {
+    - '    uint32_t dev_id = request.device;'
+    - '    if (dev_id >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_type_t buft;'
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ ggml_tensor_overhead()*(1 + GGML_MAX_SRC),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * tensor = deserialize_tensor(ctx, &request.tensor);'
+    - '    if (tensor == nullptr) {'
+    - '        GGML_LOG_ERROR("Null tensor pointer passed to server get_alloc_size
+      function.\n");'
+    - '        return false;'
+    - '    }'
+    - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+    - '        if (request.srcs[i].id != 0) {'
+    - '            tensor->src[i] = deserialize_tensor(ctx, &request.srcs[i]);'
+    - '        }'
+    - '    }'
+    - '    LOG_DBG("[%s] device: %d, buffer: %p, data: %p\n", __func__, dev_id, (void*)tensor->buffer,
+      tensor->data);'
+    - '    if (tensor->buffer == nullptr) {'
+    - '        //No buffer allocated.'
+    - '        buft = ggml_backend_get_default_buffer_type(backends[dev_id]);'
+    - '    } else {'
+    - '        buft = tensor->buffer->buft;'
+    - '    }'
+    - '    response.alloc_size = ggml_backend_buft_get_alloc_size(buft, tensor);'
+    - '    return true;'
+    - '}'
+    desc: 计算指定Tensor在特定设备上所需的内存分配大小。
+    line: 111-147
+    name: get_alloc_size
+  - code:
+    - bool rpc_server::alloc_buffer(const rpc_msg_alloc_buffer_req & request, rpc_msg_alloc_buffer_rsp
+      & response) {
+    - '    uint32_t dev_id = request.device;'
+    - '    if (dev_id >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backends[dev_id]);'
+    - '    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, request.size);'
+    - '    response.remote_ptr = 0;'
+    - '    response.remote_size = 0;'
+    - '    if (buffer != nullptr) {'
+    - '        response.remote_ptr = reinterpret_cast<uint64_t>(buffer);'
+    - '        response.remote_size = buffer->size;'
+    - '        LOG_DBG("[%s] device: %d, size: %" PRIu64 " -> remote_ptr: %" PRIx64
+      ", remote_size: %" PRIu64 "\n", __func__, dev_id, request.size, response.remote_ptr,
+      response.remote_size);'
+    - '        buffers.insert(buffer);'
+    - '    } else {'
+    - '        LOG_DBG("[%s] device: %d, size: %" PRIu64 " -> failed\n", __func__,
+      dev_id, request.size);'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 在指定后端设备上分配内存缓冲区。
+    line: 149-169
+    name: alloc_buffer
+  - code:
+    - bool rpc_server::get_alignment(const rpc_msg_get_alignment_req & request, rpc_msg_get_alignment_rsp
+      & response) {
+    - '    uint32_t dev_id = request.device;'
+    - '    if (dev_id >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backends[dev_id]);'
+    - '    size_t alignment = ggml_backend_buft_get_alignment(buft);'
+    - '    LOG_DBG("[%s] device: %d, alignment: %lu\n", __func__, dev_id, alignment);'
+    - '    response.alignment = alignment;'
+    - '    return true;'
+    - '}'
+    desc: 获取指定后端设备的内存对齐要求。
+    line: 171-181
+    name: get_alignment
+  - code:
+    - bool rpc_server::get_max_size(const rpc_msg_get_max_size_req & request, rpc_msg_get_max_size_rsp
+      & response) {
+    - '    uint32_t dev_id = request.device;'
+    - '    if (dev_id >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backends[dev_id]);'
+    - '    size_t max_size = ggml_backend_buft_get_max_size(buft);'
+    - '    LOG_DBG("[%s] device: %d, max_size: %lu\n", __func__, dev_id, max_size);'
+    - '    response.max_size = max_size;'
+    - '    return true;'
+    - '}'
+    desc: 获取指定后端设备可分配的最大缓冲区大小。
+    line: 183-193
+    name: get_max_size
+  - code:
+    - bool rpc_server::buffer_get_base(const rpc_msg_buffer_get_base_req & request,
+      rpc_msg_buffer_get_base_rsp & response) {
+    - '    LOG_DBG("[%s] remote_ptr: %" PRIx64 "\n", __func__, request.remote_ptr);'
+    - '    ggml_backend_buffer_t buffer = reinterpret_cast<ggml_backend_buffer_t>(request.remote_ptr);'
+    - '    if (buffers.find(buffer) == buffers.end()) {'
+    - '        GGML_LOG_ERROR("[%s] buffer not found\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    void * base = ggml_backend_buffer_get_base(buffer);'
+    - '    response.base_ptr = reinterpret_cast<uint64_t>(base);'
+    - '    return true;'
+    - '}'
+    desc: 获取指定远程缓冲区的基地址。
+    line: 195-207
+    name: buffer_get_base
+  - code:
+    - bool rpc_server::free_buffer(const rpc_msg_free_buffer_req & request) {
+    - '    LOG_DBG("[%s] remote_ptr: %" PRIx64 "\n", __func__, request.remote_ptr);'
+    - '    ggml_backend_buffer_t buffer = reinterpret_cast<ggml_backend_buffer_t>(request.remote_ptr);'
+    - '    if (buffers.find(buffer) == buffers.end()) {'
+    - '        GGML_LOG_ERROR("[%s] buffer not found\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_free(buffer);'
+    - '    buffers.erase(buffer);'
+    - '    return true;'
+    - '}'
+    desc: 释放远程缓冲区并移除其记录。
+    line: 209-220
+    name: free_buffer
+  - code:
+    - bool rpc_server::buffer_clear(const rpc_msg_buffer_clear_req & request) {
+    - '    LOG_DBG("[%s] remote_ptr: %" PRIx64 ", value: %u\n", __func__, request.remote_ptr,
+      request.value);'
+    - '    ggml_backend_buffer_t buffer = reinterpret_cast<ggml_backend_buffer_t>(request.remote_ptr);'
+    - '    if (buffers.find(buffer) == buffers.end()) {'
+    - '        GGML_LOG_ERROR("[%s] buffer not found\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    ggml_backend_buffer_clear(buffer, request.value);'
+    - '    return true;'
+    - '}'
+    desc: 使用指定值清除远程缓冲区的内容。
+    line: 222-232
+    name: buffer_clear
+  - code:
+    - ggml_tensor * rpc_server::deserialize_tensor(struct ggml_context * ctx, const
+      rpc_tensor * tensor) {
+    - '    // Validate tensor type before using it'
+    - '    if (tensor->type >= GGML_TYPE_COUNT) {'
+    - '        GGML_LOG_ERROR("[%s] invalid tensor type received: %u\n", __func__,
+      tensor->type);'
+    - '        return nullptr;'
+    - '    }'
+    - '    // Fix: Prevent division by zero if blck_size is 0 (e.g., deprecated types)'
+    - '    if (ggml_blck_size((enum ggml_type)tensor->type) == 0) {'
+    - '        GGML_LOG_ERROR("[%s] invalid tensor type received (blck_size is 0):
+      %u\n", __func__, tensor->type);'
+    - '        return nullptr;'
+    - '    }'
+    - '    ggml_tensor * result = ggml_new_tensor_4d(ctx, (ggml_type) tensor->type,'
+    - '        tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);'
+    - '    // ggml_new_tensor_4d might fail if dimensions are invalid, although less
+      likely to crash than invalid type'
+    - '    if (result == nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] ggml_new_tensor_4d failed for type %u\n", __func__,
+      tensor->type);'
+    - '        return nullptr;'
+    - '    }'
+    - '    for (uint32_t i = 0; i < GGML_MAX_DIMS; i++) {'
+    - '        result->nb[i] = tensor->nb[i];'
+    - '    }'
+    - '    result->buffer = reinterpret_cast<ggml_backend_buffer_t>(tensor->buffer);'
+    - '    if (result->buffer && buffers.find(result->buffer) == buffers.end()) {'
+    - '        result->buffer = nullptr;'
+    - '    }'
+    - '    if (result->buffer) {'
+    - '        // require that the tensor data does not go beyond the buffer end'
+    - '        uint64_t tensor_size = (uint64_t) ggml_nbytes(result);'
+    - '        uint64_t buffer_start = (uint64_t) ggml_backend_buffer_get_base(result->buffer);'
+    - '        uint64_t buffer_size = (uint64_t) ggml_backend_buffer_get_size(result->buffer);'
+    - '        GGML_ASSERT(tensor->data + tensor_size >= tensor->data); // check for
+      overflow'
+    - '        GGML_ASSERT(tensor->data >= buffer_start && tensor->data + tensor_size
+      <= buffer_start + buffer_size);'
+    - '    }'
+    - '    result->op = (ggml_op) tensor->op;'
+    - '    for (uint32_t i = 0; i < GGML_MAX_OP_PARAMS / sizeof(int32_t); i++) {'
+    - '        result->op_params[i] = tensor->op_params[i];'
+    - '    }'
+    - '    result->flags = tensor->flags;'
+    - '    result->data = reinterpret_cast<void *>(tensor->data);'
+    - '    ggml_set_name(result, tensor->name);'
+    - '    return result;'
+    - '}'
+    desc: 从RPC消息中反序列化ggml_tensor数据结构。
+    line: 234-276
+    name: deserialize_tensor
+  - code:
+    - bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
+    - '    // serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
+      |'
+    - '    if (input.size() < sizeof(rpc_tensor) + sizeof(uint64_t)) {'
+    - '        return false;'
+    - '    }'
+    - '    const rpc_tensor * in_tensor = (const rpc_tensor *)input.data();'
+    - '    uint64_t offset;'
+    - '    memcpy(&offset, input.data() + sizeof(rpc_tensor), sizeof(offset));'
+    - '    const size_t size = input.size() - sizeof(rpc_tensor) - sizeof(offset);'
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ ggml_tensor_overhead(),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * tensor = deserialize_tensor(ctx, in_tensor);'
+    - '    if (tensor == nullptr || tensor->buffer == nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] error deserializing tensor\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    LOG_DBG("[%s] buffer: %p, data: %p, offset: %" PRIu64 ", size: %zu\n",
+      __func__, (void*)tensor->buffer, tensor->data, offset, size);'
+    - '    // sanitize tensor->data'
+    - '    {'
+    - '        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);'
+    - '        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);'
+    - '        if (in_tensor->data + offset < p0 || in_tensor->data + offset >= p1
+      || size > (p1 - in_tensor->data - offset)) {'
+    - '            GGML_LOG_ERROR("[%s] tensor data region (data=0x%" PRIx64 ", offset=%"
+      PRIu64 ", size=%zu) out of buffer bounds [0x%zx, 0x%zx)\n",'
+    - '                           __func__, in_tensor->data, offset, size, p0, p1);'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    const void * data = input.data() + sizeof(rpc_tensor) + sizeof(offset);'
+    - '    if (cache_dir && size > HASH_THRESHOLD) {'
+    - '        uint64_t hash = fnv_hash((const uint8_t*)data, size);'
+    - '        char hash_str[17];'
+    - '        snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, hash);'
+    - '        // save to cache_dir/hash_str'
+    - '        fs::path cache_file = fs::path(cache_dir) / hash_str;'
+    - '        std::ofstream ofs(cache_file, std::ios::binary);'
+    - '        ofs.write((const char *)data, size);'
+    - '        GGML_LOG_INFO("[%s] saved to ''%s''\n", __func__, cache_file.c_str());'
+    - '    }'
+    - '    ggml_backend_tensor_set(tensor, data, offset, size);'
+    - '    return true;'
+    - '}'
+    desc: 接收并设置Tensor数据，支持大数据的文件缓存。
+    line: 278-329
+    name: set_tensor
+  - code:
+    - bool rpc_server::get_cached_file(uint64_t hash, std::vector<uint8_t> & data)
+      {
+    - '    if (!cache_dir) {'
+    - '        return false;'
+    - '    }'
+    - '    char hash_str[17];'
+    - '    snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, hash);'
+    - '    fs::path cache_file = fs::path(cache_dir) / hash_str;'
+    - '    std::error_code ec;'
+    - '    if (!fs::exists(cache_file, ec)) {'
+    - '        return false;'
+    - '    }'
+    - '    std::ifstream ifs(cache_file, std::ios::binary);'
+    - '    ifs.seekg(0, std::ios::end);'
+    - '    size_t size = ifs.tellg();'
+    - '    ifs.seekg(0, std::ios::beg);'
+    - '    data.resize(size);'
+    - '    ifs.read((char *)data.data(), size);'
+    - '    return true;'
+    - '}'
+    desc: 从本地缓存目录读取文件内容。
+    line: 331-345
+    name: get_cached_file
+  - code:
+    - bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request,
+      rpc_msg_set_tensor_hash_rsp & response) {
+    - '    std::vector<uint8_t> cached_file;'
+    - '    if (!get_cached_file(request.hash, cached_file)) {'
+    - '        response.result = 0;'
+    - '        return true;'
+    - '    }'
+    - '    size_t size = cached_file.size();'
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ ggml_tensor_overhead(),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * tensor = deserialize_tensor(ctx, &request.tensor);'
+    - '    if (tensor == nullptr || tensor->buffer == nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] error deserializing tensor\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    LOG_DBG("[%s] buffer: %p, data: %p, offset: %" PRIu64 ", size: %zu, hash:
+      %" PRIx64 "\n",'
+    - '            __func__, (void*)tensor->buffer, tensor->data, request.offset,
+      size, request.hash);'
+    - '    // sanitize tensor->data'
+    - '    {'
+    - '        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);'
+    - '        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);'
+    - '        if (request.tensor.data + request.offset < p0'
+    - '         || request.tensor.data + request.offset >= p1'
+    - '         || size > (p1 - request.tensor.data - request.offset)) {'
+    - '            GGML_LOG_ERROR("[%s] tensor data region (data=0x%" PRIx64 ", offset=%"
+      PRIu64 ", size=%zu, hash=0x%" PRIx64 ") out of buffer bounds [0x%zx, 0x%zx)\n",'
+    - '                           __func__, request.tensor.data, request.offset, size,
+      request.hash, p0, p1);'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    ggml_backend_tensor_set(tensor, cached_file.data(), request.offset, size);'
+    - '    response.result = 1;'
+    - '    return true;'
+    - '}'
+    desc: 通过哈希值从缓存加载数据并设置Tensor内容。
+    line: 347-386
+    name: set_tensor_hash
+  - code:
+    - bool rpc_server::init_tensor(const rpc_msg_init_tensor_req & request) {
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ ggml_tensor_overhead(),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * tensor = deserialize_tensor(ctx, &request.tensor);'
+    - '    if (tensor == nullptr) {'
+    - '        GGML_LOG_ERROR("Null tensor pointer passed to server init_tensor function.\n");'
+    - '        return false;'
+    - '    }'
+    - '    LOG_DBG("[%s] buffer: %p, data: %p\n", __func__, (void*)tensor->buffer,
+      tensor->data);'
+    - '    // Call the backend''s buffer_init_tensor function'
+    - '    ggml_backend_buffer_t buffer = tensor->buffer;'
+    - '    if (buffer && buffer->iface.init_tensor) {'
+    - '        buffer->iface.init_tensor(buffer, tensor);'
+    - '    } else {'
+    - '        if (!buffer) {'
+    - '            GGML_LOG_ERROR("Tensor with null buffer passed to init_tensor function\n");'
+    - '        }'
+    - '    }'
+    - '    if (tensor->extra != nullptr) {'
+    - '        // This pointer can either be passed around client/server, or probably
+      better stored server-side and kept track of.'
+    - '        // Currently unimplemented.'
+    - '        GGML_LOG_ERROR("tensor->extra populated by the backend, this is currently
+      unsupported.\n");'
+    - '        return false;'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 初始化Tensor的后端缓冲区。
+    line: 388-420
+    name: init_tensor
+  - code:
+    - bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<uint8_t>
+      & response) {
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ ggml_tensor_overhead(),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * tensor = deserialize_tensor(ctx, &request.tensor);'
+    - '    if (tensor == nullptr || tensor->buffer == nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] error deserializing tensor\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    LOG_DBG("[%s] buffer: %p, data: %p, offset: %" PRIu64 ", size: %" PRIu64
+      "\n", __func__, (void*)tensor->buffer, tensor->data, request.offset, request.size);'
+    - '    // sanitize tensor->data'
+    - '    {'
+    - '        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);'
+    - '        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);'
+    - '        if (request.tensor.data + request.offset < p0 ||'
+    - '            request.tensor.data + request.offset >= p1 ||'
+    - '            request.size > (p1 - request.tensor.data - request.offset)) {'
+    - '                GGML_LOG_ERROR("[%s] requested tensor region (data=0x%" PRIx64
+      ", offset=%" PRIu64 ", size=%" PRIu64 ") out of buffer bounds [0x%zx, 0x%zx)\n",'
+    - '                               __func__, request.tensor.data, request.offset,
+      request.size, p0, p1);'
+    - '                return false;'
+    - '        }'
+    - '    }'
+    - '    response.resize(request.size, 0);'
+    - '    ggml_backend_tensor_get(tensor, response.data(), request.offset, request.size);'
+    - '    return true;'
+    - '}'
+    desc: 从远程Tensor中读取数据并返回给客户端。
+    line: 422-453
+    name: get_tensor
+  - code:
+    - bool rpc_server::copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp
+      & response) {
+    - '    struct ggml_init_params params {'
+    - '        /*.mem_size   =*/ 2*ggml_tensor_overhead(),'
+    - '        /*.mem_buffer =*/ NULL,'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    ggml_tensor * src = deserialize_tensor(ctx, &request.src);'
+    - '    ggml_tensor * dst = deserialize_tensor(ctx, &request.dst);'
+    - '    if (src == nullptr || dst == nullptr || src->buffer == nullptr || dst->buffer
+      == nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] error deserializing tensors\n", __func__);'
+    - '        return false;'
+    - '    }'
+    - '    uint64_t src_size   = (uint64_t) ggml_nbytes(src);'
+    - '    uint64_t dst_data   = (uint64_t) dst->data;'
+    - '    uint64_t dst_base   = (uint64_t) ggml_backend_buffer_get_base(dst->buffer);'
+    - '    uint64_t dst_buf_sz = (uint64_t) ggml_backend_buffer_get_size(dst->buffer);'
+    - '    if (dst_data + src_size > dst_base + dst_buf_sz) {'
+    - '        GGML_LOG_ERROR("[%s] out-of-bounds write in rpc_server::copy_tensor:\n"'
+    - '                         "    write range : [0x%" PRIx64 ", 0x%" PRIx64 "]\n"'
+    - '                         "    buffer base: [0x%" PRIx64 ", 0x%" PRIx64 "]\n",'
+    - '                         __func__,'
+    - '                         dst_data,'
+    - '                         dst_data + src_size,'
+    - '                         dst_base,'
+    - '                         dst_base + dst_buf_sz);'
+    - '        return false;'
+    - '    }'
+    - '    LOG_DBG("[%s] src->buffer: %p, dst->buffer: %p\n",'
+    - '            __func__, (void*) src->buffer, (void*) dst->buffer);'
+    - '    response.result = ggml_backend_buffer_copy_tensor(src, dst);'
+    - '    return true;'
+    - '}'
+    desc: 复制Tensor数据，从源Tensor复制到目标Tensor。
+    line: 455-493
+    name: copy_tensor
+  - code:
+    - ggml_tensor * rpc_server::create_node(uint64_t id,
+    - '                                      struct ggml_context * ctx,'
+    - '                                      const std::unordered_map<uint64_t, const
+      rpc_tensor*> & tensor_ptrs,'
+    - '                                      std::unordered_map<uint64_t, struct ggml_tensor*>
+      & tensor_map) {'
+    - '    if (tensor_map.find(id) != tensor_map.end()) {'
+    - '        return tensor_map[id];'
+    - '    }'
+    - '    // Safely find the tensor pointer'
+    - '    auto it_ptr = tensor_ptrs.find(id);'
+    - '    if (it_ptr == tensor_ptrs.end()) {'
+    - '        return nullptr;'
+    - '    }'
+    - '    const rpc_tensor * tensor = it_ptr->second;'
+    - '    struct ggml_tensor * result = deserialize_tensor(ctx, tensor);'
+    - '    if (result == nullptr) {'
+    - '        return nullptr;'
+    - '    }'
+    - '    if (result->buffer == nullptr && result->data != nullptr) {'
+    - '        GGML_LOG_ERROR("[%s] invalid data ptr", __func__);'
+    - '        return nullptr;'
+    - '    }'
+    - '    tensor_map[id] = result;'
+    - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+    - '        // Check if the source ID is 0 before calling create_node recursively'
+    - '        if (tensor->src[i] == 0) {'
+    - '            result->src[i] = nullptr;'
+    - '        } else {'
+    - '            result->src[i] = create_node(tensor->src[i], ctx, tensor_ptrs,
+      tensor_map);'
+    - '            // If the recursive call failed for a non-zero ID, propagate the
+      error'
+    - '            if (result->src[i] == nullptr) {'
+    - '                GGML_LOG_ERROR("[%s] failed to create source node %d (src_id=%"
+      PRIu64 ") for node id %" PRIu64 "\n",'
+    - '                               __func__, i, tensor->src[i], id);'
+    - '                // Must return nullptr to signal failure up the call stack'
+    - '                return nullptr;'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    // Handle view_src similarly'
+    - '    if (tensor->view_src == 0) {'
+    - '        result->view_src = nullptr;'
+    - '    } else {'
+    - '        result->view_src = create_node(tensor->view_src, ctx, tensor_ptrs,
+      tensor_map);'
+    - '        // If the recursive call failed for a non-zero ID, propagate the error'
+    - '        if (result->view_src == nullptr) {'
+    - '            GGML_LOG_ERROR("[%s] failed to create view_src node (view_src_id=%"
+      PRIu64 ") for node id %" PRIu64 "\n",'
+    - '                           __func__, tensor->view_src, id);'
+    - '            // Must return nullptr to signal failure up the call stack'
+    - '            return nullptr;'
+    - '        }'
+    - '    }'
+    - '    result->view_offs = tensor->view_offs;'
+    - '    return result;'
+    - '}'
+    desc: 递归创建计算图节点及其关联的源节点。
+    line: 495-552
+    name: create_node
+  - code:
+    - bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+    - '    // serialization format:'
+    - '    // | device (4 bytes) | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t)
+      | n_tensors (4 bytes) | tensors (n_tensors * sizeof(rpc_tensor)) |'
+    - '    if (input.size() < 2*sizeof(uint32_t)) {'
+    - '        return false;'
+    - '    }'
+    - '    const uint8_t * src = input.data();'
+    - '    uint32_t device;'
+    - '    memcpy(&device, src, sizeof(device));'
+    - '    src += sizeof(device);'
+    - '    if (device >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    uint32_t n_nodes;'
+    - '    memcpy(&n_nodes, src, sizeof(n_nodes));'
+    - '    src += sizeof(n_nodes);'
+    - '    if (input.size() < 2*sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t))
+      {'
+    - '        return false;'
+    - '    }'
+    - '    const uint64_t * nodes = (const uint64_t *)src;'
+    - '    src += n_nodes*sizeof(uint64_t);'
+    - '    uint32_t n_tensors;'
+    - '    memcpy(&n_tensors, src, sizeof(n_tensors));'
+    - '    src += sizeof(n_tensors);'
+    - '    if (input.size() < 2*sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t)
+      + n_tensors*sizeof(rpc_tensor)) {'
+    - '        return false;'
+    - '    }'
+    - '    const rpc_tensor * tensors = (const rpc_tensor *)src;'
+    - '    LOG_DBG("[%s] device: %u, n_nodes: %u, n_tensors: %u\n", __func__, device,
+      n_nodes, n_tensors);'
+    - '    size_t buf_size = ggml_tensor_overhead()*(n_nodes + n_tensors) + ggml_graph_overhead_custom(n_nodes,
+      false);'
+    - '    if (stored_graphs[device].buffer.size() < buf_size) {'
+    - '        stored_graphs[device].buffer.resize(buf_size);'
+    - '    }'
+    - '    struct ggml_init_params params = {'
+    - '        /*.mem_size   =*/ buf_size,'
+    - '        /*.mem_buffer =*/ stored_graphs[device].buffer.data(),'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ggml_context_ptr ctx_ptr { ggml_init(params) };'
+    - '    GGML_ASSERT(ctx_ptr != nullptr);'
+    - '    ggml_context * ctx = ctx_ptr.get();'
+    - '    struct ggml_cgraph * graph = ggml_new_graph_custom(ctx, n_nodes, false);'
+    - '    graph->n_nodes = n_nodes;'
+    - '    std::unordered_map<uint64_t, const rpc_tensor*> tensor_ptrs;'
+    - '    tensor_ptrs.reserve(n_tensors);'
+    - '    for (uint32_t i = 0; i < n_tensors; i++) {'
+    - '        tensor_ptrs.emplace(tensors[i].id, &tensors[i]);'
+    - '    }'
+    - '    std::unordered_map<uint64_t, ggml_tensor*> tensor_map;'
+    - '    tensor_map.reserve(n_nodes);'
+    - '    for (uint32_t i = 0; i < n_nodes; i++) {'
+    - '        int64_t id;'
+    - '        memcpy(&id, &nodes[i], sizeof(id));'
+    - '        graph->nodes[i] = create_node(id, ctx, tensor_ptrs, tensor_map);'
+    - '        // Check if create_node failed for a *non-zero* ID.'
+    - '        // If id was 0, create_node returning nullptr is expected.'
+    - '        // If id was non-zero and create_node returned nullptr, it indicates
+      a deserialization error.'
+    - '        if (graph->nodes[i] == nullptr && id != 0) {'
+    - '            GGML_LOG_ERROR("[%s] failed to create graph node %d (id=%" PRId64
+      ")\n", __func__, i, id);'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    ggml_status status = ggml_backend_graph_compute(backends[device], graph);'
+    - '    GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations
+      are not supported with RPC");'
+    - '    stored_graphs[device].graph = graph;'
+    - '    return true;'
+    - '}'
+    desc: 反序列化并执行计算图计算。
+    line: 554-631
+    name: graph_compute
+  - code:
+    - bool rpc_server::graph_recompute(const rpc_msg_graph_recompute_req & request)
+      {
+    - '    uint32_t device = request.device;'
+    - '    if (device >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    if (stored_graphs[device].graph == nullptr) {'
+    - '        return false;'
+    - '    }'
+    - '    ggml_cgraph * graph = stored_graphs[device].graph;'
+    - '    LOG_DBG("[%s] device: %u\n", __func__, device);'
+    - '    ggml_status status = ggml_backend_graph_compute(backends[device], graph);'
+    - '    GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations
+      are not supported with RPC");'
+    - '    return true;'
+    - '}'
+    desc: 重新执行之前存储的计算图。
+    line: 633-646
+    name: graph_recompute
+  - code:
+    - bool rpc_server::get_device_memory(const rpc_msg_get_device_memory_req & request,
+      rpc_msg_get_device_memory_rsp & response) {
+    - '    uint32_t dev_id = request.device;'
+    - '    if (dev_id >= backends.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    size_t free, total;'
+    - '    ggml_backend_dev_t dev = ggml_backend_get_device(backends[dev_id]);'
+    - '    ggml_backend_dev_memory(dev, &free, &total);'
+    - '    response.free_mem = free;'
+    - '    response.total_mem = total;'
+    - '    LOG_DBG("[%s] device: %u, free_mem: %" PRIu64 ", total_mem: %" PRIu64 "\n",
+      __func__, dev_id, response.free_mem, response.total_mem);'
+    - '    return true;'
+    - '}'
+    desc: 获取指定设备的内存使用情况。
+    line: 648-658
+    name: get_device_memory
+  - code:
+    - rpc_server::~rpc_server() {
+    - '    for (auto buffer : buffers) {'
+    - '        ggml_backend_buffer_free(buffer);'
+    - '    }'
+    - '}'
+    desc: 析构函数，释放所有管理的缓冲区。
+    line: 660-664
+    name: ~rpc_server
+  name: rpc_server
+- desc: RPC后端设备上下文结构体，存储设备的端点信息、设备ID、名称和描述。
+  methods: []
+  name: ggml_backend_rpc_device_context
+- desc: RPC后端注册上下文结构体，存储后端名称和关联的设备列表。
+  methods: []
+  name: ggml_backend_rpc_reg_context
+desc: 该文件实现了 ggml 库的 RPC (远程过程调用) 后端，允许将张量操作（如分配缓冲区、设置/获取张量数据、图计算等）通过网络发送到远程服务器执行，从而实现多设备或分布式计算。文件包含客户端和服务端的完整实现，包括
+  socket 通信、协议序列化、图缓存和版本检查等功能。该文件是ggml RPC（远程过程调用）服务器的实现，通过socket通信为远程客户端提供ggml后端计算服务。它实现了Tensor的分配、释放、读写、复制，计算图的执行与重计算，以及设备内存查询等核心功能，并通过缓存机制优化大数据传输。该文件实现了RPC后端，提供远程过程调用能力。它包含RPC客户端和服务器功能，允许将GGML计算任务分发到远程设备上执行。主要包含设备接口、后端注册接口的实现，以及服务器启动、客户端连接处理等核心逻辑。
+file: ggml/src/ggml-rpc/ggml-rpc.cpp
+funcs:
+- code:
+  - static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
+  - '#define LOG_DBG(...) \'
+  - '    do { if (RPC_DEBUG) GGML_LOG_DEBUG(__VA_ARGS__); } while (0)'
+  - namespace fs = std::filesystem;
+  - static constexpr size_t MAX_CHUNK_SIZE = 1024ull * 1024ull * 1024ull; // 1 GiB
+  - '#ifdef _WIN32'
+  - typedef SOCKET sockfd_t;
+  - using ssize_t = __int64;
+  - '#else'
+  - typedef int sockfd_t;
+  - '#endif'
+  - '#define RPC_STATUS_ASSERT(x) if (!(x)) GGML_ABORT("Remote RPC server crashed
+    or returned malformed response")'
+  - '#pragma pack(push, 1)'
+  - struct rpc_tensor {
+  - '    uint64_t id;'
+  - '    uint32_t type;'
+  - '    uint64_t buffer;'
+  - '    uint32_t ne[GGML_MAX_DIMS];'
+  - '    uint32_t nb[GGML_MAX_DIMS];'
+  - '    uint32_t op;'
+  - '    int32_t  op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t)];'
+  - '    int32_t  flags;'
+  - '    uint64_t src[GGML_MAX_SRC];'
+  - '    uint64_t view_src;'
+  - '    uint64_t view_offs;'
+  - '    uint64_t data;'
+  - '    char name[GGML_MAX_NAME];'
+  - '    char padding[4];'
+  - '};'
+  - static_assert(sizeof(rpc_tensor) % 8 == 0, "rpc_tensor size must be multiple of
+    8");
+  - enum rpc_cmd {
+  - '    RPC_CMD_ALLOC_BUFFER = 0,'
+  - '    RPC_CMD_GET_ALIGNMENT,'
+  - '    RPC_CMD_GET_MAX_SIZE,'
+  - '    RPC_CMD_BUFFER_GET_BASE,'
+  - '    RPC_CMD_FREE_BUFFER,'
+  - '    RPC_CMD_BUFFER_CLEAR,'
+  - '    RPC_CMD_SET_TENSOR,'
+  - '    RPC_CMD_SET_TENSOR_HASH,'
+  - '    RPC_CMD_GET_TENSOR,'
+  - '    RPC_CMD_COPY_TENSOR,'
+  - '    RPC_CMD_GRAPH_COMPUTE,'
+  - '    RPC_CMD_GET_DEVICE_MEMORY,'
+  - '    RPC_CMD_INIT_TENSOR,'
+  - '    RPC_CMD_GET_ALLOC_SIZE,'
+  - '    RPC_CMD_HELLO,'
+  - '    RPC_CMD_DEVICE_COUNT,'
+  - '    RPC_CMD_GRAPH_RECOMPUTE,'
+  - '    RPC_CMD_COUNT,'
+  - '};'
+  - static_assert(RPC_CMD_HELLO == 14, "RPC_CMD_HELLO must be always 14");
+  - const size_t HASH_THRESHOLD = 10 * 1024 * 1024;
+  - struct rpc_msg_hello_rsp {
+  - '    uint8_t major;'
+  - '    uint8_t minor;'
+  - '    uint8_t patch;'
+  - '};'
+  - struct rpc_msg_device_count_rsp {
+  - '    uint32_t device_count;'
+  - '};'
+  - struct rpc_msg_get_alloc_size_req {
+  - '    uint32_t   device;'
+  - '    rpc_tensor tensor;'
+  - '    rpc_tensor srcs[GGML_MAX_SRC];'
+  - '};'
+  - struct rpc_msg_get_alloc_size_rsp {
+  - '    uint64_t alloc_size;'
+  - '};'
+  - struct rpc_msg_init_tensor_req {
+  - '    rpc_tensor tensor;'
+  - '};'
+  - struct rpc_msg_alloc_buffer_req {
+  - '    uint32_t device;'
+  - '    uint64_t size;'
+  - '};'
+  - struct rpc_msg_alloc_buffer_rsp {
+  - '    uint64_t remote_ptr;'
+  - '    uint64_t remote_size;'
+  - '};'
+  - struct rpc_msg_get_alignment_req {
+  - '    uint32_t device;'
+  - '};'
+  - struct rpc_msg_get_alignment_rsp {
+  - '    uint64_t alignment;'
+  - '};'
+  - struct rpc_msg_get_max_size_req {
+  - '    uint32_t device;'
+  - '};'
+  - struct rpc_msg_get_max_size_rsp {
+  - '    uint64_t max_size;'
+  - '};'
+  - struct rpc_msg_buffer_get_base_req {
+  - '    uint64_t remote_ptr;'
+  - '};'
+  - struct rpc_msg_buffer_get_base_rsp {
+  - '    uint64_t base_ptr;'
+  - '};'
+  - struct rpc_msg_free_buffer_req {
+  - '    uint64_t remote_ptr;'
+  - '};'
+  - struct rpc_msg_buffer_clear_req {
+  - '    uint64_t remote_ptr;'
+  - '    uint8_t value;'
+  - '};'
+  - struct rpc_msg_set_tensor_hash_req {
+  - '    rpc_tensor tensor;'
+  - '    uint64_t offset;'
+  - '    uint64_t hash;'
+  - '};'
+  - struct rpc_msg_set_tensor_hash_rsp {
+  - '    uint8_t result;'
+  - '};'
+  - struct rpc_msg_get_tensor_req {
+  - '    rpc_tensor tensor;'
+  - '    uint64_t offset;'
+  - '    uint64_t size;'
+  - '};'
+  - struct rpc_msg_copy_tensor_req {
+  - '    rpc_tensor src;'
+  - '    rpc_tensor dst;'
+  - '};'
+  - struct rpc_msg_copy_tensor_rsp {
+  - '    uint8_t result;'
+  - '};'
+  - struct rpc_msg_get_device_memory_req {
+  - '    uint32_t device;'
+  - '};'
+  - struct rpc_msg_get_device_memory_rsp {
+  - '    uint64_t free_mem;'
+  - '    uint64_t total_mem;'
+  - '};'
+  - struct rpc_msg_graph_recompute_req {
+  - '    uint32_t device;'
+  - '};'
+  - '#pragma pack(pop)'
+  - static ggml_backend_buffer_i ggml_backend_rpc_buffer_interface = {
+  - '    ggml_backend_rpc_buffer_free_buffer,'
+  - '    ggml_backend_rpc_buffer_get_base,'
+  - '    ggml_backend_rpc_buffer_init_tensor,'
+  - '    NULL,'
+  - '    ggml_backend_rpc_buffer_set_tensor,'
+  - '    ggml_backend_rpc_buffer_get_tensor,'
+  - '    ggml_backend_rpc_buffer_cpy_tensor,'
+  - '    ggml_backend_rpc_buffer_clear,'
+  - '    NULL,'
+  - '};'
+  - static ggml_backend_buffer_type_i ggml_backend_rpc_buffer_type_interface = {
+  - '    ggml_backend_rpc_buffer_type_name,'
+  - '    ggml_backend_rpc_buffer_type_alloc_buffer,'
+  - '    ggml_backend_rpc_buffer_type_get_alignment,'
+  - '    ggml_backend_rpc_get_max_size,'
+  - '    ggml_backend_rpc_buffer_type_get_alloc_size,'
+  - '    NULL,'
+  - '};'
+  - static ggml_backend_i ggml_backend_rpc_interface = {
+  - '    ggml_backend_rpc_name,'
+  - '    ggml_backend_rpc_free,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    ggml_backend_rpc_synchronize,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    ggml_backend_rpc_graph_compute,'
+  - '    NULL,'
+  - '    NULL,'
+  - '    NULL,'
+  - '};'
+  desc: 文件全局代码，包含常量定义、结构体定义、RPC 协议消息结构、接口初始化和静态变量声明。
+  line: 1-250
+  name: __main__
+- code:
+  - static ggml_guid_t ggml_backend_rpc_guid() {
+  - '    static ggml_guid guid = {0x99, 0x68, 0x5b, 0x6c, 0xd2, 0x83, 0x3d, 0x24,
+    0x25, 0x36, 0x72, 0xe1, 0x5b, 0x0e, 0x14, 0x03};'
+  - '    return &guid;'
+  - '}'
+  desc: 返回 RPC 后端的全局唯一标识符 (GUID)。
+  line: 242-245
+  name: ggml_backend_rpc_guid
+- code:
+  - static uint64_t fnv_hash(const uint8_t * data, size_t len) {
+  - '    const uint64_t fnv_prime = 0x100000001b3ULL;'
+  - '    uint64_t hash = 0xcbf29ce484222325ULL;'
+  - '    for (size_t i = 0; i < len; ++i) {'
+  - '        hash ^= data[i];'
+  - '        hash *= fnv_prime;'
+  - '    }'
+  - '    return hash;'
+  - '}'
+  desc: 计算数据的 FNV-1a 哈希值，用于大数据传输时的内容校验和去重。
+  line: 308-315
+  name: fnv_hash
+- code:
+  - static std::shared_ptr<socket_t> make_socket(sockfd_t fd) {
+  - '#ifdef _WIN32'
+  - '    if (fd == INVALID_SOCKET) {'
+  - '        return nullptr;'
+  - '    }'
+  - '#else'
+  - '    if (fd < 0) {'
+  - '        return nullptr;'
+  - '    }'
+  - '#endif'
+  - '    return std::make_shared<socket_t>(fd);'
+  - '}'
+  desc: 根据文件描述符创建 socket 对象，若无效则返回 nullptr。
+  line: 317-327
+  name: make_socket
+- code:
+  - static bool set_no_delay(sockfd_t sockfd) {
+  - '    int flag = 1;'
+  - '    int ret = setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));'
+  - '    return ret == 0;'
+  - '}'
+  desc: 设置 TCP_NODELAY 选项以禁用 Nagle 算法，减少网络延迟。
+  line: 329-334
+  name: set_no_delay
+- code:
+  - static bool set_reuse_addr(sockfd_t sockfd) {
+  - '    int flag = 1;'
+  - '    int ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, sizeof(int));'
+  - '    return ret == 0;'
+  - '}'
+  desc: 设置 SO_REUSEADDR 选项以允许地址重用，避免服务器重启时的端口占用问题。
+  line: 336-341
+  name: set_reuse_addr
+- code:
+  - static std::shared_ptr<socket_t> socket_connect(const char * host, int port) {
+  - '    struct sockaddr_in addr;'
+  - '    auto sockfd = socket(AF_INET, SOCK_STREAM, 0);'
+  - '    auto sock_ptr = make_socket(sockfd);'
+  - '    if (sock_ptr == nullptr) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (!set_no_delay(sockfd)) {'
+  - '        GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");'
+  - '        return nullptr;'
+  - '    }'
+  - '    addr.sin_family = AF_INET;'
+  - '    addr.sin_port = htons(port);'
+  - '    struct hostent * server = gethostbyname(host);'
+  - '    if (server == NULL) {'
+  - '        GGML_LOG_ERROR("Cannot resolve host ''%s''\n", host);'
+  - '        return nullptr;'
+  - '    }'
+  - '    memcpy(&addr.sin_addr.s_addr, server->h_addr, server->h_length);'
+  - '    if (connect(sock_ptr->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return sock_ptr;'
+  - '}'
+  desc: 创建 TCP 客户端 socket 并连接到指定主机和端口，返回 socket 对象。
+  line: 343-367
+  name: socket_connect
+- code:
+  - static std::shared_ptr<socket_t> socket_accept(sockfd_t srv_sockfd) {
+  - '    auto client_socket_fd = accept(srv_sockfd, NULL, NULL);'
+  - '    auto client_socket = make_socket(client_socket_fd);'
+  - '    if (client_socket == nullptr) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (!set_no_delay(client_socket_fd)) {'
+  - '        GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");'
+  - '        return nullptr;'
+  - '    }'
+  - '    return client_socket;'
+  - '}'
+  desc: 接受客户端连接并返回客户端 socket 对象，同时设置 TCP_NODELAY。
+  line: 369-380
+  name: socket_accept
+- code:
+  - static std::shared_ptr<socket_t> create_server_socket(const char * host, int port)
+    {
+  - '    auto sockfd = socket(AF_INET, SOCK_STREAM, 0);'
+  - '    auto sock = make_socket(sockfd);'
+  - '    if (sock == nullptr) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (!set_reuse_addr(sockfd)) {'
+  - '        GGML_LOG_ERROR("Failed to set SO_REUSEADDR\n");'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (inet_addr(host) == INADDR_NONE) {'
+  - '        GGML_LOG_ERROR("Invalid host address: %s\n", host);'
+  - '        return nullptr;'
+  - '    }'
+  - '    struct sockaddr_in serv_addr;'
+  - '    serv_addr.sin_family = AF_INET;'
+  - '    serv_addr.sin_addr.s_addr = inet_addr(host);'
+  - '    serv_addr.sin_port = htons(port);'
+  - '    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+    {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (listen(sockfd, 1) < 0) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    return sock;'
+  - '}'
+  desc: 创建 TCP 服务器 socket，绑定地址和端口并开始监听，返回服务器 socket 对象。
+  line: 382-405
+  name: create_server_socket
+- code:
+  - static bool send_data(sockfd_t sockfd, const void * data, size_t size) {
+  - '    size_t bytes_sent = 0;'
+  - '    while (bytes_sent < size) {'
+  - '        size_t size_to_send = std::min(size - bytes_sent, MAX_CHUNK_SIZE);'
+  - '        ssize_t n = send(sockfd, (const char *)data + bytes_sent, size_to_send,
+    0);'
+  - '        if (n < 0) {'
+  - '            GGML_LOG_ERROR("send failed (bytes_sent=%zu, size_to_send=%zu)\n",'
+  - '                           bytes_sent, size_to_send);'
+  - '            return false;'
+  - '        }'
+  - '        bytes_sent += (size_t)n;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 发送数据到 socket，支持大于 1 GiB 的大数据分块发送。
+  line: 407-422
+  name: send_data
+- code:
+  - static bool recv_data(sockfd_t sockfd, void * data, size_t size) {
+  - '    size_t bytes_recv = 0;'
+  - '    while (bytes_recv < size) {'
+  - '        size_t size_to_recv = std::min(size - bytes_recv, MAX_CHUNK_SIZE);'
+  - '        ssize_t n = recv(sockfd, (char *)data + bytes_recv, size_to_recv, 0);'
+  - '        if (n < 0) {'
+  - '            GGML_LOG_ERROR("recv failed (bytes_recv=%zu, size_to_recv=%zu)\n",'
+  - '                           bytes_recv, size_to_recv);'
+  - '            return false;'
+  - '        }'
+  - '        if (n == 0) {'
+  - '            LOG_DBG("recv returned 0 (peer closed?)\n");'
+  - '            return false;'
+  - '        }'
+  - '        bytes_recv += (size_t)n;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 从 socket 接收数据，支持大于 1 GiB 的大数据分块接收。
+  line: 424-440
+  name: recv_data
+- code:
+  - static bool send_msg(sockfd_t sockfd, const void * msg, size_t msg_size) {
+  - '    if (!send_data(sockfd, &msg_size, sizeof(msg_size))) {'
+  - '        return false;'
+  - '    }'
+  - '    return send_data(sockfd, msg, msg_size);'
+  - '}'
+  desc: 发送带大小前缀的消息，先发送消息大小再发送消息内容。
+  line: 442-448
+  name: send_msg
+- code:
+  - static bool recv_msg(sockfd_t sockfd, void * msg, size_t msg_size) {
+  - '    uint64_t size;'
+  - '    if (!recv_data(sockfd, &size, sizeof(size))) {'
+  - '        return false;'
+  - '    }'
+  - '    if (size != msg_size) {'
+  - '        return false;'
+  - '    }'
+  - '    return recv_data(sockfd, msg, msg_size);'
+  - '}'
+  desc: 接收固定大小消息，先接收大小再校验并接收对应数据。
+  line: 450-461
+  name: recv_msg
+- code:
+  - static bool recv_msg(sockfd_t sockfd, std::vector<uint8_t> & input) {
+  - '    uint64_t size;'
+  - '    if (!recv_data(sockfd, &size, sizeof(size))) {'
+  - '        return false;'
+  - '    }'
+  - '    try {'
+  - '        input.resize(size);'
+  - '    } catch (const std::bad_alloc & e) {'
+  - '        GGML_LOG_ERROR("Failed to allocate input buffer of size %" PRIu64 "\n",
+    size);'
+  - '        return false;'
+  - '    }'
+  - '    return recv_data(sockfd, input.data(), size);'
+  - '}'
+  desc: 接收动态大小消息到 vector 中，先接收大小再根据大小分配内存并接收数据。
+  line: 463-475
+  name: recv_msg
+- code:
+  - static bool parse_endpoint(const std::string & endpoint, std::string & host, int
+    & port) {
+  - '    size_t pos = endpoint.find('':'');'
+  - '    if (pos == std::string::npos) {'
+  - '        return false;'
+  - '    }'
+  - '    host = endpoint.substr(0, pos);'
+  - '    port = std::stoi(endpoint.substr(pos + 1));'
+  - '    return true;'
+  - '}'
+  desc: 解析端点字符串为主机和端口，格式为 'host:port'。
+  line: 477-486
+  name: parse_endpoint
+- code:
+  - static bool send_rpc_cmd(const std::shared_ptr<socket_t> & sock, enum rpc_cmd
+    cmd, const void * input, size_t input_size) {
+  - '    uint8_t cmd_byte = cmd;'
+  - '    if (!send_data(sock->fd, &cmd_byte, sizeof(cmd_byte))) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!send_data(sock->fd, &input_size, sizeof(input_size))) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!send_data(sock->fd, input, input_size)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 发送 RPC 命令（无响应版本），格式为 '命令字节 + 请求大小 + 请求数据'。
+  line: 489-500
+  name: send_rpc_cmd
+- code:
+  - static bool send_rpc_cmd(const std::shared_ptr<socket_t> & sock, enum rpc_cmd
+    cmd, const void * input, size_t input_size, void * output, size_t output_size)
+    {
+  - '    if (!send_rpc_cmd(sock, cmd, input, input_size)) {'
+  - '        return false;'
+  - '    }'
+  - '    uint64_t out_size;'
+  - '    if (!recv_data(sock->fd, &out_size, sizeof(out_size))) {'
+  - '        return false;'
+  - '    }'
+  - '    if (out_size != output_size) {'
+  - '        return false;'
+  - '    }'
+  - '    if (!recv_data(sock->fd, output, output_size)) {'
+  - '        return false;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 发送 RPC 命令并接收响应（带响应版本），发送请求后接收响应大小和响应数据。
+  line: 502-519
+  name: send_rpc_cmd
+- code:
+  - static bool check_server_version(const std::shared_ptr<socket_t> & sock) {
+  - '    rpc_msg_hello_rsp response;'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_HELLO, nullptr, 0, &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    if (response.major != RPC_PROTO_MAJOR_VERSION || response.minor > RPC_PROTO_MINOR_VERSION)
+    {'
+  - '        GGML_LOG_ERROR("RPC server version mismatch: %d.%d.%d\n", response.major,
+    response.minor, response.patch);'
+  - '        return false;'
+  - '    }'
+  - '    if (response.minor != RPC_PROTO_MINOR_VERSION || response.patch != RPC_PROTO_PATCH_VERSION)
+    {'
+  - '        GGML_LOG_INFO("WARNING: RPC server version mismatch: %d.%d.%d\n", response.major,
+    response.minor, response.patch);'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 检查 RPC 服务器的协议版本是否兼容，发送 HELLO 命令并比较版本号。
+  line: 523-536
+  name: check_server_version
+- code:
+  - static std::shared_ptr<socket_t> get_socket(const std::string & endpoint) {
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    static std::unordered_map<std::string, std::weak_ptr<socket_t>> sockets;'
+  - '    static bool initialized = false;'
+  - '    auto it = sockets.find(endpoint);'
+  - '    if (it != sockets.end()) {'
+  - '        if (auto sock = it->second.lock()) {'
+  - '            return sock;'
+  - '        }'
+  - '    }'
+  - '    std::string host;'
+  - '    int port;'
+  - '    if (!parse_endpoint(endpoint, host, port)) {'
+  - '        GGML_LOG_ERROR("Failed to parse endpoint: %s\n", endpoint.c_str());'
+  - '        return nullptr;'
+  - '    }'
+  - '#ifdef _WIN32'
+  - '    if (!initialized) {'
+  - '        WSADATA wsaData;'
+  - '        int res = WSAStartup(MAKEWORD(2, 2), &wsaData);'
+  - '        if (res != 0) {'
+  - '            return nullptr;'
+  - '        }'
+  - '        initialized = true;'
+  - '    }'
+  - '#else'
+  - '    GGML_UNUSED(initialized);'
+  - '#endif'
+  - '    auto sock = socket_connect(host.c_str(), port);'
+  - '    if (sock == nullptr) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    if (!check_server_version(sock)) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    LOG_DBG("[%s] connected to %s, sockfd=%d\n", __func__, endpoint.c_str(),
+    sock->fd);'
+  - '    sockets[endpoint] = sock;'
+  - '    return sock;'
+  - '}'
+  desc: 获取或创建到指定端点的 socket 连接，使用弱指针缓存已存在的连接，避免重复连接。
+  line: 538-567
+  name: get_socket
+- code:
+  - static void ggml_backend_rpc_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    rpc_msg_free_buffer_req request = {ctx->remote_ptr};'
+  - '    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_FREE_BUFFER, &request, sizeof(request),
+    nullptr, 0);'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    delete ctx;'
+  - '}'
+  desc: 释放 RPC 缓冲区，向服务器发送 FREE_BUFFER 命令并删除本地上下文。
+  line: 569-576
+  name: ggml_backend_rpc_buffer_free_buffer
+- code:
+  - static void * ggml_backend_rpc_buffer_get_base(ggml_backend_buffer_t buffer) {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    if (ctx->base_ptr != nullptr) {'
+  - '        return ctx->base_ptr;'
+  - '    }'
+  - '    rpc_msg_buffer_get_base_req request = {ctx->remote_ptr};'
+  - '    rpc_msg_buffer_get_base_rsp response;'
+  - '    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_BUFFER_GET_BASE, &request,
+    sizeof(request), &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    ctx->base_ptr = reinterpret_cast<void *>(response.base_ptr);'
+  - '    return ctx->base_ptr;'
+  - '}'
+  desc: 获取 RPC 缓冲区的基地址，若本地未缓存则向服务器发送 GET_BASE 命令获取。
+  line: 578-590
+  name: ggml_backend_rpc_buffer_get_base
+- code:
+  - static bool ggml_backend_buffer_is_rpc(ggml_backend_buffer_t buffer) {
+  - '    return buffer->iface.free_buffer == ggml_backend_rpc_buffer_free_buffer;'
+  - '}'
+  desc: 检查缓冲区是否属于 RPC 类型（通过比较 free_buffer 函数指针）。
+  line: 592-595
+  name: ggml_backend_buffer_is_rpc
+- code:
+  - static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
+  - '    rpc_tensor result;'
+  - '    if (!tensor) {'
+  - '        memset(&result, 0, sizeof(result));'
+  - '        return result;'
+  - '    }'
+  - '    result.id = reinterpret_cast<uint64_t>(tensor);'
+  - '    result.type = tensor->type;'
+  - '    if (tensor->buffer && ggml_backend_buffer_is_rpc(tensor->buffer)) {'
+  - '        ggml_backend_buffer_t buffer = tensor->buffer;'
+  - '        ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '        result.buffer = ctx != nullptr ? ctx->remote_ptr : 0;'
+  - '        result.data = reinterpret_cast<uint64_t>(tensor->data);'
+  - '    } else {'
+  - '        result.buffer = 0;'
+  - '        result.data   = 0;'
+  - '    }'
+  - '    for (uint32_t i = 0; i < GGML_MAX_DIMS; i++) {'
+  - '        result.ne[i] = tensor->ne[i];'
+  - '        result.nb[i] = tensor->nb[i];'
+  - '    }'
+  - '    result.op = tensor->op;'
+  - '    for (uint32_t i = 0; i < GGML_MAX_OP_PARAMS / sizeof(int32_t); i++) {'
+  - '        result.op_params[i] = tensor->op_params[i];'
+  - '    }'
+  - '    result.flags = tensor->flags;'
+  - '    for (uint32_t i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        result.src[i] = reinterpret_cast<uint64_t>(tensor->src[i]);'
+  - '    }'
+  - '    result.view_src = reinterpret_cast<uint64_t>(tensor->view_src);'
+  - '    result.view_offs = tensor->view_offs;'
+  - '    memset(result.name, 0, sizeof(result.name));'
+  - '    memset(result.padding, 0, sizeof(result.padding));'
+  - '    snprintf(result.name, GGML_MAX_NAME, "%s", tensor->name);'
+  - '    return result;'
+  - '}'
+  desc: 将 ggml_tensor 序列化为 rpc_tensor 结构，包含张量的所有元数据、操作、来源和缓冲区信息。
+  line: 597-629
+  name: serialize_tensor
+- code:
+  - static enum ggml_status ggml_backend_rpc_buffer_init_tensor(ggml_backend_buffer_t
+    buffer, ggml_tensor * tensor) {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    if (ggml_is_quantized(tensor->type) && (tensor->ne[0] % 512 != 0) && (tensor->view_src
+    == nullptr)) {'
+  - '        rpc_msg_init_tensor_req request;'
+  - '        request.tensor = serialize_tensor(tensor);'
+  - '        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_INIT_TENSOR, &request,
+    sizeof(request), nullptr, 0);'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 初始化服务器端的张量，仅在需要时（量化且长度不是 512 倍数）发送 INIT_TENSOR 命令。
+  line: 631-643
+  name: ggml_backend_rpc_buffer_init_tensor
+- code:
+  - static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor
+    * tensor, const void * data, size_t offset, size_t size) {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    rpc_tensor rpc_tensor = serialize_tensor(tensor);'
+  - '    if (size > HASH_THRESHOLD) {'
+  - '        rpc_msg_set_tensor_hash_req request;'
+  - '        request.tensor = rpc_tensor;'
+  - '        request.offset = offset;'
+  - '        request.hash = fnv_hash((const uint8_t*)data, size);'
+  - '        rpc_msg_set_tensor_hash_rsp response;'
+  - '        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_HASH, &request,
+    sizeof(request), &response, sizeof(response));'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '        if (response.result) {'
+  - '            return;'
+  - '        }'
+  - '    }'
+  - '    size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;'
+  - '    std::vector<uint8_t> input(input_size, 0);'
+  - '    memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));'
+  - '    memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));'
+  - '    memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data, size);'
+  - '    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '}'
+  desc: 设置张量的数据，对于大数据先使用哈希命令检查服务器是否有相同数据以减少传输，否则发送数据。
+  line: 645-669
+  name: ggml_backend_rpc_buffer_set_tensor
+- code:
+  - static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, const
+    ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    rpc_msg_get_tensor_req request;'
+  - '    request.tensor = serialize_tensor(tensor);'
+  - '    request.offset = offset;'
+  - '    request.size = size;'
+  - '    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request),
+    data, size);'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '}'
+  desc: 从服务器获取张量数据，发送 GET_TENSOR 命令并接收数据。
+  line: 671-681
+  name: ggml_backend_rpc_buffer_get_tensor
+- code:
+  - static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const
+    ggml_tensor * src, ggml_tensor * dst) {
+  - '    if (ggml_backend_buffer_is_rpc(src->buffer)) {'
+  - '        ggml_backend_buffer_t src_buffer = src->buffer;'
+  - '        ggml_backend_rpc_buffer_context * src_ctx = (ggml_backend_rpc_buffer_context
+    *)src_buffer->context;'
+  - '        ggml_backend_buffer_t dst_buffer = dst->buffer;'
+  - '        ggml_backend_rpc_buffer_context * dst_ctx = (ggml_backend_rpc_buffer_context
+    *)dst_buffer->context;'
+  - '        if (src_ctx->sock != dst_ctx->sock) {'
+  - '            return false;'
+  - '        }'
+  - '        ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '        rpc_msg_copy_tensor_req request;'
+  - '        request.src = serialize_tensor(src);'
+  - '        request.dst = serialize_tensor(dst);'
+  - '        rpc_msg_copy_tensor_rsp response;'
+  - '        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_COPY_TENSOR, &request,
+    sizeof(request), &response, sizeof(response));'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '        return response.result;'
+  - '    }'
+  - '    return false;'
+  - '}'
+  desc: 在服务器端复制张量，如果源和目标在同一服务器上则发送 COPY_TENSOR 命令，否则失败。
+  line: 683-704
+  name: ggml_backend_rpc_buffer_cpy_tensor
+- code:
+  - static void ggml_backend_rpc_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context
+    *)buffer->context;'
+  - '    rpc_msg_buffer_clear_req request = {ctx->remote_ptr, value};'
+  - '    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_BUFFER_CLEAR, &request, sizeof(request),
+    nullptr, 0);'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '}'
+  desc: 清除缓冲区内容，发送 CLEAR 命令，设置指定值。
+  line: 706-712
+  name: ggml_backend_rpc_buffer_clear
+- code:
+  - static const char * ggml_backend_rpc_buffer_type_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '    return buft_ctx->name.c_str();'
+  - '}'
+  desc: 返回 RPC 缓冲区类型的名称。
+  line: 726-730
+  name: ggml_backend_rpc_buffer_type_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_rpc_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '    rpc_msg_alloc_buffer_req request = {buft_ctx->device, size};'
+  - '    rpc_msg_alloc_buffer_rsp response;'
+  - '    auto sock = get_socket(buft_ctx->endpoint);'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_ALLOC_BUFFER, &request, sizeof(request),
+    &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    if (response.remote_ptr != 0) {'
+  - '        ggml_backend_buffer_t buffer = ggml_backend_buffer_init(buft,'
+  - '            ggml_backend_rpc_buffer_interface,'
+  - '            new ggml_backend_rpc_buffer_context{sock, nullptr, response.remote_ptr},'
+  - '            response.remote_size);'
+  - '        return buffer;'
+  - '    } else {'
+  - '        return nullptr;'
+  - '    }'
+  - '}'
+  desc: 在远程服务器上分配缓冲区，发送 ALLOC_BUFFER 命令并创建缓冲区对象。
+  line: 732-749
+  name: ggml_backend_rpc_buffer_type_alloc_buffer
+- code:
+  - static size_t get_alignment(const std::shared_ptr<socket_t> & sock, uint32_t device)
+    {
+  - '    rpc_msg_get_alignment_req request = {device};'
+  - '    rpc_msg_get_alignment_rsp response;'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_GET_ALIGNMENT, &request, sizeof(request),
+    &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    return response.alignment;'
+  - '}'
+  desc: 从服务器获取指定设备的对齐要求，发送 GET_ALIGNMENT 命令。
+  line: 751-758
+  name: get_alignment
+- code:
+  - static size_t ggml_backend_rpc_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '    return buft_ctx->alignment;'
+  - '}'
+  desc: 返回缓存的对齐要求值。
+  line: 760-764
+  name: ggml_backend_rpc_buffer_type_get_alignment
+- code:
+  - static size_t get_max_size(const std::shared_ptr<socket_t> & sock, uint32_t device)
+    {
+  - '    rpc_msg_get_max_size_req request = {device};'
+  - '    rpc_msg_get_max_size_rsp response;'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_GET_MAX_SIZE, &request, sizeof(request),
+    &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    return response.max_size;'
+  - '}'
+  desc: 从服务器获取指定设备的最大缓冲区大小，发送 GET_MAX_SIZE 命令。
+  line: 766-773
+  name: get_max_size
+- code:
+  - static size_t ggml_backend_rpc_get_max_size(ggml_backend_buffer_type_t buft) {
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '    return buft_ctx->max_size;'
+  - '}'
+  desc: 返回缓存的最大缓冲区大小值。
+  line: 775-779
+  name: ggml_backend_rpc_get_max_size
+- code:
+  - static size_t ggml_backend_rpc_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const ggml_tensor * tensor) {
+  - '    bool rpc_get = false;'
+  - '    rpc_get |= ggml_is_quantized(tensor->type) && (tensor->ne[0] % 512 != 0)
+    && (tensor->view_src == nullptr);'
+  - '    rpc_get |= tensor->op == GGML_OP_FLASH_ATTN_EXT;'
+  - '    rpc_get |= tensor->op == GGML_OP_MUL_MAT_ID;'
+  - '    if (rpc_get) {'
+  - '        ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '        auto sock = get_socket(buft_ctx->endpoint);'
+  - '        rpc_msg_get_alloc_size_req request = {'
+  - '            buft_ctx->device,'
+  - '            serialize_tensor(tensor),'
+  - '            {},'
+  - '        };'
+  - '        for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '            request.srcs[i] = serialize_tensor(tensor->src[i]);'
+  - '        }'
+  - '        rpc_msg_get_alloc_size_rsp response;'
+  - '        bool status = send_rpc_cmd(sock, RPC_CMD_GET_ALLOC_SIZE, &request, sizeof(request),
+    &response, sizeof(response));'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '        return response.alloc_size;'
+  - '    }'
+  - '    return ggml_nbytes(tensor);'
+  - '}'
+  desc: 计算张量的分配大小，对某些特殊张量（量化或特定操作）远程查询服务器获取实际大小，否则使用本地计算。
+  line: 781-812
+  name: ggml_backend_rpc_buffer_type_get_alloc_size
+- code:
+  - static const char * ggml_backend_rpc_name(ggml_backend_t backend) {
+  - '    ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;'
+  - '    return rpc_ctx->name.c_str();'
+  - '}'
+  desc: 返回 RPC 后端的名称。
+  line: 819-823
+  name: ggml_backend_rpc_name
+- code:
+  - static void ggml_backend_rpc_free(ggml_backend_t backend) {
+  - '    ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;'
+  - '    delete rpc_ctx;'
+  - '    delete backend;'
+  - '}'
+  desc: 释放 RPC 后端资源，删除上下文和后端对象。
+  line: 825-830
+  name: ggml_backend_rpc_free
+- code:
+  - static void ggml_backend_rpc_synchronize(ggml_backend_t backend) {
+  - '    GGML_UNUSED(backend);'
+  - '}'
+  desc: 同步操作，由于 RPC 后端没有异步操作，此函数为无操作。
+  line: 832-836
+  name: ggml_backend_rpc_synchronize
+- code:
+  - static void add_tensor(ggml_tensor * tensor, std::vector<rpc_tensor> & tensors,
+    std::unordered_set<ggml_tensor*> & visited) {
+  - '    if (tensor == nullptr) {'
+  - '        return;'
+  - '    }'
+  - '    if (visited.find(tensor) != visited.end()) {'
+  - '        return;'
+  - '    }'
+  - '    visited.insert(tensor);'
+  - '    for (int i = 0; i < GGML_MAX_SRC; i++) {'
+  - '        add_tensor(tensor->src[i], tensors, visited);'
+  - '    }'
+  - '    add_tensor(tensor->view_src, tensors, visited);'
+  - '    tensors.push_back(serialize_tensor(tensor));'
+  - '}'
+  desc: 递归添加张量及其所有源张量到序列化列表，使用 visited 集合避免重复。
+  line: 838-853
+  name: add_tensor
+- code:
+  - static void serialize_graph(uint32_t device, const ggml_cgraph * cgraph, std::vector<uint8_t>
+    & output) {
+  - '    uint32_t n_nodes = cgraph->n_nodes;'
+  - '    std::vector<rpc_tensor> tensors;'
+  - '    std::unordered_set<ggml_tensor*> visited;'
+  - '    for (uint32_t i = 0; i < n_nodes; i++) {'
+  - '        add_tensor(cgraph->nodes[i], tensors, visited);'
+  - '    }'
+  - '    uint32_t n_tensors = tensors.size();'
+  - '    int output_size = 2*sizeof(uint32_t) + n_nodes * sizeof(uint64_t) + sizeof(uint32_t)
+    + n_tensors * sizeof(rpc_tensor);'
+  - '    output.resize(output_size, 0);'
+  - '    uint8_t * dest = output.data();'
+  - '    memcpy(dest, &device, sizeof(device));'
+  - '    dest += sizeof(device);'
+  - '    memcpy(dest, &n_nodes, sizeof(n_nodes));'
+  - '    dest += sizeof(n_nodes);'
+  - '    for (uint32_t i = 0; i < n_nodes; i++) {'
+  - '        memcpy(dest + i * sizeof(uint64_t), &cgraph->nodes[i], sizeof(uint64_t));'
+  - '    }'
+  - '    dest += n_nodes * sizeof(uint64_t);'
+  - '    memcpy(dest, &n_tensors, sizeof(n_tensors));'
+  - '    dest += sizeof(n_tensors);'
+  - '    rpc_tensor * out_tensors = (rpc_tensor *)dest;'
+  - '    memcpy(out_tensors, tensors.data(), n_tensors * sizeof(rpc_tensor));'
+  - '}'
+  desc: 将计算图序列化为二进制格式，包含设备号、节点数、节点指针、张量数和张量序列。
+  line: 855-878
+  name: serialize_graph
+- code:
+  - static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend,
+    ggml_cgraph * cgraph) {
+  - '    ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;'
+  - '    GGML_ASSERT(cgraph->n_nodes > 0);'
+  - '    bool reuse = rpc_ctx->gc.is_cached(cgraph);'
+  - '    if (reuse) {'
+  - '        rpc_msg_graph_recompute_req request;'
+  - '        request.device = rpc_ctx->device;'
+  - '        auto sock = get_socket(rpc_ctx->endpoint);'
+  - '        bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_RECOMPUTE, &request, sizeof(request));'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '    } else {'
+  - '        rpc_ctx->gc.add(cgraph);'
+  - '        std::vector<uint8_t> input;'
+  - '        serialize_graph(rpc_ctx->device, cgraph, input);'
+  - '        auto sock = get_socket(rpc_ctx->endpoint);'
+  - '        bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_COMPUTE, input.data(),
+    input.size());'
+  - '        RPC_STATUS_ASSERT(status);'
+  - '    }'
+  - '    return GGML_STATUS_SUCCESS;'
+  - '}'
+  desc: 执行远程图计算，若图已缓存则发送 RECOMPUTE 命令，否则序列化图并发送 COMPUTE 命令。
+  line: 880-900
+  name: ggml_backend_rpc_graph_compute
+- code:
+  - ggml_backend_buffer_type_t ggml_backend_rpc_buffer_type(const char * endpoint,
+    uint32_t device) {
+  - '    static std::mutex mutex;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    std::string buft_name = "RPC" + std::to_string(device) + "[" + std::string(endpoint)
+    + "]";'
+  - '    static std::unordered_map<std::string, ggml_backend_buffer_type_t> buft_map;'
+  - '    auto it = buft_map.find(buft_name);'
+  - '    if (it != buft_map.end()) {'
+  - '        return it->second;'
+  - '    }'
+  - '    auto sock = get_socket(endpoint);'
+  - '    if (sock == nullptr) {'
+  - '        GGML_LOG_ERROR("Failed to connect to %s\n", endpoint);'
+  - '        return nullptr;'
+  - '    }'
+  - '    size_t alignment = get_alignment(sock, device);'
+  - '    size_t max_size = get_max_size(sock, device);'
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = new ggml_backend_rpc_buffer_type_context
+    {'
+  - '        endpoint,'
+  - '        device,'
+  - '        buft_name,'
+  - '        alignment,'
+  - '        max_size'
+  - '    };'
+  - '    auto reg = ggml_backend_rpc_add_server(endpoint);'
+  - '    ggml_backend_buffer_type_t buft = new ggml_backend_buffer_type {'
+  - '        ggml_backend_rpc_buffer_type_interface,'
+  - '        ggml_backend_reg_dev_get(reg, device),'
+  - '        buft_ctx'
+  - '    };'
+  - '    buft_map[buft_name] = buft;'
+  - '    return buft;'
+  - '}'
+  desc: 创建或获取指定端点和设备的 RPC 缓冲区类型，缓存已创建的缓冲区类型避免重复创建。
+  line: 908-939
+  name: ggml_backend_rpc_buffer_type
+- code:
+  - ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device) {
+  - '    std::string dev_name = "RPC" + std::to_string(device) + "[" + std::string(endpoint)
+    + "]";'
+  - '    ggml_backend_rpc_context * ctx = new ggml_backend_rpc_context {'
+  - '        endpoint,'
+  - '        device,'
+  - '        dev_name,'
+  - '        {},'
+  - '    };'
+  - '    auto reg = ggml_backend_rpc_add_server(endpoint);'
+  - '    ggml_backend_t backend = new ggml_backend {'
+  - '        ggml_backend_rpc_guid(),'
+  - '        ggml_backend_rpc_interface,'
+  - '        ggml_backend_reg_dev_get(reg, device),'
+  - '        ctx'
+  - '    };'
+  - '    return backend;'
+  - '}'
+  desc: 初始化 RPC 后端，创建后端上下文并返回后端对象。
+  line: 941-958
+  name: ggml_backend_rpc_init
+- code:
+  - bool ggml_backend_is_rpc(ggml_backend_t backend) {
+  - '    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_rpc_guid());'
+  - '}'
+  desc: 检查后端是否为 RPC 类型，通过比较 GUID。
+  line: 960-963
+  name: ggml_backend_is_rpc
+- code:
+  - static void get_device_memory(const std::shared_ptr<socket_t> & sock, uint32_t
+    device, size_t * free, size_t * total) {
+  - '    rpc_msg_get_device_memory_req request;'
+  - '    request.device = device;'
+  - '    rpc_msg_get_device_memory_rsp response;'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_GET_DEVICE_MEMORY, &request, sizeof(request),
+    &response, sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    *free = response.free_mem;'
+  - '    *total = response.total_mem;'
+  - '}'
+  desc: 从服务器获取设备内存信息（空闲和总内存），发送 GET_DEVICE_MEMORY 命令。
+  line: 965-975
+  name: get_device_memory
+- code:
+  - void ggml_backend_rpc_get_device_memory(const char * endpoint, uint32_t device,
+    size_t * free, size_t * total) {
+  - '    auto sock = get_socket(endpoint);'
+  - '    if (sock == nullptr) {'
+  - '        *free = 0;'
+  - '        *total = 0;'
+  - '        return;'
+  - '    }'
+  - '    get_device_memory(sock, device, free, total);'
+  - '}'
+  desc: 获取指定端点和设备的设备内存信息，若连接失败则返回零值。
+  line: 977-985
+  name: ggml_backend_rpc_get_device_memory
+- code:
+  - static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+    char * cache_dir,
+  - '                             sockfd_t sockfd) {'
+  - '    rpc_server server(backends, cache_dir);'
+  - '    uint8_t cmd;'
+  - '    if (!recv_data(sockfd, &cmd, 1)) {'
+  - '        return;'
+  - '    }'
+  - '    // the first command sent by the client must be HELLO'
+  - '    if (cmd != RPC_CMD_HELLO) {'
+  - '        GGML_LOG_ERROR("Expected HELLO command, update client\n");'
+  - '        return;'
+  - '    }'
+  - '    if (!recv_msg(sockfd, nullptr, 0)) {'
+  - '        return;'
+  - '    }'
+  - '    rpc_msg_hello_rsp response;'
+  - '    server.hello(response);'
+  - '    if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '        return;'
+  - '    }'
+  - '    while (true) {'
+  - '        if (!recv_data(sockfd, &cmd, 1)) {'
+  - '            break;'
+  - '        }'
+  - '        if (cmd >= RPC_CMD_COUNT) {'
+  - '            // fail fast if the command is invalid'
+  - '            GGML_LOG_ERROR("Unknown command: %d\n", cmd);'
+  - '            break;'
+  - '        }'
+  - '        switch (cmd) {'
+  - '            case RPC_CMD_HELLO: {'
+  - '                // HELLO command is handled above'
+  - '                return;'
+  - '            }'
+  - '            case RPC_CMD_DEVICE_COUNT: {'
+  - '                if (!recv_msg(sockfd, nullptr, 0)) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_device_count_rsp response;'
+  - '                response.device_count = backends.size();'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_ALLOC_BUFFER: {'
+  - '                rpc_msg_alloc_buffer_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_alloc_buffer_rsp response;'
+  - '                if (!server.alloc_buffer(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GET_ALLOC_SIZE: {'
+  - '                rpc_msg_get_alloc_size_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_get_alloc_size_rsp response;'
+  - '                if (!server.get_alloc_size(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GET_ALIGNMENT: {'
+  - '                rpc_msg_get_alignment_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_get_alignment_rsp response;'
+  - '                if (!server.get_alignment(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GET_MAX_SIZE: {'
+  - '                rpc_msg_get_max_size_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_get_max_size_rsp response;'
+  - '                if (!server.get_max_size(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_BUFFER_GET_BASE: {'
+  - '                rpc_msg_buffer_get_base_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_buffer_get_base_rsp response;'
+  - '                if (!server.buffer_get_base(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_FREE_BUFFER: {'
+  - '                rpc_msg_free_buffer_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.free_buffer(request)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, nullptr, 0)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_BUFFER_CLEAR: {'
+  - '                rpc_msg_buffer_clear_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.buffer_clear(request)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, nullptr, 0)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_SET_TENSOR: {'
+  - '                std::vector<uint8_t> input;'
+  - '                if (!recv_msg(sockfd, input)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.set_tensor(input)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_SET_TENSOR_HASH: {'
+  - '                rpc_msg_set_tensor_hash_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_set_tensor_hash_rsp response;'
+  - '                if (!server.set_tensor_hash(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_INIT_TENSOR: {'
+  - '                rpc_msg_init_tensor_req request;'
+  - '                if (!recv_msg(sockfd, &request,sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.init_tensor(request)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, nullptr, 0)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GET_TENSOR: {'
+  - '                rpc_msg_get_tensor_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                std::vector<uint8_t> response;'
+  - '                if (!server.get_tensor(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, response.data(), response.size())) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_COPY_TENSOR: {'
+  - '                rpc_msg_copy_tensor_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_copy_tensor_rsp response;'
+  - '                if (!server.copy_tensor(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GRAPH_COMPUTE: {'
+  - '                std::vector<uint8_t> input;'
+  - '                if (!recv_msg(sockfd, input)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.graph_compute(input)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GRAPH_RECOMPUTE: {'
+  - '                rpc_msg_graph_recompute_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!server.graph_recompute(request)) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            case RPC_CMD_GET_DEVICE_MEMORY: {'
+  - '                rpc_msg_get_device_memory_req request;'
+  - '                if (!recv_msg(sockfd, &request, sizeof(request))) {'
+  - '                    return;'
+  - '                }'
+  - '                rpc_msg_get_device_memory_rsp response;'
+  - '                if (!server.get_device_memory(request, response)) {'
+  - '                    return;'
+  - '                }'
+  - '                if (!send_msg(sockfd, &response, sizeof(response))) {'
+  - '                    return;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '            default: {'
+  - '                GGML_LOG_ERROR("Unknown command: %d\n", cmd);'
+  - '                return;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 处理单个RPC客户端连接的服务循环，根据命令分发到rpc_server的相应处理方法。
+  line: 666-818
+  name: rpc_serve_client
+- code:
+  - void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
+  - '                                   size_t n_threads, size_t n_devices, ggml_backend_dev_t
+    * devices) {'
+  - '    if (n_devices == 0 || devices == nullptr) {'
+  - '        fprintf(stderr, "Invalid arguments to ggml_backend_rpc_start_server\n");'
+  - '        return;'
+  - '    }'
+  - '    std::vector<ggml_backend_t> backends;'
+  - '    printf("Starting RPC server v%d.%d.%d\n",'
+  - '        RPC_PROTO_MAJOR_VERSION,'
+  - '        RPC_PROTO_MINOR_VERSION,'
+  - '        RPC_PROTO_PATCH_VERSION);'
+  - '    printf("  endpoint       : %s\n", endpoint);'
+  - '    printf("  local cache    : %s\n", cache_dir ? cache_dir : "n/a");'
+  - '    printf("Devices:\n");'
+  - '    for (size_t i = 0; i < n_devices; i++) {'
+  - '        auto dev = devices[i];'
+  - '        size_t free, total;'
+  - '        ggml_backend_dev_memory(dev, &free, &total);'
+  - '        printf("  %s: %s (%zu MiB, %zu MiB free)\n", ggml_backend_dev_name(dev),
+    ggml_backend_dev_description(dev),'
+  - '               total / 1024 / 1024, free / 1024 / 1024);'
+  - '        auto backend = ggml_backend_dev_init(dev, nullptr);'
+  - '        if (!backend) {'
+  - '            fprintf(stderr, "Failed to create backend for device %s\n", dev->iface.get_name(dev));'
+  - '            return;'
+  - '        }'
+  - '        backends.push_back(backend);'
+  - '        ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;'
+  - '        if (reg) {'
+  - '            auto ggml_backend_set_n_threads_fn = (ggml_backend_set_n_threads_t)
+    ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");'
+  - '            if (ggml_backend_set_n_threads_fn) {'
+  - '                ggml_backend_set_n_threads_fn(backend, n_threads);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    std::string host;'
+  - '    int port;'
+  - '    if (!par'
+  desc: 启动RPC服务器，初始化后端设备并监听客户端连接。
+  line: 820-895
+  name: ggml_backend_rpc_start_server
+- code: []
+  desc: 处理单个RPC客户端连接的请求循环，接收命令并分发给相应的处理函数。
+  line: 1000-1200
+  name: rpc_serve_client
+- code:
+  - void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
+    int n_threads) {
+  - '    std::vector<ggml_backend_t> backends;'
+  - '    ...'
+  - '    auto server_socket = create_server_socket(host.c_str(), port);'
+  - '    ...'
+  - '    while (true) {'
+  - '        auto client_socket = socket_accept(server_socket->fd);'
+  - '        ...'
+  - '        rpc_serve_client(backends, cache_dir, client_socket->fd);'
+  - '    }'
+  - '}'
+  desc: 启动RPC服务器，初始化套接字并接受客户端连接。
+  line: 1000-1200
+  name: ggml_backend_rpc_start_server
+- code:
+  - static const char * ggml_backend_rpc_device_get_name(ggml_backend_dev_t dev) {
+  - '    ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 获取RPC设备的名称。
+  line: 1200-1250
+  name: ggml_backend_rpc_device_get_name
+- code:
+  - static const char * ggml_backend_rpc_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    return ctx->description.c_str();'
+  - '}'
+  desc: 获取RPC设备的描述信息。
+  line: 1250-1300
+  name: ggml_backend_rpc_device_get_description
+- code:
+  - static void ggml_backend_rpc_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '    ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    ggml_backend_rpc_get_device_memory(ctx->endpoint.c_str(), ctx->device, free,
+    total);'
+  - '}'
+  desc: 获取RPC设备的内存信息。
+  line: 1300-1350
+  name: ggml_backend_rpc_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_rpc_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    return GGML_BACKEND_DEVICE_TYPE_GPU;'
+  - '}'
+  desc: 获取RPC设备的类型。
+  line: 1350-1400
+  name: ggml_backend_rpc_device_get_type
+- code:
+  - static void ggml_backend_rpc_device_get_props(ggml_backend_dev_t dev, struct ggml_backend_dev_props
+    * props) {
+  - '    props->name        = ggml_backend_rpc_device_get_name(dev);'
+  - '    props->description = ggml_backend_rpc_device_get_description(dev);'
+  - '    props->type        = ggml_backend_rpc_device_get_type(dev);'
+  - '    ggml_backend_rpc_device_get_memory(dev, &props->memory_free, &props->memory_total);'
+  - '    props->caps = { false, false, false, false };'
+  - '}'
+  desc: 获取RPC设备的完整属性信息。
+  line: 1400-1450
+  name: ggml_backend_rpc_device_get_props
+- code:
+  - static ggml_backend_t ggml_backend_rpc_device_init(ggml_backend_dev_t dev, const
+    char * params) {
+  - '    ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    return ggml_backend_rpc_init(ctx->endpoint.c_str(), ctx->device);'
+  - '}'
+  desc: 初始化RPC后端设备。
+  line: 1450-1500
+  name: ggml_backend_rpc_device_init
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_rpc_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    return ggml_backend_rpc_buffer_type(ctx->endpoint.c_str(), ctx->device);'
+  - '}'
+  desc: 获取RPC设备的缓冲区类型。
+  line: 1500-1550
+  name: ggml_backend_rpc_device_get_buffer_type
+- code:
+  - static bool ggml_backend_rpc_device_supports_op(ggml_backend_dev_t dev, const
+    struct ggml_tensor * op) {
+  - '    return true;'
+  - '}'
+  desc: 检查RPC设备是否支持指定操作。
+  line: 1550-1600
+  name: ggml_backend_rpc_device_supports_op
+- code:
+  - static bool ggml_backend_rpc_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t
+    buft) {
+  - '    if (!buft || buft->iface.get_name != ggml_backend_rpc_buffer_type_name) {'
+  - '        return false;'
+  - '    }'
+  - '    ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context
+    *)buft->context;'
+  - '    ggml_backend_rpc_device_context * dev_ctx = (ggml_backend_rpc_device_context
+    *)dev->context;'
+  - '    return buft_ctx->endpoint == dev_ctx->endpoint && buft_ctx->device == dev_ctx->device;'
+  - '}'
+  desc: 检查RPC设备是否支持指定的缓冲区类型。
+  line: 1600-1650
+  name: ggml_backend_rpc_device_supports_buft
+- code:
+  - static const char * ggml_backend_rpc_reg_get_name(ggml_backend_reg_t reg) {
+  - '    ggml_backend_rpc_reg_context * ctx = (ggml_backend_rpc_reg_context *)reg->context;'
+  - '    return ctx ? ctx->name.c_str() : "RPC";'
+  - '}'
+  desc: 获取RPC后端注册的名称。
+  line: 1650-1700
+  name: ggml_backend_rpc_reg_get_name
+- code:
+  - static size_t ggml_backend_rpc_reg_get_device_count(ggml_backend_reg_t reg) {
+  - '    ggml_backend_rpc_reg_context * ctx = (ggml_backend_rpc_reg_context *)reg->context;'
+  - '    return ctx ? ctx->devices.size() : 0;'
+  - '}'
+  desc: 获取RPC后端注册的设备数量。
+  line: 1700-1750
+  name: ggml_backend_rpc_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_rpc_reg_get_device(ggml_backend_reg_t reg,
+    size_t index) {
+  - '    ggml_backend_rpc_reg_context * ctx = (ggml_backend_rpc_reg_context *)reg->context;'
+  - '    if (ctx == nullptr) {'
+  - '        GGML_ABORT("The RPC backend does not have enumerated devices - use ggml_backend_rpc_add_server
+    instead");'
+  - '    } else {'
+  - '        GGML_ASSERT(index < ctx->devices.size());'
+  - '        return ctx->devices[index];'
+  - '    }'
+  - '}'
+  desc: 获取RPC后端注册的指定设备。
+  line: 1750-1800
+  name: ggml_backend_rpc_reg_get_device
+- code:
+  - static void * ggml_backend_rpc_get_proc_address(ggml_backend_reg_t reg, const
+    char * name) {
+  - '    if (std::strcmp(name, "ggml_backend_rpc_add_server") == 0) {'
+  - '        return (void *)ggml_backend_rpc_add_server;'
+  - '    }'
+  - '    if (std::strcmp(name, "ggml_backend_rpc_start_server") == 0) {'
+  - '        return (void *)ggml_backend_rpc_start_server;'
+  - '    }'
+  - '    return NULL;'
+  - '}'
+  desc: 获取RPC后端注册的进程地址。
+  line: 1800-1850
+  name: ggml_backend_rpc_get_proc_address
+- code:
+  - ggml_backend_reg_t ggml_backend_rpc_reg(void) {
+  - '    static struct ggml_backend_reg ggml_backend_rpc_reg = {'
+  - '        /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '        /* .iface       = */ ggml_backend_rpc_reg_i,'
+  - '        /* .context     = */ NULL,'
+  - '    };'
+  - '    return &ggml_backend_rpc_reg;'
+  - '}'
+  desc: 获取RPC后端注册接口。
+  line: 1850-1900
+  name: ggml_backend_rpc_reg
+- code:
+  - static uint32_t ggml_backend_rpc_get_device_count(const char * endpoint) {
+  - '    auto sock = get_socket(endpoint);'
+  - '    if (sock == nullptr) {'
+  - '        GGML_LOG_ERROR("Failed to connect to %s\n", endpoint);'
+  - '        return 0;'
+  - '    }'
+  - '    rpc_msg_device_count_rsp response;'
+  - '    bool status = send_rpc_cmd(sock, RPC_CMD_DEVICE_COUNT, nullptr, 0, &response,
+    sizeof(response));'
+  - '    RPC_STATUS_ASSERT(status);'
+  - '    return response.device_count;'
+  - '}'
+  desc: 通过RPC命令获取远程设备的数量。
+  line: 1900-1950
+  name: ggml_backend_rpc_get_device_count
+- code:
+  - ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint) {
+  - '    static std::unordered_map<std::string, ggml_backend_reg_t> reg_map;'
+  - '    static std::mutex mutex;'
+  - '    static uint32_t dev_id = 0;'
+  - '    std::lock_guard<std::mutex> lock(mutex);'
+  - '    if (reg_map.find(endpoint) != reg_map.end()) {'
+  - '        return reg_map[endpoint];'
+  - '    }'
+  - '    uint32_t dev_count = ggml_backend_rpc_get_device_count(endpoint);'
+  - '    if (dev_count == 0) {'
+  - '        return nullptr;'
+  - '    }'
+  - '    ggml_backend_rpc_reg_context * ctx = new ggml_backend_rpc_reg_context;'
+  - '    ctx->name = "RPC[" + std::string(endpoint) + "]";'
+  - '    for (uint32_t ind = 0; ind < dev_count; ind++) {'
+  - '        std::string dev_name = "RPC" + std::to_string(dev_id);'
+  - '        std::string dev_desc = std::string(endpoint);'
+  - '        ggml_backend_rpc_device_context * dev_ctx = new ggml_backend_rpc_device_context
+    {'
+  - '            /* .endpoint    = */ endpoint,'
+  - '            /* .device      = */ ind,'
+  - '            /* .name        = */ dev_name,'
+  - '            /* .description = */ dev_desc'
+  - '        };'
+  - '        ggml_backend_dev_t dev = new ggml_backend_device {'
+  - '            /* .iface   = */ ggml_backend_rpc_device_i,'
+  - '            /* .reg     = */ ggml_backend_rpc_reg(),'
+  - '            /* .context = */ dev_ctx,'
+  - '        };'
+  - '        ctx->devices.push_back(dev);'
+  - '        dev_id++;'
+  - '    }'
+  - '    ggml_backend_reg_t reg = new ggml_backend_reg {'
+  - '        /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '        /* .iface       = */ ggml_backend_rpc_reg_interface,'
+  - '        /* .context     = */ ctx'
+  - '    };'
+  - '    reg_map[endpoint] = reg;'
+  - '    return reg;'
+  - '}'
+  desc: 添加RPC服务器，创建后端注册和设备列表。
+  line: 1950-2100
+  name: ggml_backend_rpc_add_server

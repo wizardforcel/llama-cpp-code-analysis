@@ -1,0 +1,1683 @@
+classes:
+- desc: 用于匹配多个字面量的Trie数据结构，支持在给定位置检查匹配状态，并收集所有前缀及后续字符。
+  methods:
+  - code:
+    - trie(const std::vector<std::string> & words) {
+    - '  create_node(); // root node'
+    - '  for (const auto & w : words) {'
+    - '      insert(w);'
+    - '  }'
+    - '}'
+    desc: 构造函数，根据给定字符串列表构建Trie。
+    line: 46-51
+    name: trie
+  - code:
+    - match_result check_at(std::string_view sv, size_t start_pos) const {
+    - '    size_t current = 0; // Start at root'
+    - '    size_t pos = start_pos;'
+    - '    while (pos < sv.size()) {'
+    - '        auto result = common_parse_utf8_codepoint(sv, pos);'
+    - '        if (result.status != utf8_parse_result::SUCCESS) break;'
+    - '        auto it = nodes[current].children.find(result.codepoint);'
+    - '        if (it == nodes[current].children.end()) {'
+    - '            return match_result{match_result::NO_MATCH};'
+    - '        }'
+    - '        current = it->second;'
+    - '        pos += result.bytes_consumed;'
+    - '        if (nodes[current].is_word) {'
+    - '            return match_result{match_result::COMPLETE_MATCH};'
+    - '        }'
+    - '    }'
+    - '    if (current != 0) {'
+    - '        return match_result{match_result::PARTIAL_MATCH};'
+    - '    }'
+    - '    return match_result{match_result::NO_MATCH};'
+    - '}'
+    desc: 检查给定位置是否匹配Trie中的一个完整词。
+    line: 56-77
+    name: check_at
+  - code:
+    - std::vector<prefix_and_next> collect_prefix_and_next() {
+    - '    std::vector<uint32_t>        prefix;'
+    - '    std::vector<prefix_and_next> result;'
+    - '    collect_prefix_and_next(0, prefix, result);'
+    - '    return result;'
+    - '}'
+    desc: 收集所有非词节点上的前缀及后续字符列表。
+    line: 80-85
+    name: collect_prefix_and_next
+  name: trie
+- desc: 解析器执行器，对每种类型的解析器定义匹配逻辑，通过重载不同解析器类型运算符进行分发。
+  methods:
+  - code:
+    - parser_executor(const common_peg_arena & arena,
+    - '                common_peg_parse_context & ctx,'
+    - '                size_t start)'
+    - '    : arena(arena), ctx(ctx), start_pos(start) {}'
+    desc: 构造函数，初始化解析器执行环境。
+    line: 183-186
+    name: parser_executor
+  - code:
+    - std::string debug_indent() const
+    - '{ return std::string(ctx.parse_depth * 2, '' ''); }'
+    desc: 返回调试输出的缩进字符串。
+    line: 188-189
+    name: debug_indent
+  - code:
+    - common_peg_parse_result operator()(const common_peg_epsilon_parser & /* p */)
+      const {
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos);'
+    - '}'
+    desc: 处理空解析器，总是成功匹配。
+    line: 198-200
+    name: operator()(const common_peg_epsilon_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_start_parser & /* p */)
+      const {
+    - '    return common_peg_parse_result('
+    - '        start_pos == 0 ? COMMON_PEG_PARSE_RESULT_SUCCESS : COMMON_PEG_PARSE_RESULT_FAIL,'
+    - '        start_pos'
+    - '    );'
+    - '}'
+    desc: 处理起始解析器，只有在位置为0时成功。
+    line: 202-206
+    name: operator()(const common_peg_start_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_end_parser & /* p */) const
+      {
+    - '    return common_peg_parse_result('
+    - '        start_pos >= ctx.input.size() ? COMMON_PEG_PARSE_RESULT_SUCCESS : COMMON_PEG_PARSE_RESULT_FAIL,'
+    - '        start_pos'
+    - '    );'
+    - '}'
+    desc: 处理结束解析器，只有在输入末尾时成功。
+    line: 208-212
+    name: operator()(const common_peg_end_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_literal_parser & p) {
+    - '    auto pos = start_pos;'
+    - '    for (auto i = 0u; i < p.literal.size(); ++i) {'
+    - '        if (pos >= ctx.input.size()) {'
+    - '            if (!ctx.is_lenient()) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start_pos);'
+    - '            }'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos);'
+    - '        }'
+    - '        if (ctx.input[pos] != p.literal[i]) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '        }'
+    - '        ++pos;'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      pos);'
+    - '}'
+    desc: 处理字面量解析器，逐字节匹配。
+    line: 226-239
+    name: operator()(const common_peg_literal_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_sequence_parser & p) {
+    - '    if (ctx.is_debug()) {'
+    - '        LOG_DBG("%sSEQ start at %zu ''%s'' (%zu children)\n", debug_indent().c_str(),
+      start_pos,'
+    - '                debug_input_snippet(start_pos).c_str(), p.children.size());'
+    - '    }'
+    - '    ctx.parse_depth++;'
+    - '    auto pos = start_pos;'
+    - '    std::vector<common_peg_ast_id> nodes;'
+    - '    for (size_t i = 0; i < p.children.size(); i++) {'
+    - '        const auto & child_id = p.children[i];'
+    - '        if (ctx.is_debug()) {'
+    - '            fprintf(stderr, "%sSEQ child %zu: %s\n", debug_indent().c_str(),
+      i, arena.dump(child_id).c_str());'
+    - '        }'
+    - '        auto result = arena.parse(child_id, ctx, pos);'
+    - '        if (ctx.is_debug()) {'
+    - '            fprintf(stderr, "%sSEQ child %zu: %s at %zu->%zu\n", debug_indent().c_str(),
+      i,'
+    - '                    common_peg_parse_result_type_name(result.type), result.start,
+      result.end);'
+    - '        }'
+    - '        if (result.fail()) {'
+    - '            ctx.parse_depth--;'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos,
+      result.end);'
+    - '        }'
+    - '        if (!result.nodes.empty()) {'
+    - '            nodes.insert(nodes.end(), result.nodes.begin(), result.nodes.end());'
+    - '        }'
+    - '        if (result.need_more_input()) {'
+    - '            ctx.parse_depth--;'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, result.end, std::move(nodes));'
+    - '        }'
+    - '        pos = result.end;'
+    - '    }'
+    - '    ctx.parse_depth--;'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      pos, std::move(nodes));'
+    - '}'
+    desc: 处理序列解析器，按顺序匹配所有子解析器。
+    line: 241-270
+    name: operator()(const common_peg_sequence_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_choice_parser & p) {
+    - '    if (ctx.is_debug()) {'
+    - '        fprintf(stderr, "%sCHOICE start at %zu ''%s'' (%zu options)\n", debug_indent().c_str(),
+      start_pos,'
+    - '                debug_input_snippet(start_pos).c_str(), p.children.size());'
+    - '    }'
+    - '    ctx.parse_depth++;'
+    - '    auto pos = start_pos;'
+    - '    for (size_t i = 0; i < p.children.size(); i++) {'
+    - '        const auto & child_id = p.children[i];'
+    - '        auto result = arena.parse(child_id, ctx, pos);'
+    - '        if (!result.fail()) {'
+    - '            ctx.parse_depth--;'
+    - '            return result;'
+    - '        }'
+    - '    }'
+    - '    ctx.parse_depth--;'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '}'
+    desc: 处理选择解析器，尝试所有子解析器直到第一个成功。
+    line: 272-289
+    name: operator()(const common_peg_choice_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_repetition_parser & p) {
+    - '    if (ctx.is_debug()) {'
+    - '        fprintf(stderr, "%sREPEAT start at %zu ''%s'' (min=%d, max=%d)\n",
+      debug_indent().c_str(), start_pos,'
+    - '                debug_input_snippet(start_pos).c_str(), p.min_count, p.max_count);'
+    - '    }'
+    - '    ctx.parse_depth++;'
+    - '    auto pos = start_pos;'
+    - '    int match_count = 0;'
+    - '    std::vector<common_peg_ast_id> nodes;'
+    - '    while (p.max_count == -1 || match_count < p.max_count) {'
+    - '        if (pos >= ctx.input.size()) {'
+    - '            break;'
+    - '        }'
+    - '        auto result = arena.parse(p.child, ctx, pos);'
+    - '        if (result.success()) {'
+    - '            if (result.end == pos) {'
+    - '                break;'
+    - '            }'
+    - '            if (!result.nodes.empty()) {'
+    - '                nodes.insert(nodes.end(), result.nodes.begin(), result.nodes.end());'
+    - '            }'
+    - '            pos = result.end;'
+    - '            match_count++;'
+    - '            continue;'
+    - '        }'
+    - '        if (result.need_more_input()) {'
+    - '            ctx.parse_depth--;'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, result.end, std::move(nodes));'
+    - '        }'
+    - '        break;'
+    - '    }'
+    - '    if (p.min_count > 0 && match_count < p.min_count) {'
+    - '        ctx.parse_depth--;'
+    - '        if (pos >= ctx.input.size() && ctx.is_lenient()) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos, std::move(nodes));'
+    - '        }'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos,
+      pos);'
+    - '    }'
+    - '    ctx.parse_depth--;'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      pos, std::move(nodes));'
+    - '}'
+    desc: 处理重复解析器，按最小最大次数重复匹配子解析器。
+    line: 291-338
+    name: operator()(const common_peg_repetition_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_and_parser & p) {
+    - '    auto result = arena.parse(p.child, ctx, start_pos);'
+    - '    // Pass result but don''t consume input'
+    - '    return common_peg_parse_result(result.type, start_pos);'
+    - '}'
+    desc: 处理与解析器，测试但不消耗输入。
+    line: 340-343
+    name: operator()(const common_peg_and_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_not_parser & p) {
+    - '    auto result = arena.parse(p.child, ctx, start_pos);'
+    - '    if (result.success()) {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '    }'
+    - '    if (result.need_more_input()) {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos);'
+    - '    }'
+    - '    // Child failed, so negation succeeds'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos);'
+    - '}'
+    desc: 处理否定解析器，匹配当且仅当子解析器失败。
+    line: 345-354
+    name: operator()(const common_peg_not_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_any_parser & /* p */) const
+      {
+    - '    // Parse a single UTF-8 codepoint (not just a single byte)'
+    - '    auto result = common_parse_utf8_codepoint(ctx.input, start_pos);'
+    - '    if (result.status == utf8_parse_result::INCOMPLETE) {'
+    - '        if (!ctx.is_lenient()) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '        }'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos);'
+    - '    }'
+    - '    if (result.status == utf8_parse_result::INVALID) {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      start_pos + result.bytes_consumed);'
+    - '}'
+    desc: 处理任意字符解析器，匹配单个Unicode码点。
+    line: 356-365
+    name: operator()(const common_peg_any_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_space_parser & /* p */)
+      {
+    - '    auto pos = start_pos;'
+    - '    while (pos < ctx.input.size()) {'
+    - '        auto c = static_cast<unsigned char>(ctx.input[pos]);'
+    - '        if (std::isspace(c)) {'
+    - '            ++pos;'
+    - '        } else {'
+    - '            break;'
+    - '        }'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      pos);'
+    - '}'
+    desc: 处理空白字符解析器，匹配所有空白字符。
+    line: 367-376
+    name: operator()(const common_peg_space_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_chars_parser & p) const
+      {
+    - '    auto pos = start_pos;'
+    - '    int match_count = 0;'
+    - '    while (p.max_count == -1 || match_count < p.max_count) {'
+    - '        auto result = common_parse_utf8_codepoint(ctx.input, pos);'
+    - '        if (result.status == utf8_parse_result::INCOMPLETE) {'
+    - '            if (match_count >= p.min_count) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS,
+      start_pos, pos);'
+    - '            }'
+    - '            if (!ctx.is_lenient()) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start_pos);'
+    - '            }'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos);'
+    - '        }'
+    - '        if (result.status == utf8_parse_result::INVALID) {'
+    - '            if (match_count >= p.min_count) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS,
+      start_pos, pos);'
+    - '            }'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '        }'
+    - '        bool matches = false;'
+    - '        for (const auto & range : p.ranges) {'
+    - '            if (range.contains(result.codepoint)) {'
+    - '                matches = true;'
+    - '                break;'
+    - '            }'
+    - '        }'
+    - '        if (p.negated) {'
+    - '            matches = !matches;'
+    - '        }'
+    - '        if (matches) {'
+    - '            pos += result.bytes_consumed;'
+    - '            ++match_count;'
+    - '        } else {'
+    - '            break;'
+    - '        }'
+    - '    }'
+    - '    if (match_count < p.min_count) {'
+    - '        if (pos >= ctx.input.size() && ctx.is_lenient()) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos);'
+    - '        }'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos,
+      pos);'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      pos);'
+    - '}'
+    desc: 处理字符集解析器，匹配字符类中的字符。
+    line: 378-406
+    name: operator()(const common_peg_chars_parser &)
+  - code:
+    - static common_peg_parse_result handle_escape_sequence(common_peg_parse_context
+      & ctx, size_t start, size_t & pos, const char delimiter) {
+    - '    ++pos; // consume ''\'''
+    - '    if (pos >= ctx.input.size()) {'
+    - '        if (!ctx.is_lenient()) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start);'
+    - '        }'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start, pos);'
+    - '    }'
+    - '    char c = ctx.input[pos];'
+    - '    if (c == delimiter || c == ''\\'' || c == ''/'' || c == ''b'' || c == ''f''
+      || c == ''n'' || c == ''r'' || c == ''t'') {'
+    - '        ++pos;'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start,
+      pos);'
+    - '    } else if (c == ''u'') {'
+    - '        return handle_unicode_escape(ctx, start, pos);'
+    - '    } else {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start);'
+    - '    }'
+    - '}'
+    desc: 处理字符串解析器中的转义序列。
+    line: 408-421
+    name: handle_escape_sequence
+  - code:
+    - static common_peg_parse_result handle_unicode_escape(common_peg_parse_context
+      & ctx, size_t start, size_t & pos) {
+    - '    ++pos; // consume ''u'''
+    - '    for (int i = 0; i < 4; ++i) {'
+    - '        if (pos >= ctx.input.size()) {'
+    - '            if (!ctx.is_lenient()) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start);'
+    - '            }'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start, pos);'
+    - '        }'
+    - '        if (!is_hex_digit(ctx.input[pos])) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start);'
+    - '        }'
+    - '        ++pos;'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start,
+      pos);'
+    - '}'
+    desc: 处理Unicode转义序列（\uXXXX）。
+    line: 423-438
+    name: handle_unicode_escape
+  - code:
+    - common_peg_parse_result operator()(const common_peg_string_parser & p) {
+    - '    auto pos = start_pos;'
+    - '    while (pos < ctx.input.size()) {'
+    - '        char c = ctx.input[pos];'
+    - '        if (c == p.delimiter) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS,
+      start_pos, pos);'
+    - '        }'
+    - '        if (c == ''\\'') {'
+    - '            auto result = handle_escape_sequence(ctx, start_pos, pos, p.delimiter);'
+    - '            if (!result.success()) {'
+    - '                return result;'
+    - '            }'
+    - '        } else {'
+    - '            auto utf8_result = common_parse_utf8_codepoint(ctx.input, pos);'
+    - '            if (utf8_result.status == utf8_parse_result::INCOMPLETE) {'
+    - '                if (!ctx.is_lenient()) {'
+    - '                    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start_pos);'
+    - '                }'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos);'
+    - '            }'
+    - '            if (utf8_result.status == utf8_parse_result::INVALID) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start_pos);'
+    - '            }'
+    - '            pos += utf8_result.bytes_consumed;'
+    - '        }'
+    - '    }'
+    - '    if (!ctx.is_lenient()) {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos,
+      pos);'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, pos);'
+    - '}'
+    desc: 处理字符串解析器，匹配到指定的结束定界符。
+    line: 440-465
+    name: operator()(const common_peg_string_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_until_parser & p) const
+      {
+    - '    trie matcher(p.delimiters);'
+    - '    size_t pos = start_pos;'
+    - '    size_t last_valid_pos = start_pos;'
+    - '    while (pos < ctx.input.size()) {'
+    - '        auto utf8_result = common_parse_utf8_codepoint(ctx.input, pos);'
+    - '        if (utf8_result.status == utf8_parse_result::INCOMPLETE) {'
+    - '            if (!ctx.is_lenient()) {'
+    - '                return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL,
+      start_pos);'
+    - '            }'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, last_valid_pos);'
+    - '        }'
+    - '        if (utf8_result.status == utf8_parse_result::INVALID) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_FAIL, start_pos);'
+    - '        }'
+    - '        auto match = matcher.check_at(ctx.input, pos);'
+    - '        if (match == trie::COMPLETE_MATCH) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS,
+      start_pos, pos);'
+    - '        }'
+    - '        if (match == trie::PARTIAL_MATCH) {'
+    - '            return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS,
+      start_pos, pos);'
+    - '        }'
+    - '        pos += utf8_result.bytes_consumed;'
+    - '        last_valid_pos = pos;'
+    - '    }'
+    - '    if (last_valid_pos == ctx.input.size() && ctx.is_lenient()) {'
+    - '        return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT,
+      start_pos, last_valid_pos);'
+    - '    }'
+    - '    return common_peg_parse_result(COMMON_PEG_PARSE_RESULT_SUCCESS, start_pos,
+      last_valid_pos);'
+    - '}'
+    desc: 处理直到解析器，匹配直到遇到指定的分隔符之一。
+    line: 467-491
+    name: operator()(const common_peg_until_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_schema_parser & p) {
+    - '    return arena.parse(p.child, ctx, start_pos);'
+    - '}'
+    desc: 处理模式解析器，委派给子解析器。
+    line: 493-495
+    name: operator()(const common_peg_schema_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_rule_parser & p) {
+    - '    auto result = arena.parse(p.child, ctx, start_pos);'
+    - '    if (!result.fail()) {'
+    - '        std::string_view text;'
+    - '        if (result.start < ctx.input.size()) {'
+    - '            text = std::string_view(ctx.input).substr(result.start, result.end
+      - result.start);'
+    - '        }'
+    - '        auto node_id = ctx.ast.add_node('
+    - '            p.name, "", result.start, result.end, text,'
+    - '            std::move(result.nodes), result.need_more_input()'
+    - '        );'
+    - '        return common_peg_parse_result(result.type, result.start, result.end,
+      { node_id });'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 处理规则解析器，将子解析器的结果包装为带名称的AST节点。
+    line: 497-511
+    name: operator()(const common_peg_rule_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_tag_parser & p) {
+    - '    auto result = arena.parse(p.child, ctx, start_pos);'
+    - '    if (!result.fail()) {'
+    - '        std::string_view text;'
+    - '        if (result.start < ctx.input.size()) {'
+    - '            text = std::string_view(ctx.input).substr(result.start, result.end
+      - result.start);'
+    - '        }'
+    - '        auto node_id = ctx.ast.add_node('
+    - '            "", p.tag, result.start, result.end, text,'
+    - '            std::move(result.nodes), result.need_more_input()'
+    - '        );'
+    - '        return common_peg_parse_result(result.type, result.start, result.end,
+      { node_id });'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 处理标签解析器，将子解析器的结果包装为带标签的AST节点。
+    line: 513-528
+    name: operator()(const common_peg_tag_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_ref_parser & p) {
+    - '    auto rule_id = arena.get_rule(p.name);'
+    - '    return arena.parse(rule_id, ctx, start_pos);'
+    - '}'
+    desc: 处理引用解析器，解析到对应规则。
+    line: 530-533
+    name: operator()(const common_peg_ref_parser &)
+  - code:
+    - common_peg_parse_result operator()(const common_peg_atomic_parser & p) {
+    - '    auto result = arena.parse(p.child, ctx, start_pos);'
+    - '    if (result.need_more_input()) {'
+    - '        // Clear nodes so they don''t propagate up.'
+    - '        result.nodes.clear();'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 处理原子解析器，如果子解析器需要更多输入则清除节点。
+    line: 535-541
+    name: operator()(const common_peg_atomic_parser &)
+  name: parser_executor
+- desc: 管理 PEG AST 节点并提供树结构转储功能。
+  methods:
+  - code:
+    - std::string common_peg_ast_arena::dump() {
+    - '    std::ostringstream oss;'
+    - '    for (auto & node : nodes_) {'
+    - '        bfs_node(*this, oss, node, 0);'
+    - '    }'
+    - '    return oss.str();'
+    - '}'
+    desc: 遍历 AST 节点并生成可读的层序结构字符串。
+    line: 951-958
+    name: dump
+  name: common_peg_ast_arena
+- desc: 维护 PEG 解析器节点、规则和根节点，并负责引用解析、结构转储及 GBNF 文法生成。
+  methods:
+  - code:
+    - void common_peg_arena::resolve_refs() {
+    - '    for (auto & parser : parsers_) {'
+    - '        std::visit([this](auto & p) {'
+    - '            using T = std::decay_t<decltype(p)>;'
+    - '            ...'
+    - '        }, parser);'
+    - '    }'
+    - '    if (root_ != COMMON_PEG_INVALID_PARSER_ID) {'
+    - '        root_ = resolve_ref(root_);'
+    - '    }'
+    - '}'
+    desc: 遍历所有解析器节点，将解析器引用替换为对应的规则解析器 ID，并解析根节点引用。
+    line: 960-1006
+    name: resolve_refs
+  - code:
+    - std::string common_peg_arena::dump(common_peg_parser_id id) const {
+    - '    std::unordered_set<common_peg_parser_id> visited;'
+    - '    return dump_impl(id, visited);'
+    - '}'
+    desc: 从指定解析器 ID 开始生成解析器结构的字符串表示。
+    line: 1008-1011
+    name: dump
+  - code:
+    - std::string common_peg_arena::dump_impl(common_peg_parser_id id,
+    - '                                        std::unordered_set<common_peg_parser_id>
+      & visited) const {'
+    - '    if (visited.count(id)) {'
+    - '        return "[cycle]";'
+    - '    }'
+    - '    visited.insert(id);'
+    - '    const auto & parser = parsers_.at(id);'
+    - '    return std::visit([this, &visited](const auto & p) -> std::string {'
+    - '        ...'
+    - '    }, parser);'
+    - '}'
+    desc: 递归转储解析器节点，并检测循环引用。
+    line: 1013-1069
+    name: dump_impl
+  - code:
+    - void common_peg_arena::build_grammar(const common_grammar_builder & builder,
+      bool lazy) const {
+    - '    auto schema_delegates = [](const common_peg_schema_parser & s) -> bool
+      {'
+    - '        ...'
+    - '    };'
+    - '    auto effective_parser = [&](common_peg_parser_id id) -> const common_peg_parser_variant
+      & {'
+    - '        ...'
+    - '    };'
+    - '    std::function<std::string(common_peg_parser_id)> to_gbnf = [&](common_peg_parser_id
+      id) -> std::string {'
+    - '        ...'
+    - '    };'
+    - '    ...'
+    - '    builder.add_rule("root", to_gbnf(root_));'
+    - '}'
+    desc: 收集可达 PEG 规则并将其转换为 GBNF 文法，支持懒加载规则和触发规则。
+    line: 1331-1533
+    name: build_grammar
+  name: common_peg_arena
+- desc: 表示一个 PEG 解析器节点的句柄，并提供解析器之间的组合运算符。
+  methods:
+  - code:
+    - common_peg_parser & common_peg_parser::operator=(const common_peg_parser & other)
+      {
+    - '    id_ = other.id_;'
+    - '    return *this;'
+    - '}'
+    desc: 复制另一个解析器句柄的节点 ID。
+    line: 1071-1074
+    name: operator=
+  - code:
+    - common_peg_parser & common_peg_parser::operator+=(const common_peg_parser &
+      other) {
+    - '    id_ = builder_.sequence({id_, other.id_});'
+    - '    return *this;'
+    - '}'
+    desc: 将当前解析器与另一个解析器组合为序列。
+    line: 1076-1079
+    name: operator+=
+  - code:
+    - common_peg_parser & common_peg_parser::operator|=(const common_peg_parser &
+      other) {
+    - '    id_ = builder_.choice({id_, other.id_});'
+    - '    return *this;'
+    - '}'
+    desc: 将当前解析器与另一个解析器组合为选择分支。
+    line: 1081-1084
+    name: operator|=
+  - code:
+    - common_peg_parser common_peg_parser::operator+(const common_peg_parser & other)
+      const {
+    - '    return builder_.sequence({id_, other.id_});'
+    - '}'
+    desc: 返回当前解析器与另一个解析器组成的序列解析器。
+    line: 1086-1088
+    name: operator+
+  - code:
+    - common_peg_parser common_peg_parser::operator|(const common_peg_parser & other)
+      const {
+    - '    return builder_.choice({id_, other.id_});'
+    - '}'
+    desc: 返回当前解析器与另一个解析器组成的选择解析器。
+    line: 1090-1092
+    name: operator|
+  - code:
+    - common_peg_parser common_peg_parser::operator<<(const common_peg_parser & other)
+      const {
+    - '    return builder_.sequence({id_, builder_.space(), other.id_});'
+    - '}'
+    desc: 以空格解析器连接当前解析器和另一个解析器。
+    line: 1094-1096
+    name: operator<<
+  - code:
+    - common_peg_parser common_peg_parser::operator+(const char * str) const {
+    - '    return *this + builder_.literal(str);'
+    - '}'
+    desc: 将字符串字面量转换为字面量解析器并追加到当前解析器。
+    line: 1098-1100
+    name: operator+(const char*)
+  - code:
+    - common_peg_parser common_peg_parser::operator+(const std::string & str) const
+      {
+    - '    return *this + builder_.literal(str);'
+    - '}'
+    desc: 将字符串转换为字面量解析器并追加到当前解析器。
+    line: 1102-1104
+    name: operator+(const std::string&)
+  - code:
+    - common_peg_parser common_peg_parser::operator<<(const char * str) const {
+    - '    return *this << builder_.literal(str);'
+    - '}'
+    desc: 将字符串字面量转换为解析器，并以空格规则连接。
+    line: 1106-1108
+    name: operator<<(const char*)
+  - code:
+    - common_peg_parser common_peg_parser::operator<<(const std::string & str) const
+      {
+    - '    return *this << builder_.literal(str);'
+    - '}'
+    desc: 将字符串转换为解析器，并以空格规则连接。
+    line: 1110-1112
+    name: operator<<(const std::string&)
+  - code:
+    - common_peg_parser common_peg_parser::operator|(const char * str) const {
+    - '    return *this | builder_.literal(str);'
+    - '}'
+    desc: 将字符串字面量作为选择分支与当前解析器组合。
+    line: 1114-1116
+    name: operator|(const char*)
+  - code:
+    - common_peg_parser common_peg_parser::operator|(const std::string & str) const
+      {
+    - '    return *this | builder_.literal(str);'
+    - '}'
+    desc: 将字符串作为选择分支与当前解析器组合。
+    line: 1118-1120
+    name: operator|(const std::string&)
+  name: common_peg_parser
+- desc: 提供构造 PEG 解析器、组合规则以及生成 JSON/Python 语法解析器的工厂接口。
+  methods:
+  - code:
+    - common_peg_parser_builder::common_peg_parser_builder() {}
+    desc: 构造解析器构建器。
+    line: 1141-1141
+    name: common_peg_parser_builder
+  - code:
+    - common_peg_parser common_peg_parser_builder::sequence(const std::vector<common_peg_parser_id>
+      & parsers) {
+    - '    std::vector<common_peg_parser_id> flattened;'
+    - '    for (const auto & p : parsers) {'
+    - '        ...'
+    - '    }'
+    - '    return wrap(arena_.add_parser(common_peg_sequence_parser{flattened}));'
+    - '}'
+    desc: 根据解析器 ID 创建序列解析器，并扁平化嵌套序列。
+    line: 1143-1157
+    name: sequence
+  - code:
+    - common_peg_parser common_peg_parser_builder::sequence(const std::vector<common_peg_parser>
+      & parsers) {
+    - '    std::vector<common_peg_parser_id> ids;'
+    - '    ids.reserve(parsers.size());'
+    - '    for (const auto & p : parsers) ids.push_back(p.id());'
+    - '    return sequence(ids);'
+    - '}'
+    desc: 将解析器对象转换为 ID 后创建序列解析器。
+    line: 1159-1167
+    name: sequence(const std::vector<common_peg_parser>&)
+  - code:
+    - common_peg_parser common_peg_parser_builder::sequence(std::initializer_list<common_peg_parser>
+      parsers) {
+    - '    std::vector<common_peg_parser_id> ids;'
+    - '    ids.reserve(parsers.size());'
+    - '    for (const auto & p : parsers) ids.push_back(p.id());'
+    - '    return sequence(ids);'
+    - '}'
+    desc: 根据初始化列表创建序列解析器。
+    line: 1169-1177
+    name: sequence(std::initializer_list<common_peg_parser>)
+  - code:
+    - common_peg_parser common_peg_parser_builder::choice(const std::vector<common_peg_parser_id>
+      & parsers) {
+    - '    std::vector<common_peg_parser_id> flattened;'
+    - '    for (const auto & p : parsers) {'
+    - '        ...'
+    - '    }'
+    - '    return wrap(arena_.add_parser(common_peg_choice_parser{flattened}));'
+    - '}'
+    desc: 根据解析器 ID 创建选择解析器，并扁平化嵌套选择。
+    line: 1179-1193
+    name: choice
+  - code:
+    - common_peg_parser common_peg_parser_builder::choice(const std::vector<common_peg_parser>
+      & parsers) {
+    - '    std::vector<common_peg_parser_id> ids;'
+    - '    ids.reserve(parsers.size());'
+    - '    for (const auto & p : parsers) ids.push_back(p.id());'
+    - '    return choice(ids);'
+    - '}'
+    desc: 将解析器对象转换为 ID 后创建选择解析器。
+    line: 1195-1203
+    name: choice(const std::vector<common_peg_parser>&)
+  - code:
+    - common_peg_parser common_peg_parser_builder::choice(std::initializer_list<common_peg_parser>
+      parsers) {
+    - '    std::vector<common_peg_parser_id> ids;'
+    - '    ids.reserve(parsers.size());'
+    - '    for (const auto & p : parsers) ids.push_back(p.id());'
+    - '    return choice(ids);'
+    - '}'
+    desc: 根据初始化列表创建选择解析器。
+    line: 1205-1213
+    name: choice(std::initializer_list<common_peg_parser>)
+  - code:
+    - common_peg_parser common_peg_parser_builder::chars(const std::string & classes,
+      int min, int max) {
+    - '    auto [ranges, negated] = parse_char_classes(classes);'
+    - '    return wrap(arena_.add_parser(common_peg_chars_parser{classes, ranges,
+      negated, min, max}));'
+    - '}'
+    desc: 解析字符类模式并创建带最小、最大数量限制的字符解析器。
+    line: 1215-1218
+    name: chars
+  - code:
+    - common_peg_parser common_peg_parser_builder::schema(const common_peg_parser
+      & p, const std::string & name, const nlohmann::ordered_json & schema, bool raw)
+      {
+    - '    return wrap(arena_.add_parser(common_peg_schema_parser{p.id(), name, std::make_shared<nlohmann::ordered_json>(schema),
+      raw}));'
+    - '}'
+    desc: 为解析器附加 JSON Schema 元数据。
+    line: 1220-1222
+    name: schema
+  - code:
+    - common_peg_parser common_peg_parser_builder::rule(const std::string & name,
+      const common_peg_parser & p, bool trigger) {
+    - '    auto clean_name = rule_name(name);'
+    - '    auto rule_id = arena_.add_parser(common_peg_rule_parser{clean_name, p.id(),
+      trigger});'
+    - '    arena_.add_rule(clean_name, rule_id);'
+    - '    return ref(clean_name);'
+    - '}'
+    desc: 创建命名 PEG 规则并注册到解析器竞技场。
+    line: 1224-1230
+    name: rule
+  - code:
+    - common_peg_parser common_peg_parser_builder::rule(const std::string & name,
+      const std::function<common_peg_parser()> & builder_fn, bool trigger) {
+    - '    auto clean_name = rule_name(name);'
+    - '    if (arena_.has_rule(clean_name)) return ref(clean_name);'
+    - '    auto placeholder = any();'
+    - '    auto placeholder_rule_id = arena_.add_parser(common_peg_rule_parser{clean_name,
+      placeholder.id(), trigger});'
+    - '    arena_.add_rule(clean_name, placeholder_rule_id);'
+    - '    auto parser = builder_fn();'
+    - '    auto rule_id = arena_.add_parser(common_peg_rule_parser{clean_name, parser.id(),
+      trigger});'
+    - '    arena_.rules_[clean_name] = rule_id;'
+    - '    return ref(clean_name);'
+    - '}'
+    desc: 通过延迟构建函数创建规则，并使用占位规则支持递归引用。
+    line: 1232-1249
+    name: rule(const std::string&, const std::function<common_peg_parser()>&, bool)
+  - code:
+    - void common_peg_parser_builder::set_root(const common_peg_parser & p) {
+    - '    arena_.set_root(p.id());'
+    - '}'
+    desc: 设置 PEG 语法树的根解析器。
+    line: 1251-1253
+    name: set_root
+  - code:
+    - common_peg_arena common_peg_parser_builder::build() {
+    - '    arena_.resolve_refs();'
+    - '    return std::move(arena_);'
+    - '}'
+    desc: 解析引用并返回构建完成的解析器竞技场。
+    line: 1255-1258
+    name: build
+  - code:
+    - common_peg_parser common_peg_parser_builder::string_content(char delimiter)
+      {
+    - '    return wrap(arena_.add_parser(common_peg_string_parser{delimiter}));'
+    - '}'
+    desc: 创建指定分隔符的字符串内容解析器。
+    line: 1262-1264
+    name: string_content
+  - code:
+    - common_peg_parser common_peg_parser_builder::double_quoted_string() {
+    - '    return rule("double-quoted-string", [this]() {'
+    - '        return sequence({literal("\""), string_content(''\"''), literal("\""),
+      space()});'
+    - '    });'
+    - '}'
+    desc: 构造双引号字符串规则。
+    line: 1266-1270
+    name: double_quoted_string
+  - code:
+    - common_peg_parser common_peg_parser_builder::single_quoted_string() {
+    - '    return rule("single-quoted-string", [this]() {'
+    - '        return sequence({literal("''"), string_content(''\''''), literal("''"),
+      space()});'
+    - '    });'
+    - '}'
+    desc: 构造单引号字符串规则。
+    line: 1272-1276
+    name: single_quoted_string
+  - code:
+    - common_peg_parser common_peg_parser_builder::quoted_string() {
+    - '    return rule("quoted-string", [this]() {'
+    - '        return choice({double_quoted_string(), single_quoted_string()});'
+    - '    });'
+    - '}'
+    desc: 构造同时支持单双引号的字符串规则。
+    line: 1278-1282
+    name: quoted_string
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_number() {
+    - '    return rule("json-number", [this]() {'
+    - '        auto digit1_9 = chars("[1-9]", 1, 1);'
+    - '        auto digits = chars("[0-9]");'
+    - '        auto int_part = choice({literal("0"), sequence({digit1_9, chars("[0-9]",
+      0, -1)})});'
+    - '        auto frac = sequence({literal("."), digits});'
+    - '        auto exp = sequence({choice({literal("e"), literal("E")}), optional(chars("[+-]",
+      1, 1)), digits});'
+    - '        auto not_number_continuation = negate(chars("[0-9.eE+-]", 1, 1));'
+    - '        return sequence({optional(literal("-")), int_part, optional(frac),
+      optional(exp), not_number_continuation, space()});'
+    - '    });'
+    - '}'
+    desc: 构造 JSON 数字规则，支持整数、小数、指数和负数。
+    line: 1286-1298
+    name: json_number
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_string() {
+    - '    return rule("json-string", [this]() {'
+    - '        return sequence({literal("\""), string_content(''\"''), literal("\""),
+      space()});'
+    - '    });'
+    - '}'
+    desc: 构造 JSON 双引号字符串规则。
+    line: 1300-1304
+    name: json_string
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_bool() {
+    - '    return rule("json-bool", [this]() {'
+    - '        return sequence({choice({literal("true"), literal("false")}), space()});'
+    - '    });'
+    - '}'
+    desc: 构造 JSON true/false 布尔值规则。
+    line: 1306-1310
+    name: json_bool
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_null() {
+    - '    return rule("json-null", [this]() {'
+    - '        return sequence({literal("null"), space()});'
+    - '    });'
+    - '}'
+    desc: 构造 JSON null 规则。
+    line: 1312-1316
+    name: json_null
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_object() {
+    - '    return rule("json-object", [this]() {'
+    - '        auto ws = space();'
+    - '        auto member = sequence({json_string(), ws, literal(":"), ws, json()});'
+    - '        auto members = sequence({member, zero_or_more(sequence({ws, literal(","),
+      ws, member}))});'
+    - '        return sequence({literal("{"), ws, choice({literal("}"), sequence({members,
+      ws, literal("}")})}), ws});'
+    - '    });'
+    - '}'
+    desc: 构造支持嵌套成员和逗号分隔的 JSON 对象规则。
+    line: 1318-1330
+    name: json_object
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_array() {
+    - '    return rule("json-array", [this]() {'
+    - '        auto ws = space();'
+    - '        auto elements = sequence({json(), zero_or_more(sequence({literal(","),
+      ws, json()}))});'
+    - '        return sequence({literal("["), ws, choice({literal("]"), sequence({elements,
+      ws, literal("]")})}), ws});'
+    - '    });'
+    - '}'
+    desc: 构造支持嵌套值和逗号分隔的 JSON 数组规则。
+    line: 1332-1344
+    name: json_array
+  - code:
+    - common_peg_parser common_peg_parser_builder::json() {
+    - '    return rule("json-value", [this]() {'
+    - '        return choice({json_object(), json_array(), json_string(), json_number(),
+      json_bool(), json_null()});'
+    - '    });'
+    - '}'
+    desc: 构造 JSON 值的总规则，覆盖对象、数组、字符串、数字、布尔值和 null。
+    line: 1346-1350
+    name: json
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_string() {
+    - '    return rule("python-string", [this]() {'
+    - '        return choice({double_quoted_string(), single_quoted_string()});'
+    - '    });'
+    - '}'
+    desc: 构造 Python 字符串规则，支持单双引号。
+    line: 1352-1356
+    name: python_string
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_number() {
+    - '    return json_number();'
+    - '}'
+    desc: 复用 JSON 数字规则作为 Python 数字规则。
+    line: 1358-1360
+    name: python_number
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_bool() {
+    - '    return rule("python-bool", [this]() {'
+    - '        return sequence({choice({literal("True"), literal("False")}), space()});'
+    - '    });'
+    - '}'
+    desc: 构造 Python True/False 布尔值规则。
+    line: 1362-1368
+    name: python_bool
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_null() {
+    - '    return rule("python-none", [this]() {'
+    - '        return sequence({literal("None"), space()});'
+    - '    });'
+    - '}'
+    desc: 构造 Python None 规则。
+    line: 1370-1374
+    name: python_null
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_dict() {
+    - '    return rule("python-dict", [this]() {'
+    - '        auto ws = space();'
+    - '        auto member = sequence({python_string(), ws, literal(":"), ws, python_value()});'
+    - '        auto members = sequence({member, zero_or_more(sequence({ws, literal(","),
+      ws, member}))});'
+    - '        return sequence({literal("{"), ws, choice({literal("}"), sequence({members,
+      ws, literal("}")})}), ws});'
+    - '    });'
+    - '}'
+    desc: 构造 Python 字典规则，支持嵌套值和逗号分隔成员。
+    line: 1376-1388
+    name: python_dict
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_array() {
+    - '    return rule("python-array", [this]() {'
+    - '        auto ws = space();'
+    - '        auto elements = sequence({python_value(), zero_or_more(sequence({literal(","),
+      ws, python_value()}))});'
+    - '        return sequence({literal("["), ws, choice({literal("]"), sequence({elements,
+      ws, literal("]")})}), ws});'
+    - '    });'
+    - '}'
+    desc: 构造 Python 列表规则，支持嵌套值和逗号分隔元素。
+    line: 1390-1402
+    name: python_array
+  - code:
+    - common_peg_parser common_peg_parser_builder::python_value() {
+    - '    return rule("python-value", [this]() {'
+    - '        return choice({python_dict(), python_array(), python_string(), python_number(),
+      python_bool(), python_null()});'
+    - '    });'
+    - '}'
+    desc: 构造 Python 值的总规则。
+    line: 1404-1408
+    name: python_value
+  - code:
+    - common_peg_parser common_peg_parser_builder::marker() {
+    - '    auto sharp_bracket_parser = literal("<") + until(">") + literal(">");'
+    - '    auto square_bracket_parser = literal("[") + until("]") + literal("]");'
+    - '    return choice({sharp_bracket_parser, square_bracket_parser});'
+    - '}'
+    desc: 构造支持尖括号和方括号内容的标记解析器。
+    line: 1410-1415
+    name: marker
+  - code:
+    - common_peg_parser common_peg_parser_builder::json_member(const std::string &
+      key, const common_peg_parser & p) {
+    - '    auto ws = space();'
+    - '    return sequence({literal("\"" + key + "\""), ws, literal(":"), ws, p});'
+    - '}'
+    desc: 构造匹配指定 JSON 键及其值解析器的成员规则。
+    line: 1417-1424
+    name: json_member
+  name: common_peg_parser_builder
+- desc: PEG 解析器竞技场类，管理解析器集合、规则映射及根解析器，支持 JSON 格式的序列化和反序列化。
+  methods:
+  - code:
+    - nlohmann::json common_peg_arena::to_json() const {
+    - '    auto parsers = nlohmann::json::array();'
+    - '    for (const auto & parser : parsers_) {'
+    - '        parsers.push_back(serialize_parser_variant(parser));'
+    - '    }'
+    - '    return nlohmann::json{'
+    - '        {"parsers", parsers},'
+    - '        {"rules", rules_},'
+    - '        {"root", root_}'
+    - '    };'
+    - '}'
+    desc: 将解析器竞技场转换为 JSON 对象，包含解析器列表、规则映射和根解析器 ID。
+    line: 1841-1850
+    name: to_json
+  - code:
+    - common_peg_arena common_peg_arena::from_json(const nlohmann::json & j) {
+    - '    if (!j.contains("parsers") || !j["parsers"].is_array()) {'
+    - '        throw std::runtime_error("JSON missing or invalid ''parsers'' array");'
+    - '    }'
+    - '    if (!j.contains("rules") || !j["rules"].is_object()) {'
+    - '        throw std::runtime_error("JSON missing or invalid ''rules'' object");'
+    - '    }'
+    - '    if (!j.contains("root")) {'
+    - '        throw std::runtime_error("JSON missing ''root'' field");'
+    - '    }'
+    - ''
+    - '    common_peg_arena arena;'
+    - ''
+    - '    const auto & parsers_json = j["parsers"];'
+    - '    arena.parsers_.reserve(parsers_json.size());'
+    - '    for (const auto & parser_json : parsers_json) {'
+    - '        arena.parsers_.push_back(deserialize_parser_variant(parser_json));'
+    - '    }'
+    - ''
+    - '    arena.rules_ = j["rules"].get<std::unordered_map<std::string, common_peg_parser_id>>();'
+    - ''
+    - '    for (const auto & [name, id] : arena.rules_) {'
+    - '        if (id >= arena.parsers_.size()) {'
+    - '            throw std::runtime_error("Rule ''" + name + "'' references invalid
+      parser ID: " + std::to_string(id));'
+    - '        }'
+    - '    }'
+    - ''
+    - '    arena.root_ = j["root"].get<common_peg_parser_id>();'
+    - '    if (arena.root_ != COMMON_PEG_INVALID_PARSER_ID && arena.root_ >= arena.parsers_.size())
+      {'
+    - '        throw std::runtime_error("Root references invalid parser ID: " + std::to_string(arena.root_));'
+    - '    }'
+    - ''
+    - '    return arena;'
+    - '}'
+    desc: 从 JSON 对象创建解析器竞技场，验证并反序列化解析器、规则和根解析器。
+    line: 1951-1984
+    name: from_json
+  - code:
+    - std::string common_peg_arena::save() const {
+    - '    return to_json().dump();'
+    - '}'
+    desc: 将解析器竞技场序列化为 JSON 字符串并返回。
+    line: 1986-1988
+    name: save
+  - code:
+    - void common_peg_arena::load(const std::string & data) {
+    - '    *this = from_json(nlohmann::json::parse(data));'
+    - '}'
+    desc: 从 JSON 字符串反序列化解析器竞技场数据。
+    line: 1990-1992
+    name: load
+  name: common_peg_arena
+desc: 该文件实现了一个PEG（解析表达式语法）解析引擎，包括语法定义与匹配执行的功能。它定义了AST（抽象语法树）的内存管理、多种解析器原语（普通字符、序列、选择、重复等）、转义序列处理、Unicode字符支持，以及基于Trie的结构用于高效的多字符串匹配。该代码实现
+  PEG 解析器抽象语法树与解析器竞技场的核心功能，包括解析器引用解析、解析器结构转储、解析器组合运算符、序列与选择扁平化、规则构建、JSON/Python 基础语法规则构造、字符串与标记解析，以及将
+  PEG 规则转换为 GBNF 文法并收集可达规则。代码还包含若干用于字符类转义、排除模式生成和规则可达性分析的辅助函数。该代码实现了 PEG 解析器竞技场（arena）的
+  JSON 序列化与反序列化功能，包括将各种解析器变体（如字面量、序列、选择、重复等）转换为 JSON 格式，以及从 JSON 数据恢复解析器结构，并提供了保存与加载整个解析器定义的方法。
+file: common/peg-parser.cpp
+funcs:
+- code:
+  - const char * common_peg_parse_result_type_name(common_peg_parse_result_type type)
+    {
+  - '    switch (type) {'
+  - '        case COMMON_PEG_PARSE_RESULT_FAIL:            return "fail";'
+  - '        case COMMON_PEG_PARSE_RESULT_SUCCESS:         return "success";'
+  - '        case COMMON_PEG_PARSE_RESULT_NEED_MORE_INPUT: return "need_more_input";'
+  - '        default:                                      return "unknown";'
+  - '    }'
+  - '}'
+  desc: 返回解析结果类型的字符串表示。
+  line: 19-26
+  name: common_peg_parse_result_type_name
+- code:
+  - static bool is_hex_digit(const char c) {
+  - '    return (c >= ''0'' && c <= ''9'') || (c >= ''a'' && c <= ''f'') || (c >=
+    ''A'' && c <= ''F'');'
+  - '}'
+  desc: 检查字符是否为十六进制数字。
+  line: 29-31
+  name: is_hex_digit
+- code:
+  - static std::pair<uint32_t, size_t> parse_hex_escape(const std::string & str, size_t
+    pos, int hex_count) {
+  - '    if (pos + hex_count > str.length()) {'
+  - '        return {0, 0};'
+  - '    }'
+  - '    uint32_t value = 0;'
+  - '    for (int i = 0; i < hex_count; i++) {'
+  - '        char c = str[pos + i];'
+  - '        if (!is_hex_digit(c)) {'
+  - '            return {0, 0};'
+  - '        }'
+  - '        value <<= 4;'
+  - '        if (''a'' <= c && c <= ''f'') {'
+  - '            value += c - ''a'' + 10;'
+  - '        } else if (''A'' <= c && c <= ''F'') {'
+  - '            value += c - ''A'' + 10;'
+  - '        } else if (''0'' <= c && c <= ''9'') {'
+  - '            value += c - ''0'';'
+  - '        } else {'
+  - '            break;'
+  - '        }'
+  - '    }'
+  - '    return {value, static_cast<size_t>(hex_count)};'
+  - '}'
+  desc: 解析十六进制转义序列。
+  line: 100-122
+  name: parse_hex_escape
+- code:
+  - static std::pair<uint32_t, size_t> parse_char_class_char(const std::string & content,
+    size_t pos) {
+  - '    if (content[pos] == ''\\'' && pos + 1 < content.length()) {'
+  - '        switch (content[pos + 1]) {'
+  - '            case ''x'': {'
+  - '                auto result = parse_hex_escape(content, pos + 2, 2);'
+  - '                if (result.second > 0) {'
+  - '                    return {result.first, 2 + result.second};'
+  - '                }'
+  - '                return {static_cast<uint32_t>(''x''), 2};'
+  - '            }'
+  - '            case ''u'': {'
+  - '                auto result = parse_hex_escape(content, pos + 2, 4);'
+  - '                if (result.second > 0) {'
+  - '                    return {result.first, 2 + result.second};'
+  - '                }'
+  - '                return {static_cast<uint32_t>(''u''), 2};'
+  - '            }'
+  - '            case ''U'': {'
+  - '                auto result = parse_hex_escape(content, pos + 2, 8);'
+  - '                if (result.second > 0) {'
+  - '                    return {result.first, 2 + result.second};'
+  - '                }'
+  - '                return {static_cast<uint32_t>(''U''), 2};'
+  - '            }'
+  - '            case ''n'':  return {''\n'', 2};'
+  - '            case ''t'':  return {''\t'', 2};'
+  - '            case ''r'':  return {''\r'', 2};'
+  - '            case ''\\'': return {''\\'', 2};'
+  - '            case '']'':  return {'']'', 2};'
+  - '            case ''['':  return {''['', 2};'
+  - '            default:   return {static_cast<uint32_t>(content[pos + 1]), 2};'
+  - '        }'
+  - '    }'
+  - '    // Regular character - return as codepoint'
+  - '    return {static_cast<uint32_t>(static_cast<unsigned char>(content[pos])),
+    1};'
+  - '}'
+  desc: 解析字符类中的单个字符或转义序列。
+  line: 125-155
+  name: parse_char_class_char
+- code:
+  - static std::pair<std::vector<common_peg_chars_parser::char_range>, bool> parse_char_classes(const
+    std::string & classes) {
+  - '    std::vector<common_peg_chars_parser::char_range> ranges;'
+  - '    bool negated = false;'
+  - '    std::string content = classes;'
+  - '    if (content.front() == ''['') {'
+  - '        content = content.substr(1);'
+  - '    }'
+  - '    if (content.back() == '']'') {'
+  - '        content.pop_back();'
+  - '    }'
+  - '    if (!content.empty() && content.front() == ''^'') {'
+  - '        negated = true;'
+  - '        content = content.substr(1);'
+  - '    }'
+  - '    size_t i = 0;'
+  - '    while (i < content.length()) {'
+  - '        auto [start, start_len] = parse_char_class_char(content, i);'
+  - '        i += start_len;'
+  - '        if (i + 1 < content.length() && content[i] == ''-'') {'
+  - '            auto [end, end_len] = parse_char_class_char(content, i + 1);'
+  - '            ranges.push_back(common_peg_chars_parser::char_range{start, end});'
+  - '            i += 1 + end_len;'
+  - '        } else {'
+  - '            ranges.push_back(common_peg_chars_parser::char_range{start, start});'
+  - '        }'
+  - '    }'
+  - '    return {ranges, negated};'
+  - '}'
+  desc: 解析字符类字符串为字符范围列表及否定标志。
+  line: 158-180
+  name: parse_char_classes
+- code:
+  - static void bfs_node(common_peg_ast_arena &arena, std::ostringstream & oss, const
+    common_peg_ast_node & node, int indent) {
+  - '    for (int i = 0; i < indent; i++) {'
+  - '        oss << "  ";'
+  - '    }'
+  - '    oss << "NODE " << node.id;'
+  - '    if (!node.rule.empty()) {'
+  - '        oss << " (rule " << node.rule << ")";'
+  - '    }'
+  - '    if (!node.tag.empty()) {'
+  - '        oss << " (tag " << node.tag << ")";'
+  - '    }'
+  - '    oss << " [''" << node.text << "'']\n";'
+  - '    for (const auto child : node.children) {'
+  - '        bfs_node(arena, oss, arena.get(child), indent + 1);'
+  - '    }'
+  - '}'
+  desc: BFS遍历并输出AST节点信息。
+  line: 570-582
+  name: bfs_node
+- code:
+  - common_peg_parser operator+(const char * str, const common_peg_parser & p) {
+  - '    return p.builder().literal(str) + p;'
+  - '}'
+  desc: 将字符串字面量放在解析器前面构成序列。
+  line: 1122-1124
+  name: operator+(const char*, const common_peg_parser&)
+- code:
+  - common_peg_parser operator+(const std::string & str, const common_peg_parser &
+    p) {
+  - '    return operator+(str.c_str(), p);'
+  - '}'
+  desc: 将字符串转换为 C 字符串后调用前置序列运算。
+  line: 1126-1128
+  name: operator+(const std::string&, const common_peg_parser&)
+- code:
+  - common_peg_parser operator<<(const char * str, const common_peg_parser & p) {
+  - '    return p.builder().literal(str) << p;'
+  - '}'
+  desc: 将字符串字面量和解析器以空格规则连接。
+  line: 1130-1132
+  name: operator<<(const char*, const common_peg_parser&)
+- code:
+  - common_peg_parser operator<<(const std::string & str, const common_peg_parser
+    & p) {
+  - '    return operator<<(str.c_str(), p);'
+  - '}'
+  desc: 将字符串转换为 C 字符串后执行带空格的前置连接。
+  line: 1134-1136
+  name: operator<<(const std::string&, const common_peg_parser&)
+- code:
+  - common_peg_parser operator|(const char * str, const common_peg_parser & p) {
+  - '    return p.builder().literal(str) | p;'
+  - '}'
+  desc: 将字符串字面量作为前置选择分支与解析器组合。
+  line: 1138-1140
+  name: operator|(const char*, const common_peg_parser&)
+- code:
+  - common_peg_parser operator|(const std::string & str, const common_peg_parser &
+    p) {
+  - '    return operator|(str.c_str(), p);'
+  - '}'
+  desc: 将字符串转换为 C 字符串后执行前置选择组合。
+  line: 1142-1144
+  name: operator|(const std::string&, const common_peg_parser&)
+- code:
+  - static std::string rule_name(const std::string & name) {
+  - '    static const std::regex invalid_rule_chars_re("[^a-zA-Z0-9-]+");'
+  - '    return std::regex_replace(name, invalid_rule_chars_re, "-");'
+  - '}'
+  desc: 清理规则名称，将非法字符替换为连字符。
+  line: 1146-1149
+  name: rule_name
+- code:
+  - static std::string gbnf_escape_char_class(uint32_t c) {
+  - '    if (c == ''-'' || c == '']'' || c == ''['' || c == ''\\'') return "\\" +
+    std::string(1, (char)c);'
+  - '    if (c == ''\n'') return "\\n";'
+  - '    if (c == ''\t'') return "\\t";'
+  - '    if (c == ''\r'') return "\\r";'
+  - '    if (c >= 0x20 && c <= 0x7E) return std::string(1, (char)c);'
+  - '    ...'
+  - '    return std::string(buf);'
+  - '}'
+  desc: 将 Unicode 码点转换为 GBNF 字符类中的安全转义形式。
+  line: 1259-1308
+  name: gbnf_escape_char_class
+- code:
+  - static std::string gbnf_excluding_pattern(const std::vector<std::string> & strings)
+    {
+  - '    trie matcher(strings);'
+  - '    auto pieces = matcher.collect_prefix_and_next();'
+  - '    std::string pattern;'
+  - '    for (size_t i = 0; i < pieces.size(); ++i) {'
+  - '        ...'
+  - '    }'
+  - '    return "(" + pattern + ")*";'
+  - '}'
+  desc: 根据多个终止字符串生成 GBNF 排除模式，用于匹配直到指定分隔符之前的内容。
+  line: 1310-1340
+  name: gbnf_excluding_pattern
+- code:
+  - static std::unordered_set<std::string> collect_reachable_rules(
+  - '    const common_peg_arena & arena,'
+  - '    const common_peg_parser_id & rule'
+  - ) {
+  - '    std::unordered_set<std::string> reachable;'
+  - '    std::unordered_set<std::string> visited;'
+  - '    std::function<void(common_peg_parser_id)> visit = [&](common_peg_parser_id
+    id) {'
+  - '        ...'
+  - '    };'
+  - '    visit(rule);'
+  - '    return reachable;'
+  - '}'
+  desc: 从指定规则递归遍历解析器图，收集所有可达规则名称并避免循环访问。
+  line: 1342-1410
+  name: collect_reachable_rules
+- code:
+  - static nlohmann::json serialize_parser_variant(const common_peg_parser_variant
+    & variant) {
+  - '    using json = nlohmann::json;'
+  - '    return std::visit([](const auto & p) -> json {'
+  - '        using T = std::decay_t<decltype(p)>;'
+  - '        ...'
+  - '    }, variant);'
+  - '}'
+  desc: 将 PEG 解析器变体序列化为 JSON 表示；当前代码片段仅展示了函数开头。
+  line: 1535-1544
+  name: serialize_parser_variant
+- code:
+  - 该文件片段未包含独立的 main 函数或其他无法归属到类的业务逻辑。
+  - 全局实现主要包括运算符重载、规则名称清理、GBNF 字符类转义、排除模式生成、可达规则收集和解析器序列化。
+  desc: 文件级全局代码，主要由 PEG 解析器竞技场、解析器构建器及相关辅助函数的实现组成。
+  line: 945-1544
+  name: __main__
+- code:
+  - static nlohmann::json serialize_parser_variant(const common_peg_parser_variant
+    & variant) {
+  - '    using json = nlohmann::json;'
+  - ''
+  - '    return std::visit([](const auto & p) -> json {'
+  - '        using T = std::decay_t<decltype(p)>;'
+  - ''
+  - '        if constexpr (std::is_same_v<T, common_peg_epsilon_parser>) {'
+  - '            return json{{"type", "epsilon"}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_start_parser>) {'
+  - '            return json{{"type", "start"}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_end_parser>) {'
+  - '            return json{{"type", "end"}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_literal_parser>) {'
+  - '            return json{{"type", "literal"}, {"literal", p.literal}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_sequence_parser>) {'
+  - '            return json{{"type", "sequence"}, {"children", p.children}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_choice_parser>) {'
+  - '            return json{{"type", "choice"}, {"children", p.children}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_repetition_parser>)
+    {'
+  - '            return json{'
+  - '                {"type", "repetition"},'
+  - '                {"child", p.child},'
+  - '                {"min_count", p.min_count},'
+  - '                {"max_count", p.max_count}'
+  - '            };'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_and_parser>) {'
+  - '            return json{{"type", "and"}, {"child", p.child}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_not_parser>) {'
+  - '            return json{{"type", "not"}, {"child", p.child}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_any_parser>) {'
+  - '            return json{{"type", "any"}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_space_parser>) {'
+  - '            return json{{"type", "space"}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_chars_parser>) {'
+  - '            json ranges = json::array();'
+  - '            for (const auto & range : p.ranges) {'
+  - '                ranges.push_back({{"start", range.start}, {"end", range.end}});'
+  - '            }'
+  - '            return json{'
+  - '                {"type", "chars"},'
+  - '                {"pattern", p.pattern},'
+  - '                {"ranges", ranges},'
+  - '                {"negated", p.negated},'
+  - '                {"min_count", p.min_count},'
+  - '                {"max_count", p.max_count}'
+  - '            };'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_string_parser>) {'
+  - '            return json{{"type", "string"}, {"delimiter", std::string(1, p.delimiter)}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_until_parser>) {'
+  - '            return json{{"type", "until"}, {"delimiters", p.delimiters}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_schema_parser>) {'
+  - '            return json{'
+  - '                {"type", "schema"},'
+  - '                {"child", p.child},'
+  - '                {"name", p.name},'
+  - '                {"schema", p.schema ? *p.schema : nullptr},'
+  - '                {"raw", p.raw}'
+  - '            };'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_rule_parser>) {'
+  - '            return json{'
+  - '                {"type", "rule"},'
+  - '                {"name", p.name},'
+  - '                {"child", p.child},'
+  - '                {"trigger", p.trigger}'
+  - '            };'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_ref_parser>) {'
+  - '            return json{{"type", "ref"}, {"name", p.name}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_atomic_parser>) {'
+  - '            return json{{"type", "atomic"}, {"child", p.child}};'
+  - '        } else if constexpr (std::is_same_v<T, common_peg_tag_parser>) {'
+  - '            return json{'
+  - '                {"type", "tag"},'
+  - '                {"child", p.child},'
+  - '                {"tag", p.tag}'
+  - '            };'
+  - '        }'
+  - '    }, variant);'
+  - '}'
+  desc: 将解析器变体（std::variant）序列化为 JSON 对象，支持所有解析器类型。
+  line: 1843-1908
+  name: serialize_parser_variant
+- code:
+  - static common_peg_parser_variant deserialize_parser_variant(const nlohmann::json
+    & j) {
+  - '    if (!j.contains("type") || !j["type"].is_string()) {'
+  - '        throw std::runtime_error("Parser variant JSON missing or invalid ''type''
+    field");'
+  - '    }'
+  - ''
+  - '    std::string type = j["type"];'
+  - ''
+  - '    if (type == "epsilon") {'
+  - '        return common_peg_epsilon_parser{};'
+  - '    }'
+  - '    if (type == "start") {'
+  - '        return common_peg_start_parser{};'
+  - '    }'
+  - '    if (type == "end") {'
+  - '        return common_peg_end_parser{};'
+  - '    }'
+  - '    if (type == "literal") {'
+  - '        if (!j.contains("literal") || !j["literal"].is_string()) {'
+  - '            throw std::runtime_error("literal parser missing or invalid ''literal''
+    field");'
+  - '        }'
+  - '        return common_peg_literal_parser{j["literal"]};'
+  - '    }'
+  - '    if (type == "sequence") {'
+  - '        if (!j.contains("children") || !j["children"].is_array()) {'
+  - '            throw std::runtime_error("sequence parser missing or invalid ''children''
+    field");'
+  - '        }'
+  - '        return common_peg_sequence_parser{j["children"].get<std::vector<common_peg_parser_id>>()};'
+  - '    }'
+  - '    if (type == "choice") {'
+  - '        if (!j.contains("children") || !j["children"].is_array()) {'
+  - '            throw std::runtime_error("choice parser missing or invalid ''children''
+    field");'
+  - '        }'
+  - '        return common_peg_choice_parser{j["children"].get<std::vector<common_peg_parser_id>>()};'
+  - '    }'
+  - '    if (type == "repetition") {'
+  - '        if (!j.contains("child") || !j.contains("min_count") || !j.contains("max_count"))
+    {'
+  - '            throw std::runtime_error("repetition parser missing required fields");'
+  - '        }'
+  - '        return common_peg_repetition_parser{'
+  - '            j["child"].get<common_peg_parser_id>(),'
+  - '            j["min_count"].get<int>(),'
+  - '            j["max_count"].get<int>()'
+  - '        };'
+  - '    }'
+  - '    if (type == "and") {'
+  - '        if (!j.contains("child")) {'
+  - '            throw std::runtime_error("and parser missing ''child'' field");'
+  - '        }'
+  - '        return common_peg_and_parser{j["child"].get<common_peg_parser_id>()};'
+  - '    }'
+  - '    if (type == "not") {'
+  - '        if (!j.contains("child")) {'
+  - '            throw std::runtime_error("not parser missing ''child'' field");'
+  - '        }'
+  - '        return common_peg_not_parser{j["child"].get<common_peg_parser_id>()};'
+  - '    }'
+  - '    if (type == "any") {'
+  - '        return common_peg_any_parser{};'
+  - '    }'
+  - '    if (type == "space") {'
+  - '        return common_peg_space_parser{};'
+  - '    }'
+  - '    if (type == "chars") {'
+  - '        if (!j.contains("pattern") || !j.contains("ranges") || !j.contains("negated")
+    ||'
+  - '            !j.contains("min_count") || !j.contains("max_count")) {'
+  - '            throw std::runtime_error("chars parser missing required fields");'
+  - '        }'
+  - '        common_peg_chars_parser parser;'
+  - '        parser.pattern = j["pattern"];'
+  - '        parser.negated = j["negated"];'
+  - '        parser.min_count = j["min_count"];'
+  - '        parser.max_count = j["max_count"];'
+  - '        for (const auto & range_json : j["ranges"]) {'
+  - '            if (!range_json.contains("start") || !range_json.contains("end"))
+    {'
+  - '                throw std::runtime_error("char_range missing ''start'' or ''end''
+    field");'
+  - '            }'
+  - '            parser.ranges.push_back({'
+  - '                range_json["start"].get<uint32_t>(),'
+  - '                range_json["end"].get<uint32_t>()'
+  - '            });'
+  - '        }'
+  - '        return parser;'
+  - '    }'
+  - '    if (type == "string") {'
+  - '        if (!j.contains("delimiter")) {'
+  - '            throw std::runtime_error("string parser missing delimiter field.");'
+  - '        }'
+  - '        std::string delimiter = j["delimiter"];'
+  - '        if (delimiter.empty()) {'
+  - '            throw std::runtime_error("string parser delimiter is empty.");'
+  - '        }'
+  - '        return common_peg_string_parser{delimiter[0]};'
+  - '    }'
+  - '    if (type == "until") {'
+  - '        if (!j.contains("delimiters") || !j["delimiters"].is_array()) {'
+  - '            throw std::runtime_error("until parser missing or invalid ''delimiters''
+    field");'
+  - '        }'
+  - '        return common_peg_until_parser{j["delimiters"].get<std::vector<std::string>>()};'
+  - '    }'
+  - '    if (type == "schema") {'
+  - '        if (!j.contains("child") || !j.contains("name") || !j.contains("schema")
+    || !j.contains("raw")) {'
+  - '            throw std::runtime_error("schema parser missing required fields");'
+  - '        }'
+  - '        common_peg_schema_parser parser;'
+  - '        parser.child = j["child"].get<common_peg_parser_id>();'
+  - '        parser.name = j["name"];'
+  - '        if (!j["schema"].is_null()) {'
+  - '            parser.schema = std::make_shared<nlohmann::ordered_json>(j["schema"]);'
+  - '        }'
+  - '        parser.raw = j["raw"].get<bool>();'
+  - '        return parser;'
+  - '    }'
+  - '    if (type == "rule") {'
+  - '        if (!j.contains("name") || !j.contains("child") || !j.contains("trigger"))
+    {'
+  - '            throw std::runtime_error("rule parser missing required fields");'
+  - '        }'
+  - '        return common_peg_rule_parser{'
+  - '            j["name"].get<std::string>(),'
+  - '            j["child"].get<common_peg_parser_id>(),'
+  - '            j["trigger"].get<bool>()'
+  - '        };'
+  - '    }'
+  - '    if (type == "ref") {'
+  - '        if (!j.contains("name") || !j["name"].is_string()) {'
+  - '            throw std::runtime_error("ref parser missing or invalid ''name''
+    field");'
+  - '        }'
+  - '        return common_peg_ref_parser{j["name"]};'
+  - '    }'
+  - '    if (type == "atomic") {'
+  - '        if (!j.contains("child")) {'
+  - '            throw std::runtime_error("tag parser missing required fields");'
+  - '        }'
+  - '        return common_peg_atomic_parser{'
+  - '            j["child"].get<common_peg_parser_id>(),'
+  - '        };'
+  - '    }'
+  - '    if (type == "tag") {'
+  - '        if (!j.contains("child") || !j.contains("tag")) {'
+  - '            throw std::runtime_error("tag parser missing required fields");'
+  - '        }'
+  - '        return common_peg_tag_parser{'
+  - '            j["child"].get<common_peg_parser_id>(),'
+  - '            j["tag"].get<std::string>(),'
+  - '        };'
+  - '    }'
+  - ''
+  - '    throw std::runtime_error("Unknown parser type: " + type);'
+  - '}'
+  desc: 从 JSON 对象反序列化解析器变体，根据 type 字段创建对应的解析器对象。
+  line: 1912-1949
+  name: deserialize_parser_variant
+- code:
+  - common_peg_arena build_peg_parser(const std::function<common_peg_parser(common_peg_parser_builder
+    & builder)> & fn) {
+  - '    common_peg_parser_builder builder;'
+  - '    builder.set_root(fn(builder));'
+  - '    return builder.build();'
+  - '}'
+  desc: 使用给定的构建函数创建 PEG 解析器竞技场对象。
+  line: 1994-1998
+  name: build_peg_parser

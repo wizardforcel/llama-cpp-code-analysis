@@ -1,0 +1,157 @@
+classes:
+- desc: 语法解析器类，负责将GBNF格式的语法描述字符串解析为内部规则表示，支持规则定义、序列和交替解析以及符号ID管理。
+  methods:
+  - code:
+    - llama_grammar_stack c_rules() const;
+    desc: 返回当前所有规则组成的栈视图，将规则向量转换为指向规则首元素的指针栈。
+    line: 93-93
+    name: c_rules
+  - code:
+    - uint32_t get_symbol_id(const char * src, size_t len);
+    desc: 根据给定的字符串和长度查找并返回对应的符号ID，如果不存在则返回0。
+    line: 95-95
+    name: get_symbol_id
+  - code:
+    - uint32_t generate_symbol_id(const std::string & base_name);
+    desc: 基于基础名称生成一个唯一的符号ID，若已有同名的则通过添加后缀避免冲突并记录映射。
+    line: 96-96
+    name: generate_symbol_id
+  - code:
+    - void add_rule(uint32_t rule_id, const llama_grammar_rule & rule);
+    desc: 向解析器的规则集中添加一条新的语法规则，将规则ID与对应的元素序列关联。
+    line: 98-98
+    name: add_rule
+  - code:
+    - const char * parse_alternates(
+    - '        const char        * src,'
+    - '        const std::string & rule_name,'
+    - '        uint32_t            rule_id,'
+    - '        bool                is_nested);'
+    desc: 解析语法中的交替选项，处理多个以竖线分隔的序列，为每个序列创建独立规则并递归调用parse_sequence。
+    line: 100-105
+    name: parse_alternates
+  - code:
+    - const char * parse_sequence(
+    - '        const char         * src,'
+    - '        const std::string  & rule_name,'
+    - '        llama_grammar_rule & rule,'
+    - '        bool               is_nested);'
+    desc: 解析语法中的一个序列，识别字符类、标量值、规则引用等构建规则元素列表。
+    line: 107-111
+    name: parse_sequence
+  - code:
+    - const char * parse_rule(const char * src);
+    desc: 解析单条规则定义，提取规则名称和交替部分，生成规则ID。
+    line: 113-113
+    name: parse_rule
+  - code:
+    - bool parse(const char * src);
+    desc: 解析完整的语法字符串，初始化规则集并为起始规则建立栈。
+    line: 115-115
+    name: parse
+  - code:
+    - void print(FILE * file);
+    desc: 将解析后的语法规则以可读形式输出到指定文件流。
+    line: 116-116
+    name: print
+  name: llama_grammar_parser
+- desc: 用于惰性语法的触发模式类，包含正则表达式和匹配逻辑，在生成的字符串匹配特定模式时激活语法约束。
+  methods:
+  - code:
+    - size_t find(const std::string & input) const;
+    desc: 在输入字符串中搜索触发模式，返回匹配位置作为size_t类型索引。
+    line: 130-130
+    name: find
+  name: llama_grammar_trigger_pattern
+- desc: 语法状态的核心类，持有解析后的规则、当前栈状态、部分UTF-8缓存以及惰性语法触发器相关的缓冲区和条件标志。
+  methods: []
+  name: llama_grammar
+desc: 该文件是llama.cpp中语法约束的核心头文件，定义了用于基于GBNF（Grammar-Based Negative Feedback）语法规则约束LLM采样过程的完整数据结构、枚举类型和API函数原型，包括语法元素类型、规则栈、候选生成、解析器以及惰性语法触发器机制。
+file: src/llama-grammar.h
+funcs:
+- code:
+  - const llama_grammar_rules  & llama_grammar_get_rules (const struct llama_grammar
+    * grammar);
+  desc: 返回给定语法对象的规则集合的常量引用，供测试等场景使用。
+  line: 59-59
+  name: llama_grammar_get_rules
+- code:
+  - '      llama_grammar_stacks & llama_grammar_get_stacks(      struct llama_grammar
+    * grammar);'
+  desc: 返回给定语法对象的栈集合的非const引用，允许外部修改。
+  line: 60-60
+  name: llama_grammar_get_stacks
+- code:
+  - void llama_grammar_accept(struct llama_grammar * grammar, uint32_t chr);
+  desc: 接收一个Unicode字符并将其应用到语法栈，更新栈状态以反映该字符被接受。
+  line: 69-69
+  name: llama_grammar_accept
+- code:
+  - std::vector<llama_grammar_candidate> llama_grammar_reject_candidates_for_stack(
+  - '        const llama_grammar_rules      & rules,'
+  - '        const llama_grammar_stack      & stack,'
+  - '        const llama_grammar_candidates & candidates);'
+  desc: 根据当前语法栈过滤候选令牌序列，返回符合语法规则的候选项列表。
+  line: 71-75
+  name: llama_grammar_reject_candidates_for_stack
+- code:
+  - struct llama_grammar * llama_grammar_init_impl(
+  - '        const struct llama_vocab * vocab,'
+  - '        const llama_grammar_element ** rules,'
+  - '        size_t n_rules,'
+  - '        size_t start_rule_index);'
+  desc: 内部API：根据给定的规则元素数组初始化语法对象，用于测试和内部调用。
+  line: 152-157
+  name: llama_grammar_init_impl
+- code:
+  - struct llama_grammar * llama_grammar_init_impl(
+  - '        const struct llama_vocab * vocab,'
+  - '                      const char * grammar_str,'
+  - '                      const char * grammar_root,'
+  - '                              bool lazy,'
+  - '                     const char ** trigger_patterns,'
+  - '                            size_t num_trigger_patterns,'
+  - '               const llama_token * trigger_tokens,'
+  - '                            size_t num_trigger_tokens);'
+  desc: 内部API：根据语法字符串、根规则名称和惰性触发参数初始化语法对象（重载版本）。
+  line: 159-168
+  name: llama_grammar_init_impl
+- code:
+  - void llama_grammar_free_impl(struct llama_grammar * grammar);
+  desc: 内部API：释放语法对象占用的内存资源。
+  line: 170-170
+  name: llama_grammar_free_impl
+- code:
+  - struct llama_grammar * llama_grammar_clone_impl(const struct llama_grammar & grammar);
+  desc: 内部API：深拷贝语法对象并返回新指针。
+  line: 172-172
+  name: llama_grammar_clone_impl
+- code:
+  - void llama_grammar_apply_impl(
+  - '        const struct llama_grammar & grammar,'
+  - '            llama_token_data_array * cur_p);'
+  desc: 内部API：根据语法约束修改候选令牌的概率分布。
+  line: 176-178
+  name: llama_grammar_apply_impl
+- code:
+  - void llama_grammar_accept_impl(
+  - '              struct llama_grammar & grammar,'
+  - '                       llama_token   token);'
+  desc: 内部API：接收一个令牌并将其应用到语法状态。
+  line: 180-182
+  name: llama_grammar_accept_impl
+- code:
+  - void llama_grammar_accept_str(
+  - '              struct llama_grammar & grammar,'
+  - '                 const std::string & piece);'
+  desc: 接收生成的字符串片段，用于非惰性语法或触发后更新语法状态和缓冲区。
+  line: 184-187
+  name: llama_grammar_accept_str
+- code:
+  - void llama_grammar_accept_token(
+  - '              struct llama_grammar & grammar,'
+  - '                       llama_token   token,'
+  - '                 const std::string & piece);'
+  desc: 接收完整的令牌及其对应的字符串片段，更新语法状态。
+  line: 189-193
+  name: llama_grammar_accept_token

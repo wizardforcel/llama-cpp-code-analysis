@@ -1,0 +1,256 @@
+classes: []
+desc: 该文件实现了 LaTeX 数学表达式与代码块的预处理和保护功能，主要用于在 Markdown 渲染前安全地处理 LaTeX 数学语法、防止货币金额（如
+  $5.99）被误识别为数学公式、以及保护代码块不被数学解析干扰。
+file: tools/server/webui/src/lib/utils/latex-protection.ts
+funcs:
+- code:
+  - 'export function maskInlineLaTeX(content: string, latexExpressions: string[]):
+    string {'
+  - "\tif (!content.includes('$')) {"
+  - "\t\treturn content;"
+  - "\t}"
+  - "\treturn content"
+  - "\t\t.split('\\n')"
+  - "\t\t.map((line) => {"
+  - "\t\t\tif (line.indexOf('$') == -1) {"
+  - "\t\t\t\treturn line;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\tlet processedLine = '';"
+  - "\t\t\tlet currentPosition = 0;"
+  - ''
+  - "\t\t\twhile (currentPosition < line.length) {"
+  - "\t\t\t\tconst openDollarIndex = line.indexOf('$', currentPosition);"
+  - ''
+  - "\t\t\t\tif (openDollarIndex == -1) {"
+  - "\t\t\t\t\tprocessedLine += line.slice(currentPosition);"
+  - "\t\t\t\t\tbreak;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\t// Is there a next $-sign?"
+  - "\t\t\t\tconst closeDollarIndex = line.indexOf('$', openDollarIndex + 1);"
+  - ''
+  - "\t\t\t\tif (closeDollarIndex == -1) {"
+  - "\t\t\t\t\tprocessedLine += line.slice(currentPosition);"
+  - "\t\t\t\t\tbreak;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tconst charBeforeOpen = openDollarIndex > 0 ? line[openDollarIndex - 1]\
+    \ : '';"
+  - "\t\t\t\tconst charAfterOpen = line[openDollarIndex + 1];"
+  - "\t\t\t\tconst charBeforeClose ="
+  - "\t\t\t\t\topenDollarIndex + 1 < closeDollarIndex ? line[closeDollarIndex - 1]\
+    \ : '';"
+  - "\t\t\t\tconst charAfterClose = closeDollarIndex + 1 < line.length ? line[closeDollarIndex\
+    \ + 1] : '';"
+  - ''
+  - "\t\t\t\tlet shouldSkipAsNonLatex = false;"
+  - ''
+  - "\t\t\t\tif (closeDollarIndex == currentPosition + 1) {"
+  - "\t\t\t\t\t// No content"
+  - "\t\t\t\t\tshouldSkipAsNonLatex = true;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tif (/[A-Za-z0-9_$-]/.test(charBeforeOpen)) {"
+  - "\t\t\t\t\t// Character, digit, $, _ or - before first '$', no TeX."
+  - "\t\t\t\t\tshouldSkipAsNonLatex = true;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tif ("
+  - "\t\t\t\t\t/[0-9]/.test(charAfterOpen) &&"
+  - "\t\t\t\t\t(/[A-Za-z0-9_$-]/.test(charAfterClose) || ' ' == charBeforeClose)"
+  - "\t\t\t\t) {"
+  - "\t\t\t\t\t// First $ seems to belong to an amount."
+  - "\t\t\t\t\tshouldSkipAsNonLatex = true;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\tif (shouldSkipAsNonLatex) {"
+  - "\t\t\t\t\tprocessedLine += line.slice(currentPosition, openDollarIndex + 1);"
+  - "\t\t\t\t\tcurrentPosition = openDollarIndex + 1;"
+  - ''
+  - "\t\t\t\t\tcontinue;"
+  - "\t\t\t\t}"
+  - ''
+  - "\t\t\t\t// Treat as LaTeX"
+  - "\t\t\t\tprocessedLine += line.slice(currentPosition, openDollarIndex);"
+  - "\t\t\t\tconst latexContent = line.slice(openDollarIndex, closeDollarIndex + 1);"
+  - "\t\t\t\tlatexExpressions.push(latexContent);"
+  - "\t\t\t\tprocessedLine += `<<LATEX_${latexExpressions.length - 1}>>`;"
+  - "\t\t\t\tcurrentPosition = closeDollarIndex + 1;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\treturn processedLine;"
+  - "\t\t})"
+  - "\t\t.join('\\n');"
+  - '}'
+  desc: 将文本中的行内 LaTeX 数学表达式（$...$）替换为占位符（如 <<LATEX_0>>），并通过启发式规则跳过看起来像货币金额或代码标识符的美元符号，避免误识别。
+  line: 23-95
+  name: maskInlineLaTeX
+- code:
+  - 'function escapeBrackets(text: string): string {'
+  - "\treturn text.replace("
+  - "\t\tLATEX_MATH_AND_CODE_PATTERN,"
+  - "\t\t("
+  - "\t\t\tmatch: string,"
+  - "\t\t\tcodeBlock: string | undefined,"
+  - "\t\t\tsquareBracket: string | undefined,"
+  - "\t\t\troundBracket: string | undefined"
+  - "\t\t): string => {"
+  - "\t\t\tif (codeBlock != null) {"
+  - "\t\t\t\treturn codeBlock;"
+  - "\t\t\t} else if (squareBracket != null) {"
+  - "\t\t\t\treturn `$$${squareBracket}$$`;"
+  - "\t\t\t} else if (roundBracket != null) {"
+  - "\t\t\t\treturn `$${roundBracket}$`;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\treturn match;"
+  - "\t\t}"
+  - "\t);"
+  - '}'
+  desc: 转义文本中的方括号 LaTeX 表达式，将 \(...\) 转换为 $...$，\[...\] 转换为 $$...$$，同时保护代码块不受影响。
+  line: 97-114
+  name: escapeBrackets
+- code:
+  - 'function escapeMhchem(text: string): string {'
+  - "\treturn MHCHEM_PATTERN_MAP.reduce((result, [pattern, replacement]) => {"
+  - "\t\treturn result.replace(pattern, replacement);"
+  - "\t}, text);"
+  - '}'
+  desc: 处理 mhchem 化学宏（如 \ce{...}、\pu{...}}）的转义，通过预定义的模式映射表替换特定的 LaTeX 化学语法。
+  line: 117-121
+  name: escapeMhchem
+- code:
+  - 'export function preprocessLaTeX(content: string): string {'
+  - "\t// See also:"
+  - "\t// https://github.com/danny-avila/LibreChat/blob/main/client/src/utils/latex.ts"
+  - ''
+  - "\t// Step 0: Temporarily remove blockquote markers (>) to process LaTeX correctly"
+  - "\t// Store the structure so we can restore it later"
+  - "\tconst blockquoteMarkers: Map<number, string> = new Map();"
+  - "\tconst lines = content.split('\\n');"
+  - "\tconst processedLines = lines.map((line, index) => {"
+  - "\t\tconst match = line.match(/^(>\\s*)/);"
+  - "\t\tif (match) {"
+  - "\t\t\tblockquoteMarkers.set(index, match[1]);"
+  - "\t\t\treturn line.slice(match[1].length);"
+  - "\t\t}"
+  - "\t\treturn line;"
+  - "\t});"
+  - "\tcontent = processedLines.join('\\n');"
+  - ''
+  - "\t// Step 1: Protect code blocks"
+  - "\tconst codeBlocks: string[] = [];"
+  - ''
+  - "\tcontent = content.replace(CODE_BLOCK_REGEXP, (match) => {"
+  - "\t\tcodeBlocks.push(match);"
+  - ''
+  - "\t\treturn `<<CODE_BLOCK_${codeBlocks.length - 1}>>`;"
+  - "\t});"
+  - ''
+  - "\t// Step 2: Protect existing LaTeX expressions"
+  - "\tconst latexExpressions: string[] = [];"
+  - ''
+  - "\t// Match \\S...\\[...\\] and protect them and insert a line-break."
+  - "\tcontent = content.replace(/([\\S].*?)\\\\\\[([\\s\\S]*?)\\\\\\](.*)/g, (match,\
+    \ group1, group2, group3) => {"
+  - "\t\t// Check if there are characters following the formula (display-formula in\
+    \ a table-cell?)"
+  - "\t\tif (group1.endsWith('\\\\')) {"
+  - "\t\t\treturn match; // Backslash before \\[, do nothing."
+  - "\t\t}"
+  - "\t\tconst hasSuffix = /\\S/.test(group3);"
+  - "\t\tlet optBreak;"
+  - ''
+  - "\t\tif (hasSuffix) {"
+  - "\t\t\tlatexExpressions.push(`\\\\(${group2.trim()}\\\\)`); // Convert into inline."
+  - "\t\t\toptBreak = '';"
+  - "\t\t} else {"
+  - "\t\t\tlatexExpressions.push(`\\\\[${group2}\\\\]`);"
+  - "\t\t\toptBreak = '\\n';"
+  - "\t\t}"
+  - ''
+  - "\t\treturn `${group1}${optBreak}<<LATEX_${latexExpressions.length - 1}>>${optBreak}${group3}`;"
+  - "\t});"
+  - ''
+  - "\t// Match \\(...\\), \\[...\\], $$...$$ and protect them"
+  - "\tcontent = content.replace("
+  - "\t\t/(\\$\\$[\\s\\S]*?\\$\\$|(?<!\\\\)\\\\\\[[\\s\\S]*?\\\\\\]|(?<!\\\\)\\\\\\\
+    (.*?\\\\\\))/g,"
+  - "\t\t(match) => {"
+  - "\t\t\tlatexExpressions.push(match);"
+  - ''
+  - "\t\t\treturn `<<LATEX_${latexExpressions.length - 1}>>`;"
+  - "\t\t}"
+  - "\t);"
+  - ''
+  - "\t// Protect inline $...$ but NOT if it looks like money (e.g., $10, $3.99)"
+  - "\tcontent = maskInlineLaTeX(content, latexExpressions);"
+  - ''
+  - "\t// Step 3: Escape standalone $ before digits (currency like $5 → \\$5)"
+  - "\t// (Now that inline math is protected, this will only escape dollars not already\
+    \ protected)"
+  - "\tcontent = content.replace(/\\$(?=\\d)/g, '\\\\$');"
+  - ''
+  - "\t// Step 4: Restore protected LaTeX expressions (they are valid)"
+  - "\tcontent = content.replace(/<<LATEX_(\\d+)>>/g, (_, index) => {"
+  - "\t\tlet expr = latexExpressions[parseInt(index)];"
+  - "\t\tconst match = expr.match(LATEX_LINEBREAK_REGEXP);"
+  - "\t\tif (match) {"
+  - "\t\t\t// Katex: The $$-delimiters should be in their own line"
+  - "\t\t\t// if there are \\\\-line-breaks."
+  - "\t\t\tconst formula = match[1];"
+  - "\t\t\tconst prefix = formula.startsWith('\\n') ? '' : '\\n';"
+  - "\t\t\tconst suffix = formula.endsWith('\\n') ? '' : '\\n';"
+  - "\t\t\texpr = '$$' + prefix + formula + suffix + '$$';"
+  - "\t\t}"
+  - "\t\treturn expr;"
+  - "\t});"
+  - ''
+  - "\t// Step 5: Apply additional escaping functions (brackets and mhchem)"
+  - "\t// This must happen BEFORE restoring code blocks to avoid affecting code content"
+  - "\tcontent = escapeBrackets(content);"
+  - ''
+  - "\tif (doEscapeMhchem && (content.includes('\\\\ce{') || content.includes('\\\\\
+    pu{'))) {"
+  - "\t\tcontent = escapeMhchem(content);"
+  - "\t}"
+  - ''
+  - "\t// Step 6: Convert remaining \\(...\\) → $...$, \\[...\\] → $$...$$"
+  - "\t// This must happen BEFORE restoring code blocks to avoid affecting code content"
+  - "\tcontent = content"
+  - "\t\t// Using the look‑behind pattern `(?<!\\\\)` we skip matches"
+  - "\t\t// that are preceded by a backslash, e.g."
+  - "\t\t// `Definitions\\\\(also called macros)` (title of chapter 20 in The TeXbook)."
+  - "\t\t.replace(/(?<!\\\\)\\\\\\((.+?)\\\\\\)/g, '$$$1$') // inline"
+  - "\t\t.replace("
+  - "\t\t\t// Using the look‑behind pattern `(?<!\\\\)` we skip matches"
+  - "\t\t\t// that are preceded by a backslash, e.g. `\\\\[4pt]`."
+  - "\t\t\t/(?<!\\\\)\\\\\\[([\\s\\S]*?)\\\\\\]/g, // display, see also PR #16599"
+  - "\t\t\t(_, content: string) => {"
+  - "\t\t\t\treturn `$$${content}$$`;"
+  - "\t\t\t}"
+  - "\t\t);"
+  - ''
+  - "\t// Step 7: Restore code blocks"
+  - "\t// This happens AFTER all LaTeX conversions to preserve code content"
+  - "\tcontent = content.replace(/<<CODE_BLOCK_(\\d+)>>/g, (_, index) => {"
+  - "\t\treturn codeBlocks[parseInt(index)];"
+  - "\t});"
+  - ''
+  - "\t// Step 8: Restore blockquote markers"
+  - "\tif (blockquoteMarkers.size > 0) {"
+  - "\t\tconst finalLines = content.split('\\n');"
+  - "\t\tconst restoredLines = finalLines.map((line, index) => {"
+  - "\t\t\tconst marker = blockquoteMarkers.get(index);"
+  - "\t\t\treturn marker ? marker + line : line;"
+  - "\t\t});"
+  - "\t\tcontent = restoredLines.join('\\n');"
+  - "\t}"
+  - ''
+  - "\treturn content;"
+  - '}'
+  desc: 预处理 Markdown 内容中的 LaTeX 公式，依次保护代码块、提取块级和行内数学表达式、转义货币符号、恢复占位符并转换标准 LaTeX 语法为
+    KaTeX 兼容格式，同时处理引用块标记的还原。
+  line: 126-260
+  name: preprocessLaTeX

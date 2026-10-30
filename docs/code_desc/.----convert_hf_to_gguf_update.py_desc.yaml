@@ -1,0 +1,274 @@
+classes:
+- desc: 定义 tokenizer 类型的 IntEnum 枚举类，包含 SPM、BPE、WPM 和 UGM 四种类型。
+  methods:
+  - code:
+    - 'class TOKENIZER_TYPE(IntEnum):'
+    - '    SPM = auto()'
+    - '    BPE = auto()'
+    - '    WPM = auto()'
+    - '    UGM = auto()'
+    desc: IntEnum 自动生成的初始化方法，用于设置枚举成员的整数值。
+    line: 18-22
+    name: __init__
+  name: TOKENIZER_TYPE
+desc: 该脚本用于分析来自 Huggingface 的各类模型 tokenizer，为 convert_hf_to_gguf.py 生成 get_vocab_base_pre()
+  函数，并生成测试用例以验证 tokenizer 的兼容性。
+file: ./convert_hf_to_gguf_update.py
+funcs:
+- code:
+  - 'def download_file_with_auth(url, token, save_path):'
+  - '    headers = {"Authorization": f"Bearer {token}"} if token else None'
+  - '    response = sess.get(url, headers=headers)'
+  - '    response.raise_for_status()'
+  - '    os.makedirs(os.path.dirname(save_path), exist_ok=True)'
+  - '    with open(save_path, ''wb'') as downloaded_file:'
+  - '        downloaded_file.write(response.content)'
+  - '    logger.info(f"File {save_path} downloaded successfully")'
+  desc: 使用可选的身份认证 token 从 URL 下载文件到指定路径。
+  line: 206-213
+  name: download_file_with_auth
+- code:
+  - 'def download_model(model):'
+  - '    name = model["name"]'
+  - '    repo = model["repo"]'
+  - '    tokt = model["tokt"]'
+  - ''
+  - '    os.makedirs(f"models/tokenizers/{name}", exist_ok=True)'
+  - ''
+  - '    files = ["config.json", "tokenizer.json", "tokenizer_config.json"]'
+  - ''
+  - '    if name == "gpt-4o":'
+  - '        # Xenova/gpt-4o is tokenizer-only, it does not contain config.json'
+  - '        files = ["tokenizer.json", "tokenizer_config.json"]'
+  - ''
+  - '    if tokt == TOKENIZER_TYPE.SPM:'
+  - '        files.append("tokenizer.model")'
+  - ''
+  - '    if tokt == TOKENIZER_TYPE.UGM:'
+  - '        files.append("spiece.model")'
+  - ''
+  - '    if os.path.isdir(repo):'
+  - '        # If repo is a path on the file system, copy the directory'
+  - '        for file in files:'
+  - '            src_path = os.path.join(repo, file)'
+  - '            dst_path = f"models/tokenizers/{name}/{file}"'
+  - '            if os.path.isfile(dst_path):'
+  - '                logger.info(f"{name}: File {dst_path} already exists - skipping")'
+  - '                continue'
+  - '            if os.path.isfile(src_path):'
+  - '                shutil.copy2(src_path, dst_path)'
+  - '                logger.info(f"{name}: Copied {src_path} to {dst_path}")'
+  - '            else:'
+  - '                logger.warning(f"{name}: Source file {src_path} does not exist")'
+  - '    else:'
+  - '        # If repo is a URL, download the files'
+  - '        for file in files:'
+  - '            save_path = f"models/tokenizers/{name}/{file}"'
+  - '            if os.path.isfile(save_path):'
+  - '                logger.info(f"{name}: File {save_path} already exists - skipping")'
+  - '                continue'
+  - '            download_file_with_auth(f"{repo}/resolve/main/{file}", hf_token,
+    save_path)'
+  desc: 根据模型的名称、仓库地址和 tokenizer 类型下载所需的 tokenizer 配置文件和模型文件到本地目录。
+  line: 215-236
+  name: download_model
+- code:
+  - 'def get_existing_models(convert_py):'
+  - '    pattern = r''if chkhsh == "([a-f0-9]{64})":\s*\n\s*.*\s*res = "([^"]+)"'''
+  - '    matches = re.findall(pattern, convert_py)'
+  - '    output = {}'
+  - '    for chkhsh, res in matches:'
+  - '        output[res] = chkhsh'
+  - '    return output'
+  desc: 从 convert_hf_to_gguf.py 文件中解析出已有的模型哈希值，返回 res 到 chkhsh 的映射字典。
+  line: 240-246
+  name: get_existing_models
+- code:
+  - existing_models = {}
+  - all_models = models.copy()
+  - 'if not args.full:'
+  - '    # Filter out models that already exist in convert_hf_to_gguf.py'
+  - '    existing_models = get_existing_models(convert_py)'
+  - '    all_models = models.copy()'
+  - '    models = [model for model in all_models if model["name"] not in existing_models]'
+  - ''
+  - 'if not args.check_missing:'
+  - '    logging.info(f"Downloading {len(models)} models...")'
+  - '    for model in models:'
+  - '        try:'
+  - '            download_model(model)'
+  - '        except Exception as e:'
+  - '            logger.error(f"Failed to download model {model[''name'']}. Error:
+    {e}")'
+  - ''
+  - ''
+  - '# generate the source code for the convert_hf_to_gguf.py:get_vocab_base_pre()
+    function:'
+  - ''
+  - src_ifs = ""
+  - 'for model in [*pre_computed_hashes, *all_models]:'
+  - '    name = model["name"]'
+  - '    tokt = model["tokt"]'
+  - '    chkhsh = model.get("chkhsh")'
+  - ''
+  - '    if tokt == TOKENIZER_TYPE.SPM or tokt == TOKENIZER_TYPE.UGM:'
+  - '        continue'
+  - ''
+  - '    # create the tokenizer'
+  - '    if chkhsh is not None:'
+  - '        # if the model has a pre-computed hash, use it'
+  - '        logger.info(f"Using pre-computed hash for model {name}: {chkhsh}")'
+  - '    elif name in existing_models:'
+  - '        # if the model already exists in convert_hf_to_gguf.py, skip compute
+    hash'
+  - '        chkhsh = existing_models[name]'
+  - '    else:'
+  - '        # otherwise, compute the hash of the tokenizer'
+  - ''
+  - '        # Fail if the tokenizer folder with config does not exist or there are
+    other download issues previously'
+  - '        if not os.path.isfile(f"models/tokenizers/{name}/tokenizer_config.json"):'
+  - '            raise OSError(f"Config for tokenizer {name} not found. The model
+    may not exist or is not accessible with the provided token.")'
+  - ''
+  - '        try:'
+  - '            logger.info(f"Loading tokenizer from {f''models/tokenizers/{name}''}...")'
+  - '            if name == "t5":'
+  - '                tokenizer = AutoTokenizer.from_pretrained(f"models/tokenizers/{name}",
+    use_fast=False)'
+  - '            else:'
+  - '                tokenizer = AutoTokenizer.from_pretrained(f"models/tokenizers/{name}")'
+  - '        except Exception as e:'
+  - '            raise OSError(f"Error loading tokenizer for model {name}.") from
+    e'
+  - ''
+  - '        chktok = tokenizer.encode(CHK_TXT)'
+  - '        chkhsh = sha256(str(chktok).encode()).hexdigest()'
+  - ''
+  - '        logger.info(f"model: {name}")'
+  - '        logger.info(f"tokt: {tokt}")'
+  - '        logger.info(f"repo: {model[''repo'']}")'
+  - '        logger.info(f"chktok: {chktok}")'
+  - '        logger.info(f"chkhsh: {chkhsh}")'
+  - ''
+  - '        # print the "pre_tokenizer" content from the tokenizer.json'
+  - '        with open(f"models/tokenizers/{name}/tokenizer.json", "r", encoding="utf-8")
+    as f:'
+  - '            cfg = json.load(f)'
+  - '            normalizer = cfg["normalizer"]'
+  - '            logger.info("normalizer: " + json.dumps(normalizer, indent=4))'
+  - '            pre_tokenizer = cfg["pre_tokenizer"]'
+  - '            logger.info("pre_tokenizer: " + json.dumps(pre_tokenizer, indent=4))'
+  - '            if "ignore_merges" in cfg["model"]:'
+  - '                logger.info("ignore_merges: " + json.dumps(cfg["model"]["ignore_merges"],
+    indent=4))'
+  - ''
+  - '        logger.info("")'
+  - ''
+  - '    src_ifs += f"        if chkhsh == \"{chkhsh}\":\n"'
+  - '    src_ifs += f"            # ref: {model[''repo'']}\n"'
+  - '    src_ifs += f"            res = \"{name}\"\n"'
+  - ''
+  - src_func = f"""
+  - '    def get_vocab_base_pre(self, tokenizer) -> str:'
+  - '        # encoding this string and hashing the resulting tokens would (hopefully)
+    give us a unique identifier that'
+  - '        # is specific for the BPE pre-tokenizer used by the model'
+  - '        # we will use this unique identifier to write a "tokenizer.ggml.pre"
+    entry in the GGUF file which we can'
+  - '        # use in llama.cpp to implement the same pre-tokenizer'
+  - ''
+  - '        chktxt = {repr(CHK_TXT)}'
+  - ''
+  - '        chktok = tokenizer.encode(chktxt)'
+  - '        chkhsh = sha256(str(chktok).encode()).hexdigest()'
+  - ''
+  - '        logger.debug(f"chktok: {{chktok}}")'
+  - '        logger.debug(f"chkhsh: {{chkhsh}}")'
+  - ''
+  - '        res = None'
+  - ''
+  - '        # NOTE: if you get an error here, you need to update the convert_hf_to_gguf_update.py
+    script'
+  - '        #       or pull the latest version of the model from Huggingface'
+  - '        #       don''t edit the hashes manually!'
+  - '{src_ifs}'
+  - '        if res is None:'
+  - '            logger.warning("\\n")'
+  - '            logger.warning("**************************************************************************************")'
+  - '            logger.warning("** WARNING: The BPE pre-tokenizer was not recognized!")'
+  - '            logger.warning("**          There are 2 possible reasons for this:")'
+  - '            logger.warning("**          - the model has not been added to convert_hf_to_gguf_update.py
+    yet")'
+  - '            logger.warning("**          - the pre-tokenization config has changed
+    upstream")'
+  - '            logger.warning("**          Check your model files and convert_hf_to_gguf_update.py
+    and update them accordingly.")'
+  - '            logger.warning("** ref:     https://github.com/ggml-org/llama.cpp/pull/6920")'
+  - '            logger.warning("**")'
+  - '            logger.warning(f"** chkhsh:  {{chkhsh}}")'
+  - '            logger.warning("**************************************************************************************")'
+  - '            logger.warning("\\n")'
+  - '            raise NotImplementedError("BPE pre-tokenizer was not recognized -
+    update get_vocab_base_pre()")'
+  - ''
+  - '        logger.debug(f"tokenizer.ggml.pre: {{repr(res)}}")'
+  - '        logger.debug(f"chkhsh: {{chkhsh}}")'
+  - ''
+  - '        return res'
+  - '"""'
+  - ''
+  - convert_py = re.sub(
+  - '    r"(# Marker: Start get_vocab_base_pre)(.+?)( +# Marker: End get_vocab_base_pre)",'
+  - '    lambda m: m.group(1) + src_func + m.group(3),'
+  - '    convert_py,'
+  - '    flags=re.DOTALL | re.MULTILINE,'
+  - )
+  - ''
+  - convert_py_pth.write_text(convert_py, encoding="utf-8")
+  - ''
+  - logger.info("+++ convert_hf_to_gguf.py was updated")
+  - ''
+  - ''
+  - 'for model in models:'
+  - '    name = model["name"]'
+  - '    tokt = model["tokt"]'
+  - ''
+  - '    # Skip if the tokenizer folder does not exist or there are other download
+    issues previously'
+  - '    if not os.path.exists(f"models/tokenizers/{name}"):'
+  - '        logger.warning(f"Directory for tokenizer {name} not found. Skipping...")'
+  - '        continue'
+  - ''
+  - '    # create the tokenizer'
+  - '    try:'
+  - '        if name == "t5":'
+  - '            tokenizer = AutoTokenizer.from_pretrained(f"models/tokenizers/{name}",
+    use_fast=False)'
+  - '        else:'
+  - '            tokenizer = AutoTokenizer.from_pretrained(f"models/tokenizers/{name}")'
+  - '    except (OSError, TypeError) as e:'
+  - '        logger.error(f"Failed to load tokenizer for model {name}. Error: {e}")'
+  - '        continue  # Skip this model and continue with the next one in the loop'
+  - ''
+  - '    if not os.path.exists(f"models/ggml-vocab-{name}.gguf"):'
+  - '        logger.info(f"Skip vocab files for model {name}, no GGUF file found")'
+  - '        continue'
+  - ''
+  - '    with open(f"models/ggml-vocab-{name}.gguf.inp", "w", encoding="utf-8") as
+    f:'
+  - '        for text in tests:'
+  - '            f.write(f"{text}")'
+  - '            f.write("\n__ggml_vocab_test__\n")'
+  - ''
+  - '    with open(f"models/ggml-vocab-{name}.gguf.out", "w") as f:'
+  - '        for text in tests:'
+  - '            res = tokenizer.encode(text, add_special_tokens=False)'
+  - '            for r in res:'
+  - '                f.write(f" {r}")'
+  - '            f.write("\n")'
+  - ''
+  - '    logger.info(f"Tests for {name} written in ./models/ggml-vocab-{name}.gguf.*")'
+  desc: 脚本的主执行流程，负责下载模型、生成 get_vocab_base_pre() 函数源码、更新目标文件以及生成测试用例。
+  line: 248-390
+  name: __main__

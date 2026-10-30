@@ -1,0 +1,628 @@
+classes: []
+desc: This file is a test script for verifying the tool calling capability of a chat
+  completions endpoint. It defines multiple test cases, each with tool definitions,
+  initial messages, mock tool responses, and validation logic, and runs them through
+  an agentic loop that sends messages, processes tool calls, and checks the final
+  output.该文件是一个用于测试 llama-server 工具调用（Tool Calling）能力的命令行脚本。它定义了一系列测试用例（如探索公司、健身教练、社区通知、地理位置和电动车队管理），每个用例包含系统提示词、用户问题和工具定义。脚本通过调用服务器的
+  /v1/chat/completions 接口，并可选地进行流式或非流式测试，来验证模型能否正确调用工具。其中，EV 车队用例专门验证了模型能否按特定顺序（先查询股价）完成一个四步骤的管道操作。脚本最终输出所有测试用例的通过率。
+file: scripts/server-test-function-call.py
+funcs:
+- code:
+  - '#!/usr/bin/env python3'
+  - '"""'
+  - Test tool calling capability via chat completions endpoint.
+  - 'Each test case contains:'
+  - '  - tools: list of tool definitions (OpenAI-compatible)'
+  - '  - messages: initial conversation messages'
+  - '  - mock_tool_responses: dict mapping tool_name -> callable(arguments) -> str
+    (JSON)'
+  - '  - validate: callable(tool_calls_history, final_content) -> (passed: bool, reason:
+    str)'
+  - '"""'
+  - import argparse
+  - import json
+  - import requests
+  - import sys
+  - RESET = "\x1b[0m"
+  - BOLD = "\x1b[1m"
+  - DIM = "\x1b[2m"
+  - CYAN = "\x1b[36m"
+  - YELLOW = "\x1b[33m"
+  - GREEN = "\x1b[32m"
+  - RED = "\x1b[31m"
+  - BLUE = "\x1b[34m"
+  - WHITE = "\x1b[97m"
+  - def _print(text="", end="\n")
+  - def print_header(title)
+  - def print_tool_call(name, args)
+  - def print_tool_result(result)
+  - def print_model_output(text)
+  - def print_pass(reason)
+  - def print_fail(reason)
+  - def print_info(msg)
+  - def chat_completion(url, messages, tools=None, stream=False)
+  - def run_agentic_loop(url, messages, tools, mock_tool_responses, stream, max_turns=6)
+  - def run_test(url, test_case, stream)
+  - _AZZOO_TOOLS = [...]
+  - _AZZOO_SEARCH_RESULT = {...}
+  - _AZZOO_PRODUCT_RESULT = {...}
+  - _AZZOO_REVIEWS_RESULT = {...}
+  - AZZOO_TEST_CASE = {...}
+  - def _validate_azzoo(tcs, content)
+  - _FITNESS_TOOLS = [...]
+  - _BMI_RESULT = {...}
+  - _EXERCISES_RESULT = {...}
+  - FITNESS_TEST_CASE = {...}
+  - def _validate_fitness(tcs, content)
+  - _COMMUNITY_TOOLS = [...]
+  - _TRENDING_QUESTIONS_RESULT = {...}
+  - _APPS_RESULT = {...}
+  - COMMUNITY_CLASS_TEST_CASE = {...}
+  - def _validate_community(tcs, content)
+  - _GEO_TOOLS = [...]
+  - _GEO_RESPONSES = {...}
+  - def _geo_mock(args)
+  - GEO_TEST_CASE = {...}
+  - def _validate_geo(tcs, content)
+  - _EV_TOOLS = [...]
+  - _STOCK_RESULT_VLTR = {...}
+  - _STOCK_RESULT_RVXN = {...}
+  - _ADVISORIES_RESULT = {...}
+  - _PROPERTIES_RESULT = {...}
+  - _VIDEOS_RESULT = {...}
+  - def _ev_stock_mock(args)
+  - EV_FLEET_TEST_CASE = {...}
+  - def _validate_ev(tcs, content)
+  desc: The global code in the file that defines test cases and runs them.
+  line: 1-
+  name: __main__
+- code:
+  - 'def _print(text="", end="\n"):'
+  - '    sys.stdout.write(text + end)'
+  - '    sys.stdout.flush()'
+  desc: Writes a string to stdout and flushes.
+  line: 30-32
+  name: _print
+- code:
+  - 'def chat_completion(url, messages, tools=None, stream=False):'
+  - '    payload = {'
+  - '        "messages": messages,'
+  - '        "stream": stream,'
+  - '        "max_tokens": 4096,'
+  - '    }'
+  - '    if tools:'
+  - '        payload["tools"] = tools'
+  - '        payload["tool_choice"] = "auto"'
+  - '    try:'
+  - '        response = requests.post(url, json=payload, stream=stream)'
+  - '        response.raise_for_status()'
+  - '    except requests.exceptions.RequestException as e:'
+  - '        body = e.response.content if (e.response is not None) else b""'
+  - '        print_fail(f"Request error: {e} | body: {body}")'
+  - '        return None'
+  - '    full_content = ""'
+  - '    reasoning_content = ""'
+  - '    tool_calls: list[dict] = []'
+  - '    if stream:'
+  - '        for line in response.iter_lines():'
+  - '            if not line:'
+  - '                continue'
+  - '            decoded = line.decode("utf-8")'
+  - '            if not decoded.startswith("data: "):'
+  - '                continue'
+  - '            data_str = decoded[6:]'
+  - '            if data_str == "[DONE]":'
+  - '                break'
+  - '            try:'
+  - '                data = json.loads(data_str)'
+  - '            except json.JSONDecodeError:'
+  - '                continue'
+  - '            choices = data.get("choices", [])'
+  - '            if not choices:'
+  - '                continue'
+  - '            delta = choices[0].get("delta", {})'
+  - '            if delta.get("reasoning_content"):'
+  - '                reasoning_content += delta["reasoning_content"]'
+  - '            if delta.get("content"):'
+  - '                full_content += delta["content"]'
+  - '                print_model_output(delta["content"])'
+  - '            for tc in delta.get("tool_calls", []):'
+  - '                idx = tc.get("index", 0)'
+  - '                while len(tool_calls) <= idx:'
+  - '                    tool_calls.append('
+  - '                        {'
+  - '                            "id": "",'
+  - '                            "type": "function",'
+  - '                            "function": {"name": "", "arguments": ""},'
+  - '                        }'
+  - '                    )'
+  - '                if "id" in tc:'
+  - '                    tool_calls[idx]["id"] += tc["id"]'
+  - '                if "function" in tc:'
+  - '                    if "name" in tc["function"]:'
+  - '                        tool_calls[idx]["function"]["name"] += tc["function"]["name"]'
+  - '                    if "arguments" in tc["function"]:'
+  - '                        tool_calls[idx]["function"]["arguments"] += tc["function"]["arguments"]'
+  - '    else:'
+  - '        data = response.json()'
+  - '        choices = data.get("choices", [])'
+  - '        if choices:'
+  - '            msg = choices[0].get("message", {})'
+  - '            full_content = msg.get("content") or ""'
+  - '            reasoning_content = msg.get("reasoning_content") or ""'
+  - '            tool_calls = msg.get("tool_calls") or []'
+  - '            if full_content:'
+  - '                print_model_output(full_content)'
+  - '    result = {"content": full_content, "tool_calls": tool_calls}'
+  - '    if reasoning_content:'
+  - '        result["reasoning_content"] = reasoning_content'
+  - '    return result'
+  - ''
+  desc: Sends a chat completion request, handles streaming and non-streaming responses,
+    and collects content, reasoning, and tool calls.
+  line: 67-137
+  name: chat_completion
+- code:
+  - 'def run_agentic_loop(url, messages, tools, mock_tool_responses, stream, max_turns=6):'
+  - '    msgs = list(messages)'
+  - '    all_tool_calls: list[dict] = []'
+  - '    for _ in range(max_turns):'
+  - '        result = chat_completion(url, msgs, tools=tools, stream=stream)'
+  - '        if result is None:'
+  - '            return all_tool_calls, None'
+  - '        tcs = result.get("tool_calls") or []'
+  - '        content = result.get("content") or ""'
+  - '        if not tcs:'
+  - '            if content:'
+  - '                _print(f"\n{DIM}{''·''*60}{RESET}")'
+  - '                _print(f"{DIM}  model response:{RESET}\n")'
+  - '            return all_tool_calls, content'
+  - '        all_tool_calls.extend(tcs)'
+  - '        assistant_msg: dict = {'
+  - '            "role": "assistant",'
+  - '            "content": content,'
+  - '            "tool_calls": tcs,'
+  - '        }'
+  - '        reasoning = result.get("reasoning_content")'
+  - '        if reasoning:'
+  - '            assistant_msg["reasoning_content"] = reasoning'
+  - '        msgs.append(assistant_msg)'
+  - '        for tc in tcs:'
+  - '            tool_name = tc["function"]["name"]'
+  - '            try:'
+  - '                args = json.loads(tc["function"]["arguments"])'
+  - '            except json.JSONDecodeError:'
+  - '                args = {}'
+  - '            print_tool_call(tool_name, args)'
+  - '            mock_fn = mock_tool_responses.get(tool_name)'
+  - '            if mock_fn:'
+  - '                tool_result = mock_fn(args)'
+  - '            else:'
+  - '                tool_result = json.dumps({"error": f"Unknown tool: {tool_name}"})'
+  - '            print_tool_result(tool_result)'
+  - '            msgs.append('
+  - '                {'
+  - '                    "role": "tool",'
+  - '                    "tool_call_id": tc.get("id", ""),'
+  - '                    "content": tool_result,'
+  - '                }'
+  - '            )'
+  - '    return all_tool_calls, None'
+  - ''
+  desc: 'Drives the multi-turn tool-call loop: sends messages, executes mock tool
+    calls, appends results, and repeats until no more tool calls or max turns reached.'
+  line: 139-194
+  name: run_agentic_loop
+- code:
+  - 'def run_test(url, test_case, stream):'
+  - '    name = test_case["name"]'
+  - '    mode = f"{''stream'' if stream else ''non-stream''}"'
+  - '    print_header(f"{name}  [{mode}]")'
+  - '    all_tool_calls, final_content = run_agentic_loop('
+  - '        url,'
+  - '        messages=test_case["messages"],'
+  - '        tools=test_case["tools"],'
+  - '        mock_tool_responses=test_case["mock_tool_responses"],'
+  - '        stream=stream,'
+  - '    )'
+  - '    if final_content is None and not all_tool_calls:'
+  - '        print_fail("No response from server.")'
+  - '        return False'
+  - '    passed, reason = test_case["validate"](all_tool_calls, final_content)'
+  - '    if passed:'
+  - '        print_pass(reason)'
+  - '    else:'
+  - '        print_fail(reason)'
+  - '    return passed'
+  - ''
+  desc: Runs a test case by calling run_agentic_loop, validating the results, and
+    printing pass/fail.
+  line: 196-214
+  name: run_test
+- code:
+  - 'def print_header(title):'
+  - '    bar = "─" * 60'
+  - '    _print(f"\n{BOLD}{CYAN}┌{bar}┐{RESET}")'
+  - '    _print('
+  - '        f"{BOLD}{CYAN}│  {WHITE}{title}{CYAN}{'' '' * max(0, 58 - len(title))}│{RESET}"'
+  - '    )'
+  - '    _print(f"{BOLD}{CYAN}└{bar}┘{RESET}")'
+  desc: Prints a formatted header with the given title.
+  line: 35-40
+  name: print_header
+- code:
+  - 'def print_tool_call(name, args):'
+  - '    args_str = json.dumps(args)'
+  - '    _print('
+  - '        f"\n  {BOLD}{YELLOW}⚙ tool call{RESET}  {CYAN}{name}{RESET}{DIM}({args_str}){RESET}"'
+  - '    )'
+  desc: Prints a tool call with its name and arguments.
+  line: 42-47
+  name: print_tool_call
+- code:
+  - 'def print_tool_result(result):'
+  - '    preview = result[:160] + ("…" if len(result) > 160 else "")'
+  - '    _print(f"  {DIM}{BLUE}↳ result{RESET}    {DIM}{preview}{RESET}")'
+  desc: Prints a tool result with a preview of the content.
+  line: 49-51
+  name: print_tool_result
+- code:
+  - 'def print_model_output(text):'
+  - '    # printed inline during streaming; prefix with a visual marker on first chunk'
+  - '    sys.stdout.write(text)'
+  - '    sys.stdout.flush()'
+  desc: Writes text to stdout without a newline (inline printing during streaming).
+  line: 53-56
+  name: print_model_output
+- code:
+  - 'def print_pass(reason):'
+  - '    _print(f"\n{BOLD}{GREEN}✔ PASS{RESET}  {reason}")'
+  desc: Prints a success message with the given reason.
+  line: 58-59
+  name: print_pass
+- code:
+  - 'def print_fail(reason):'
+  - '    _print(f"\n{BOLD}{RED}✘ FAIL{RESET}  {reason}")'
+  desc: Prints a failure message with the given reason.
+  line: 61-62
+  name: print_fail
+- code:
+  - 'def print_info(msg):'
+  - '    _print(f"{DIM}{msg}{RESET}")'
+  desc: Prints an informational dimmed message.
+  line: 64-65
+  name: print_info
+- code:
+  - 'def _validate_azzoo(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    if "azzoo_search_products" not in names:'
+  - '        return False, f"Expected azzoo_search_products to be called, got: {names}"'
+  - '    if "azzoo_get_product" not in names and "azzoo_get_reviews" not in names:'
+  - '        return False, f"Expected follow-up product/review lookup, got: {names}"'
+  - '    for tc in tcs:'
+  - '        if tc["function"]["name"] == "azzoo_get_product":'
+  - '            try:'
+  - '                args = json.loads(tc["function"]["arguments"])'
+  - '                pid = args.get("product_id", "")'
+  - '                if not pid:'
+  - '                    return False, "azzoo_get_product called with empty product_id"'
+  - '            except json.JSONDecodeError:'
+  - '                return False, "azzoo_get_product arguments are not valid JSON"'
+  - '    if not content:'
+  - '        return False, "No final summary produced"'
+  - '    return True, f"All expected tools called in order: {names}"'
+  desc: Validates the Azzoo e-commerce test case by checking tool calls and final
+    content.
+  line: 338-357
+  name: _validate_azzoo
+- code:
+  - 'def _validate_fitness(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    if "calculate_bmi" not in names:'
+  - '        return False, f"Expected calculate_bmi to be called, got: {names}"'
+  - '    for tc in tcs:'
+  - '        if tc["function"]["name"] == "calculate_bmi":'
+  - '            try:'
+  - '                args = json.loads(tc["function"]["arguments"])'
+  - '                w = args.get("weight_kg")'
+  - '                h = args.get("height_m")'
+  - '                if w is None or h is None:'
+  - '                    return False, f"calculate_bmi missing weight_kg or height_m:
+    {args}"'
+  - '                if not (50 <= float(w) <= 200):'
+  - '                    return False, f"calculate_bmi weight out of plausible range:
+    {w}"'
+  - '                if not (1.0 <= float(h) <= 2.5):'
+  - '                    return False, f"calculate_bmi height out of plausible range:
+    {h}"'
+  - '            except (json.JSONDecodeError, ValueError) as e:'
+  - '                return False, f"calculate_bmi argument error: {e}"'
+  - '    if not content:'
+  - '        return False, "No final plan produced"'
+  - '    return True, f"Tools called: {names}"'
+  - ''
+  desc: Validates the fitness test case by checking tool calls and BMI parameter plausibility.
+  line: 472-494
+  name: _validate_fitness
+- code:
+  - 'def _validate_community(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    missing = ['
+  - '        t for t in ("get_trending_questions", "search_mobile_apps") if t not
+    in names'
+  - '    ]'
+  - '    if missing:'
+  - '        return False, f"Missing expected tool calls: {missing}; got: {names}"'
+  - '    if not content:'
+  - '        return False, "No class suggestion produced"'
+  - '    return True, f"Both discovery tools called: {names}"'
+  desc: Validates the community class planning test case by checking tool calls and
+    final content.
+  line: 625-634
+  name: _validate_community
+- code:
+  - 'def _geo_mock(args):'
+  - '    host = args.get("host", "")'
+  - '    return json.dumps(_GEO_RESPONSES.get(host, {"error": f"unknown host: {host}"}))'
+  desc: Mock function for geolocation that returns a JSON response based on the host
+    argument.
+  line: 700-703
+  name: _geo_mock
+- code:
+  - 'def _validate_geo(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    geo_calls = [tc for tc in tcs if tc["function"]["name"] == "lookup_ip_geolocation"]'
+  - '    if len(geo_calls) < 3:'
+  - '        return False, f"Expected geolocation called 3 times (once per domain),
+    got {len(geo_calls)}"'
+  - '    queried_hosts = set()'
+  - '    for tc in geo_calls:'
+  - '        try:'
+  - '            args = json.loads(tc["function"]["arguments"])'
+  - '            host = args.get("host", "")'
+  - '            if not host:'
+  - '                return False, f"lookup_ip_geolocation called with empty host:
+    {args}"'
+  - '            queried_hosts.add(host)'
+  - '        except json.JSONDecodeError:'
+  - '            return False, "lookup_ip_geolocation arguments are not valid JSON"'
+  - '    expected = {"halle-eins.de", "galerie-deux.fr", "galleria-tre.it"}'
+  - '    if not expected.issubset(queried_hosts):'
+  - '        return False, f"Not all domains queried. Expected {expected}, got {queried_hosts}"'
+  - '    if not content:'
+  - '        return False, "No final summary produced"'
+  - '    return True, f"All 3 domains geolocated: {sorted(queried_hosts)}"'
+  - ''
+  desc: Validates the gallery geolocation test case by checking that all three domains
+    are queried.
+  line: 775-794
+  name: _validate_geo
+- code:
+  - 'def _ev_stock_mock(args):'
+  - '    symbol = args.get("symbol", "").upper()'
+  - '    if symbol == "VLTR":'
+  - '        return json.dumps(_STOCK_RESULT_VLTR)'
+  - '    if symbol == "RVXN":'
+  - '        return json.dumps(_STOCK_RESULT_RVXN)'
+  - '    return json.dumps({"error": f"Unknown symbol: {symbol}"})'
+  desc: Mock function for stock quotes that returns a JSON response based on the symbol.
+  line: 908-913
+  name: _ev_stock_mock
+- code:
+  - 'def _validate_ev(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  desc: Validates the EV fleet expansion test case by checking tool calls and final
+    content.
+  line: 1005-1008
+  name: _validate_ev
+- code:
+  - 'ols": _EV_TOOLS,'
+  - '    "mock_tool_responses": {'
+  - '        "get_stock_quote": _ev_stock_mock,'
+  - '        "get_security_advisories": lambda _: json.dumps(_ADVISORIES_RESULT),'
+  - '        "search_commercial_properties": lambda _: json.dumps(_PROPERTIES_RESULT),'
+  - '        "get_video_recommendations": lambda _: json.dumps(_VIDEOS_RESULT),'
+  - '    },'
+  - '    "validate": lambda tcs, content: _validate_ev(tcs, content),'
+  - '},'
+  - ''
+  - ''
+  - 'def _validate_ev(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    # Stock quote must come first'
+  - '    if names[0] != "get_stock_quote":'
+  - '        return False, f"Expected get_stock_quote to be called first, got: {names[0]}"'
+  - '    stock_calls = [tc for tc in tcs if tc["function"]["name"] == "get_stock_quote"]'
+  - '    for tc in stock_calls:'
+  - '        try:'
+  - '            args = json.loads(tc["function"]["arguments"])'
+  - '            sym = args.get("symbol", "")'
+  - '            if not sym:'
+  - '                return False, f"get_stock_quote called with empty symbol: {args}"'
+  - '        except json.JSONDecodeError:'
+  - '            return False, "get_stock_quote arguments are not valid JSON"'
+  - '    # All four pipeline tools expected'
+  - '    required = ['
+  - '        "get_stock_quote",'
+  - '        "get_security_advisories",'
+  - '        "search_commercial_properties",'
+  - '        "get_video_recommendations",'
+  - '    ]'
+  - '    missing = [t for t in required if t not in names]'
+  - '    if missing:'
+  - '        return False, f"Missing pipeline steps: {missing}"'
+  - '    if not content:'
+  - '        return False, "No final summary produced"'
+  - '    return True, f"Full 4-step pipeline executed: {names}"'
+  - ''
+  - ''
+  - '# ---------------------------------------------------------------------------'
+  - '# All test cases'
+  - '# ---------------------------------------------------------------------------'
+  - ''
+  - ALL_TEST_CASES = [
+  - '    AZZOO_TEST_CASE,'
+  - '    FITNESS_TEST_CASE,'
+  - '    COMMUNITY_CLASS_TEST_CASE,'
+  - '    GEO_TEST_CASE,'
+  - '    EV_FLEET_TEST_CASE,'
+  - ']'
+  - ''
+  - ''
+  - '# ---------------------------------------------------------------------------'
+  - '# Entry point'
+  - '# ---------------------------------------------------------------------------'
+  - ''
+  - ''
+  - 'def main():'
+  - '    parser = argparse.ArgumentParser('
+  - '        description="Test llama-server tool-calling capability."'
+  - '    )'
+  - '    parser.add_argument("--host", default="localhost")'
+  - '    parser.add_argument("--port", default=8080, type=int)'
+  - '    parser.add_argument('
+  - '        "--no-stream", action="store_true", help="Disable streaming mode tests"'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--stream-only", action="store_true", help="Only run streaming mode tests"'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--test",'
+  - '        help="Run only the test whose name contains this substring (case-insensitive)",'
+  - '    )'
+  - '    args = parser.parse_args()'
+  - ''
+  - '    url = f"http://{args.host}:{args.port}/v1/chat/completions"'
+  - '    print_info(f"Testing server at {url}")'
+  - ''
+  - '    modes = []'
+  - '    if not args.stream_only:'
+  - '        modes.append(False)'
+  - '    if not args.no_stream:'
+  - '        modes.append(True)'
+  - ''
+  - '    cases: list[dict] = ALL_TEST_CASES'
+  - '    if args.test:'
+  - '        name_filter = args.test.lower()'
+  - '        cases = [c for c in cases if name_filter in str(c["name"]).lower()]'
+  - '        if not cases:'
+  - '            print_fail(f"No test cases matched ''{args.test}''")'
+  - '            sys.exit(1)'
+  - ''
+  - '    total = 0'
+  - '    passed = 0'
+  - '    for stream in modes:'
+  - '        for case in cases:'
+  - '            total += 1'
+  - '            if run_test(url, case, stream=stream):'
+  - '                passed += 1'
+  - ''
+  - '    color = GREEN if passed == total else RED'
+  - '    _print(f"\n{BOLD}{color}{''─''*60}{RESET}")'
+  - '    _print(f"{BOLD}{color}  Results: {passed}/{total} passed{RESET}")'
+  - '    _print(f"{BOLD}{color}{''─''*60}{RESET}\n")'
+  - '    sys.exit(0 if passed == total else 1)'
+  - ''
+  - ''
+  - 'if __name__ == "__main__":'
+  - '    main()'
+  desc: 文件的顶层执行入口。它定义了所有测试用例的数据结构（如 AZZOO_TEST_CASE、EV_FLEET_TEST_CASE），以及 EV 用例的自定义工具定义和验证逻辑（通过
+    *_EV_TOOLS、_ev_stock_mock 等变量），最后调用 main() 函数来执行测试流程。
+  line: 1038-1143
+  name: __main__
+- code:
+  - 'def _validate_ev(tcs, content):'
+  - '    names = [tc["function"]["name"] for tc in tcs]'
+  - '    if not names:'
+  - '        return False, "No tool calls made"'
+  - '    # Stock quote must come first'
+  - '    if names[0] != "get_stock_quote":'
+  - '        return False, f"Expected get_stock_quote to be called first, got: {names[0]}"'
+  - '    stock_calls = [tc for tc in tcs if tc["function"]["name"] == "get_stock_quote"]'
+  - '    for tc in stock_calls:'
+  - '        try:'
+  - '            args = json.loads(tc["function"]["arguments"])'
+  - '            sym = args.get("symbol", "")'
+  - '            if not sym:'
+  - '                return False, f"get_stock_quote called with empty symbol: {args}"'
+  - '        except json.JSONDecodeError:'
+  - '            return False, "get_stock_quote arguments are not valid JSON"'
+  - '    # All four pipeline tools expected'
+  - '    required = ['
+  - '        "get_stock_quote",'
+  - '        "get_security_advisories",'
+  - '        "search_commercial_properties",'
+  - '        "get_video_recommendations",'
+  - '    ]'
+  - '    missing = [t for t in required if t not in names]'
+  - '    if missing:'
+  - '        return False, f"Missing pipeline steps: {missing}"'
+  - '    if not content:'
+  - '        return False, "No final summary produced"'
+  - '    return True, f"Full 4-step pipeline executed: {names}"'
+  desc: 一个专用验证函数，用于校验 EV 车队测试用例的模型输出。它检查模型是否按正确顺序执行了所有必需的工具调用（首先是 'get_stock_quote'，然后是安全公告、房产搜索和视频推荐），并确认最终生成了摘要内容。
+  line: 1063-1096
+  name: _validate_ev
+- code:
+  - 'def main():'
+  - '    parser = argparse.ArgumentParser('
+  - '        description="Test llama-server tool-calling capability."'
+  - '    )'
+  - '    parser.add_argument("--host", default="localhost")'
+  - '    parser.add_argument("--port", default=8080, type=int)'
+  - '    parser.add_argument('
+  - '        "--no-stream", action="store_true", help="Disable streaming mode tests"'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--stream-only", action="store_true", help="Only run streaming mode tests"'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--test",'
+  - '        help="Run only the test whose name contains this substring (case-insensitive)",'
+  - '    )'
+  - '    args = parser.parse_args()'
+  - ''
+  - '    url = f"http://{args.host}:{args.port}/v1/chat/completions"'
+  - '    print_info(f"Testing server at {url}")'
+  - ''
+  - '    modes = []'
+  - '    if not args.stream_only:'
+  - '        modes.append(False)'
+  - '    if not args.no_stream:'
+  - '        modes.append(True)'
+  - ''
+  - '    cases: list[dict] = ALL_TEST_CASES'
+  - '    if args.test:'
+  - '        name_filter = args.test.lower()'
+  - '        cases = [c for c in cases if name_filter in str(c["name"]).lower()]'
+  - '        if not cases:'
+  - '            print_fail(f"No test cases matched ''{args.test}''")'
+  - '            sys.exit(1)'
+  - ''
+  - '    total = 0'
+  - '    passed = 0'
+  - '    for stream in modes:'
+  - '        for case in cases:'
+  - '            total += 1'
+  - '            if run_test(url, case, stream=stream):'
+  - '                passed += 1'
+  - ''
+  - '    color = GREEN if passed == total else RED'
+  - '    _print(f"\n{BOLD}{color}{''─''*60}{RESET}")'
+  - '    _print(f"{BOLD}{color}  Results: {passed}/{total} passed{RESET}")'
+  - '    _print(f"{BOLD}{color}{''─''*60}{RESET}\n")'
+  - '    sys.exit(0 if passed == total else 1)'
+  desc: 脚本的主控制函数。它解析命令行参数（如主机、端口、流式模式开关和测试过滤），构建 API 的 URL，收集所有需要运行的测试用例，然后遍历所有流式和非流式模式组合来执行测试，最后统计并输出通过率。
+  line: 1110-1139
+  name: main

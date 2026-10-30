@@ -1,0 +1,565 @@
+classes: []
+desc: 该文件定义了一个名为 useProcessingState 的 Svelte 组合式函数（hook），用于响应式地管理服务器的处理状态。它从 chatStore
+  中直接读取响应式状态，提供格式化的处理详情用于 UI 显示，包括实时处理状态绑定、上下文和输出令牌跟踪、每秒令牌数计算、流式数据到达时自动更新等功能，并支持多个并发会话。
+file: tools/server/webui/src/lib/hooks/use-processing-state.svelte.ts
+funcs:
+- code:
+  - 'export function useProcessingState(): UseProcessingStateReturn {'
+  - "\tlet isMonitoring = $state(false);"
+  - "\tlet lastKnownState = $state<ApiProcessingState | null>(null);"
+  - "\tlet lastKnownProcessingStats = $state<LiveProcessingStats | null>(null);"
+  - ''
+  - "\t// Derive processing state reactively from chatStore's direct state"
+  - "\tconst processingState = $derived.by(() => {"
+  - "\t\tif (!isMonitoring) {"
+  - "\t\t\treturn lastKnownState;"
+  - "\t\t}"
+  - "\t\t// Read directly from the reactive state export"
+  - "\t\treturn activeProcessingState();"
+  - "\t});"
+  - ''
+  - "\t// Track last known state for keepStatsVisible functionality"
+  - "\t$effect(() => {"
+  - "\t\tif (processingState && isMonitoring) {"
+  - "\t\t\tlastKnownState = processingState;"
+  - "\t\t}"
+  - "\t});"
+  - ''
+  - "\t// Track last known processing stats for when promptProgress disappears"
+  - "\t$effect(() => {"
+  - "\t\tif (processingState?.promptProgress) {"
+  - "\t\t\tconst { processed, total, time_ms, cache } = processingState.promptProgress;"
+  - "\t\t\tconst actualProcessed = processed - cache;"
+  - "\t\t\tconst actualTotal = total - cache;"
+  - ''
+  - "\t\t\tif (actualProcessed > 0 && time_ms > 0) {"
+  - "\t\t\t\tconst tokensPerSecond = actualProcessed / (time_ms / 1000);"
+  - "\t\t\t\tlastKnownProcessingStats = {"
+  - "\t\t\t\t\ttokensProcessed: actualProcessed,"
+  - "\t\t\t\t\ttotalTokens: actualTotal,"
+  - "\t\t\t\t\ttimeMs: time_ms,"
+  - "\t\t\t\t\ttokensPerSecond"
+  - "\t\t\t\t};"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t});"
+  - ''
+  - "\tfunction getETASecs(done: number, total: number, elapsedMs: number): number\
+    \ | undefined {"
+  - "\t\tconst elapsedSecs = elapsedMs / 1000;"
+  - "\t\tconst progressETASecs ="
+  - "\t\t\tdone === 0 || elapsedSecs < 0.5"
+  - "\t\t\t\t? undefined // can be the case for the 0% progress report"
+  - "\t\t\t\t: elapsedSecs * (total / done - 1);"
+  - "\t\treturn progressETASecs;"
+  - "\t}"
+  - ''
+  - "\tfunction startMonitoring(): void {"
+  - "\t\tif (isMonitoring) return;"
+  - "\t\tisMonitoring = true;"
+  - "\t}"
+  - ''
+  - "\tfunction stopMonitoring(): void {"
+  - "\t\tif (!isMonitoring) return;"
+  - "\t\tisMonitoring = false;"
+  - ''
+  - "\t\t// Only clear last known state if keepStatsVisible is disabled"
+  - "\t\tconst currentConfig = config();"
+  - "\t\tif (!currentConfig.keepStatsVisible) {"
+  - "\t\t\tlastKnownState = null;"
+  - "\t\t\tlastKnownProcessingStats = null;"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\tfunction getProcessingMessage(): string {"
+  - "\t\tif (!processingState) {"
+  - "\t\t\treturn 'Processing...';"
+  - "\t\t}"
+  - ''
+  - "\t\tswitch (processingState.status) {"
+  - "\t\t\tcase 'initializing':"
+  - "\t\t\t\treturn 'Initializing...';"
+  - "\t\t\tcase 'preparing':"
+  - "\t\t\t\tif (processingState.progressPercent !== undefined) {"
+  - "\t\t\t\t\treturn `Processing (${processingState.progressPercent}%)`;"
+  - "\t\t\t\t}"
+  - "\t\t\t\treturn 'Preparing response...';"
+  - "\t\t\tcase 'generating':"
+  - "\t\t\t\treturn '';"
+  - "\t\t\tdefault:"
+  - "\t\t\t\treturn 'Processing...';"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\tfunction getProcessingDetails(): string[] {"
+  - "\t\t// Use current processing state or fall back to last known state"
+  - "\t\tconst stateToUse = processingState || lastKnownState;"
+  - "\t\tif (!stateToUse) {"
+  - "\t\t\treturn [];"
+  - "\t\t}"
+  - ''
+  - "\t\tconst details: string[] = [];"
+  - ''
+  - "\t\t// Show prompt processing progress with ETA during preparation phase"
+  - "\t\tif (stateToUse.promptProgress) {"
+  - "\t\t\tconst { processed, total, time_ms, cache } = stateToUse.promptProgress;"
+  - "\t\t\tconst actualProcessed = processed - cache;"
+  - "\t\t\tconst actualTotal = total - cache;"
+  - ''
+  - "\t\t\tif (actualProcessed < actualTotal && actualProcessed > 0) {"
+  - "\t\t\t\tconst percent = Math.round((actualProcessed / actualTotal) * 100);"
+  - "\t\t\t\tconst eta = getETASecs(actualProcessed, actualTotal, time_ms);"
+  - ''
+  - "\t\t\t\tif (eta !== undefined) {"
+  - "\t\t\t\t\tconst etaSecs = Math.ceil(eta);"
+  - "\t\t\t\t\tdetails.push(`Processing ${percent}% (ETA: ${etaSecs}s)`);"
+  - "\t\t\t\t} else {"
+  - "\t\t\t\t\tdetails.push(`Processing ${percent}%`);"
+  - "\t\t\t\t}"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\t// Always show context info when we have valid data"
+  - "\t\tif ("
+  - "\t\t\ttypeof stateToUse.contextTotal === 'number' &&"
+  - "\t\t\tstateToUse.contextUsed >= 0 &&"
+  - "\t\t\tstateToUse.contextTotal > 0"
+  - "\t\t) {"
+  - "\t\t\tconst contextPercent = Math.round((stateToUse.contextUsed / stateToUse.contextTotal)\
+    \ * 100);"
+  - ''
+  - "\t\t\tdetails.push("
+  - "\t\t\t\t`Context: ${stateToUse.contextUsed}/${stateToUse.contextTotal} (${contextPercent}%)`"
+  - "\t\t\t);"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.outputTokensUsed > 0) {"
+  - "\t\t\t// Handle infinite max_tokens (-1) case"
+  - "\t\t\tif (stateToUse.outputTokensMax <= 0) {"
+  - "\t\t\t\tdetails.push(`Output: ${stateToUse.outputTokensUsed}/∞`);"
+  - "\t\t\t} else {"
+  - "\t\t\t\tconst outputPercent = Math.round("
+  - "\t\t\t\t\t(stateToUse.outputTokensUsed / stateToUse.outputTokensMax) * 100"
+  - "\t\t\t\t);"
+  - ''
+  - "\t\t\t\tdetails.push("
+  - "\t\t\t\t\t`Output: ${stateToUse.outputTokensUsed}/${stateToUse.outputTokensMax}\
+    \ (${outputPercent}%)`"
+  - "\t\t\t\t);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.tokensPerSecond && stateToUse.tokensPerSecond > 0) {"
+  - "\t\t\tdetails.push(`${stateToUse.tokensPerSecond.toFixed(1)} ${STATS_UNITS.TOKENS_PER_SECOND}`);"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.speculative) {"
+  - "\t\t\tdetails.push('Speculative decoding enabled');"
+  - "\t\t}"
+  - ''
+  - "\t\treturn details;"
+  - "\t}"
+  - ''
+  - "\t/**"
+  - "\t * Returns technical details without the progress message (for bottom bar)"
+  - "\t */"
+  - "\tfunction getTechnicalDetails(): string[] {"
+  - "\t\tconst stateToUse = processingState || lastKnownState;"
+  - "\t\tif (!stateToUse) {"
+  - "\t\t\treturn [];"
+  - "\t\t}"
+  - ''
+  - "\t\tconst details: string[] = [];"
+  - ''
+  - "\t\t// Always show context info when we have valid data"
+  - "\t\tif ("
+  - "\t\t\ttypeof stateToUse.contextTotal === 'number' &&"
+  - "\t\t\tstateToUse.contextUsed >= 0 &&"
+  - "\t\t\tstateToUse.contextTotal > 0"
+  - "\t\t) {"
+  - "\t\t\tconst contextPercent = Math.round((stateToUse.contextUsed / stateToUse.contextTotal)\
+    \ * 100);"
+  - ''
+  - "\t\t\tdetails.push("
+  - "\t\t\t\t`Context: ${stateToUse.contextUsed}/${stateToUse.contextTotal} (${contextPercent}%)`"
+  - "\t\t\t);"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.outputTokensUsed > 0) {"
+  - "\t\t\t// Handle infinite max_tokens (-1) case"
+  - "\t\t\tif (stateToUse.outputTokensMax <= 0) {"
+  - "\t\t\t\tdetails.push(`Output: ${stateToUse.outputTokensUsed}/∞`);"
+  - "\t\t\t} else {"
+  - "\t\t\t\tconst outputPercent = Math.round("
+  - "\t\t\t\t\t(stateToUse.outputTokensUsed / stateToUse.outputTokensMax) * 100"
+  - "\t\t\t\t);"
+  - ''
+  - "\t\t\t\tdetails.push("
+  - "\t\t\t\t\t`Output: ${stateToUse.outputTokensUsed}/${stateToUse.outputTokensMax}\
+    \ (${outputPercent}%)`"
+  - "\t\t\t\t);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.tokensPerSecond && stateToUse.tokensPerSecond > 0) {"
+  - "\t\t\tdetails.push(`${stateToUse.tokensPerSecond.toFixed(1)} ${STATS_UNITS.TOKENS_PER_SECOND}`);"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stateToUse.speculative) {"
+  - "\t\t\tdetails.push('Speculative decoding enabled');"
+  - "\t\t}"
+  - ''
+  - "\t\treturn details;"
+  - "\t}"
+  - ''
+  - "\tfunction shouldShowDetails(): boolean {"
+  - "\t\treturn processingState !== null && processingState.status !== 'idle';"
+  - "\t}"
+  - ''
+  - "\t/**"
+  - "\t * Returns a short progress message with percent"
+  - "\t */"
+  - "\tfunction getPromptProgressText(): string | null {"
+  - "\t\tif (!processingState?.promptProgress) return null;"
+  - ''
+  - "\t\tconst { processed, total, cache } = processingState.promptProgress;"
+  - ''
+  - "\t\tconst actualProcessed = processed - cache;"
+  - "\t\tconst actualTotal = total - cache;"
+  - "\t\tconst percent = Math.round((actualProcessed / actualTotal) * 100);"
+  - "\t\tconst eta = getETASecs(actualProcessed, actualTotal, processingState.promptProgress.time_ms);"
+  - ''
+  - "\t\tif (eta !== undefined) {"
+  - "\t\t\tconst etaSecs = Math.ceil(eta);"
+  - "\t\t\treturn `Processing ${percent}% (ETA: ${etaSecs}s)`;"
+  - "\t\t}"
+  - ''
+  - "\t\treturn `Processing ${percent}%`;"
+  - "\t}"
+  - ''
+  - "\t/**"
+  - "\t * Returns live processing statistics for display (prompt processing phase)"
+  - "\t * Returns last known stats when promptProgress becomes unavailable"
+  - "\t */"
+  - "\tfunction getLiveProcessingStats(): LiveProcessingStats | null {"
+  - "\t\tif (processingState?.promptProgress) {"
+  - "\t\t\tconst { processed, total, time_ms, cache } = processingState.promptProgress;"
+  - ''
+  - "\t\t\tconst actualProcessed = processed - cache;"
+  - "\t\t\tconst actualTotal = total - cache;"
+  - ''
+  - "\t\t\tif (actualProcessed > 0 && time_ms > 0) {"
+  - "\t\t\t\tconst tokensPerSecond = actualProcessed / (time_ms / 1000);"
+  - ''
+  - "\t\t\t\treturn {"
+  - "\t\t\t\t\ttokensProcessed: actualProcessed,"
+  - "\t\t\t\t\ttotalTokens: actualTotal,"
+  - "\t\t\t\t\ttimeMs: time_ms,"
+  - "\t\t\t\t\ttokensPerSecond"
+  - "\t\t\t\t};"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\t// Return last known stats if promptProgress is no longer available"
+  - "\t\treturn lastKnownProcessingStats;"
+  - "\t}"
+  - ''
+  - "\t/**"
+  - "\t * Returns live generation statistics for display (token generation phase)"
+  - "\t */"
+  - "\tfunction getLiveGenerationStats(): LiveGenerationStats | null {"
+  - "\t\tif (!processingState) return null;"
+  - ''
+  - "\t\tconst { tokensDecoded, tokensPerSecond } = processingState;"
+  - ''
+  - "\t\tif (tokensDecoded <= 0) return null;"
+  - ''
+  - "\t\t// Calculate time from tokens and speed"
+  - "\t\tconst timeMs ="
+  - "\t\t\ttokensPerSecond && tokensPerSecond > 0 ? (tokensDecoded / tokensPerSecond)\
+    \ * 1000 : 0;"
+  - ''
+  - "\t\treturn {"
+  - "\t\t\ttokensGenerated: tokensDecoded,"
+  - "\t\t\ttimeMs,"
+  - "\t\t\ttokensPerSecond: tokensPerSecond || 0"
+  - "\t\t};"
+  - "\t}"
+  - ''
+  - "\treturn {"
+  - "\t\tget processingState() {"
+  - "\t\t\treturn processingState;"
+  - "\t\t},"
+  - "\t\tgetProcessingDetails,"
+  - "\t\tgetTechnicalDetails,"
+  - "\t\tgetProcessingMessage,"
+  - "\t\tgetPromptProgressText,"
+  - "\t\tgetLiveProcessingStats,"
+  - "\t\tgetLiveGenerationStats,"
+  - "\t\tshouldShowDetails,"
+  - "\t\tstartMonitoring,"
+  - "\t\tstopMonitoring"
+  - "\t};"
+  - '}'
+  desc: 创建一个响应式处理状态的 hook，提供处理状态访问、监控控制和各种格式化详情的方法
+  line: 32-282
+  name: useProcessingState
+- code:
+  - 'function getETASecs(done: number, total: number, elapsedMs: number): number |
+    undefined {'
+  - "\tconst elapsedSecs = elapsedMs / 1000;"
+  - "\tconst progressETASecs ="
+  - "\t\tdone === 0 || elapsedSecs < 0.5"
+  - "\t\t\t? undefined // can be the case for the 0% progress report"
+  - "\t\t\t: elapsedSecs * (total / done - 1);"
+  - "\treturn progressETASecs;"
+  - '}'
+  desc: 计算处理任务的预计剩余时间（ETA），基于已完成进度和已用时间
+  line: 71-78
+  name: getETASecs
+- code:
+  - 'function startMonitoring(): void {'
+  - "\tif (isMonitoring) return;"
+  - "\tisMonitoring = true;"
+  - '}'
+  desc: 开始监控处理状态，设置监控标志为 true
+  line: 80-83
+  name: startMonitoring
+- code:
+  - 'function stopMonitoring(): void {'
+  - "\tif (!isMonitoring) return;"
+  - "\tisMonitoring = false;"
+  - ''
+  - "\t// Only clear last known state if keepStatsVisible is disabled"
+  - "\tconst currentConfig = config();"
+  - "\tif (!currentConfig.keepStatsVisible) {"
+  - "\t\tlastKnownState = null;"
+  - "\t\tlastKnownProcessingStats = null;"
+  - "\t}"
+  - '}'
+  desc: 停止监控处理状态，根据配置决定是否清除最后已知状态和统计信息
+  line: 85-95
+  name: stopMonitoring
+- code:
+  - 'function getProcessingMessage(): string {'
+  - "\tif (!processingState) {"
+  - "\t\treturn 'Processing...';"
+  - "\t}"
+  - ''
+  - "\tswitch (processingState.status) {"
+  - "\t\tcase 'initializing':"
+  - "\t\t\treturn 'Initializing...';"
+  - "\t\tcase 'preparing':"
+  - "\t\t\tif (processingState.progressPercent !== undefined) {"
+  - "\t\t\t\treturn `Processing (${processingState.progressPercent}%)`;"
+  - "\t\t\t}"
+  - "\t\t\treturn 'Preparing response...';"
+  - "\t\tcase 'generating':"
+  - "\t\t\treturn '';"
+  - "\t\tdefault:"
+  - "\t\t\treturn 'Processing...';"
+  - "\t}"
+  - '}'
+  desc: 根据当前处理状态返回相应的处理消息文本
+  line: 97-113
+  name: getProcessingMessage
+- code:
+  - 'function getProcessingDetails(): string[] {'
+  - "\t// Use current processing state or fall back to last known state"
+  - "\tconst stateToUse = processingState || lastKnownState;"
+  - "\tif (!stateToUse) {"
+  - "\t\treturn [];"
+  - "\t}"
+  - ''
+  - "\tconst details: string[] = [];"
+  - ''
+  - "\t// Show prompt processing progress with ETA during preparation phase"
+  - "\tif (stateToUse.promptProgress) {"
+  - "\t\tconst { processed, total, time_ms, cache } = stateToUse.promptProgress;"
+  - "\t\tconst actualProcessed = processed - cache;"
+  - "\t\tconst actualTotal = total - cache;"
+  - ''
+  - "\t\tif (actualProcessed < actualTotal && actualProcessed > 0) {"
+  - "\t\t\tconst percent = Math.round((actualProcessed / actualTotal) * 100);"
+  - "\t\t\tconst eta = getETASecs(actualProcessed, actualTotal, time_ms);"
+  - ''
+  - "\t\t\tif (eta !== undefined) {"
+  - "\t\t\t\tconst etaSecs = Math.ceil(eta);"
+  - "\t\t\t\tdetails.push(`Processing ${percent}% (ETA: ${etaSecs}s)`);"
+  - "\t\t\t} else {"
+  - "\t\t\t\tdetails.push(`Processing ${percent}%`);"
+  - "\t\t\t}"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\t// Always show context info when we have valid data"
+  - "\tif ("
+  - "\t\ttypeof stateToUse.contextTotal === 'number' &&"
+  - "\t\tstateToUse.contextUsed >= 0 &&"
+  - "\t\tstateToUse.contextTotal > 0"
+  - "\t) {"
+  - "\t\tconst contextPercent = Math.round((stateToUse.contextUsed / stateToUse.contextTotal)\
+    \ * 100);"
+  - ''
+  - "\t\tdetails.push("
+  - "\t\t\t`Context: ${stateToUse.contextUsed}/${stateToUse.contextTotal} (${contextPercent}%)`"
+  - "\t\t);"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.outputTokensUsed > 0) {"
+  - "\t\t// Handle infinite max_tokens (-1) case"
+  - "\t\tif (stateToUse.outputTokensMax <= 0) {"
+  - "\t\t\tdetails.push(`Output: ${stateToUse.outputTokensUsed}/∞`);"
+  - "\t\t} else {"
+  - "\t\t\tconst outputPercent = Math.round("
+  - "\t\t\t\t(stateToUse.outputTokensUsed / stateToUse.outputTokensMax) * 100"
+  - "\t\t\t);"
+  - ''
+  - "\t\t\tdetails.push("
+  - "\t\t\t\t`Output: ${stateToUse.outputTokensUsed}/${stateToUse.outputTokensMax}\
+    \ (${outputPercent}%)`"
+  - "\t\t\t);"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.tokensPerSecond && stateToUse.tokensPerSecond > 0) {"
+  - "\t\tdetails.push(`${stateToUse.tokensPerSecond.toFixed(1)} ${STATS_UNITS.TOKENS_PER_SECOND}`);"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.speculative) {"
+  - "\t\tdetails.push('Speculative decoding enabled');"
+  - "\t}"
+  - ''
+  - "\treturn details;"
+  - '}'
+  desc: 获取完整的处理详情列表，包括进度、上下文使用情况、输出令牌统计和性能指标
+  line: 115-173
+  name: getProcessingDetails
+- code:
+  - 'function getTechnicalDetails(): string[] {'
+  - "\tconst stateToUse = processingState || lastKnownState;"
+  - "\tif (!stateToUse) {"
+  - "\t\treturn [];"
+  - "\t}"
+  - ''
+  - "\tconst details: string[] = [];"
+  - ''
+  - "\t// Always show context info when we have valid data"
+  - "\tif ("
+  - "\t\ttypeof stateToUse.contextTotal === 'number' &&"
+  - "\t\tstateToUse.contextUsed >= 0 &&"
+  - "\t\tstateToUse.contextTotal > 0"
+  - "\t) {"
+  - "\t\tconst contextPercent = Math.round((stateToUse.contextUsed / stateToUse.contextTotal)\
+    \ * 100);"
+  - ''
+  - "\t\tdetails.push("
+  - "\t\t\t`Context: ${stateToUse.contextUsed}/${stateToUse.contextTotal} (${contextPercent}%)`"
+  - "\t\t);"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.outputTokensUsed > 0) {"
+  - "\t\t// Handle infinite max_tokens (-1) case"
+  - "\t\tif (stateToUse.outputTokensMax <= 0) {"
+  - "\t\t\tdetails.push(`Output: ${stateToUse.outputTokensUsed}/∞`);"
+  - "\t\t} else {"
+  - "\t\t\tconst outputPercent = Math.round("
+  - "\t\t\t\t(stateToUse.outputTokensUsed / stateToUse.outputTokensMax) * 100"
+  - "\t\t\t);"
+  - ''
+  - "\t\t\tdetails.push("
+  - "\t\t\t\t`Output: ${stateToUse.outputTokensUsed}/${stateToUse.outputTokensMax}\
+    \ (${outputPercent}%)`"
+  - "\t\t\t);"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.tokensPerSecond && stateToUse.tokensPerSecond > 0) {"
+  - "\t\tdetails.push(`${stateToUse.tokensPerSecond.toFixed(1)} ${STATS_UNITS.TOKENS_PER_SECOND}`);"
+  - "\t}"
+  - ''
+  - "\tif (stateToUse.speculative) {"
+  - "\t\tdetails.push('Speculative decoding enabled');"
+  - "\t}"
+  - ''
+  - "\treturn details;"
+  - '}'
+  desc: 获取技术详情列表（不包含进度消息），用于底部栏显示
+  line: 178-220
+  name: getTechnicalDetails
+- code:
+  - 'function shouldShowDetails(): boolean {'
+  - "\treturn processingState !== null && processingState.status !== 'idle';"
+  - '}'
+  desc: 判断是否应该显示处理详情，当处理状态存在且不是空闲状态时返回 true
+  line: 222-224
+  name: shouldShowDetails
+- code:
+  - 'function getPromptProgressText(): string | null {'
+  - "\tif (!processingState?.promptProgress) return null;"
+  - ''
+  - "\tconst { processed, total, cache } = processingState.promptProgress;"
+  - ''
+  - "\tconst actualProcessed = processed - cache;"
+  - "\tconst actualTotal = total - cache;"
+  - "\tconst percent = Math.round((actualProcessed / actualTotal) * 100);"
+  - "\tconst eta = getETASecs(actualProcessed, actualTotal, processingState.promptProgress.time_ms);"
+  - ''
+  - "\tif (eta !== undefined) {"
+  - "\t\tconst etaSecs = Math.ceil(eta);"
+  - "\t\treturn `Processing ${percent}% (ETA: ${etaSecs}s)`;"
+  - "\t}"
+  - ''
+  - "\treturn `Processing ${percent}%`;"
+  - '}'
+  desc: 返回包含百分比和预计剩余时间的简短进度消息文本
+  line: 229-244
+  name: getPromptProgressText
+- code:
+  - 'function getLiveProcessingStats(): LiveProcessingStats | null {'
+  - "\tif (processingState?.promptProgress) {"
+  - "\t\tconst { processed, total, time_ms, cache } = processingState.promptProgress;"
+  - ''
+  - "\t\tconst actualProcessed = processed - cache;"
+  - "\t\tconst actualTotal = total - cache;"
+  - ''
+  - "\t\tif (actualProcessed > 0 && time_ms > 0) {"
+  - "\t\t\tconst tokensPerSecond = actualProcessed / (time_ms / 1000);"
+  - ''
+  - "\t\t\treturn {"
+  - "\t\t\t\ttokensProcessed: actualProcessed,"
+  - "\t\t\t\ttotalTokens: actualTotal,"
+  - "\t\t\t\ttimeMs: time_ms,"
+  - "\t\t\t\ttokensPerSecond"
+  - "\t\t\t};"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\t// Return last known stats if promptProgress is no longer available"
+  - "\treturn lastKnownProcessingStats;"
+  - '}'
+  desc: 获取实时处理统计信息（提示处理阶段），当 promptProgress 不可用时返回最后已知的统计信息
+  line: 250-270
+  name: getLiveProcessingStats
+- code:
+  - 'function getLiveGenerationStats(): LiveGenerationStats | null {'
+  - "\tif (!processingState) return null;"
+  - ''
+  - "\tconst { tokensDecoded, tokensPerSecond } = processingState;"
+  - ''
+  - "\tif (tokensDecoded <= 0) return null;"
+  - ''
+  - "\t// Calculate time from tokens and speed"
+  - "\tconst timeMs ="
+  - "\t\ttokensPerSecond && tokensPerSecond > 0 ? (tokensDecoded / tokensPerSecond)\
+    \ * 1000 : 0;"
+  - ''
+  - "\treturn {"
+  - "\t\ttokensGenerated: tokensDecoded,"
+  - "\t\ttimeMs,"
+  - "\t\ttokensPerSecond: tokensPerSecond || 0"
+  - "\t};"
+  - '}'
+  desc: 获取实时生成统计信息（令牌生成阶段），包括已生成令牌数、耗时和生成速度
+  line: 275-291
+  name: getLiveGenerationStats

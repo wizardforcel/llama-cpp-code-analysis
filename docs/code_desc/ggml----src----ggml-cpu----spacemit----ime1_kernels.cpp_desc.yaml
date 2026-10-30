@@ -1,0 +1,645 @@
+classes: []
+desc: 该文件是ggml中针对Spacemit平台（RISC-V架构）的IME1内核实现，提供了高效的量化函数。主要功能是将浮点矩阵按行量化为8位整数，支持多种块大小（16,
+  32, 64, 128, 256），利用了RISC-V向量指令集进行性能优化。该文件是ggml项目中针对Spacemit（spacemit）CPU架构的向量量化内核实现，专注于将浮点张量数据按块（BlkLen）量化为8位整数（int8）格式，并存储对应的缩放因子（scale），以支持高效的模型推理计算。代码通过RISC-V向量指令集（RVV）编写了高度优化的内联汇编，针对不同的块大小（16、32、64、128及更大）分别实现了量化循环，包括求绝对值最大值、计算缩放因子、浮点转定点、整数裁剪（clip）以及批量存储等操作。该文件是ggml项目中针对Spacemit平台（RISC-V架构）的CPU内核实现，包含针对4-bit量化矩阵乘法（SQ4BitGemm）的高性能手写RISC-V向量汇编内核。文件通过一系列宏定义封装了向量加载、乘加、存储等底层操作，实现两个模板函数，在不同量化配置（有无零点、fp16/float缩放）下，利用RISC-V向量扩展指令进行块大小为4x16的矩阵乘法运算，以提升llama.cpp中此类量化模型的推理性能。该文件实现Spacemit
+  IME1 RISC-V平台的量化矩阵乘法（GEMM）内核，针对4位整数量化数据（SQ4BIT）提供RISC-V向量指令集优化。核心功能包括：针对不同块大小（BlkLen）和数据类型组合（有无零点、FP16或FP32缩放因子）选择最优汇编实现；包含数据加载、零点偏移、整数乘加、浮点累加和结果存储等完整流程；通过模板参数在编译期分派到不同的专用内核函数。该文件是
+  ggml 项目中针对 RISC-V SpacemiT 平台的 ime1 内核实现，专注于 4-bit 量化矩阵乘法的底层内核。文件中包含大量内联汇编代码，利用
+  RISC-V 向量扩展指令（如 vle、vfwcvt、vfmul 等）来高效执行量化矩阵运算，支持不同块大小和零点配置的矩阵乘法内核。该文件实现基于 Spacemit
+  IME1 硬件加速的 int8 权重与 int4 激活矩阵乘法 kernel，支持 M=1 和 M=4 两种路径，自动在标量步长为 4（fp32）和 2（fp16）之间切换，并支持可选的零点补偿（zero
+  point）。
+file: ggml/src/ggml-cpu/spacemit/ime1_kernels.cpp
+funcs:
+- code:
+  - void quantize_a_4row_i8(size_t BlkLen, const float * A, size_t CountK, std::byte
+    * QuantA) {
+  - '    constexpr float range_max_reciprocal = 1.0f / ((1 << 7) - 1);'
+  - '    const float     fone                 = 1.0f;'
+  - ''
+  - '    if (BlkLen == 16 || BlkLen == 32 || BlkLen == 64) {'
+  - '        for (size_t row_index = 0; row_index < 4; ++row_index) {'
+  - '            const float * SRC = A + row_index * CountK;'
+  - '            std::byte *   DST = QuantA + row_index * sizeof(float);'
+  - ''
+  - '            const size_t offset = (4 - row_index) * 4 + row_index * 8;'
+  - '            const size_t stride = 4 * (sizeof(float) + BlkLen);'
+  - '            __asm__ volatile('
+  - '                ...'
+  - '        }'
+  - '    } else if (BlkLen == 128) {'
+  - '        ...'
+  - '    } else if (BlkLen == 256) {'
+  - '        ...'
+  - '    }'
+  - '}'
+  desc: 将4行浮点矩阵数据量化为8位整数格式，支持16、32、64、128和256的块大小，使用RISC-V向量指令进行优化。
+  line: 62-389
+  name: quantize_a_4row_i8
+- code:
+  - void quantize_a_row_i8(size_t BlkLen, const float * A, size_t CountK, std::byte
+    * QuantA) {
+  - '    const float *   SRC                  = A;'
+  - '    std::byte *     DST                  = QuantA;'
+  - '    constexpr float range_max_reciprocal = 1.0f / ((1 << 7) - 1);'
+  - '    const float     fone                 = 1.0f;'
+  - '    std::byte *     QuantA_offset        = QuantA + CountK + 4 * ((CountK + BlkLen
+    - 1) / BlkLen);'
+  - '    size_t          offset               = (CountK + BlkLen - 1) / BlkLen * BlkLen
+    - CountK;'
+  - ''
+  - '    if (CountK <= BlkLen) {'
+  - '        // 标量处理逻辑'
+  - '    } else {'
+  - '        // 向量处理逻辑，使用RISC-V向量指令'
+  - '    }'
+  - '}'
+  desc: 将单行浮点矩阵数据量化为8位整数格式，支持16、32、64、128、256等不同的块大小，对于小规模数据使用标量处理，大规模数据使用向量指令优化。
+  line: 392-587
+  name: quantize_a_row_i8
+- code:
+  - // 量化内核，根据 BlkLen 不同执行分支
+  - if (BlkLen == 16) {
+  - '    __asm__ volatile( ... ) ;// 专用内联汇编'
+  - '} else if (BlkLen == 32) {'
+  - '    __asm__ volatile( ... );'
+  - '} else if (BlkLen == 64) {'
+  - '    // ...'
+  - '} else if (BlkLen == 128) {'
+  - '    // ...'
+  - '} else {'
+  - '    // 通用路径，处理更大的块'
+  - '}'
+  desc: 全局代码：包含量化函数的实现，针对不同BlkLen分支使用RISC-V向量汇编进行块内量化，计算缩放因子（scale）和量化后的int8数据，其他分支使用通用逻辑处理更大的块。
+  line: 630-1200
+  name: __main__
+- code:
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM4Kernel_CompInt8_ScaleFp16_Impl(size_t            BlkLen,
+  - '                                                const std::byte * QuantA,'
+  - '                                                const std::byte * QuantBData,'
+  - '                                                const float *     QuantBScale,'
+  - '                                                const std::byte * QuantBZeroPoint,'
+  - '                                                float *           C,'
+  - '                                                size_t            CountN,'
+  - '                                                size_t            BlockCountK,'
+  - '                                                const float *     Bias,'
+  - '                                                const size_t      ldc) {'
+  - '    GGML_UNUSED(QuantBScale);'
+  - '    GGML_UNUSED(QuantBZeroPoint);'
+  - '    size_t       LDC   = ldc * sizeof(float);'
+  - '    const size_t INNER = BlkLen / 16;'
+  - '    float        tmp[4 * 16];'
+  - ''
+  - '    if constexpr (HasZeroPoint) {'
+  - '        for (size_t n = 0; n < CountN; n += 16) {'
+  - '            size_t      NBLKS         = (CountN - n) > 16 ? 16 : CountN - n;'
+  - '            std::byte * QuantBDataPtr = (std::byte *) QuantBData +           //'
+  - '                                        n * BlockCountK * BlkLen / 2 +       //
+    b data'
+  - '                                        n * BlockCountK * sizeof(uint8_t) +  //
+    zp'
+  - '                                        n * BlockCountK * sizeof(_Float16);    //
+    scale'
+  - '            float * CPtr = C + n;'
+  - '            if (NBLKS < 16) {'
+  - '                CPtr = tmp;'
+  - '                LDC  = 16 * sizeof(float);'
+  - '            }'
+  - '            if (Bias != nullptr) {'
+  - '                const float * bias = Bias + n;'
+  - '                if (NBLKS < 16) {'
+  - '                    __asm__ volatile('
+  - '                        "vsetvli        t0, %[N], e32, m2     \n\t"'
+  - '                        "vle32.v        v0, (%[SRC])          \n\t"'
+  - '                        "vse32.v        v0, (%[DST])          \n\t"'
+  - '                        :'
+  - '                        : [SRC] "r"(bias), [DST] "r"(tmp), [N] "r"(NBLKS)'
+  - '                        : "cc", "t0");'
+  - '                    bias = tmp;'
+  - '                }'
+  - '                __asm__ volatile(LOAD_BIAS'
+  - '                                 "addi               t3, %[BlockCountK], 0       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, m1            \n\t"'
+  - '                                 "li                 s1, 24                      \n\t"'
+  - '                                 "vmv.v.i            v1, 3                       \n\t"'
+  - '                                 "vsetvli            t0, s1, e8, m1              \n\t"'
+  - '                                 "vmv.v.i            v1, 2                       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, mf2           \n\t"'
+  - '                                 "vmv.v.i            v1, 1                       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, mf4           \n\t"'
+  - '                                 "vmv.v.i            v1, 0                       \n\t"'
+  - '                                 "addi               a1, %[A], 0                 \n\t"'
+  - '                                 "addi               s1, %[B], 0                 \n\t"'
+  - '                                 "BLOCK_COUNTK_LOOP%=:                           \n\t"'
+  - '                                 // scale offset'
+  - '                                 "addi               s5, s1, 0                   \n\t"'
+  - '                                 // zp offset'
+  - '                                 "addi               s6, s1, 32                  \n\t"'
+  - '                                 "addi               s1, s6, 16                  \n\t"'
+  - '                                 "addi               s2, s1, 32                  \n\t"'
+  - '                                 "addi               s3, s1, 32*2                \n\t"'
+  - '                                 "addi               s4, s1, 32*3                \n\t"'
+  - '                                 "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                                 "vxor.vv            v16, v16, v16               \n\t"'
+  - '                                 // load a scale'
+  - '                                 "flw                f1, (a1)                    \n\t"'
+  - '                                 "flw                f2, 4(a1)                   \n\t"'
+  - '                                 "flw                f3, 8(a1)                   \n\t"'
+  - '                                 "flw                f4, 12(a1)                  \n\t"'
+  - '                                 "addi               a1, a1, 16                  \n\t"'
+  - '                                 "addi               t2, %[INNER], 0             \n\t"'
+  - '                                 SQ4BIT_KERNEL_LOAD_ZP_16X1_v2'
+  - '                                 "BLOCK_INNER_LOOP%=:                            \n\t"'
+  - '                                 LOAD_B_16x8x2'
+  - '                                 "vle8.v             v10, (a1)                   \n\t"'
+  - '                                 "addi               a1, a1, 32                  \n\t"'
+  - '                                 "vle8.v             v11, (a1)                   \n\t"'
+  - '                                 "addi               a1, a1, 32                  \n\t"'
+  - '                                 "vsub.vv            v2, v2, v12                 \n\t"'
+  - '                                 "vsub.vv            v6, v6, v12                 \n\t"'
+  - '                                 "vsub.vv            v3, v3, v13                 \n\t"'
+  - '                                 "vsub.vv            v7, v7, v13                 \n\t"'
+  - '                                 "vsub.vv            v4, v4, v14                 \n\t"'
+  - '                                 "vsub.vv            v8, v8, v14                 \n\t"'
+  - '                                 "vsub.vv            v5, v5, v15                 \n\t"'
+  - '                                 "vsub.vv            v9, v9, v15                 \n\t"'
+  - '                                 SQ4BIT_KERNEL_COMP_4x16x16'
+  - '                                 "addi               t2, t2, -1                  \n\t"'
+  - '                                 "bnez               t2, BLOCK_INNER_LOOP%=      \n\t"'
+  - '                                 LOAD_SCALE_4x16_FP16'
+  - '                                 "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                                 "vfcvt.f.x.v        v16, v16                    \n\t"'
+  - '                                 "vfmacc.vv          v24, v16, v8                \n\t"'
+  - '                                 "addi               t3, t3, -1                  \n\t"'
+  - '                                 "bnez               t3, BLOCK_COUNTK_LOOP%=     \n\t"'
+  - '                                 "RESULT_SAVE%=:                                 \n\t"'
+  - '                                 SAVE_RESULT_4x16'
+  - '                                 :'
+  - '                                 : [INNER] "r"(INNER), [A] "r"(QuantA), [B] "r"(QuantBDataPtr),
+    [LDC] "r"(LDC),'
+  - '                                   [BlockCountK] "r"(BlockCountK), [C] "r"(CPtr),
+    [BIAS] "r"(bias)'
+  - '                                 : "cc", "t0", "t1", "t2", "t3", "a1", "a2",
+    "a3", "a4", "f1", "f2", "f3", "f4", "s1",'
+  - '                                   "s2", "s3", "s4", "s5", "s6");'
+  - '            } else {'
+  - '                __asm__ volatile('
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vxor.vv            v24, v24, v24               \n\t"'
+  - '                    "addi               t3, %[BlockCountK], 0       \n\t"'
+  - '                    "vsetvli            t0, zero, e8, m1            \n\t"'
+  - '                    "li                 s1, 24                      \n\t"'
+  - '                    "vmv.v.i            v1, 3                       \n\t"'
+  - '                    "vsetvli            t0, s1, e8, m1              \n\t"'
+  - '                    "vmv.v.i            v1, 2                       \n\t"'
+  - '                    "vsetvli            t0, zero, e8, mf2           \n\t"'
+  - '                    "vmv.v.i            v1, 1                       \n\t"'
+  - '                    "vsetvli            t0, zero, e8, mf4           \n\t"'
+  - '                    "vmv.v.i            v1, 0                       \n\t"'
+  - '                    "addi               a1, %[A], 0                 \n\t"'
+  - '                    "addi               s1, %[B], 0                 \n\t"'
+  - '                    "BLOCK_COUNTK_LOOP%=:                           \n\t"'
+  - '                    // scale offset'
+  - '                    "addi               s5, s1, 0                   \n\t"'
+  - '                    // zp offset'
+  - '                    "addi               s6, s1, 32                  \n\t"'
+  - '                    "addi               s1, s6, 16                  \n\t"'
+  - '                    "addi               s2, s1, 32                  \n\t"'
+  - '                    "addi               s3, s1, 32*2                \n\t"'
+  - '                    "addi               s4, s1, 32*3                \n\t"'
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vxor.vv            v16, v16, v16               \n\t"'
+  - '                    // load a scale'
+  - '                    "flw                f1, (a1)                    \n\t"'
+  - '                    "flw                f2, 4(a1)                   \n\t"'
+  - '                    "flw                f3, 8(a1)                   \n\t"'
+  - '                    "flw                f4, 12(a1)                  \n\t"'
+  - '                    "addi               a1, a1, 16                  \n\t"'
+  - '                    "addi               t2, %[INNER], 0             \n\t"'
+  - '                    SQ4BIT_KERNEL_LOAD_ZP_16X1_v2'
+  - '                    "BLOCK_INNER_LOOP%=:                            \n\t"'
+  - '                    LOAD_B_16x8x2'
+  - '                    "vle8.v             v10, (a1)                   \n\t"'
+  - '                    "addi               a1, a1, 32                  \n\t"'
+  - '                    "vle8.v             v11, (a1)                   \n\t"'
+  - '                    "addi               a1, a1, 32                  \n\t"'
+  - '                    "vsub.vv            v2, v2, v12                 \n\t"'
+  - '                    "vsub.vv            v6, v6, v12                 \n\t"'
+  - '                    "vsub.vv            v3, v3, v13                 \n\t"'
+  - '                    "vsub.vv            v7, v7, v13                 \n\t"'
+  - '                    "vsub.vv            v4, v4, v14                 \n\t"'
+  - '                    "vsub.vv            v8, v8, v14                 \n\t"'
+  - '                    "vsub.vv            v5, v5, v15                 \n\t"'
+  - '                    "vsub.vv            v9, v9, v15                 \n\t"'
+  - '                    SQ4BIT_KERNEL_COMP_4x16x16'
+  - '                    "addi               t2, t2, -1                  \n\t"'
+  - '                    "bnez               t2, BLOCK_INNER_LOOP%=      \n\t"'
+  - '                    LOAD_SCALE_4x16_FP16'
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vfcvt.f.x.v        v16, v16                    \n\t"'
+  - '                    "vfmacc.vv          v24, v16, v8                \n\t"'
+  - '                    "addi               t3, t3, -1                  \n\t"'
+  - '                    "bnez               t3, BLOCK_COUNTK_LOOP%=     \n\t"'
+  - '                    "RESULT_SAVE%=:                                 \n\t"'
+  - '                    SAVE_RESULT_4x16'
+  - '                    :'
+  - '                    : [INNER] "r"(INNER), [A] "r"(QuantA), [B] "r"(QuantBDataPtr),
+    [LDC] "r"(LDC),'
+  - '                      [BlockCountK] "r"(BlockCountK), [C] "r"(CPtr)'
+  - '                    : "cc", "t0", "t1", "t2", "t3", "a1", "a2", "a3", "a4", "f1",
+    "f2", "f3", "f4", "s1", "s2", "s3",'
+  - '                      "s4", "s5", "s6");'
+  - '            }'
+  - '        }'
+  - '    } else {'
+  - '        for (size_t n = 0; n < CountN; n += 16) {'
+  - '            size_t      NBLKS         = (CountN - n) > 16 ? 16 : CountN - n;'
+  - '            std::byte * QuantBDataPtr = (std::byte *) QuantBData +         //'
+  - '                                        n * BlockCountK * BlkLen / 2 +     //
+    b data'
+  - '                                        n * BlockCountK * sizeof(_Float16);  //
+    scale'
+  - '            float * CPtr = C + n;'
+  - '            if (NBLKS < 16) {'
+  - '                CPtr = tmp;'
+  - '                LDC  = 16 * sizeof(float);'
+  - '            }'
+  - '            if (Bias != nullptr) {'
+  - '                const float * bias = Bias + n;'
+  - '                if (NBLKS < 16) {'
+  - '                    __asm__ volatile('
+  - '                        "vsetvli        t0, %[N], e32, m2     \n\t"'
+  - '                        "vle32.v        v0, (%[SRC])          \n\t"'
+  - '                        "vse32.v        v0, (%[DST])          \n\t"'
+  - '                        :'
+  - '                        : [SRC] "r"(bias), [DST] "r"(tmp), [N] "r"(NBLKS)'
+  - '                        : "cc", "t0");'
+  - '                    bias = tmp;'
+  - '                }'
+  - '                __asm__ volatile(LOAD_BIAS'
+  - '                                 "addi               t3, %[BlockCountK], 0       \n\t"'
+  - '                                 "addi               a1, %[A], 0                 \n\t"'
+  - '                                 "addi               s1, %[B], 0                 \n\t"'
+  - '                                 "BLOCK_COUNTK_LOOP%=:                           \n\t"'
+  - '                                 "addi               s5, s1, 0                   \n\t"'
+  - '                                 "addi               s1, s5, 32                  \n\t"'
+  - '                                 "addi               s2, s1, 32                  \n\t"'
+  - '                                 "addi               s3, s1, 32*2                \n\t"'
+  - '                                 "addi               s4, s1, 32*3                \n\t"'
+  - '                                 "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                                 "vxor.vv            v16, v16, v16               \n\t"'
+  - '                                 // load a scale'
+  - '                                 "flw                f1, (a1)                    \n\t"'
+  - '                                 "flw                f2, 4(a1)                   \n\t"'
+  - '                                 "flw                f3, 8(a1)                   \n\t"'
+  - '                                 "flw                f4, 12(a1)                  \n\t"'
+  - '                                 "addi               a1, a1, 16                  \n\t"'
+  - '                                 "addi               t2, %[INNER], 0             \n\t"'
+  - '                                 "BLOCK_INNER_LOOP%=:                            \n\t"'
+  - '                                 LOAD_B_16x8x2'
+  - '                                 "vsetvli            t0, zero, e8, m1            \n\t"'
+  - '                                 "vle8.v             v10, (a1)                   \n\t"'
+  - '                                 "addi               a1, a1, 32                  \n\t"'
+  - '                                 "vle8.v             v11, (a1)                   \n\t"'
+  - '                                 "addi               a1, a1, 32                  \n\t"'
+  - '                                 "vadd.vi            v2, v2, -8                  \n\t"'
+  - '                                 "vadd.vi            v3, v3, -8                  \n\t"'
+  - '                                 "vadd.vi            v4, v4, -8                  \n\t"'
+  - '                                 "vadd.vi            v5, v5, -8                  \n\t"'
+  - '                                 "vadd.vi            v6, v6, -8                  \n\t"'
+  - '                                 "vadd.vi            v7, v7, -8                  \n\t"'
+  - '                                 "vadd.vi            v8, v8, -8                  \n\t"'
+  - '                                 "vadd.vi            v9, v9, -8                  \n\t"'
+  - '                                 SQ4BIT_KERNEL_COMP_4x16x16'
+  - '                                 "addi               t2, t2, -1                  \n\t"'
+  - '                                 "bnez               t2, BLOCK_INNER_LOOP%=      \n\t"'
+  - '                                 LOAD_SCALE_4x16_FP16'
+  - '                                 "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                                 "vfcvt.f.x.v        v16, v16                    \n\t"'
+  - '                                 "vfmacc.vv          v24, v16, v8                \n\t"'
+  - '                                 "addi               t3, t3, -1                  \n\t"'
+  - '                                 "bnez               t3, BLOCK_COUNTK_LOOP%=     \n\t"'
+  - '                                 "RESULT_SAVE%=:                                 \n\t"'
+  - '                                 SAVE_RESULT_4x16'
+  - '                                 :'
+  - '                                 : [INNER] "r"(INNER), [A] "r"(QuantA), [B] "r"(QuantBDataPtr),
+    [LDC] "r"(LDC),'
+  - '                                   [BlockCountK] "r"(BlockCountK), [C] "r"(CPtr),
+    [BIAS] "r"(bias)'
+  - '                                 : "cc", "t0", "t1", "t2", "t3", "a1", "a2",
+    "a3", "a4", "f1", "f2", "f3", "f4", "s1",'
+  - '                                   "s2", "s3", "s4", "s5", "s6");'
+  - '            } else {'
+  - '                __asm__ volatile('
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vxor.vv            v24, v24, v24               \n\t"'
+  - '                    "addi               t3, %[BlockCountK], 0       \n\t"'
+  - '                    "addi               a1, %[A], 0                 \n\t"'
+  - '                    "addi               s1, %[B], 0                 \n\t"'
+  - '                    "BLOCK_COUNTK_LOOP%=:                           \n\t"'
+  - '                    "addi               s5, s1, 0                   \n\t"'
+  - '                    "addi               s1, s5, 32                  \n\t"'
+  - '                    "addi               s2, s1, 32                  \n\t"'
+  - '                    "addi               s3, s1, 32*2                \n\t"'
+  - '                    "addi               s4, s1, 32*3                \n\t"'
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vxor.vv            v16, v16, v16               \n\t"'
+  - '                    // load a scale'
+  - '                    "flw                f1, (a1)                    \n\t"'
+  - '                    "flw                f2, 4(a1)                   \n\t"'
+  - '                    "flw                f3, 8(a1)                   \n\t"'
+  - '                    "flw                f4, 12(a1)                  \n\t"'
+  - '                    "addi               a1, a1, 16                  \n\t"'
+  - '                    "addi               t2, %[INNER], 0             \n\t"'
+  - '                    "BLOCK_INNER_LOOP%=:                            \n\t"'
+  - '                    LOAD_B_16x8x2'
+  - '                    "vsetvli            t0, zero, e8, m1            \n\t"'
+  - '                    "vle8.v             v10, (a1)                   \n\t"'
+  - '                    "addi               a1, a1, 32                  \n\t"'
+  - '                    "vle8.v             v11, (a1)                   \n\t"'
+  - '                    "addi               a1, a1, 32                  \n\t"'
+  - '                    "vadd.vi            v2, v2, -8                  \n\t"'
+  - '                    "vadd.vi            v3, v3, -8                  \n\t"'
+  - '                    "vadd.vi            v4, v4, -8                  \n\t"'
+  - '                    "vadd.vi            v5, v5, -8                  \n\t"'
+  - '                    "vadd.vi            v6, v6, -8                  \n\t"'
+  - '                    "vadd.vi            v7, v7, -8                  \n\t"'
+  - '                    "vadd.vi            v8, v8, -8                  \n\t"'
+  - '                    "vadd.vi            v9, v9, -8                  \n\t"'
+  - '                    SQ4BIT_KERNEL_COMP_4x16x16'
+  - '                    "addi               t2, t2, -1                  \n\t"'
+  - '                    "bnez               t2, BLOCK_INNER_LOOP%=      \n\t"'
+  - '                    LOAD_SCALE_4x16_FP16'
+  - '                    "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                    "vfcvt.f.x.v        v16, v16                    \n\t"'
+  - '                    "vfmacc.vv          v24, v16, v8                \n\t"'
+  - '                    "addi               t3, t3, -1                  \n\t"'
+  - '                    "bnez               t3, BLOCK_COUNTK_LOOP%=     \n\t"'
+  - '                    "RESULT_SAVE%=:                                 \n\t"'
+  - '                    SAVE_RESULT_4x16'
+  - '                    :'
+  - '                    : [INNER] "r"(INNER), [A] "r"(QuantA), [B] "r"(QuantBDataPtr),
+    [LDC] "r"(LDC),'
+  - '                      [BlockCountK] "r"(BlockCountK), [C] "r"(CPtr)'
+  - '                    : "cc", "t0", "t1", "t2", "t3", "a1", "a2", "a3", "a4", "f1",
+    "f2", "f3", "f4", "s1", "s2", "s3",'
+  - '                      "s4", "s5", "s6");'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    if (CountN % 16 != 0) {'
+  - '        // stroe output from tmp to C when NBLKS less than 16.'
+  - '        float *      CPtr = C + CountN / 16 * 16;'
+  - '        const size_t N    = CountN % 16;'
+  - '        LDC               = ldc * sizeof(float);'
+  - '        __asm__ volatile('
+  - '            "vsetvli            t0, %[N], e32, m2       \n\t"'
+  - '            "vle32.v            v0, (%[SRC])            \n\t"'
+  - '            "addi               s2, %[SRC], 64          \n\t"'
+  - '            "addi               s3, %[SRC], 64*2        \n\t"'
+  - '            "addi               s4, %[SRC], 64*3        \n\t"'
+  - '            "vle32.v            v2, (s2)                \n\t"'
+  - '            "vle32.v            v4, (s3)                \n\t"'
+  - '            "vle32.v            v6, (s4)                \n\t"'
+  - '            "add                t2, %[DST], %[LDC]      \n\t"'
+  - '            "add                t3, t2, %[LDC]          \n\t"'
+  - '            "add                t4, t3, %[LDC]          \n\t"'
+  - '            "vse32.v            v0, (%[DST])            \n\t"'
+  - '            "vse32.v            v2, (t2)                \n\t"'
+  - '            "vse32.v            v4, (t3)                \n\t"'
+  - '            "vse32.v            v6, (t4)                \n\t"'
+  - '            :'
+  - '            : [N] "r"(N), [SRC] "r"(tmp), [DST] "r"(CPtr), [LDC] "r"(LDC)'
+  - '            : "cc", "t0", "t2", "t3", "t4", "s2", "s3", "s4");'
+  - '    }'
+  - '}'
+  desc: 一个被模板化的C++函数，利用内联汇编实现的4x16块大小、int8压缩的4-bit量化矩阵乘法内核，其中B矩阵使用fp16缩放因子。该函数处理有/无零点、有/无偏置等多种情况，针对RISC-V向量指令（如vmadot）进行了高度优化。
+  line: 353-696
+  name: SQ4BitGemmM4Kernel_CompInt8_ScaleFp16_Impl
+- code:
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM4Kernel_CompInt8_Impl(size_t            BlkLen,
+  - '                                      const std::byte * QuantA,'
+  - '                                      const std::byte * QuantBData,'
+  - '                                      const float *     QuantBScale,'
+  - '                                      const std::byte * QuantBZeroPoint,'
+  - '                                      float *           C,'
+  - '                                      size_t            CountN,'
+  - '                                      size_t            BlockCountK,'
+  - '                                      const float *     Bias,'
+  - '                                      const size_t      ldc) {'
+  - '    GGML_UNUSED(QuantBScale);'
+  - '    GGML_UNUSED(QuantBZeroPoint);'
+  - '    size_t       LDC   = ldc * sizeof(float);'
+  - '    const size_t INNER = BlkLen / 16;'
+  - '    float        tmp[4 * 16];'
+  - ''
+  - '    if constexpr (HasZeroPoint) {'
+  - '        for (size_t n = 0; n < CountN; n += 16) {'
+  - '            size_t      NBLKS         = (CountN - n) > 16 ? 16 : CountN - n;'
+  - '            std::byte * QuantBDataPtr = (std::byte *) QuantBData +           //'
+  - '                                        n * BlockCountK * BlkLen / 2 +       //
+    b data'
+  - '                                        n * BlockCountK * sizeof(uint8_t) +  //
+    zp'
+  - '                                        n * BlockCountK * sizeof(float);     //
+    scale'
+  - '            float * CPtr = C + n;'
+  - '            if (NBLKS < 16) {'
+  - '                CPtr = tmp;'
+  - '                LDC  = 16 * sizeof(float);'
+  - '            }'
+  - '            if (Bias != nullptr) {'
+  - '                const float * bias = Bias + n;'
+  - '                if (NBLKS < 16) {'
+  - '                    __asm__ volatile('
+  - '                        "vsetvli        t0, %[N], e32, m2     \n\t"'
+  - '                        "vle32.v        v0, (%[SRC])          \n\t"'
+  - '                        "vse32.v        v0, (%[DST])          \n\t"'
+  - '                        :'
+  - '                        : [SRC] "r"(bias), [DST] "r"(tmp), [N] "r"(NBLKS)'
+  - '                        : "cc", "t0");'
+  - '                    bias = tmp;'
+  - '                }'
+  - ''
+  - '                __asm__ volatile(LOAD_BIAS'
+  - '                                 "addi               t3, %[BlockCountK], 0       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, m1            \n\t"'
+  - '                                 "li                 s1, 24                      \n\t"'
+  - '                                 "vmv.v.i            v1, 3                       \n\t"'
+  - '                                 "vsetvli            t0, s1, e8, m1              \n\t"'
+  - '                                 "vmv.v.i            v1, 2                       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, mf2           \n\t"'
+  - '                                 "vmv.v.i            v1, 1                       \n\t"'
+  - '                                 "vsetvli            t0, zero, e8, mf4           \n\t"'
+  - '                                 "vmv.v.i            v1, 0                       \n\t"'
+  - '                                 "addi               a1, %[A], 0                 \n\t"'
+  - '                                 "addi               s1, %[B], 0                 \n\t"'
+  - '                                 "BLOCK_COUNTK_LOOP%=:                           \n\t"'
+  - '                                 // scale offset'
+  - '                                 "addi               s5, s1, 0                   \n\t"'
+  - '                                 // zp offset'
+  - '                                 "addi               s6, s1, 64                  \n\t"'
+  - '                                 "addi               s1, s6, 16                  \n\t"'
+  - '                                 "addi               s2, s1, 32                  \n\t"'
+  - '                                 "addi               s3, s1, 32*2                \n\t"'
+  - '                                 "addi               s4, s1, 32*3                \n\t"'
+  - '                                 "vsetvli            t0, zero, e32, m8           \n\t"'
+  - '                                 "vxor.vv            v16, v16, v16               \n\t"'
+  - '                                 // load a scale'
+  - '                                 "flw                f1, (a1)'
+  desc: 一个被模板化的C++函数，利用内联汇编实现的4x16块大小、int8压缩的4-bit量化矩阵乘法内核，其中B矩阵使用float缩放因子。该函数处理有/无零点、有/无偏置等多种情况，针对RISC-V向量指令进行了高度优化。
+  line: 696-1055
+  name: SQ4BitGemmM4Kernel_CompInt8_Impl
+- code:
+  - // 文件全局范围：包含头文件和模板函数定义
+  - // 宏定义：SQ4BIT_KERNEL_LOAD_ZP_16X1_v2, LOAD_B_16x8x2, SQ4BIT_KERNEL_COMP_4x16x16,
+    LOAD_SCALE_4x16, SAVE_RESULT_4x16
+  - // 宏定义：LOAD_BIAS, SQ4BIT_KERNEL_LOAD_ZP_16X1, SQ4BIT_KERNEL_LOAD_1x8x2_4X8X4,
+    SQ4BIT_KERNEL_COMP_1x8x2_4X8X4, SQ4BIT_KERNEL_ACC_F16_1X4X4
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM1Kernel_CompInt8_ScaleFp16_Impl(...)
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM1Kernel_CompInt8_ScaleFp32_Impl(...)
+  desc: 文件级别的全局代码，包括所有模板函数定义以及宏定义。
+  line: 1-1000
+  name: __main__
+- code:
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM1Kernel_CompInt8_ScaleFp32_Impl(size_t BlkLen, const std::byte
+    * QuantA,
+  - '                                                const std::byte * QuantBData,
+    const float * QuantBScale,'
+  - '                                                const std::byte * QuantBZeroPoint,
+    float * C,'
+  - '                                                size_t CountN, size_t BlockCountK,
+    const float * Bias) {'
+  - '  // 内层循环次数计算'
+  - '  size_t INNER = BlkLen / 16;'
+  - '  // 外层循环遍历N维度，每次处理16列'
+  - '  for (size_t n = 0; n < CountN; n += 16) {'
+  - '    // ... 汇编优化循环 ...'
+  - '  }'
+  - '}'
+  desc: 针对4位量化数据、FP32缩放因子和可选零点（HasZeroPoint）的GEMM内核实现。使用RISC-V向量指令进行32x16块的矩阵乘累加运算，支持多块K-dim迭代和可选的bias向量。
+  line: 1914-2200
+  name: SQ4BitGemmM1Kernel_CompInt8_ScaleFp32_Impl
+- code:
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM1Kernel_CompInt8_ScaleFp16_Impl(size_t BlkLen, const std::byte
+    * QuantA,
+  - '                                                const std::byte * QuantBData,'
+  - '                                                const float * QuantBScale,'
+  - '                                                const std::byte * QuantBZeroPoint,'
+  - '                                                float * C, size_t CountN,'
+  - '                                                size_t BlockCountK, const float
+    * Bias) {'
+  - '  // 内层循环次数计算'
+  - '  size_t INNER = BlkLen / 16;'
+  - '  if constexpr (HasZeroPoint) {'
+  - '    // ... 汇编优化循环 ...'
+  - '  } else {'
+  - '    // ... 汇编优化循环 ...'
+  - '  }'
+  - '}'
+  desc: 针对4位量化数据、FP16缩放因子和可选零点（HasZeroPoint）的GEMM内核实现。使用RISC-V向量指令进行4x16块的矩阵乘累加运算，支持多块K-dim迭代和可选的bias向量。
+  line: 2200-2500
+  name: SQ4BitGemmM1Kernel_CompInt8_ScaleFp16_Impl
+- code:
+  - template <bool HasZeroPoint>
+  - void SQ4BitGemmM1Kernel_CompInt8_Impl(size_t            BlkLen,
+  - '                                      const std::byte * QuantA,'
+  - '                                      const std::byte * QuantBData,'
+  - '                                      const float *     QuantBScale,'
+  - '                                      const std::byte * QuantBZeroPoint,'
+  - '                                      float *           C,'
+  - '                                      size_t            CountN,'
+  - '                                      size_t            BlockCountK,'
+  - '                                      const float *     Bias) {'
+  - '    ...'
+  desc: 针对 M1 矩阵尺寸的 4-bit 量化矩阵乘法内核实现在模板参数 HasZeroPoint 控制是否支持零点，通过内联汇编执行向量化乘加运算。
+  line: 2526-2793
+  name: SQ4BitGemmM1Kernel_CompInt8_Impl
+- code:
+  - template <bool HasZeroPoint>
+  - inline void SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen(size_t            BlkLen,
+  - '                                                         const std::byte * QuantA,'
+  - '                                                         const std::byte * QuantBData,'
+  - '                                                         const float *     QuantBScale,'
+  - '                                                         const std::byte * QuantBZeroPoint,'
+  - '                                                         float *           C,'
+  - '                                                         size_t            CountM,'
+  - '                                                         size_t            CountN,'
+  - '                                                         size_t            BlockStrideQuantB,'
+  - '                                                         const float *     Bias,'
+  - '                                                         const size_t      ldc,'
+  - '                                                         const size_t      scalestride)
+    {'
+  - '    ...'
+  desc: 根据不同的块长度（scalestride）和模板参数 HasZeroPoint，分派到不同的 4-bit 量化矩阵乘法内核实现，用于 M4 矩阵尺寸。
+  line: 2794-2805
+  name: SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen
+- code:
+  - namespace sqnbitgemm_spacemit_ime {
+  - ''
+  - template <bool HasZeroPoint>
+  - inline void SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen(...) { ... }
+  - ''
+  - template <bool HasZeroPoint>
+  - inline void SQ4BitGemmM1Kernel_CompInt8_DispatchOnBlkLen(...) { ... }
+  - ''
+  - '}  // namespace'
+  - ''
+  - namespace ime1 {
+  - size_t gemm_kernel_i8i4(...) { ... }
+  - '}  // namespace ime1'
+  - '}  // namespace sqnbitgemm_spacemit_ime'
+  desc: 文件顶层代码，包含对 sqnbitgemm_spacemit_ime 命名空间的包裹、全局上下文和 dispatch 逻辑的声明，以及核心 gemm
+    入口函数的定义。
+  line: 3162-3340
+  name: __main__
+- code:
+  - template <bool HasZeroPoint>
+  - inline void SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen(...) {
+  - '    if (scalestride == 4) {'
+  - '        SQ4BitGemmM4Kernel_CompInt8_Impl<HasZeroPoint>(...);'
+  - '    } else if (scalestride == 2) {'
+  - '        SQ4BitGemmM4Kernel_CompInt8_ScaleFp16_Impl<HasZeroPoint>(...);'
+  - '    }'
+  - '}'
+  desc: M=4 路径的 dispatch 函数，根据标量步长（scalestride）选择 fp32 或 fp16 的底层实现。
+  line: 3162-3176
+  name: sqnbitgemm_spacemit_ime::SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen<HasZeroPoint>
+- code:
+  - template <bool HasZeroPoint>
+  - inline void SQ4BitGemmM1Kernel_CompInt8_DispatchOnBlkLen(...) {
+  - '    if (scalestride == 4) {'
+  - '        SQ4BitGemmM1Kernel_CompInt8_Impl<HasZeroPoint>(...);'
+  - '    } else if (scalestride == 2) {'
+  - '        SQ4BitGemmM1Kernel_CompInt8_ScaleFp16_Impl<HasZeroPoint>(...);'
+  - '    }'
+  - '}'
+  desc: M=1 路径的 dispatch 函数，根据标量步长（scalestride）选择 fp32 或 fp16 的底层实现。
+  line: 3178-3192
+  name: sqnbitgemm_spacemit_ime::SQ4BitGemmM1Kernel_CompInt8_DispatchOnBlkLen<HasZeroPoint>
+- code:
+  - size_t gemm_kernel_i8i4(size_t BlkLen, const std::byte * QuantA, ...) {
+  - '    GGML_UNUSED(CountM); GGML_UNUSED(CountK); GGML_UNUSED(ldc);'
+  - '    if (CountM >= 4) {'
+  - '        if (QuantBZeroPoint != nullptr) {'
+  - '            SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen<true>(...);'
+  - '        } else {'
+  - '            SQ4BitGemmM4Kernel_CompInt8_DispatchOnBlkLen<false>(...);'
+  - '        }'
+  - '        return 4;'
+  - '    } else {'
+  - '        if (QuantBZeroPoint != nullptr) {'
+  - '            SQ4BitGemmM1Kernel_CompInt8_DispatchOnBlkLen<true>(...);'
+  - '        } else {'
+  - '            SQ4BitGemmM1Kernel_CompInt8_DispatchOnBlkLen<false>(...);'
+  - '        }'
+  - '        return 1;'
+  - '    }'
+  - '}'
+  desc: 对外暴露的 GEMM 入口函数，根据 CountM 选择 M=4 或 M=1 的路径，并根据是否提供零点指针进行相应 dispatch，最终返回实际处理的
+    M 数。
+  line: 3194-3239
+  name: ime1::gemm_kernel_i8i4

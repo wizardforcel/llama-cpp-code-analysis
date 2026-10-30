@@ -1,0 +1,475 @@
+code_map:
+- src/models/llama.cpp
+- ├── template <bool embed>
+- '│   └── llm_build_llama<embed>::llm_build_llama()      # 1-180 行：基础 LLaMA，模板类支持
+  embed/lm 两种模式'
+- '│       ├── inp_attn = build_attn_inp_kv() / no_cache()  # 根据 embed 选择注意力输入'
+- │       ├── Q/K/V 投影 + reshape_3d + ggml_rope_ext()
+- '│       ├── hparams.use_kq_norm → ggml_rms_norm()        # Llama4 风格 Q/K L2 归一化'
+- '│       ├── ffn_gate_inp == nullptr ? build_ffn : build_moe_ffn'
+- │       └── if constexpr (!embed) → build_lora_mm(model.output) 计算 logits
+- '├── template struct llm_build_llama<false>;               # 显式实例化'
+- └── template struct llm_build_llama<true>;
+- ''
+- src/models/llama-iswa.cpp
+- '└── llm_build_llama_iswa::llm_build_llama_iswa()          # 1-180 行：ISWA 滑动窗口变体'
+- '    ├── inp_attn = build_attn_inp_kv_iswa()               # ISWA 注意力输入'
+- '    ├── get_rope_freq_base/scale(cparams, il)             # 按层动态调整 RoPE'
+- '    ├── use_rope = (il+1) % n_no_rope_layer_step != 0     # NoPE 步进'
+- '    ├── inp_attn_scale = build_inp_attn_scale()           # Llama4 温度调谐'
+- '    └── LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID              # Sigmoid 路由（非 SOFTMAX）'
+- ''
+- src/models/qwen.cpp
+- '└── llm_build_qwen::llm_build_qwen()                       # 1-110 行：QKV 打包视图拆分'
+- '    ├── build_lora_mm(wqkv, cur) + ggml_add(bqkv)'
+- '    └── ggml_view_3d 拆分 Q/K/V（offset = 0/1/2 * n_embd）'
+- ''
+- src/models/qwen2.cpp
+- '└── llm_build_qwen2::llm_build_qwen2()                     # 1-130 行：分离的 wq/wk/wv
+  + 可选 bq/bk/bv'
+- '    └── if (model.output_b != nullptr) → ggml_add() 给 lm_head 加偏置'
+- ''
+- src/models/qwen2moe.cpp
+- '└── llm_build_qwen2moe::llm_build_qwen2moe()               # 1-150 行：MoE + 双门控共享专家'
+- '    ├── ffn_gate_inp_shexp 做 sigmoid 门控（silu(x)/x）'
+- '    └── moe_out + ffn_shexp_out（共享专家）'
+- ''
+- src/models/qwen2vl.cpp
+- '└── llm_build_qwen2vl::llm_build_qwen2vl()                 # 1-110 行：多模态 M-RoPE'
+- '    └── ggml_rope_multi(..., sections, ...)               # 时间/高度/宽度 4 段'
+- ''
+- src/models/qwen3.cpp
+- '└── llm_build_qwen3::llm_build_qwen3()                     # 1-130 行：Q/K 归一化前置（RoPE
+  之前）'
+- '    ├── build_norm(Qcur, attn_q_norm) → RoPE'
+- '    └── build_norm(Kcur, attn_k_norm) → RoPE'
+- ''
+- src/models/qwen3moe.cpp
+- '└── llm_build_qwen3moe::llm_build_qwen3moe()               # 1-130 行：MoE + 专家权重缩放'
+- '    └── build_moe_ffn(..., ffn_*_exps_s 缩放张量)'
+- ''
+- src/models/qwen3vl.cpp
+- '└── llm_build_qwen3vl::llm_build_qwen3vl()                 # 1-150 行：DeepStack
+  多层视觉融合'
+- '    └── ggml_view_2d(t_inp_embd, n_embd, n_tokens, nb, (il+1)*n_embd*sizeof)'
+- ''
+- src/models/qwen3vl-moe.cpp
+- '└── llm_build_qwen3vlmoe::llm_build_qwen3vlmoe()           # 1-150 行：MoE + DeepStack'
+- '    └── Q/K 归一化 + ggml_rope_multi + DeepStack 注入'
+- ''
+- src/models/bailingmoe.cpp
+- '└── llm_build_bailingmoe::llm_build_bailingmoe()           # 1-130 行：标准 MoE + 共享专家'
+- '    ├── n_rot 作为 head 维做 reshape_3d'
+- '    └── build_moe_ffn + build_ffn(ffn_*_shexp)'
+- ''
+- src/models/bailingmoe2.cpp
+- '└── llm_build_bailingmoe2::llm_build_bailingmoe2()         # 1-180 行：QKV 打包 + Q/K
+  归一化'
+- '    ├── n_transformer_layers = n_layer - nextn_predict_layers  # 跳过 NextN 层'
+- '    ├── il < n_layer_dense_lead ? dense FFN : build_moe_ffn'
+- '    └── ffn_exp_probs_b 路由偏置'
+- ''
+- src/models/chatglm.cpp
+- '└── llm_build_chatglm::llm_build_chatglm()                 # 1-140 行：双模式 QKV'
+- '    ├── wqkv == nullptr ? reshape : view_3d'
+- '    └── LLM_FFN_SWIGLU + LLM_FFN_SEQ                     # SWIGLU 序列布局'
+- ''
+- src/models/glm4.cpp
+- '└── llm_build_glm4::llm_build_glm4()                       # 1-180 行：Post-Norm
+  + M-RoPE 二选一'
+- '    ├── use_mrope ? ggml_rope_multi : ggml_rope_ext'
+- '    ├── attn_post_norm / ffn_post_norm                     # 注意力后与 FFN 后的归一化'
+- '    └── ubatch.embd && !use_mrope → GGML_ABORT'
+- ''
+- src/models/glm4-moe.cpp
+- '└── llm_build_glm4_moe::llm_build_glm4_moe()               # 1-180 行：MoE + Q/K
+  归一化前置'
+- '    ├── n_transformer_layers = n_layer - nextn_predict_layers'
+- '    ├── il < n_layer_dense_lead ? dense FFN : build_moe_ffn'
+- '    └── if (attn_q_norm/k_norm) → build_norm()'
+- ''
+- src/models/baichuan.cpp
+- '└── llm_build_baichuan::llm_build_baichuan()               # 1-120 行：7B/13B 分支'
+- '    ├── inp_pos = (model.type == LLM_TYPE_7B) ? build_inp_pos() : nullptr'
+- '    └── switch (model.type): 7B 走 RoPE，13B 走 ALiBi（不调用 RoPE）'
+- ''
+- src/models/internlm2.cpp
+- '└── llm_build_internlm2::llm_build_internlm2()             # 1-130 行：标准 Pre-Norm
+  + lm_head 偏置'
+- '    └── wq/wk/wv 分离 + 可选 bq/bk/bv'
+- ''
+- src/models/hunyuan-dense.cpp
+- '└── llm_build_hunyuan_dense::llm_build_hunyuan_dense()     # 1-140 行：Q/K 归一化后置'
+- '    └── Q → RoPE, K → RoPE → build_norm(Kcur, attn_k_norm)'
+- ''
+- src/models/hunyuan-moe.cpp
+- '└── llm_build_hunyuan_moe::llm_build_hunyuan_moe()         # 1-140 行：稠密 + MoE 双轨
+  FFN'
+- '    ├── cur_mlp = build_ffn(ffn_*_shexp, ...)'
+- '    ├── cur_moe = build_moe_ffn(..., true /*norm_topk_prob*/, ...)'
+- '    └── ffn_out = ggml_add(cur_moe, cur_mlp)'
+- ''
+- src/models/mistral3.cpp
+- '└── llm_build_mistral3::llm_build_mistral3()               # 1-150 行：注意力温度缩放'
+- '    ├── if (f_attn_temp_scale != 0.0f) → inp_attn_scale = build_inp_attn_scale()'
+- '    ├── if (inp_attn_scale) → Qcur = ggml_mul(Qcur, inp_attn_scale)'
+- '    └── ffn_gate_inp == nullptr ? build_ffn : build_moe_ffn'
+- ''
+- src/models/arcee.cpp
+- '└── llm_build_arcee::llm_build_arcee()                     # 1-130 行：ReLU² 激活'
+- '    └── build_ffn(..., LLM_FFN_RELU_SQR, LLM_FFN_SEQ, ...) # 无 gate，gate 参数为 NULL'
+- ''
+- src/models/step35-iswa.cpp
+- '└── llm_build_step35_iswa::llm_build_step35_iswa()         # 1-180 行：ISWA + 头级注意力门控'
+- '    ├── n_head/n_head_kv 按层读取'
+- '    ├── is_swa = hparams.is_swa(il) → rope_factors = nullptr'
+- '    ├── n_rot_l = hparams.n_rot(il) 按层旋转维度'
+- '    ├── wqkv_gate 投影 → sigmoid → reshape_3d → ggml_mul 头级广播门控'
+- '    └── MoE 层：moe_out + sh_out（共享专家）'
+- ''
+- src/models/smallthinker.cpp
+- └── template <bool iswa>
+- '    └── llm_build_smallthinker<iswa>::llm_build_smallthinker() # 1-160 行：模板化 ISWA'
+- '        ├── if constexpr (iswa) ? build_attn_inp_kv_iswa : build_attn_inp_kv'
+- '        ├── probs = build_lora_mm(ffn_gate_inp, inpL)  # 预计算路由概率'
+- '        ├── use_rope = il % n_no_rope_layer_step != 0   # NoPE 步进'
+- '        └── build_moe_ffn(cur, nullptr, ..., probs)       # probs 作为最后一个参数传入'
+- '        template struct llm_build_smallthinker<false>;'
+- '        template struct llm_build_smallthinker<true>;'
+exercises:
+- contents:
+  - 阅读 `src/models/llama.cpp` 与 `src/models/qwen3.cpp`，回答以下问题：
+  - 1. Llama 在哪一步调用 `ggml_rms_norm`？是在 `ggml_rope_ext` 之前还是之后？
+  - 2. Qwen3 在哪一步调用 `build_norm`（RMSNorm）？时序与 Llama 有何差异？
+  - 3. 两者的判断条件分别是什么？Llama 用 `hparams.use_kq_norm`，Qwen3 用了哪些层张量？
+  - 4. 这两种顺序差异会对模型训练稳定性产生什么影响？请结合 Llama4TextL2Norm 的设计意图分析。
+  'no': 1
+  title: 对比 Qwen3 与基础 Llama 的 Q/K 归一化顺序
+- contents:
+  - 阅读 `src/models/bailingmoe2.cpp`，回答以下问题：
+  - 1. `n_transformer_layers` 与 `n_layer`、`hparams.nextn_predict_layers` 的关系是什么？为什么要跳过最后几层？
+  - 2. `il < hparams.n_layer_dense_lead` 这条分支中，稠密 FFN 与 MoE 各用了哪些张量（`ffn_up` / `ffn_up_exps`
+    等）？
+  - 3. `ffn_exp_probs_b` 在 `build_moe_ffn` 调用中扮演什么角色？它和 `LLAMA_EXPERT_GATING_FUNC_TYPE_*`
+    的关系是什么？
+  - 4. QKV 视图中 K 偏移 `1 * sizeof(float) * n_embd`、V 偏移 `1 * sizeof(float) * (n_embd
+    + n_embd_gqa)` 是如何保证 GQA 正确索引的？
+  'no': 2
+  title: 追踪 BailingMoe2 的稠密/MoE 切换路径
+- contents:
+  - 阅读 `src/models/llama-iswa.cpp` 与 `src/models/smallthinker.cpp`，回答以下问题：
+  - 1. 两者都用 ISWA 注意力输入，但实现方式不同：Llama-ISWA 直接调用 `build_attn_inp_kv_iswa()`，SmallThinker
+    用 `template <bool iswa>` 包装。两种风格各自的优劣是什么？
+  - 2. 两者的 `use_rope` 判定条件有何区别？Llama-ISWA 用 `(il+1) % n_no_rope_layer_step`，SmallThinker
+    用 `il % n_no_rope_layer_step`，为什么差一？
+  - 3. SmallThinker 在循环一开始就计算了 `probs = build_lora_mm(ffn_gate_inp, inpL)`，这个 `probs`
+    在 MoE 调用中如何被复用？
+  - 4. Llama-ISWA 使用 `LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID`，SmallThinker 使用 `static_cast<llama_expert_gating_func_type>(hparams.expert_gating_func)`，这两种写法分别表达什么意图？
+  'no': 3
+  title: 梳理 ISWA 与模板化 ISWA 的差异
+- contents:
+  - 阅读 `src/models/qwen3vl.cpp`，重点关注 DeepStack 注入逻辑，回答以下问题：
+  - 1. `res->t_inp_embd` 是什么张量？它的形状和作用是什么？
+  - 2. `ggml_view_2d(ctx0, res->t_inp_embd, n_embd, n_tokens, res->t_inp_embd->nb[1],
+    (il + 1) * n_embd * sizeof(float))` 这五个参数分别代表什么？为什么 offset 是 `(il + 1) * n_embd`？
+  - 3. `n_deepstack_layers` 是多少？融合发生在前几层还是所有层？
+  - 4. 与 Qwen3-VL-MoE 相比，DeepStack 注入的位置（attn 前 / FFN 后）是否一致？
+  'no': 4
+  title: 解析 DeepStack 多模态融合的张量视图
+- contents:
+  - 假设你希望把 `src/models/llama.cpp` 中的 `llm_build_llama` 改造为支持 ISWA：
+  - 1. 写出需要修改的代码片段（包括头部的注意力输入选择与循环内 `use_rope` 的判定）。
+  - 2. 需要新增哪些超参数？（提示：参考 `hparams.n_no_rope_layer_step`、`hparams.is_swa`）
+  - 3. 改造后是否需要修改 `models.h` 中的类声明？需要新增 `template struct llm_build_llama_iswa<false>;`
+    这种显式实例化吗？
+  - 4. 这种改造对显存占用与长上下文性能的影响是什么？请从 KV Cache 与 SWA 内存机制的角度分析。
+  'no': 5
+  title: 动手改造：把一个 LLaMA 变型模式改造为 ISWA
+learning_targets:
+- 理解 GGML 计算图构建中各算子的组织方式，掌握 llm_graph_context 子类如何将模型架构转换为 GGML 图节点
+- 掌握模板参数 `embed` 和 `iswa` 的编译期多态技巧，理解 `if constexpr` 如何生成两条独立实例化
+- 深入理解 QKV 视图（view_3d）拆分、RoPE 旋转位置编码的应用时序，以及 `use_kq_norm` 与 `rope_factors` 的协同
+- 掌握 MoE 路由专家与共享专家的混合策略，理解 `ffn_gate_inp == nullptr` 作为稠密/MoE 判定的工程意义
+- 理解 NoPE 步进、滑动窗口注意力（ISWA/SWA）、M-RoPE、Q/K 归一化前置等架构差异如何体现在构图选择上
+- 了解 `inp_out_ids`、`rope_factors`、`build_cvec`、`build_lora_mm` 等高层 API 在不同模型变体间的复用模式
+life_analogy:
+- 想象 GGML 的模型构建世界是一家「中央厨房」，每个模型文件都是一份菜谱：
+- '- **llm_build_*** 厨师团队 = 每个家族模型（如 llama、qwen、mistral）的专属厨师长，负责按菜谱组装一道道工序'
+- '- **build_norm** = 食材清洗员（RMSNorm / LayerNorm），把上一道工序的产出标准化'
+- '- **build_lora_mm** = 切配厨师，按照 `wq/wk/wv/up/gate/down` 等矩阵对食材（张量）做线性变换'
+- '- **ggml_reshape_3d** = 整形刀，把扁平的肉片重新切成 [头维度, 头数, token数] 的三维形状'
+- '- **ggml_view_3d** = 玻璃窗（零拷贝视图），不搬动食材，只贴标签，让不同厨师从不同角度看同一块肉'
+- '- **ggml_rope_ext / ggml_rope_multi** = 调料旋钮，按 token 位置给食材「加入时间风味」（位置编码）'
+- '- **build_attn** = 主厨的秘制炒锅（Flash Attention / 标准注意力），把 QKV 三种食材快速翻炒'
+- '- **build_ffn / build_moe_ffn** = 二级烹饪工序：稠密 FFN 是单人小炒，MoE 是多位厨师分工的「大锅炒」'
+- '- **build_cvec** = 风味修正师（控制向量），在菜品出锅前微调风味'
+- '- **inp_out_ids** = 出菜筛选器，只把最后几道菜（最后 token）呈给顾客'
+- '- **template <bool embed/iswa>** = 「双模菜谱」，同一份菜谱可以做出两种版本（语言模型 / 嵌入模型，普通 KV / ISWA）'
+- '- **if constexpr** = 厨房的「炒菜开关」，按下哪一档就启动哪条工序'
+- 就像每家餐厅都有专属厨师团队处理招牌菜，llama.cpp 也为每个模型家族安排了专属的 `llm_build_*` 构造函数，把架构差异转化为 GGML 计算图的统一语言。
+'no': 25
+summary:
+- concept: llm_build_llama 模板类
+  desc: 用 template <bool embed> 统一支持语言模型与嵌入模式，编译期通过 if constexpr 分支
+- concept: llm_build_llama_iswa
+  desc: 在基础 Llama 上叠加 ISWA 注意力输入、NoPE 步进与 Sigmoid 路由的 MoE
+- concept: llm_build_qwen/Qwen2VL
+  desc: Qwen 原版用 view_3d 拆分打包 QKV，Qwen2VL 用 ggml_rope_multi 注入 M-RoPE
+- concept: llm_build_qwen2 输出偏置
+  desc: 通过 if (model.output_b != nullptr) 在 lm_head 后可选加偏置
+- concept: llm_build_qwen2moe
+  desc: MoE 路由专家 + 共享专家 + 双门控（sigmoid(silu(x)/x)）
+- concept: llm_build_qwen3/Qwen3moe
+  desc: Q/K 归一化前置（RoPE 之前），MoE 版额外传入 ffn_*_exps_s 缩放张量
+- concept: llm_build_qwen3vl
+  desc: M-RoPE + 前 n_deepstack_layers 层用 ggml_view_2d 注入视觉特征
+- concept: llm_build_bailingmoe
+  desc: 标准 MoE + 共享专家，reshape 用 n_rot 而非 n_embd_head
+- concept: llm_build_bailingmoe2
+  desc: QKV 打包 + Q/K 归一化 + 稠密/MoE 分层（n_layer_dense_lead）
+- concept: llm_build_chatglm
+  desc: wqkv 双模（== nullptr 时 reshape，否则 view_3d）+ SWIGLU+SEQ 前馈
+- concept: llm_build_glm4
+  desc: Post-Norm（attn/ffn 后归一化）+ use_mrope 二选一 + ubatch.embd 校验
+- concept: llm_build_glm4_moe
+  desc: GLM4 Post-Norm + MoE + Q/K 归一化前置 + 稠密/MoE 分层
+- concept: llm_build_baichuan
+  desc: model.type==LLM_TYPE_7B 走 RoPE，13B 完全跳过 RoPE（ALiBi 风格）
+- concept: llm_build_internlm2
+  desc: 标准 Pre-Norm + 分离 wq/wk/wv + 可选 bq/bk/bv
+- concept: llm_build_hunyuan_dense
+  desc: Q/K 归一化后置（RoPE 之后）
+- concept: llm_build_hunyuan_moe
+  desc: cur_mlp = build_ffn + cur_moe = build_moe_ffn(norm_topk_prob=true) 双轨相加
+- concept: llm_build_mistral3
+  desc: f_attn_temp_scale≠0 时构造 inp_attn_scale，Qcur = ggml_mul(Qcur, inp_attn_scale)
+- concept: llm_build_arcee
+  desc: 无 gate 的 ReLU² 激活（gate 参数为 NULL）
+- concept: llm_build_step35_iswa
+  desc: 每层 n_head/n_rot + wqkv_gate 头级 sigmoid 门控 + ISWA
+- concept: llm_build_smallthinker
+  desc: template <bool iswa> + 预计算路由概率 probs 传入 build_moe_ffn 末尾
+units:
+- codes:
+  - file: src/models/llama.cpp
+    line: 1-180
+    method_or_func: llm_build_llama<embed>::llm_build_llama()
+  - file: src/models/llama.cpp
+    line: 1-180
+    method_or_func: __main__
+  name: Llama 主体架构 —— 模板类统一处理嵌入与语言模型两种模式
+  'no': 1
+  points:
+  - '**模板参数 `embed` 的双模式设计**：通过 `template <bool embed>` 让同一个 `llm_build_llama` 类同时支持纯语言模型（`embed=false`）与嵌入模式（`embed=true`），代码末尾
+    `template struct llm_build_llama<false>;` 与 `template struct llm_build_llama<true>;`
+    完成显式实例化'
+  - '**注意力输入的差异化选择**：根据 `embed` 决定是用 `llm_graph_input_attn_no_cache`（无 KV 缓存，适合编码任务）还是
+    `llm_graph_input_attn_kv`（标准自回归 KV 缓存），编译期通过 `if constexpr (embed)` 完成分支'
+  - '**Q/K/V 投影三件套**：依次用 `build_lora_mm` 加载 `wq/wk/wv` 权重并支持可选的 `bq/bk/bk` 偏置，然后 `ggml_reshape_3d`
+    切成 `[n_embd_head, n_head, n_tokens]` 形状'
+  - '**RoPE 旋转位置编码**：`ggml_rope_ext` 同时对 Q 和 K 应用旋转，`rope_factors` 来自 `model.get_rope_factors()`，LLaMA3
+    等长上下文模型会返回非空的 rope_scaling 因子'
+  - '**Llama4 风格的 Q/K L2 归一化**：当 `hparams.use_kq_norm` 时使用 `ggml_rms_norm` 对 RoPE
+    之后的 Q/K 重新归一化，这是从 Llama4 借鉴的稳定性技巧'
+  - '**FFN 的双分支路由**：通过 `ffn_gate_inp == nullptr` 判定该层是稠密 FFN 还是 MoE；稠密走 `build_ffn`（SILU
+    + PAR 布局），MoE 走 `build_moe_ffn`'
+  - '**MoE 专家权重缩放**：注意 `hparams.expert_weights_scale` 与 `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX`
+    两个参数共同控制 MoE 行为'
+  - '**输出层与 lm_head**：标准 RMSNorm + `build_lora_mm` 投影到词表；只有 `!embed` 模式下才计算 logits（嵌入模式只输出隐藏层表示）'
+  - '**`inp_out_ids` 的最后层剪枝**：当批次中只有最后几个 token 需要输出时，用 `ggml_get_rows` 一次性挑出这些位置以节省后续计算'
+- codes:
+  - file: src/models/llama-iswa.cpp
+    line: 1-180
+    method_or_func: llm_build_llama_iswa::llm_build_llama_iswa()
+  name: Llama-ISWA —— 滑动窗口变体如何兼顾频率缩放与专家路由
+  'no': 2
+  points:
+  - '**ISWA 注意力输入**：使用 `build_attn_inp_kv_iswa()` 而非普通 `kv` 版本，这是支持"间歇式滑动窗口注意力"（Intermittent
+    Sliding Window Attention）的关键'
+  - '**每层 RoPE 频率与缩放**：通过 `model.get_rope_freq_base(cparams, il)` 与 `model.get_rope_freq_scale(cparams,
+    il)` 按层获取频率参数，这与基础版 Llama 的全模型共享频率形成对比'
+  - '**温度调谐（Temperature Tuning）**：`inp_attn_scale = build_inp_attn_scale()` 作为可选输入，对未应用
+    RoPE 的层使用 `ggml_mul(Qcur, inp_attn_scale)` 进行注意力温度调节'
+  - '**RoPE 的条件启用**：`use_rope = (il+1) % hparams.n_no_rope_layer_step != 0`，通过 `n_no_rope_layer_step`
+    让某些层跳过 RoPE，这与 NoPE（No Position Embedding）论文思想一致'
+  - '**K 归一化的条件触发**：只有 `use_rope && hparams.use_kq_norm` 同时成立才进行 K 的 RMSNorm，避免对非
+    RoPE 层做不必要的归一化'
+  - '**共享专家网络**：MoE 分支单独构建 `ffn_shexp` 通过 `build_ffn` 走普通 SILU+PAR 路径，并与 `moe_out`
+    相加形成 `ffn_moe_out_merged`'
+  - '**Sigmoid 门控函数**：注意 ISWA 版本使用 `LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID` 而非 SOFTMAX，这与
+    DeepSeek-V2/V3 的 sigmoid 路由保持一致'
+  - '**最后一层裁剪与残差**：保留与基础 Llama 相同的 `ggml_get_rows` 最后层剪枝和 `ggml_add` 残差连接模式'
+- codes:
+  - file: src/models/qwen.cpp
+    line: 1-110
+    method_or_func: llm_build_qwen::llm_build_qwen()
+  - file: src/models/qwen2.cpp
+    line: 1-130
+    method_or_func: llm_build_qwen2::llm_build_qwen2()
+  - file: src/models/qwen2moe.cpp
+    line: 1-150
+    method_or_func: llm_build_qwen2moe::llm_build_qwen2moe()
+  - file: src/models/qwen2vl.cpp
+    line: 1-110
+    method_or_func: llm_build_qwen2vl::llm_build_qwen2vl()
+  - file: src/models/qwen3.cpp
+    line: 1-130
+    method_or_func: llm_build_qwen3::llm_build_qwen3()
+  - file: src/models/qwen3moe.cpp
+    line: 1-130
+    method_or_func: llm_build_qwen3moe::llm_build_qwen3moe()
+  - file: src/models/qwen3vl.cpp
+    line: 1-150
+    method_or_func: llm_build_qwen3vl::llm_build_qwen3vl()
+  - file: src/models/qwen3vl-moe.cpp
+    line: 1-150
+    method_or_func: llm_build_qwen3vlmoe::llm_build_qwen3vlmoe()
+  name: Qwen 家族全家桶 —— 从原始 Qwen 到 Qwen3-VL 的演进图谱
+  'no': 3
+  points:
+  - '**Qwen 原始版：QKV 打包视图**：通过 `ggml_view_3d` 把单一 `wqkv` 张量拆成 Q/K/V 三个 3D 视图（偏移分别为
+    `0*n_embd`、`1*n_embd`、`2*n_embd`），避免复制权重'
+  - '**Qwen2 拆 QKV**：使用独立的 `wq/wk/wv` 矩阵分别做 LoRA 矩阵乘，再 reshape 为 `[n_embd_head, n_head,
+    n_tokens]`，并在 lm_head 后可选加 `output_b` 偏置'
+  - '**Qwen2MoE 的双门控共享专家**：先用 `ffn_gate_inp_shexp` 做 sigmoid 门控（`silu(x)/x`），再与 `ffn_shexp`
+    的输出相乘，最后与 MoE 路由专家结果相加'
+  - '**Qwen2-VL 的多模态 RoPE**：`ggml_rope_multi` 配合 `sections[4]` 数组实现 M-RoPE（Multimodal
+    Rotary Position Embedding），分别对时间/高度/宽度维度编码'
+  - '**Qwen3 的 Q/K 归一化前置**：`build_norm(Qcur, attn_q_norm, ...)` 在 RoPE **之前**对 Q/K
+    做 RMSNorm，这与 Qwen2 在 RoPE 之后才归一化形成对比'
+  - '**Qwen3MoE 的专家权重缩放**：使用 `expert_weights_scale` 与 `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX`，并显式传入
+    `ffn_*_exps_s` 缩放张量'
+  - '**Qwen3-VL 的 DeepStack 融合**：每层在 `cur` 上加 `res->t_inp_embd` 的 `(il+1)*n_embd`
+    偏移切片（`ggml_view_2d`），实现多模态视觉特征的逐层注入'
+  - '**Qwen3-VL-MoE 的差异**：与普通 Qwen3MoE 类似但额外支持 DeepStack 注入，attention 路径沿用 Qwen3 的
+    Q/K 归一化前置模式'
+- codes:
+  - file: src/models/bailingmoe.cpp
+    line: 1-130
+    method_or_func: llm_build_bailingmoe::llm_build_bailingmoe()
+  - file: src/models/bailingmoe2.cpp
+    line: 1-180
+    method_or_func: llm_build_bailingmoe2::llm_build_bailingmoe2()
+  name: BailingMoe 与 BailingMoe2 —— 稀疏专家的"标准化模板"
+  'no': 4
+  points:
+  - '**BailingMoe 的基础 MoE 结构**：标准自注意 + `build_moe_ffn` + 共享专家 `ffn_shexp` 三件套，路由使用
+    `expert_weights_norm` 控制归一化；注意 reshape 时使用 `n_rot` 而非 `n_embd_head` 作为头维度'
+  - '**BailingMoe2 的 QKV 打包 + Q/K 归一化**：先 `build_lora_mm(wqkv)` 一次得到拼接张量，再用 `ggml_view_3d`
+    拆分（K 偏移 `1*n_embd`，V 偏移 `1*(n_embd+n_embd_gqa)`），随后对 Q/K 做 `build_norm` 归一化'
+  - '**稠密/MoE 混合层**：通过 `il < hparams.n_layer_dense_lead` 决定该层是稠密 FFN 还是 MoE，前几层可以保留为稠密以稳定训练'
+  - '**专家偏置项 `ffn_exp_probs_b`**：BailingMoe2 在 MoE 路由中传入 `ffn_exp_probs_b`，这是某些 MoE
+    实现会给路由 logit 加偏置的工程细节'
+  - '**NextN 预测层的跳过**：通过 `n_transformer_layers = n_layer - hparams.nextn_predict_layers`
+    跳过最后一层（专门用于 multi-token prediction 的层）'
+  - '**两种 MoE 门控函数**：BailingMoe2 用 `static_cast<llama_expert_gating_func_type>(hparams.expert_gating_func)`
+    支持多种门控（softmax/sigmoid）'
+- codes:
+  - file: src/models/chatglm.cpp
+    line: 1-140
+    method_or_func: llm_build_chatglm::llm_build_chatglm()
+  - file: src/models/glm4.cpp
+    line: 1-180
+    method_or_func: llm_build_glm4::llm_build_glm4()
+  - file: src/models/glm4-moe.cpp
+    line: 1-180
+    method_or_func: llm_build_glm4_moe::llm_build_glm4_moe()
+  name: GLM/ChatGLM 系列 —— 清华系的分组注意与 M-RoPE 演进
+  'no': 5
+  points:
+  - '**ChatGLM 的双模式 QKV**：通过 `wqkv == nullptr` 区分是分离的 `wq/wk/wv` 还是合并的 `wqkv`，前者 reshape、后者
+    view_3d'
+  - '**GQA 分组注意力的偏移计算**：V 视图的偏移是 `1*sizeof(float)*(n_embd + n_embd_gqa)`，这是为了在 K/V
+    头数少于 Q 头时正确索引共享的 K/V 张量'
+  - '**GLM4 的 Post-Norm 改造**：在注意力之后与 FFN 之后各加一次 `attn_post_norm` / `ffn_post_norm`
+    的 RMSNorm，这与 Pre-Norm 经典 LLaMA 形成对比'
+  - '**GLM4 的 M-RoPE 选择**：根据 `hparams.use_mrope()` 在 `ggml_rope_multi` 与 `ggml_rope_ext`
+    间二选一，多模态走 multi、纯文本走 ext'
+  - '**GLM4-MoE 的 Q/K 归一化前置**：在 RoPE 之前用 `build_norm` 做 RMSNorm，与 Qwen3 的做法一致'
+  - '**GLM4-MoE 的稠密/MoE 切换**：`n_layer_dense_lead` 决定前几层是稠密 FFN，其余层用 `build_moe_ffn`
+    走 MoE'
+  - '**GLM4-MoE 的路由专家偏置**：传入 `ffn_exp_probs_b` 与 `expert_weights_norm`/`expert_weights_scale`
+    实现精细化路由'
+  - '**SWIGLU 序列式布局**：ChatGLM 与 GLM4 都用 `LLM_FFN_SWIGLU` + `LLM_FFN_SEQ` 而非 PAR，这意味着
+    gate 与 up 在同一张量内连续排列'
+- codes:
+  - file: src/models/baichuan.cpp
+    line: 1-120
+    method_or_func: llm_build_baichuan::llm_build_baichuan()
+  - file: src/models/internlm2.cpp
+    line: 1-130
+    method_or_func: llm_build_internlm2::llm_build_internlm2()
+  name: Baichuan 与 InternLM2 —— 中文 LLM 的两套实现思路
+  'no': 6
+  points:
+  - '**Baichuan 的 7B/13B 分支**：通过 `model.type == LLM_TYPE_7B` 决定是否构建 `inp_pos` 与是否调用
+    `ggml_rope_ext`，13B 完全没有 RoPE（ALiBi 风格）'
+  - '**Baichuan 的 GQA 缺失**：Q 用 `n_head` 个头，K/V 用 `n_head_kv` 个头但本模型一般两者相等'
+  - '**InternLM2 的标准 Pre-Norm**：与基础 Llama 几乎一致，使用 `wq/wk/wv` 分别投影，Q/K/V 都走 `ggml_add`
+    偏置'
+  - '**InternLM2 的 lm_head 偏置**：注意 `if (model.output_b != nullptr)` 才会给 lm_head 加偏置，这是
+    InternLM2 特有的设计'
+- codes:
+  - file: src/models/hunyuan-dense.cpp
+    line: 1-140
+    method_or_func: llm_build_hunyuan_dense::llm_build_hunyuan_dense()
+  - file: src/models/hunyuan-moe.cpp
+    line: 1-140
+    method_or_func: llm_build_hunyuan_moe::llm_build_hunyuan_moe()
+  name: Hunyuan 混元 —— 稠密与 MoE 双线并行
+  'no': 7
+  points:
+  - '**稠密版本的 Q/K 归一化顺序**：RoPE 之后才用 `build_norm(Kcur, attn_k_norm, ...)` 做 RMSNorm，这点和
+    Qwen3（RoPE 之前）相反'
+  - '**稠密版的标准 SwiGLU FFN**：用 `LLM_FFN_SILU` + `LLM_FFN_PAR` 走标准路径'
+  - '**MoE 版本的双轨 FFN**：先调用 `build_ffn(cur, ffn_*_shexp, ...)` 走稠密路径得到 `cur_mlp`，再调用
+    `build_moe_ffn(cur, ...)` 走路由专家得到 `cur_moe`，最后 `ggml_add` 相加'
+  - '**混元 MoE 的 `norm_topk_prob=true`**：注意 `build_moe_ffn` 第三个布尔参数为 `true`，表示对 top-k
+    概率做归一化'
+  - '**混元的 RoPE 频率因子**：`model.get_rope_factors(cparams, il)` 用于按层动态调整 RoPE 频率，这是 YaRN
+    等长上下文扩展技术的实现入口'
+- codes:
+  - file: src/models/mistral3.cpp
+    line: 1-150
+    method_or_func: llm_build_mistral3::llm_build_mistral3()
+  - file: src/models/arcee.cpp
+    line: 1-130
+    method_or_func: llm_build_arcee::llm_build_arcee()
+  name: Mistral3 与 Arcee —— 欧洲系的两个工程实验
+  'no': 8
+  points:
+  - '**Mistral3 的注意力温度缩放**：当 `hparams.f_attn_temp_scale != 0.0f` 时构造 `inp_attn_scale`，在
+    RoPE 之后用 `ggml_mul(Qcur, inp_attn_scale)` 缩放（Llama4 风格）'
+  - '**Mistral3 的双分支 FFN/MoE**：标准稠密走 SILU+PAR，MoE 走 `expert_weights_scale` + SOFTMAX
+    门控'
+  - '**Mistral3 的 kq_scale 自适应**：`hparams.f_attention_scale == 0.0f` 时使用经典的 `1/sqrt(n_embd_head)`，否则用自定义缩放因子'
+  - '**Arcee 的 ReLU² 激活**：用 `LLM_FFN_RELU_SQR` + `LLM_FFN_SEQ` 走 ReLU-squared 激活（无门控），这与主流
+    SwiGLU 形成对比'
+  - '**Arcee 的无 gate FFN**：注意 `build_ffn` 的第二个参数（gate 矩阵）为 `NULL`，这正是 ReLU² 不需要门控的体现'
+- codes:
+  - file: src/models/step35-iswa.cpp
+    line: 1-180
+    method_or_func: llm_build_step35_iswa::llm_build_step35_iswa()
+  - file: src/models/smallthinker.cpp
+    line: 1-160
+    method_or_func: llm_build_smallthinker<iswa>::llm_build_smallthinker()
+  name: Step35-ISWA 与 SmallThinker —— ISWA 的两种工程化模式
+  'no': 9
+  points:
+  - '**Step35 的每层 n_head 与频率**：通过 `hparams.n_head(il)` 与 `hparams.n_head_kv(il)` 按层读取
+    GQA 配置，`get_rope_freq_base/scale` 同样按层动态调整'
+  - '**Step35 的 SWA 标志判定**：`is_swa = hparams.is_swa(il)` 用于决定 SWA 层不传 rope_factors（避免冗余计算）'
+  - '**Step35 的每层旋转维度**：`n_rot_l = hparams.n_rot(il)` 按层设置部分 RoPE 的旋转维度'
+  - '**Step35 的 Q/K RMSNorm**：RoPE 之后用 `build_norm` 做 RMSNorm（attn_q_norm/attn_k_norm），与
+    Qwen3 的前置形成对比'
+  - '**Step35 的头级注意力门控**：`wqkv_gate` 投影得到 `[n_head_l, n_tokens]` 的门控，sigmoid 后 reshape
+    为 `[1, n_head_l, n_tokens]` 与注意力输出 `[n_embd_head_v, n_head_l, n_tokens]` 做逐头广播相乘'
+  - '**Step35 的 MoE + 共享专家双轨**：MoE 路由专家通过 `build_moe_ffn`（带 `expert_weights_norm/scale/gating_func`），共享专家通过
+    `build_ffn`（SILU+PAR）'
+  - '**SmallThinker 的模板化 ISWA**：用 `template <bool iswa>` 让同一类支持普通 KV 与 ISWA 两种内存布局，编译期通过
+    `iswa` 选择 `build_attn_inp_kv_iswa()` 或 `build_attn_inp_kv()`'
+  - '**SmallThinker 的 NoPE 步进**：`use_rope = il % n_no_rope_layer_step != 0` 让特定层跳过
+    RoPE'
+  - '**SmallThinker 的预计算路由概率**：`probs = build_lora_mm(ffn_gate_inp, inpL)` 在进入 FFN
+    之前就计算好路由概率，并传入 `build_moe_ffn(cur, nullptr, ..., probs)` 的最后一个参数'
+  - '**SmallThinker 的 RELU 激活**：用 `LLM_FFN_RELU` 而非主流的 SwiGLU，这是该模型为追求低算力的选择'

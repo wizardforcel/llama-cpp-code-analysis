@@ -1,0 +1,1750 @@
+classes:
+- desc: 采样器结构体，包含接口指针iface和上下文数据ctx，通过函数指针表实现采样、接受、重置、克隆等操作
+  methods:
+  - code:
+    - LLAMA_API bool llama_set_sampler(struct llama_context * ctx, llama_seq_id seq_id,
+      struct llama_sampler * smpl);
+    desc: 将采样器附加到特定序列的上下文上
+    line: 929-931
+    name: llama_set_sampler
+  - code:
+    - LLAMA_API struct llama_sampler * llama_sampler_init(struct llama_sampler_i *
+      iface, llama_sampler_context_t ctx);
+    desc: 初始化一个采样器实例，传入接口表和上下文数据
+    line: 933-934
+    name: llama_sampler_init
+  - code:
+    - LLAMA_API const char * llama_sampler_name(const struct llama_sampler * smpl);
+    desc: 获取采样器的名称
+    line: 935-936
+    name: llama_sampler_name
+  - code:
+    - LLAMA_API void llama_sampler_accept(struct llama_sampler * smpl, llama_token
+      token);
+    desc: 让采样器接受选中的token，用于更新采样器状态
+    line: 937-938
+    name: llama_sampler_accept
+  - code:
+    - LLAMA_API void llama_sampler_apply(struct llama_sampler * smpl, llama_token_data_array
+      * cur_p);
+    desc: 对候选token数组执行采样操作
+    line: 939-940
+    name: llama_sampler_apply
+  - code:
+    - LLAMA_API void llama_sampler_reset(struct llama_sampler * smpl);
+    desc: 重置采样器的内部状态
+    line: 941-942
+    name: llama_sampler_reset
+  - code:
+    - LLAMA_API struct llama_sampler * llama_sampler_clone(const struct llama_sampler
+      * smpl);
+    desc: 克隆采样器实例
+    line: 943-944
+    name: llama_sampler_clone
+  - code:
+    - LLAMA_API void llama_sampler_free(struct llama_sampler * smpl);
+    desc: 释放采样器资源
+    line: 945-947
+    name: llama_sampler_free
+  - code:
+    - LLAMA_API struct llama_sampler * llama_sampler_chain_init(struct llama_sampler_chain_params
+      params);
+    desc: 初始化采样器链
+    line: 950-951
+    name: llama_sampler_chain_init
+  - code:
+    - LLAMA_API void llama_sampler_chain_add(struct llama_sampler * chain, struct
+      llama_sampler * smpl);
+    desc: 向采样器链中添加采样器
+    line: 953-954
+    name: llama_sampler_chain_add
+  - code:
+    - LLAMA_API struct llama_sampler * llama_sampler_chain_get(struct llama_sampler
+      * chain, int32_t i);
+    desc: 获取采样器链中指定索引的采样器
+    line: 956-961
+    name: llama_sampler_chain_get
+  - code:
+    - LLAMA_API int llama_sampler_chain_n(const struct llama_sampler * chain);
+    desc: 获取采样器链中采样器的总数
+    line: 963-964
+    name: llama_sampler_chain_n
+  - code:
+    - LLAMA_API struct llama_sampler * llama_sampler_chain_remove(struct llama_sampler
+      * chain, int32_t i);
+    desc: 从采样器链中移除指定索引的采样器
+    line: 966-968
+    name: llama_sampler_chain_remove
+  name: llama_sampler
+- desc: 用于存储上下文处理性能数据的结构体，包括加载、处理提示词和生成 token 的时间及数量。
+  methods: []
+  name: llama_perf_context_data
+- desc: 用于存储采样器性能数据的结构体，包括采样时间和采样 token 数量。
+  methods: []
+  name: llama_perf_sampler_data
+- desc: 用于配置模型训练优化器参数的结构体，包含上下文大小、参数过滤器以及优化器配置。
+  methods: []
+  name: llama_opt_params
+desc: 该文件是llama.cpp库的核心公共C接口头文件，定义了llama.cpp的完整API，包括模型加载/保存、上下文管理、推理推理、tokenizer、采样、LoRA适配器等功能，涵盖所有必要的常量、枚举、结构体定义以及函数声明。此头文件是使用llama.cpp进行本地大语言模型推理的开发者需要总览了解的核心接口入口。该头文件是llama.cpp推理引擎的核心C
+  API接口定义，定义了模型加载、上下文管理、分词、解码、采样、KV缓存控制、状态保存恢复等完整功能的函数接口，同时包含llama_sampler结构及其接口定义，用于实现自定义采样器功能。该文件是
+  llama.cpp 项目的公共 API 头文件 (llama.h)，定义了 Llama 模型的上下文、模型、采样器、分词器等的初始化、配置、推理、采样、训练等核心功能的接口。它是外部应用与
+  llama.cpp 库交互的主要入口。
+file: include/llama.h
+funcs:
+- code:
+  - '#ifndef LLAMA_H'
+  - '#define LLAMA_H'
+  - ''
+  - '#include "ggml.h"'
+  - '#include "ggml-cpu.h"'
+  - '#include "ggml-backend.h"'
+  - '#include "ggml-opt.h"'
+  - '#include "gguf.h"'
+  - ''
+  - '#include <stddef.h>'
+  - '#include <stdint.h>'
+  - '#include <stdio.h>'
+  - '#include <stdbool.h>'
+  - ''
+  - '#ifdef LLAMA_SHARED'
+  - '#    if defined(_WIN32) && !defined(__MINGW32__)'
+  - '#        ifdef LLAMA_BUILD'
+  - '#            define LLAMA_API __declspec(dllexport)'
+  - '#        else'
+  - '#            define LLAMA_API __declspec(dllimport)'
+  - '#        endif'
+  - '#    else'
+  - '#        define LLAMA_API __attribute__ ((visibility ("default")))'
+  - '#    endif'
+  - '#else'
+  - '#    define LLAMA_API'
+  - '#endif'
+  - ''
+  - '#ifdef __GNUC__'
+  - '#    define DEPRECATED(func, hint) func __attribute__((deprecated(hint)))'
+  - '#elif defined(_MSC_VER)'
+  - '#    define DEPRECATED(func, hint) __declspec(deprecated(hint)) func'
+  - '#else'
+  - '#    define DEPRECATED(func, hint) func'
+  - '#endif'
+  - ''
+  - '#define LLAMA_DEFAULT_SEED 0xFFFFFFFF'
+  - ''
+  - '#define LLAMA_TOKEN_NULL -1'
+  - ''
+  - '#define LLAMA_FILE_MAGIC_GGLA 0x67676c61u // ''ggla'''
+  - '#define LLAMA_FILE_MAGIC_GGSN 0x6767736eu // ''ggsn'''
+  - '#define LLAMA_FILE_MAGIC_GGSQ 0x67677371u // ''ggsq'''
+  - ''
+  - '#define LLAMA_SESSION_MAGIC   LLAMA_FILE_MAGIC_GGSN'
+  - '#define LLAMA_SESSION_VERSION 9'
+  - ''
+  - '#define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ'
+  - '#define LLAMA_STATE_SEQ_VERSION 2'
+  - ''
+  - '#ifdef __cplusplus'
+  - extern "C" {
+  - '#endif'
+  - ''
+  - '    //'
+  - '    // C interface'
+  - '    //'
+  - '    // TODO: show sample usage'
+  - '    //'
+  - ''
+  - '    struct llama_vocab;'
+  - '    struct llama_model;'
+  - '    struct llama_context;'
+  - '    struct llama_sampler;'
+  - ''
+  - '    typedef struct llama_memory_i * llama_memory_t;'
+  - ''
+  - '    typedef int32_t llama_pos;'
+  - '    typedef int32_t llama_token;'
+  - '    typedef int32_t llama_seq_id;'
+  - ''
+  - '    enum llama_vocab_type {'
+  - '        LLAMA_VOCAB_TYPE_NONE   = 0, // For models without vocab'
+  - '        LLAMA_VOCAB_TYPE_SPM    = 1, // LLaMA tokenizer based on byte-level BPE
+    with byte fallback'
+  - '        LLAMA_VOCAB_TYPE_BPE    = 2, // GPT-2 tokenizer based on byte-level BPE'
+  - '        LLAMA_VOCAB_TYPE_WPM    = 3, // BERT tokenizer based on WordPiece'
+  - '        LLAMA_VOCAB_TYPE_UGM    = 4, // T5 tokenizer based on Unigram'
+  - '        LLAMA_VOCAB_TYPE_RWKV   = 5, // RWKV tokenizer based on greedy tokenization'
+  - '        LLAMA_VOCAB_TYPE_PLAMO2 = 6, // PLaMo-2 tokenizer based on Aho-Corasick
+    with dynamic programming'
+  - '    };'
+  - ''
+  - '    enum llama_rope_type {'
+  - '        LLAMA_ROPE_TYPE_NONE   = -1,'
+  - '        LLAMA_ROPE_TYPE_NORM   = 0,'
+  - '        LLAMA_ROPE_TYPE_NEOX   = GGML_ROPE_TYPE_NEOX,'
+  - '        LLAMA_ROPE_TYPE_MROPE  = GGML_ROPE_TYPE_MROPE,'
+  - '        LLAMA_ROPE_TYPE_IMROPE = GGML_ROPE_TYPE_IMROPE,'
+  - '        LLAMA_ROPE_TYPE_VISION = GGML_ROPE_TYPE_VISION,'
+  - '    };'
+  - ''
+  - '    enum llama_token_type { //TODO: remove, required until per token attributes
+    are available from GGUF file'
+  - '        LLAMA_TOKEN_TYPE_UNDEFINED    = 0,'
+  - '        LLAMA_TOKEN_TYPE_NORMAL       = 1,'
+  - '        LLAMA_TOKEN_TYPE_UNKNOWN      = 2,'
+  - '        LLAMA_TOKEN_TYPE_CONTROL      = 3,'
+  - '        LLAMA_TOKEN_TYPE_USER_DEFINED = 4,'
+  - '        LLAMA_TOKEN_TYPE_UNUSED       = 5,'
+  - '        LLAMA_TOKEN_TYPE_BYTE         = 6,'
+  - '    };'
+  - ''
+  - '    enum llama_token_attr {'
+  - '        LLAMA_TOKEN_ATTR_UNDEFINED    = 0,'
+  - '        LLAMA_TOKEN_ATTR_UNKNOWN      = 1 << 0,'
+  - '        LLAMA_TOKEN_ATTR_UNUSED       = 1 << 1,'
+  - '        LLAMA_TOKEN_ATTR_NORMAL       = 1 << 2,'
+  - '        LLAMA_TOKEN_ATTR_CONTROL      = 1 << 3,  // SPECIAL?'
+  - '        LLAMA_TOKEN_ATTR_USER_DEFINED = 1 << 4,'
+  - '        LLAMA_TOKEN_ATTR_BYTE         = 1 << 5,'
+  - '        LLAMA_TOKEN_ATTR_NORMALIZED   = 1 << 6,'
+  - '        LLAMA_TOKEN_ATTR_LSTRIP       = 1 << 7,'
+  - '        LLAMA_TOKEN_ATTR_RSTRIP       = 1 << 8,'
+  - '        LLAMA_TOKEN_ATTR_SINGLE_WORD  = 1 << 9,'
+  - '    };'
+  - ''
+  - '    // model file types'
+  - '    enum llama_ftype {'
+  - '        LLAMA_FTYPE_ALL_F32              = 0,'
+  - '        LLAMA_FTYPE_MOSTLY_F16           = 1,  // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q4_0          = 2,  // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q4_1          = 3,  // except 1d tensors'
+  - '        // LLAMA_FTYPE_MOSTLY_Q4_1_SOME_F16 = 4,  // tok_embeddings.weight and
+    output.weight are F16'
+  - '        // LLAMA_FTYPE_MOSTLY_Q4_2       = 5,  // support has been removed'
+  - '        // LLAMA_FTYPE_MOSTLY_Q4_3       = 6,  // support has been removed'
+  - '        LLAMA_FTYPE_MOSTLY_Q8_0          = 7,  // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q5_0          = 8,  // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q5_1          = 9,  // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q2_K          = 10, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q3_K_S        = 11, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q3_K_M        = 12, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q3_K_L        = 13, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q4_K_S        = 14, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q4_K_M        = 15, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q5_K_S        = 16, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q5_K_M        = 17, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q6_K          = 18, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ2_XXS       = 19, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ2_XS        = 20, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q2_K_S        = 21, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ3_XS        = 22, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ3_XXS       = 23, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ1_S         = 24, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ4_NL        = 25, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ3_S         = 26, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ3_M         = 27, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ2_S         = 28, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ2_M         = 29, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ4_XS        = 30, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_IQ1_M         = 31, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_BF16          = 32, // except 1d tensors'
+  - '        //LLAMA_FTYPE_MOSTLY_Q4_0_4_4      = 33, // removed from gguf files,
+    use Q4_0 and runtime repack'
+  - '        //LLAMA_FTYPE_MOSTLY_Q4_0_4_8      = 34, // removed from gguf files,
+    use Q4_0 and runtime repack'
+  - '        //LLAMA_FTYPE_MOSTLY_Q4_0_8_8      = 35, // removed from gguf files,
+    use Q4_0 and runtime repack'
+  - '        LLAMA_FTYPE_MOSTLY_TQ1_0         = 36, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_TQ2_0         = 37, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors'
+  - '        LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors'
+  - ''
+  - '        LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file'
+  - '    };'
+  - ''
+  - '    enum llama_rope_scaling_type {'
+  - '        LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED = -1,'
+  - '        LLAMA_ROPE_SCALING_TYPE_NONE        = 0,'
+  - '        LLAMA_ROPE_SCALING_TYPE_LINEAR      = 1,'
+  - '        LLAMA_ROPE_SCALING_TYPE_YARN        = 2,'
+  - '        LLAMA_ROPE_SCALING_TYPE_LONGROPE    = 3,'
+  - '        LLAMA_ROPE_SCALING_TYPE_MAX_VALUE   = LLAMA_ROPE_SCALING_TYPE_LONGROPE,'
+  - '    };'
+  - ''
+  - '    enum llama_pooling_type {'
+  - '        LLAMA_POOLING_TYPE_UNSPECIFIED = -1,'
+  - '        LLAMA_POOLING_TYPE_NONE = 0,'
+  - '        LLAMA_POOLING_TYPE_MEAN = 1,'
+  - '        LLAMA_POOLING_TYPE_CLS  = 2,'
+  - '        LLAMA_POOLING_TYPE_LAST = 3,'
+  - '        LLAMA_POOLING_TYPE_RANK = 4, // used by reranking models to attach the
+    classification head to the graph'
+  - '    };'
+  - ''
+  - '    enum llama_attention_type {'
+  - '        LLAMA_ATTENTION_TYPE_UNSPECIFIED = -1,'
+  - '        LLAMA_ATTENTION_TYPE_CAUSAL      = 0,'
+  - '        LLAMA_ATTENTION_TYPE_NON_CAUSAL  = 1,'
+  - '    };'
+  - ''
+  - '    enum llama_flash_attn_type {'
+  - '        LLAMA_FLASH_ATTN_TYPE_AUTO     = -1,'
+  - '        LLAMA_FLASH_ATTN_TYPE_DISABLED = 0,'
+  - '        LLAMA_FLASH_ATTN_TYPE_ENABLED  = 1,'
+  - '    };'
+  - ''
+  - '    LLAMA_API const char * llama_flash_attn_type_name(enum llama_flash_attn_type
+    flash_attn_type);'
+  - ''
+  - '    enum llama_split_mode {'
+  - '        LLAMA_SPLIT_MODE_NONE  = 0, // single GPU'
+  - '        LLAMA_SPLIT_MODE_LAYER = 1, // split layers and KV across GPUs'
+  - '        LLAMA_SPLIT_MODE_ROW   = 2, // split layers and KV across GPUs, use tensor
+    parallelism if supported'
+  - '    };'
+  - ''
+  - '    // TODO: simplify (https://github.com/ggml-org/llama.cpp/pull/9294#pullrequestreview-2286561979)'
+  - '    typedef struct llama_token_data {'
+  - '        llama_token id; // token id'
+  - '        float logit;    // log-odds of the token'
+  - '        float p;        // probability of the token'
+  - '    } llama_token_data;'
+  - ''
+  - '    typedef struct llama_token_data_array {'
+  - '        // TODO: consider SoA'
+  - '        // NOTE: this pointer can be modified by the samplers'
+  - '        llama_token_data * data;'
+  - '        size_t size;'
+  - '        int64_t selected; // this is the index in the data array (i.e. not the
+    token id)'
+  - '        bool sorted;      // note: do not assume the data is sorted - always
+    check this flag'
+  - '    } llama_token_data_array;'
+  - ''
+  - '    typedef bool (*llama_progress_callback)(float progress, void * user_data);'
+  - ''
+  - '    // Input data for llama_encode/llama_decode'
+  - '    // A llama_batch object can contain input about one or many sequences'
+  - '    // The provided arrays (i.e. token, embd, pos, etc.) must have size of n_tokens'
+  - '    //'
+  - '    // - token  : the token ids of the input (used when embd is NULL)'
+  - '    // - embd   : token embeddings (i.e. float vector of size n_embd) (used when
+    token is NULL)'
+  - '    // - pos    : the positions of the respective token in the sequence'
+  - '    //            (if set to NULL, the token position will be tracked automatically
+    by llama_encode/llama_decode)'
+  - '    // - seq_id : the sequence to which the respective token belongs'
+  - '    //            (if set to NULL, the sequence ID will be assumed to be 0)'
+  - '    // - logits : if zero, the logits (and/or the embeddings) for the respective
+    token will not be output'
+  - '    //            (if set to NULL:'
+  - '    //               - if embeddings: all tokens are output'
+  - '    //               - if not:        only the last token is output'
+  - '    //            )'
+  - '    //'
+  - '    typedef struct llama_batch {'
+  - '        int32_t n_tokens;'
+  - ''
+  - '        llama_token  *  token;'
+  - '        float        *  embd;'
+  - '        llama_pos    *  pos;'
+  - '        int32_t      *  n_seq_id;'
+  - '        llama_seq_id ** seq_id;'
+  - '        int8_t       *  logits;   // TODO: rename this to "output"'
+  - '    } llama_batch;'
+  - ''
+  - '    enum llama_model_kv_override_type {'
+  - '        LLAMA_KV_OVERRIDE_TYPE_INT,'
+  - '        LLAMA_KV_OVERRIDE_TYPE_FLOAT,'
+  - '        LLAMA_KV_OVERRIDE_TYPE_BOOL,'
+  - '        LLAMA_KV_OVERRIDE_TYPE_STR,'
+  - '    };'
+  - ''
+  - '    enum llama_model_meta_key {'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_SEQUENCE,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_TOP_K,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_TOP_P,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_MIN_P,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_XTC_PROBABILITY,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_XTC_THRESHOLD,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_TEMP,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_PENALTY_LAST_N,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_PENALTY_REPEAT,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT_TAU,'
+  - '        LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT_ETA,'
+  - '    };'
+  - ''
+  - '    struct llama_model_kv_override {'
+  - '        enum llama_model_kv_override_type tag;'
+  - ''
+  - '        char key[128];'
+  - ''
+  - '        union {'
+  - '            int64_t val_i64;'
+  - '            double  val_f64;'
+  - '            bool    val_bool;'
+  - '            char    val_str[128];'
+  - '        };'
+  - '    };'
+  - ''
+  - '    struct llama_model_tensor_buft_override {'
+  - '        const char * pattern;'
+  - '        ggml_backend_buffer_type_t buft;'
+  - '    };'
+  - ''
+  - '    struct llama_model_params {'
+  - '        // NULL-terminated list of devices to use for offloading (if NULL, all
+    available devices are used)'
+  - '        ggml_backend_dev_t * devices;'
+  - ''
+  - '        // NULL-terminated list of buffer types to use for tensors that match
+    a pattern'
+  - '        const struct llama_model_tensor_buft_override * tensor_buft_overrides;'
+  - ''
+  - '        int32_t n_gpu_layers; // number of layers to store in VRAM, a negative
+    value means all layers'
+  - '        enum llama_split_mode split_mode; // how to split the model across multiple
+    GPUs'
+  - ''
+  - '        // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE'
+  - '        int32_t main_gpu;'
+  - ''
+  - '        // proportion of the model (layers or rows) to offload to each GPU, size:
+    llama_max_devices()'
+  - '        const float * tensor_split;'
+  - ''
+  - '        // Called with a progress value between 0.0 and 1.0. Pass NULL to disable.'
+  - '        // If the provided progress_callback returns true, model loading continues.'
+  - '        // If it returns false, model loading is immediately aborted.'
+  - '        llama_progress_callback progress_callback;'
+  - ''
+  - '        // context pointer passed to the progress callback'
+  - '        void * progress_callback_user_data;'
+  - ''
+  - '        // override key-value pairs of the model meta data'
+  - '        const struct llama_model_kv_override * kv_overrides;'
+  - ''
+  - '        // Keep the booleans together to avoid misalignment during copy-by-value.'
+  - '        bool vocab_only;      // only load the vocabulary, no weights'
+  - '        bool use_mmap;        // use mmap if possible'
+  - '        bool use_direct_io;   // use direct io, takes precedence over use_mmap
+    when supported'
+  - '        bool use_mlock;       // force system to keep model in RAM'
+  - '        bool check_tensors;   // validate model tensor data'
+  - '        bool use_extra_bufts; // use extra buffer types (used for weight repacking)'
+  - '        bool no_host;         // bypass host buffer allowing extra buffers to
+    be used'
+  - '        bool no_alloc;        // only load metadata and simulate memory allocations'
+  - '    };'
+  - ''
+  - '    struct llama_sampler_seq_config {'
+  - '        llama_seq_id           seq_id;'
+  - '        struct llama_sampler * sampler;'
+  - '    };'
+  - ''
+  - '    // NOTE: changing the default values of parameters marked as [EXPERIMENTAL]
+    may cause crashes or incorrect results in certain configurations'
+  - '    //       https://github.com/ggml-org/llama.cpp/pull/7544'
+  - '    struct llama_context_params {'
+  - '        uint32_t n_ctx;             // text context, 0 = from model'
+  - '        uint32_t n_batch;           // logical maximum batch size that can be
+    submitted to llama_decode'
+  - '        uint32_t n_ubatch;          // physical maximum batch size'
+  - '        uint32_t n_seq_max;         // max number of sequences (i.e. distinct
+    states for recurrent models)'
+  - '        int32_t  n_threads;         // number of threads to use for generation'
+  - '        int32_t  n_threads_batch;   // number of threads to use for batch processing'
+  - ''
+  - '        enum llama_rope_scaling_type rope_scaling_type; // RoPE scaling type,
+    from `enum llama_rope_scaling_type`'
+  - '        enum llama_pooling_type      pooling_type;      // whether to pool (sum)
+    embedding results by sequence id'
+  - '        enum llama_attention_type    attention_type;    // attention type to
+    use for embeddings'
+  - '        enum llama_flash_attn_type   flash_attn_type;   // when to enable Flash
+    Attention'
+  - ''
+  - '        // ref: https://github.com/ggml-org/llama.cpp/pull/2054'
+  - '        float    rope_freq_base;   // RoPE base frequency, 0 = from model'
+  - '        float    rope_freq_scale;  // RoPE frequency scaling factor, 0 = from
+    model'
+  - '        float    yarn_ext_factor;  // YaRN extrapolation mix factor, negative
+    = from model'
+  - '        float    yarn_attn_factor; // YaRN magnitude scaling factor'
+  - '        float    yarn_beta_fast;   // YaRN low correction dim'
+  - '        float    yarn_beta_slow;   // YaRN high correction dim'
+  - '        uint32_t yarn_orig_ctx;    // YaRN original context size'
+  - '        float    defrag_thold;     // [DEPRECATED] defragment the KV cache if
+    holes/size > thold, <= 0 disabled (default)'
+  - ''
+  - '        ggml_backend_sched_eval_callback cb_eval;'
+  - '        void * cb_eval_user_data;'
+  - ''
+  - '        enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]'
+  - '        enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]'
+  - ''
+  - '        // Abort callback'
+  - '        // if it returns true, execution of llama_decode() will be aborted'
+  - '        // currently works only with CPU execution'
+  - '        ggml_abort_callback abort_callback;'
+  - '        void *              abort_callback_data;'
+  - ''
+  - '        // Keep the booleans together and at the end of the struct to avoid misalignment
+    during copy-by-value.'
+  - '        bool embeddings;  // if true, extract embeddings (together with logits)'
+  - '        bool offload_kqv; // offload the KQV ops (including the KV cache) to
+    GPU'
+  - '        bool no_perf;     // measure performance timings'
+  - '        bool op_offload;  // offload host tensor operations to device'
+  - '        bool swa_full;    // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)'
+  - '                          // NOTE: setting to false when n_seq_max > 1 can cause
+    bad performance in some cases'
+  - '                          //       ref: https://github.com/ggml-org/llama.cpp/pull/13845#issuecomment-2924800573'
+  - '        bool kv_unified;  // use a unified buffer across the input sequences
+    when computing the attention'
+  - '                          // try to disable when n_seq_max > 1 for improved performance
+    when the sequences do not share a large prefix'
+  - '                          // ref: https://github.com/ggml-org/llama.cpp/pull/14363'
+  - ''
+  - '        // [EXPERIMENTAL]'
+  - '        // backend sampler chain configuration (make sure the caller keeps the
+    sampler chains alive)'
+  - '        // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)'
+  - '        struct llama_sampler_seq_config * samplers;'
+  - '        size_t                            n_samplers;'
+  - '    };'
+  - ''
+  - '    struct llama_model_tensor_override {'
+  - '        const char * pattern;'
+  - '        enum ggml_type type;'
+  - '    };'
+  - ''
+  - '    struct llama_model_imatrix_data {'
+  - '        const char * name;'
+  - '        const float * data;'
+  - '        size_t size;'
+  - '    };'
+  - ''
+  - '    // model quantization parameters'
+  - '    typedef struct llama_model_quantize_params {'
+  - '        int32_t nthread;                                            // number
+    of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()'
+  - '        enum llama_ftype ftype;                                     // quantize
+    to this llama_ftype'
+  - '        enum ggml_type output_tensor_type;                          // output
+    tensor type'
+  - '        enum ggml_type token_embedding_type;                        // token
+    embeddings tensor type'
+  - '        bool allow_requantize;                                      // allow
+    quantizing non-f32/f16 tensors'
+  - '        bool quantize_output_tensor;                                // quantize
+    output.weight'
+  - '        bool only_copy;                                             // only copy
+    tensors - ftype, allow_requantize and quantize_output_tensor are ignored'
+  - '        bool pure;                                                  // quantize
+    all tensors to the default type'
+  - '        bool keep_split;                                            // quantize
+    to the same number of shards'
+  - '        bool dry_run;                                               // calculate
+    and show the final quantization size without performing quantization'
+  - '        const struct llama_model_imatrix_data * imatrix;            // pointer
+    to importance matrix data'
+  - '        const struct llama_model_kv_override * kv_overrides;        // pointer
+    to kv overrides'
+  - '        const struct llama_model_tensor_override * tt_overrides;    // pointer
+    to tensor overrides'
+  - '        const int32_t * prune_layers;                               // pointer
+    to layer indices to prune'
+  - '    } llama_model_quantize_params;'
+  - ''
+  - '    typedef struct llama_logit_bias {'
+  - '        llama_token token;'
+  - '        float bias;'
+  - '    } llama_logit_bias;'
+  - ''
+  - '    typedef struct llama_sampler_chain_params {'
+  - '        bool no_perf; // whether to measure performance timings'
+  - '    } llama_sampler_chain_params;'
+  - ''
+  - '    // used in chat template'
+  - '    typedef struct llama_chat_message {'
+  - '        const char * role;'
+  - '        const char * content;'
+  - '    } llama_chat_message;'
+  - ''
+  - '    // lora adapter'
+  - '    struct llama_adapter_lora;'
+  - ''
+  - '    // Helpers for getting default parameters'
+  - '    // TODO: update API to start accepting pointers to params structs (https://github.com/ggml-org/llama.cpp/discussions/9172)'
+  - '    LLAMA_API struct llama_model_params          llama_model_default_params(void);'
+  - '    LLAMA_API struct llama_context_params        llama_context_default_params(void);'
+  - '    LLAMA_API struct llama_sampler_chain_params  llama_sampler_chain_default_params(void);'
+  - '    LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params(void);'
+  - ''
+  - '    // Initialize the llama + ggml backend'
+  - '    // If numa is true, use NUMA optimizations'
+  - '    // Call once at the start of the program'
+  - '    LLAMA_API void llama_backend_init(void);'
+  - ''
+  - '    // Call once at the end of the program - currently only used for MPI'
+  - '    LLAMA_API void llama_backend_free(void);'
+  - ''
+  - '    //optional:'
+  - '    LLAMA_API void llama_numa_init(enum ggml_numa_strategy numa);'
+  - ''
+  - '    // Optional: an auto threadpool gets created in ggml if not passed explicitly'
+  - '    LLAMA_API void llama_attach_threadpool('
+  - '            struct llama_context * ctx,'
+  - '               ggml_threadpool_t   threadpool,'
+  - '               ggml_threadpool_t   threadpool_batch);'
+  - ''
+  - '    LLAMA_API void llama_detach_threadpool(struct llama_context * ctx);'
+  - ''
+  - '    typedef void (*llama_model_set_tensor_data_t)(struct ggml_tensor * tensor,
+    void * userdata);'
+  - ''
+  - '    // Create a new model from GGUF metadata as well as a function to set the
+    tensor data'
+  - '    //   - tensors are created as GGML_TYPE_F32 by default,'
+  - '    //     override by adding a tensor with the same name but a different name
+    to the context'
+  - '    LLAMA_API struct llama_model * llama_model_init_from_user('
+  - '                    struct gguf_context * metadata,'
+  - '          llama_model_set_tensor_data_t   set_tensor_data,    // function to
+    initialize tensor data with'
+  - '                                   void * set_tensor_data_ud, // userdata for
+    function'
+  - '              struct llama_model_params   params);'
+  - ''
+  - '    DEPRECATED(LLAMA_API struct llama_model * llama_load_model_from_file('
+  - '                             const char * path_model,'
+  - '              struct llama_model_params   params),'
+  - '            "use llama_model_load_from_file instead");'
+  - ''
+  - '    // Load a model from a file'
+  - '    // If the file is split into multiple parts, the file name must follow this
+    pattern: <name>-%05d-of-%05d.gguf'
+  - '    // If the split file name does not follow this pattern, use llama_model_load_from_splits'
+  - '    LLAMA_API struct llama_model * llama_model_load_from_file('
+  - '                             const char * path_model,'
+  - '              struct llama_model_params   params);'
+  - ''
+  - '    // Load a model from an open FILE pointer'
+  - '    LLAMA_API struct llama_model * llama_model_load_from_file_ptr('
+  - '                                   FILE * file,'
+  - '              struct llama_model_params   params);'
+  - ''
+  - '    // Load a model from multiple splits (support custom naming scheme)'
+  - '    // The paths must be in the correct order'
+  - '    LLAMA_API struct llama_model * llama_model_load_from_splits('
+  - '                             const char ** paths,'
+  - '                                 size_t    n_paths,'
+  - '              struct llama_model_params    params);'
+  - ''
+  - '    LLAMA_API void llama_model_save_to_file('
+  - '            const struct llama_model * model,'
+  - '                        const char * path_model);'
+  - ''
+  - '    DEPRECATED(LLAMA_API void llama_free_model(struct llama_model * model),'
+  - '            "use llama_model_free instead");'
+  - ''
+  - '    LLAMA_API void llama_model_free(struct llama_model * model);'
+  - ''
+  - '    LLAMA_API struct llama_context * llama_init_from_model('
+  - '                     struct llama_model * model,'
+  - '            struct llama_context_params   params);'
+  - ''
+  - '    DEPRECATED(LLAMA_API struct llama_context * llama_new_context_with_model('
+  - '                     struct llama_model * model,'
+  - '            struct llama_context_params   params),'
+  - '            "use llama_init_from_model instead");'
+  - ''
+  - '    // Frees all allocated memory'
+  - '    LLAMA_API void llama_free(struct llama_context * ctx);'
+  - ''
+  - '    enum llama_params_fit_status {'
+  - '        LLAMA_PARAMS_FIT_STATUS_SUCCESS = 0, // found allocations that are projected
+    to fit'
+  - '        LLAMA_PARAMS_FIT_STATUS_FAILURE = 1, // could not find allocations that
+    are projected to fit'
+  - '        LLAMA_PARAMS_FIT_STATUS_ERROR   = 2, // a hard error occurred, e.g. because
+    no model could be found at the specified path'
+  - '    };'
+  - ''
+  - '    // fits mparams and cparams to free device memory (assumes system memory
+    is unlimited)'
+  - '    //   - returns true if the parameters could be successfully modified to fit
+    device memory'
+  - '    //   - this function is NOT thread safe because it modifies the global llama
+    logger state'
+  - '    //   - only parameters that have the same value as in llama_default_model_params
+    are modified'
+  - '    //     with the exception of the context size which is modified if and only
+    if equal to 0'
+  - '    LLAMA_API enum llama_params_fit_status llama_params_fit('
+  - '                                   const char   * path_model,'
+  - '                    struct llama_model_params   * mparams,'
+  - '                    struct llama_context_params * cparams,'
+  - '                                          float * tensor_split,          // writable
+    buffer for tensor split, needs at least llama_max_devices elements'
+  - '        struct llama_model_tensor_buft_override * tensor_buft_overrides, // writable
+    buffer for overrides, needs at least llama_max_tensor_buft_overrides elements'
+  - '                                         size_t * margins,               // margins
+    of memory to leave per device in bytes'
+  - '                                       uint32_t   n_ctx_min,             // minimum
+    context size to set when trying to reduce memory use'
+  - '                            enum ggml_log_level   log_level);            // minimum
+    log level to print during fitting, lower levels go to debug log'
+  - ''
+  - '    LLAMA_API int64_t llama_time_us(void);'
+  - ''
+  - '    LLAMA_API size_t llama_max_devices(void);'
+  - '    LLAMA_API size_t llama_max_parallel_sequences(void);'
+  - '    LLAMA_API size_t llama_max_tensor_buft_overrides(void);'
+  - ''
+  - '    LLAMA_API bool llama_supports_mmap       (void);'
+  - '    LLAMA_API bool llama_supports_mlock      (void);'
+  - '    LLAMA_API bool llama_supports_gpu_offload(void);'
+  - '    LLAMA_API bool llama_supports_rpc        (void);'
+  - ''
+  - '    // NOTE: After creating a llama_context, it is recommended to query the actual
+    values using these functions'
+  - '    //       In some cases the requested values via llama_context_params may
+    differ from the actual values used by the context'
+  - '    //       ref: https://github.com/ggml-org/llama.cpp/pull/17046#discussion_r2503085732'
+  - '    LLAMA_API uint32_t llama_n_ctx      (const struct llama_context * ctx);'
+  - '    LLAMA_API uint32_t llama_n_ctx_seq  (const struct llama_context * ctx);'
+  - '    LLAMA_API uint32_t llama_n_batch    (const struct llama_context * ctx);'
+  - '    LLAMA_API uint32_t llama_n_ubatch   (const struct llama_context * ctx);'
+  - '    LLAMA_API uint32_t llama_n_seq_max  (const struct llama_context * ctx);'
+  - ''
+  - '    DEPRECATED(LLAMA_API int32_t llama_n_ctx_train(const struct llama_model *
+    model), "use llama_model_n_ctx_train instead");'
+  - '    DEPRECATED(LLAMA_API int32_t llama_n_embd     (const struct llama_model *
+    model), "use llama_model_n_embd instead");'
+  - '    DEPRECATED(LLAMA_API int32_t llama_n_layer    (const struct llama_model *
+    model), "use llama_model_n_layer instead");'
+  - '    DEPRECATED(LLAMA_API int32_t llama_n_head     (const struct llama_model *
+    model), "use llama_model_n_head instead");'
+  - ''
+  - '    DEPRECATED(LLAMA_API int32_t llama_n_vocab    (const struct llama_vocab *
+    vocab), "use llama_vocab_n_tokens instead");'
+  - ''
+  - '    LLAMA_API const struct llama_model * llama_get_model   (const struct llama_context
+    * ctx);'
+  - '    LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context
+    * ctx);'
+  - '    LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context
+    * ctx); // TODO: rename to llama_get_pooling_type'
+  - ''
+  - '    LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model
+    * model);'
+  - '    LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model
+    * model);'
+  - ''
+  - '    LLAMA_API int32_t llama_model_n_ctx_train(const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_embd     (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_embd_inp (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_embd_out (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);'
+  - '    LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);'
+  - ''
+  - '    // Get the model''s RoPE frequency scaling factor'
+  - '    LLAMA_API float llama_model_rope_freq_scale_train(const struct llama_model
+    * model);'
+  - ''
+  - '    // Returns the number of classifier outputs (only valid for classifier models)'
+  - '    // Undefined behavior for non-classifier models'
+  - '    LLAMA_API uint32_t llama_model_n_cls_out(const struct llama_model * model);'
+  - ''
+  - '    // Returns label of classifier output by index (<n_cls_out). Returns nullptr
+    if no label provided'
+  - '    LLAMA_API const char * llama_model_cls_label(const struct llama_model * model,
+    uint32_t i);'
+  - ''
+  - '    LLAMA_API enum llama_vocab_type llama_vocab_type(const struct llama_vocab
+    * vocab);'
+  - ''
+  - '    LLAMA_API int32_t llama_vocab_n_tokens(const struct llama_vocab * vocab);'
+  - ''
+  - '    // Functions to access the model''s GGUF metadata scalar values'
+  - '    // - The functions return the length of the string on success, or -1 on failure'
+  - '    // - The output string is always null-terminated and cleared on failure'
+  - '    // - When retrieving a string, an extra byte must be allocated to account
+    for the null terminator'
+  - '    // - GGUF array values are not supported by these functions'
+  - ''
+  - '    // Get metadata value as a string by key name'
+  - '    LLAMA_API int32_t llama_model_meta_val_str(const struct llama_model * model,
+    const char * key, char * buf, size_t buf_size);'
+  - ''
+  - '    // Get the number of metadata key/value pairs'
+  - '    LLAMA_API int32_t llama_model_meta_count(const struct llama_model * model);'
+  - ''
+  - '    // Get sampling metadata key name. Returns nullptr if the key is invalid'
+  - '    LLAMA_API const char * llama_model_meta_key_str(enum llama_model_meta_key
+    key);'
+  - ''
+  - '    // Get metadata key name by index'
+  - '    LLAMA_API int32_t llama_model_meta_key_by_index(const struct llama_model
+    * model, int32_t i, char * buf, size_t buf_size);'
+  - ''
+  - '    // Get metadata value as a string by index'
+  - '    LLAMA_API int32_t llama_model_meta_val_str_by_index(const struct llama_model
+    * model, int32_t i, char * buf, size_t buf_size);'
+  - ''
+  - '    // Get a string describing the model type'
+  - '    LLAMA_API int32_t llama_model_desc(const struct llama_model * model, char
+    * buf, size_t buf_size);'
+  - ''
+  - '    // Returns the total size of all the tensors in the model in bytes'
+  - '    LLAMA_API uint64_t llama_model_size(const struct llama_model * model);'
+  - ''
+  - '    // Get the default chat template. Returns nullptr if not available'
+  - '    // If name is NULL, returns the default chat template'
+  - '    LLAMA_API const char * llama_model_chat_template(const struct llama_model
+    * model, const char * name);'
+  - ''
+  - '    // Returns the total number of parameters in the model'
+  - '    LLAMA_API uint64_t llama_model_n_params(const struct llama_model * model);'
+  - ''
+  - '    // Returns true if the model contains an encoder that requires llama_encode()
+    call'
+  - '    LLAMA_API bool llama_model_has_encoder(const struct llama_model * model);'
+  - ''
+  - '    // Returns true if the model contains a decoder that requires llama_decode()
+    call'
+  - '    LLAMA_API bool llama_model_has_decoder(const struct llama_model * model);'
+  - ''
+  - '    // For encoder-decoder models, this function returns id of the token that
+    must be provided'
+  - '    // to the decoder to start generating output sequence. For other models,
+    it returns -1.'
+  - '    LLAMA_API llama_token llama_model_decoder_start_token(const struct llama_model
+    * model);'
+  - ''
+  - '    // Returns true if the model is recurrent (like Mamba, RWKV, etc.)'
+  - '    LLAMA_API bool llama_model_is_recurrent(const struct llama_model * model);'
+  - ''
+  - '    // Returns true if the model is hybrid (like Jamba, Granite, etc.)'
+  - '    LLAMA_API bool llama_model_is_hybrid(const struct llama_model * model);'
+  - ''
+  - '    // Returns true if the model is diffusion-based (like LLaDA, Dream, etc.)'
+  - '    LLAMA_API bool llama_model_is_diffusion(const struct llama_model * model);'
+  - ''
+  - '    // Returns 0 on success'
+  - '    LLAMA_API uint32_t llama_model_quantize('
+  - '            const char * fname_inp,'
+  - '            const char * fname_out,'
+  - '            const llama_model_quantize_params * params);'
+  - ''
+  - '    //'
+  - '    // Adapters'
+  - '    //'
+  - ''
+  - '    // Load a LoRA adapter from file'
+  - '    // The adapter is valid as long as the associated model is not freed'
+  - '    LLAMA_API struct llama_adapter_lora * llama_adapter_lora_init('
+  - '            struct llama_model * model,'
+  - '            const char * path_lora);'
+  - ''
+  - '    // Functions to access the adapter''s GGUF metadata scalar values'
+  - '    // - The functions return the length of the string on success, or -1 on failure'
+  - '    // - The output string is always null-terminated and cleared on failure'
+  - '    // - When retrieving a string, an extra byte must be allocated to account
+    for the null terminator'
+  - '    // - GGUF array values are not supported by these functions'
+  - ''
+  - '    // Get metadata value as a string by key name'
+  - '    LLAMA_API int32_t llama_adapter_meta_val_str(const struct llama_adapter_lora
+    * adapter, const char * key, char * buf, size_t buf_size);'
+  - ''
+  - '    // Get the number of metadata key/value pairs'
+  - '    LLAMA_API int32_t llama_adapter_meta_count(const struct llama_adapter_lora
+    * adapter);'
+  - ''
+  - '    // Get metadata key name by index'
+  - '    LLAMA_API int32_t llama_adapter_meta_key_by_index(const struct llama_adapter_lora
+    * adapter, int32_t i, char * buf, size_t buf_size);'
+  - ''
+  - '    // Get metadata value as a string by index'
+  - '    LLAMA_API int32_t llama_adapter_meta_val_str_by_index(const struct llama_adapter_lora
+    * adapter, int32_t i, char * buf, size_t buf_size);'
+  - ''
+  - '    // Manually free a LoRA adapter'
+  - '    // NOTE: loaded adapters that are not manually freed will be freed when the
+    associated model is deleted'
+  - '    LLAMA_API void llama_adapter_lora_free(struct llama_adapter_lora * adapter);'
+  - ''
+  - '    // Get the invocation tokens if the current lora is an alora'
+  - '    LLAMA_API uint64_t            llama_adapter_get_alora_n_invocation_tokens(const
+    struct llama_adapter_lora * adapter);'
+  - '    LLAMA_API const llama_token * llama_adapter_get_alora_invocation_tokens  (const
+    struct llama_adapter_lora * adapter);'
+  - ''
+  - '    // The following functions operate on a llama_context, hence the naming:
+    llama_verb_...'
+  - ''
+  - '    // Set LoRa adapters on the context. Will only modify if the adapters currently
+    in context are different.'
+  - '    LLAMA_API int32_t llama_set_adapters_lora('
+  - '            struct llama_context * ctx,'
+  - '            struct llama_adapter_lora ** adapters,'
+  - '            size_t n_adapters,'
+  - '            float * scales);'
+  - ''
+  - '    // Apply a loaded control vector to a llama_context, or if data is NULL,
+    clear'
+  - '    // the currently loaded vector.'
+  - '    // n_embd should be the size of a single layer''s control, and data should
+    point'
+  - '    // to an n_embd x n_layers buffer starting from layer 1.'
+  - '    // il_start and il_end are the layer range the vector should apply to (both
+    inclusive)'
+  - '    // See llama_control_vector_load in common to load a control vector.'
+  - '    LLAMA_API int32_t llama_set_adapter_cvec('
+  - '            struct llama_context * ctx,'
+  - '                     const float * d'
+  desc: 文件级全局代码，定义了llama.cpp公共API的所有头文件部分，包括头文件保护，依赖包含，宏定义，枚举类型定义，结构体定义，以及大部分API函数声明，除去已实现的具体函数实现外，所有内容都在此部分描述。
+  line: 1-1060
+  name: __main__
+- code:
+  - LLAMA_API void llama_memory_clear(llama_memory_t mem, bool data);
+  desc: 清除内存内容，可选择是否同时清除数据缓冲区
+  line: 320-324
+  name: llama_memory_clear
+- code:
+  - LLAMA_API bool llama_memory_seq_rm(llama_memory_t mem, llama_seq_id seq_id, llama_pos
+    p0, llama_pos p1);
+  desc: 删除指定序列在位置范围内的所有token，支持部分序列删除
+  line: 325-331
+  name: llama_memory_seq_rm
+- code:
+  - LLAMA_API void llama_memory_seq_cp(llama_memory_t mem, llama_seq_id seq_id_src,
+    llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1);
+  desc: 将指定序列的token复制到另一个序列
+  line: 332-337
+  name: llama_memory_seq_cp
+- code:
+  - LLAMA_API void llama_memory_seq_keep(llama_memory_t mem, llama_seq_id seq_id);
+  desc: 删除所有不属于指定序列的token
+  line: 338-340
+  name: llama_memory_seq_keep
+- code:
+  - LLAMA_API void llama_memory_seq_add(llama_memory_t mem, llama_seq_id seq_id, llama_pos
+    p0, llama_pos p1, llama_pos delta);
+  desc: 为指定序列中位置范围内的所有token添加相对位置偏移
+  line: 341-348
+  name: llama_memory_seq_add
+- code:
+  - LLAMA_API void llama_memory_seq_div(llama_memory_t mem, llama_seq_id seq_id, llama_pos
+    p0, llama_pos p1, int d);
+  desc: 对指定序列中位置范围内的token位置进行整数除法
+  line: 349-356
+  name: llama_memory_seq_div
+- code:
+  - LLAMA_API llama_pos llama_memory_seq_pos_min(llama_memory_t mem, llama_seq_id
+    seq_id);
+  desc: 返回指定序列在内存中的最小位置，序列为空时返回-1
+  line: 357-362
+  name: llama_memory_seq_pos_min
+- code:
+  - LLAMA_API llama_pos llama_memory_seq_pos_max(llama_memory_t mem, llama_seq_id
+    seq_id);
+  desc: 返回指定序列在内存中的最大位置，序列为空时返回-1
+  line: 363-368
+  name: llama_memory_seq_pos_max
+- code:
+  - LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
+  desc: 检查内存是否支持位置偏移操作
+  line: 369-370
+  name: llama_memory_can_shift
+- code:
+  - LLAMA_API size_t llama_state_get_size(struct llama_context * ctx);
+  desc: 获取上下文状态的字节大小，用于保存状态时分配内存
+  line: 377-378
+  name: llama_state_get_size
+- code:
+  - LLAMA_API DEPRECATED(size_t llama_get_state_size(struct llama_context * ctx),
+  - '    "use llama_state_get_size instead");'
+  desc: 已废弃，使用llama_state_get_size替代
+  line: 379-380
+  name: llama_get_state_size
+- code:
+  - LLAMA_API size_t llama_state_get_data(struct llama_context * ctx, uint8_t * dst,
+    size_t size);
+  desc: 复制上下文状态到指定地址，返回复制的字节数
+  line: 381-386
+  name: llama_state_get_data
+- code:
+  - LLAMA_API DEPRECATED(size_t llama_copy_state_data(struct llama_context * ctx,
+    uint8_t * dst),
+  - '    "use llama_state_get_data instead");'
+  desc: 已废弃，使用llama_state_get_data替代
+  line: 387-389
+  name: llama_copy_state_data
+- code:
+  - LLAMA_API size_t llama_state_set_data(struct llama_context * ctx, const uint8_t
+    * src, size_t size);
+  desc: 从指定地址读取状态数据设置到上下文，返回读取的字节数
+  line: 390-395
+  name: llama_state_set_data
+- code:
+  - LLAMA_API DEPRECATED(size_t llama_set_state_data(struct llama_context * ctx, const
+    uint8_t * src),
+  - '    "use llama_state_set_data instead");'
+  desc: 已废弃，使用llama_state_set_data替代
+  line: 396-398
+  name: llama_set_state_data
+- code:
+  - LLAMA_API bool llama_state_load_file(struct llama_context * ctx, const char *
+    path_session,
+  - '    llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out);'
+  desc: 从会话文件加载状态
+  line: 399-405
+  name: llama_state_load_file
+- code:
+  - LLAMA_API DEPRECATED(bool llama_load_session_file(struct llama_context * ctx,
+  - '    const char * path_session, llama_token * tokens_out, size_t n_token_capacity,'
+  - '    size_t * n_token_count_out), "use llama_state_load_file instead");'
+  desc: 已废弃，使用llama_state_load_file替代
+  line: 406-411
+  name: llama_load_session_file
+- code:
+  - LLAMA_API bool llama_state_save_file(struct llama_context * ctx, const char *
+    path_session,
+  - '    const llama_token * tokens, size_t n_token_count);'
+  desc: 保存状态到会话文件
+  line: 412-416
+  name: llama_state_save_file
+- code:
+  - LLAMA_API DEPRECATED(bool llama_save_session_file(struct llama_context * ctx,
+  - '    const char * path_session, const llama_token * tokens, size_t n_token_count),'
+  - '    "use llama_state_save_file instead");'
+  desc: 已废弃，使用llama_state_save_file替代
+  line: 417-421
+  name: llama_save_session_file
+- code:
+  - LLAMA_API size_t llama_state_seq_get_size(struct llama_context * ctx, llama_seq_id
+    seq_id);
+  desc: 获取复制单个序列状态所需的准确大小
+  line: 422-425
+  name: llama_state_seq_get_size
+- code:
+  - LLAMA_API size_t llama_state_seq_get_data(struct llama_context * ctx, uint8_t
+    * dst, size_t size, llama_seq_id seq_id);
+  desc: 将单个序列的状态复制到指定缓冲区
+  line: 426-431
+  name: llama_state_seq_get_data
+- code:
+  - LLAMA_API size_t llama_state_seq_set_data(struct llama_context * ctx, const uint8_t
+    * src, size_t size, llama_seq_id dest_seq_id);
+  desc: 将序列数据复制回指定的序列，返回正数表示成功
+  line: 432-438
+  name: llama_state_seq_set_data
+- code:
+  - LLAMA_API size_t llama_state_seq_save_file(struct llama_context * ctx, const char
+    * filepath,
+  - '    llama_seq_id seq_id, const llama_token * tokens, size_t n_token_count);'
+  desc: 保存单个序列的状态到文件
+  line: 439-444
+  name: llama_state_seq_save_file
+- code:
+  - LLAMA_API size_t llama_state_seq_load_file(struct llama_context * ctx, const char
+    * filepath,
+  - '    llama_seq_id dest_seq_id, llama_token * tokens_out, size_t n_token_capacity,'
+  - '    size_t * n_token_count_out);'
+  desc: 从文件加载单个序列的状态
+  line: 445-451
+  name: llama_state_seq_load_file
+- code:
+  - LLAMA_API size_t llama_state_seq_get_size_ext(struct llama_context * ctx, llama_seq_id
+    seq_id,
+  - '    llama_state_seq_flags flags);'
+  desc: 获取指定序列和标志的状态大小，支持部分状态
+  line: 459-462
+  name: llama_state_seq_get_size_ext
+- code:
+  - LLAMA_API size_t llama_state_seq_get_data_ext(struct llama_context * ctx, uint8_t
+    * dst,
+  - '    size_t size, llama_seq_id seq_id, llama_state_seq_flags flags);'
+  desc: 复制指定序列和标志的状态数据到缓冲区
+  line: 463-468
+  name: llama_state_seq_get_data_ext
+- code:
+  - LLAMA_API size_t llama_state_seq_set_data_ext(struct llama_context * ctx, const
+    uint8_t * src,
+  - '    size_t size, llama_seq_id dest_seq_id, llama_state_seq_flags flags);'
+  desc: 将带有标志的序列数据复制回指定的序列
+  line: 469-475
+  name: llama_state_seq_set_data_ext
+- code:
+  - LLAMA_API struct llama_batch llama_batch_get_one(llama_token * tokens, int32_t
+    n_tokens);
+  desc: 创建单序列token的批次，用于简化过渡
+  line: 481-484
+  name: llama_batch_get_one
+- code:
+  - LLAMA_API struct llama_batch llama_batch_init(int32_t n_tokens, int32_t embd,
+    int32_t n_seq_max);
+  desc: 在堆上分配批次，可容纳指定数量的token和序列ID
+  line: 485-495
+  name: llama_batch_init
+- code:
+  - LLAMA_API void llama_batch_free(struct llama_batch batch);
+  desc: 释放批次资源
+  line: 496-497
+  name: llama_batch_free
+- code:
+  - LLAMA_API int32_t llama_encode(struct llama_context * ctx, struct llama_batch
+    batch);
+  desc: 处理批次token，不使用KV缓存，用于编码器处理
+  line: 498-507
+  name: llama_encode
+- code:
+  - LLAMA_API int32_t llama_decode(struct llama_context * ctx, struct llama_batch
+    batch);
+  desc: 处理批次token，使用KV缓存，用于解码器处理
+  line: 508-521
+  name: llama_decode
+- code:
+  - LLAMA_API void llama_set_n_threads(struct llama_context * ctx, int32_t n_threads,
+    int32_t n_threads_batch);
+  desc: 设置解码使用的线程数
+  line: 522-524
+  name: llama_set_n_threads
+- code:
+  - LLAMA_API int32_t llama_n_threads(struct llama_context * ctx);
+  desc: 获取单token生成使用的线程数
+  line: 525-527
+  name: llama_n_threads
+- code:
+  - LLAMA_API int32_t llama_n_threads_batch(struct llama_context * ctx);
+  desc: 获取批处理使用的线程数
+  line: 528-530
+  name: llama_n_threads_batch
+- code:
+  - LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
+  desc: 设置是否输出嵌入向量
+  line: 531-533
+  name: llama_set_embeddings
+- code:
+  - LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
+  desc: 设置是否使用因果注意力
+  line: 534-537
+  name: llama_set_causal_attn
+- code:
+  - LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup);
+  desc: 设置模型是否处于预热模式
+  line: 538-540
+  name: llama_set_warmup
+- code:
+  - LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback
+    abort_callback, void * abort_callback_data);
+  desc: 设置中止回调函数
+  line: 541-547
+  name: llama_set_abort_callback
+- code:
+  - LLAMA_API void llama_synchronize(struct llama_context * ctx);
+  desc: 等待所有计算完成
+  line: 548-551
+  name: llama_synchronize
+- code:
+  - LLAMA_API float * llama_get_logits(struct llama_context * ctx);
+  desc: 获取上次调用llama_decode得到的logits
+  line: 552-558
+  name: llama_get_logits
+- code:
+  - LLAMA_API float * llama_get_logits_ith(struct llama_context * ctx, int32_t i);
+  desc: 获取第i个token的logits，支持负索引
+  line: 559-563
+  name: llama_get_logits_ith
+- code:
+  - LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
+  desc: 获取所有输出token的嵌入向量
+  line: 564-569
+  name: llama_get_embeddings
+- code:
+  - LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t
+    i);
+  desc: 获取第i个token的嵌入向量，支持负索引
+  line: 570-574
+  name: llama_get_embeddings_ith
+- code:
+  - LLAMA_API float * llama_get_embeddings_seq(struct llama_context * ctx, llama_seq_id
+    seq_id);
+  desc: 获取指定序列ID的嵌入向量
+  line: 575-579
+  name: llama_get_embeddings_seq
+- code:
+  - LLAMA_API llama_token llama_get_sampled_token_ith(struct llama_context * ctx,
+    int32_t i);
+  desc: 获取第i个token的后端采样结果
+  line: 584-586
+  name: llama_get_sampled_token_ith
+- code:
+  - LLAMA_API float * llama_get_sampled_probs_ith(struct llama_context * ctx, int32_t
+    i);
+  desc: 获取第i个token的后端采样概率
+  line: 588-589
+  name: llama_get_sampled_probs_ith
+- code:
+  - LLAMA_API uint32_t llama_get_sampled_probs_count_ith(struct llama_context * ctx,
+    int32_t i);
+  desc: 获取第i个token的后端采样概率数量
+  line: 590-591
+  name: llama_get_sampled_probs_count_ith
+- code:
+  - LLAMA_API float * llama_get_sampled_logits_ith(struct llama_context * ctx, int32_t
+    i);
+  desc: 获取第i个token的后端采样logits
+  line: 592-593
+  name: llama_get_sampled_logits_ith
+- code:
+  - LLAMA_API uint32_t llama_get_sampled_logits_count_ith(struct llama_context * ctx,
+    int32_t i);
+  desc: 获取第i个token的后端采样logits数量
+  line: 594-595
+  name: llama_get_sampled_logits_count_ith
+- code:
+  - LLAMA_API llama_token * llama_get_sampled_candidates_ith(struct llama_context
+    * ctx, int32_t i);
+  desc: 获取第i个token的后端采样候选token ID
+  line: 597-598
+  name: llama_get_sampled_candidates_ith
+- code:
+  - LLAMA_API uint32_t llama_get_sampled_candidates_count_ith(struct llama_context
+    * ctx, int32_t i);
+  desc: 获取第i个token的后端采样候选token数量
+  line: 599-600
+  name: llama_get_sampled_candidates_count_ith
+- code:
+  - LLAMA_API const char * llama_vocab_get_text(const struct llama_vocab * vocab,
+    llama_token token);
+  desc: 获取词汇表中指定token的文本表示
+  line: 603-604
+  name: llama_vocab_get_text
+- code:
+  - LLAMA_API float llama_vocab_get_score(const struct llama_vocab * vocab, llama_token
+    token);
+  desc: 获取词汇表中指定token的分数
+  line: 605-606
+  name: llama_vocab_get_score
+- code:
+  - LLAMA_API enum llama_token_attr llama_vocab_get_attr(const struct llama_vocab
+    * vocab, llama_token token);
+  desc: 获取词汇表中指定token的属性
+  line: 607-608
+  name: llama_vocab_get_attr
+- code:
+  - LLAMA_API bool llama_vocab_is_eog(const struct llama_vocab * vocab, llama_token
+    token);
+  desc: 检查token是否用于结束生成
+  line: 609-611
+  name: llama_vocab_is_eog
+- code:
+  - LLAMA_API bool llama_vocab_is_control(const struct llama_vocab * vocab, llama_token
+    token);
+  desc: 检查token是控制token还是可渲染token
+  line: 612-613
+  name: llama_vocab_is_control
+- code:
+  - LLAMA_API llama_token llama_vocab_bos(const struct llama_vocab * vocab);
+  desc: 获取句子开头特殊token
+  line: 615-616
+  name: llama_vocab_bos
+- code:
+  - LLAMA_API llama_token llama_vocab_eos(const struct llama_vocab * vocab);
+  desc: 获取句子结尾特殊token
+  line: 617-618
+  name: llama_vocab_eos
+- code:
+  - LLAMA_API llama_token llama_vocab_eot(const struct llama_vocab * vocab);
+  desc: 获取回合结束特殊token
+  line: 619-620
+  name: llama_vocab_eot
+- code:
+  - LLAMA_API llama_token llama_vocab_sep(const struct llama_vocab * vocab);
+  desc: 获取句子分隔特殊token
+  line: 621-622
+  name: llama_vocab_sep
+- code:
+  - LLAMA_API llama_token llama_vocab_nl(const struct llama_vocab * vocab);
+  desc: 获取换行特殊token
+  line: 623-624
+  name: llama_vocab_nl
+- code:
+  - LLAMA_API llama_token llama_vocab_pad(const struct llama_vocab * vocab);
+  desc: 获取填充特殊token
+  line: 625-626
+  name: llama_vocab_pad
+- code:
+  - LLAMA_API llama_token llama_vocab_mask(const struct llama_vocab * vocab);
+  desc: 获取掩码特殊token
+  line: 627-628
+  name: llama_vocab_mask
+- code:
+  - LLAMA_API bool llama_vocab_get_add_bos(const struct llama_vocab * vocab);
+  desc: 检查是否添加句子开头token
+  line: 629-630
+  name: llama_vocab_get_add_bos
+- code:
+  - LLAMA_API bool llama_vocab_get_add_eos(const struct llama_vocab * vocab);
+  desc: 检查是否添加句子结尾token
+  line: 631-632
+  name: llama_vocab_get_add_eos
+- code:
+  - LLAMA_API bool llama_vocab_get_add_sep(const struct llama_vocab * vocab);
+  desc: 检查是否添加句子分隔token
+  line: 633-634
+  name: llama_vocab_get_add_sep
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_pre(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的前缀标记
+  line: 635-636
+  name: llama_vocab_fim_pre
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_suf(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的后缀标记
+  line: 637-638
+  name: llama_vocab_fim_suf
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_mid(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的中间标记
+  line: 639-640
+  name: llama_vocab_fim_mid
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_pad(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的填充标记
+  line: 641-642
+  name: llama_vocab_fim_pad
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_rep(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的替换标记
+  line: 643-644
+  name: llama_vocab_fim_rep
+- code:
+  - LLAMA_API llama_token llama_vocab_fim_sep(const struct llama_vocab * vocab);
+  desc: 获取填充中模型的分隔标记
+  line: 645-646
+  name: llama_vocab_fim_sep
+- code:
+  - DEPRECATED(LLAMA_API const char * llama_token_get_text(const struct llama_vocab
+    * vocab, llama_token token), "use llama_vocab_get_text instead");
+  desc: 已废弃，使用llama_vocab_get_text替代
+  line: 648-649
+  name: llama_token_get_text
+- code:
+  - DEPRECATED(LLAMA_API float llama_token_get_score(const struct llama_vocab * vocab,
+    llama_token token), "use llama_vocab_get_score instead");
+  desc: 已废弃，使用llama_vocab_get_score替代
+  line: 650-651
+  name: llama_token_get_score
+- code:
+  - DEPRECATED(LLAMA_API enum llama_token_attr llama_token_get_attr(const struct llama_vocab
+    * vocab, llama_token token), "use llama_vocab_get_attr instead");
+  desc: 已废弃，使用llama_vocab_get_attr替代
+  line: 652-653
+  name: llama_token_get_attr
+- code:
+  - DEPRECATED(LLAMA_API bool llama_token_is_eog(const struct llama_vocab * vocab,
+    llama_token token), "use llama_vocab_is_eog instead");
+  desc: 已废弃，使用llama_vocab_is_eog替代
+  line: 654-655
+  name: llama_token_is_eog
+- code:
+  - DEPRECATED(LLAMA_API bool llama_token_is_control(const struct llama_vocab * vocab,
+    llama_token token), "use llama_vocab_is_control instead");
+  desc: 已废弃，使用llama_vocab_is_control替代
+  line: 656-657
+  name: llama_token_is_control
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_bos(const struct llama_vocab * vocab),
+    "use llama_vocab_bos instead");
+  desc: 已废弃，使用llama_vocab_bos替代
+  line: 659-660
+  name: llama_token_bos
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_eos(const struct llama_vocab * vocab),
+    "use llama_vocab_eos instead");
+  desc: 已废弃，使用llama_vocab_eos替代
+  line: 661-662
+  name: llama_token_eos
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_eot(const struct llama_vocab * vocab),
+    "use llama_vocab_eot instead");
+  desc: 已废弃，使用llama_vocab_eot替代
+  line: 663-664
+  name: llama_token_eot
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_cls(const struct llama_vocab * vocab),
+    "use llama_vocab_cls instead");
+  desc: 已废弃，使用llama_vocab_cls替代
+  line: 665-666
+  name: llama_token_cls
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_sep(const struct llama_vocab * vocab),
+    "use llama_vocab_sep instead");
+  desc: 已废弃，使用llama_vocab_sep替代
+  line: 667-668
+  name: llama_token_sep
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_nl(const struct llama_vocab * vocab),
+    "use llama_vocab_nl instead");
+  desc: 已废弃，使用llama_vocab_nl替代
+  line: 669-670
+  name: llama_token_nl
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_pad(const struct llama_vocab * vocab),
+    "use llama_vocab_pad instead");
+  desc: 已废弃，使用llama_vocab_pad替代
+  line: 671-672
+  name: llama_token_pad
+- code:
+  - DEPRECATED(LLAMA_API bool llama_add_bos_token(const struct llama_vocab * vocab),
+    "use llama_vocab_get_add_bos instead");
+  desc: 已废弃，使用llama_vocab_get_add_bos替代
+  line: 673-674
+  name: llama_add_bos_token
+- code:
+  - DEPRECATED(LLAMA_API bool llama_add_eos_token(const struct llama_vocab * vocab),
+    "use llama_vocab_get_add_eos instead");
+  desc: 已废弃，使用llama_vocab_get_add_eos替代
+  line: 675-676
+  name: llama_add_eos_token
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_pre(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_pre instead");
+  desc: 已废弃，使用llama_vocab_fim_pre替代
+  line: 677-678
+  name: llama_token_fim_pre
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_suf(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_suf instead");
+  desc: 已废弃，使用llama_vocab_fim_suf替代
+  line: 679-680
+  name: llama_token_fim_suf
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_mid(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_mid instead");
+  desc: 已废弃，使用llama_vocab_fim_mid替代
+  line: 681-682
+  name: llama_token_fim_mid
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_pad(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_pad instead");
+  desc: 已废弃，使用llama_vocab_fim_pad替代
+  line: 683-684
+  name: llama_token_fim_pad
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_rep(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_rep instead");
+  desc: 已废弃，使用llama_vocab_fim_rep替代
+  line: 685-686
+  name: llama_token_fim_rep
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_token_fim_sep(const struct llama_vocab
+    * vocab), "use llama_vocab_fim_sep instead");
+  desc: 已废弃，使用llama_vocab_fim_sep替代
+  line: 687-688
+  name: llama_token_fim_sep
+- code:
+  - DEPRECATED(LLAMA_API llama_token llama_vocab_cls(const struct llama_vocab * vocab),
+    "use llama_vocab_bos instead");
+  desc: 已废弃，分类token，使用llama_vocab_bos替代
+  line: 690-693
+  name: llama_vocab_cls
+- code:
+  - LLAMA_API int32_t llama_tokenize(const struct llama_vocab * vocab, const char
+    * text,
+  - '    int32_t text_len, llama_token * tokens, int32_t n_tokens_max,'
+  - '    bool add_special, bool parse_special);'
+  desc: 将提供的文本转换为token
+  line: 703-712
+  name: llama_tokenize
+- code:
+  - LLAMA_API int32_t llama_token_to_piece(const struct llama_vocab * vocab, llama_token
+    token,
+  - '    char * buf, int32_t length, int32_t lstrip, bool special);'
+  desc: 将token转换为字符片段
+  line: 713-721
+  name: llama_token_to_piece
+- code:
+  - LLAMA_API int32_t llama_detokenize(const struct llama_vocab * vocab, const llama_token
+    * tokens,
+  - '    int32_t n_tokens, char * text, int32_t text_len_max,'
+  - '    bool remove_special, bool unparse_special);'
+  desc: 将token序列转换为文本
+  line: 722-730
+  name: llama_detokenize
+- code:
+  - LLAMA_API int32_t llama_chat_apply_template(const char * tmpl,
+  - '    const struct llama_chat_message * chat, size_t n_msg, bool add_ass,'
+  - '    char * buf, int32_t length);'
+  desc: 应用聊天模板格式化对话消息
+  line: 742-748
+  name: llama_chat_apply_template
+- code:
+  - LLAMA_API int32_t llama_chat_builtin_templates(const char ** output, size_t len);
+  desc: 获取内置聊天模板列表
+  line: 750-751
+  name: llama_chat_builtin_templates
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_greedy(void);
+  desc: 初始化贪心采样器
+  line: 984-985
+  name: llama_sampler_init_greedy
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_dist(uint32_t seed);
+  desc: 初始化分布采样器，使用指定种子
+  line: 986-988
+  name: llama_sampler_init_dist
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_top_k(int32_t k);
+  desc: 初始化Top-K采样器
+  line: 989-992
+  name: llama_sampler_init_top_k
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_top_p(float p, size_t min_keep);
+  desc: 初始化核心采样器
+  line: 993-995
+  name: llama_sampler_init_top_p
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_min_p(float p, size_t min_keep);
+  desc: 初始化最小P采样器
+  line: 996-998
+  name: llama_sampler_init_min_p
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_typical(float p, size_t min_keep);
+  desc: 初始化典型采样器
+  line: 999-1001
+  name: llama_sampler_init_typical
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_temp(float t);
+  desc: 初始化温度采样器
+  line: 1002-1004
+  name: llama_sampler_init_temp
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_temp_ext(float t, float delta,
+    float exponent);
+  desc: 初始化动态温度采样器
+  line: 1005-1006
+  name: llama_sampler_init_temp_ext
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_xtc(float p, float t, size_t
+    min_keep, uint32_t seed);
+  desc: 初始化XTC采样器
+  line: 1007-1008
+  name: llama_sampler_init_xtc
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_top_n_sigma(float n);
+  desc: 初始化Top-N-Sigma采样器
+  line: 1011-1012
+  name: llama_sampler_init_top_n_sigma
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_mirostat(int32_t n_vocab,
+  - '    uint32_t seed, float tau,'
+  desc: 初始化Mirostat 1.0采样器
+  line: 1013-1014
+  name: llama_sampler_init_mirostat
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_mirostat(
+  - '                             int32_t   n_vocab,'
+  - '                            uint32_t   seed,'
+  - '                               float   tau,'
+  - '                               float   eta,'
+  - '                             int32_t   m);'
+  desc: 初始化 Mirostat 采样器，基于目标交叉熵动态调整采样分布以生成文本。
+  line: 1363-1371
+  name: llama_sampler_init_mirostat
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_mirostat_v2(
+  - '                            uint32_t   seed,'
+  - '                               float   tau,'
+  - '                               float   eta);'
+  desc: 初始化 Mirostat 2.0 采样器，使用 token 级别而非词级别的交叉熵目标。
+  line: 1373-1380
+  name: llama_sampler_init_mirostat_v2
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_grammar(
+  - '            const struct llama_vocab * vocab,'
+  - '                          const char * grammar_str,'
+  - '                          const char * grammar_root);'
+  desc: 初始化 GBNF 语法采样器，根据语法规则约束生成的 token。
+  line: 1382-1389
+  name: llama_sampler_init_grammar
+- code:
+  - DEPRECATED(LLAMA_API struct llama_sampler * llama_sampler_init_grammar_lazy(
+  - '            const struct llama_vocab * vocab,'
+  - '                          const char * grammar_str,'
+  - '                          const char * grammar_root,'
+  - '                         const char ** trigger_words,'
+  - '                                size_t num_trigger_words,'
+  - '                   const llama_token * trigger_tokens,'
+  - '                                size_t num_trigger_tokens),'
+  - '        "use llama_sampler_init_grammar_lazy_patterns instead");'
+  desc: 初始化懒惰语法采样器（已弃用），基于触发词和 token 来启用语法约束。
+  line: 1391-1400
+  name: llama_sampler_init_grammar_lazy
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_grammar_lazy_patterns(
+  - '    const struct llama_vocab * vocab,'
+  - '                      const char * grammar_str,'
+  - '                      const char * grammar_root,'
+  - '                     const char ** trigger_patterns,'
+  - '                            size_t num_trigger_patterns,'
+  - '               const llama_token * trigger_tokens,'
+  - '                            size_t num_trigger_tokens);'
+  desc: 初始化懒惰语法采样器，基于模式和 token 触发语法约束，从生成输出的匹配处开始应用。
+  line: 1402-1411
+  name: llama_sampler_init_grammar_lazy_patterns
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_penalties(
+  - '                             int32_t   penalty_last_n,   // last n tokens to
+    penalize (0 = disable penalty, -1 = context size)'
+  - '                               float   penalty_repeat,   // 1.0 = disabled'
+  - '                               float   penalty_freq,     // 0.0 = disabled'
+  - '                               float   penalty_present); // 0.0 = disabled'
+  desc: 初始化惩罚采样器，对重复、频率高和出现的 token 进行惩罚。
+  line: 1413-1419
+  name: llama_sampler_init_penalties
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_dry(
+  - '            const struct llama_vocab *  vocab,'
+  - '                             int32_t    n_ctx_train,'
+  - '                               float    dry_multiplier,'
+  - '                               float    dry_base,'
+  - '                             int32_t    dry_allowed_length,'
+  - '                             int32_t    dry_penalty_last_n,'
+  - '                          const char ** seq_breakers,'
+  - '                              size_t    num_breakers);'
+  desc: 初始化 DRY 采样器，一种基于重复模式惩罚的采样算法。
+  line: 1421-1431
+  name: llama_sampler_init_dry
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_adaptive_p(
+  - '                               float   target,'
+  - '                               float   decay,'
+  - '                            uint32_t   seed);'
+  desc: 初始化自适应概率采样器，选择接近动态目标概率的 token。
+  line: 1433-1440
+  name: llama_sampler_init_adaptive_p
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_logit_bias(
+  - '                             int32_t   n_vocab,'
+  - '                             int32_t   n_logit_bias,'
+  - '              const llama_logit_bias * logit_bias);'
+  desc: 初始化 logit 偏置采样器，对候选 token 的 logits 添加自定义偏置。
+  line: 1442-1447
+  name: llama_sampler_init_logit_bias
+- code:
+  - LLAMA_API struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab
+    * vocab);
+  desc: 初始化填充采样器，用于上下文中的填充任务，智能处理 EOG token。
+  line: 1449-1450
+  name: llama_sampler_init_infill
+- code:
+  - LLAMA_API uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl);
+  desc: 获取采样器使用的随机种子，如果不可用则返回默认种子。
+  line: 1452-1453
+  name: llama_sampler_get_seed
+- code:
+  - LLAMA_API llama_token llama_sampler_sample(struct llama_sampler * smpl, struct
+    llama_context * ctx, int32_t idx);
+  desc: 从指定输出索引采样一个 token，并更新采样器状态。
+  line: 1455-1456
+  name: llama_sampler_sample
+- code:
+  - LLAMA_API int32_t llama_split_path(char * split_path, size_t maxlen, const char
+    * path_prefix, int32_t split_no, int32_t split_count);
+  desc: 构建模型分片文件的最终路径。
+  line: 1464-1467
+  name: llama_split_path
+- code:
+  - LLAMA_API int32_t llama_split_prefix(char * split_prefix, size_t maxlen, const
+    char * split_path, int32_t split_no, int32_t split_count);
+  desc: 从模型分片路径中提取路径前缀，前提是分片号与总数匹配。
+  line: 1469-1473
+  name: llama_split_prefix
+- code:
+  - LLAMA_API const char * llama_print_system_info(void);
+  desc: 打印系统信息到标准输出。
+  line: 1475-1476
+  name: llama_print_system_info
+- code:
+  - LLAMA_API void llama_log_get(ggml_log_callback * log_callback, void ** user_data);
+  desc: 获取当前的日志回调函数和用户数据。
+  line: 1478-1479
+  name: llama_log_get
+- code:
+  - LLAMA_API void llama_log_set(ggml_log_callback   log_callback, void *  user_data);
+  desc: 设置全局日志回调函数和用户数据。
+  line: 1480-1481
+  name: llama_log_set
+- code:
+  - LLAMA_API struct llama_perf_context_data llama_perf_context      (const struct
+    llama_context * ctx);
+  desc: 获取上下文性能统计数据。
+  line: 1497-1498
+  name: llama_perf_context
+- code:
+  - LLAMA_API void                           llama_perf_context_print(const struct
+    llama_context * ctx);
+  desc: 打印上下文性能统计信息。
+  line: 1498-1499
+  name: llama_perf_context_print
+- code:
+  - LLAMA_API void                           llama_perf_context_reset(      struct
+    llama_context * ctx);
+  desc: 重置上下文性能统计数据。
+  line: 1499-1500
+  name: llama_perf_context_reset
+- code:
+  - LLAMA_API struct llama_perf_sampler_data llama_perf_sampler      (const struct
+    llama_sampler * chain);
+  desc: 获取采样器链的性能统计数据。
+  line: 1502-1503
+  name: llama_perf_sampler
+- code:
+  - LLAMA_API void                           llama_perf_sampler_print(const struct
+    llama_sampler * chain);
+  desc: 打印采样器链的性能统计信息。
+  line: 1503-1504
+  name: llama_perf_sampler_print
+- code:
+  - LLAMA_API void                           llama_perf_sampler_reset(      struct
+    llama_sampler * chain);
+  desc: 重置采样器链的性能统计数据。
+  line: 1504-1505
+  name: llama_perf_sampler_reset
+- code:
+  - LLAMA_API void llama_memory_breakdown_print(const struct llama_context * ctx);
+  desc: 打印每个设备的内存使用详细分解。
+  line: 1507-1508
+  name: llama_memory_breakdown_print
+- code:
+  - LLAMA_API bool llama_opt_param_filter_all(const struct ggml_tensor * tensor, void
+    * userdata);
+  desc: 总是返回 true 的参数过滤器回调。
+  line: 1517-1518
+  name: llama_opt_param_filter_all
+- code:
+  - LLAMA_API void llama_opt_init(struct llama_context * lctx, struct llama_model
+    * model, struct llama_opt_params lopt_params);
+  desc: 初始化模型训练优化器。
+  line: 1540-1541
+  name: llama_opt_init
+- code:
+  - LLAMA_API void llama_opt_epoch(
+  - '            struct llama_context    * lctx,'
+  - '            ggml_opt_dataset_t        dataset,'
+  - '            ggml_opt_result_t         result_train,'
+  - '            ggml_opt_result_t         result_eval,'
+  - '            int64_t                   idata_split,'
+  - '            ggml_opt_epoch_callback   callback_train,'
+  - '            ggml_opt_epoch_callback   callback_eval);'
+  desc: 执行一个训练周期的迭代。
+  line: 1543-1552
+  name: llama_opt_epoch

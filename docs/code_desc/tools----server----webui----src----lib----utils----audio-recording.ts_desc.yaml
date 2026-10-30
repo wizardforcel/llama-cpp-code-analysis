@@ -1,0 +1,254 @@
+classes:
+- desc: A browser-based audio recording class that manages microphone access, recording
+    state, and audio format optimization using the MediaRecorder API, with support
+    for multiple audio formats and real-time state tracking.
+  methods:
+  - code:
+    - 'async startRecording(): Promise<void> {'
+    - '    try {'
+    - '        this.stream = await navigator.mediaDevices.getUserMedia({'
+    - '            audio: {'
+    - '                echoCancellation: true,'
+    - '                noiseSuppression: true,'
+    - '                autoGainControl: true'
+    - '            }'
+    - '        });'
+    - ''
+    - '        this.initializeRecorder(this.stream);'
+    - ''
+    - '        this.audioChunks = [];'
+    - '        this.mediaRecorder!.start(100);'
+    - '        this.recordingState = true;'
+    - '    } catch (error) {'
+    - '        console.error(''Failed to start recording:'', error);'
+    - '        throw new Error(''Failed to access microphone. Please check permissions.'');'
+    - '    }'
+    - '}'
+    desc: Initializes microphone access with audio enhancement settings (echo cancellation,
+      noise suppression, auto gain control) and starts the recording process with
+      a 100ms timeslice for data collection.
+    line: 25-44
+    name: startRecording
+  - code:
+    - 'async stopRecording(): Promise<Blob> {'
+    - '    return new Promise((resolve, reject) => {'
+    - '        if (!this.mediaRecorder || this.mediaRecorder.state === ''inactive'')
+      {'
+    - '            reject(new Error(''No active recording to stop''));'
+    - '            return;'
+    - '        }'
+    - ''
+    - '        this.mediaRecorder.onstop = () => {'
+    - '            const mimeType = this.mediaRecorder?.mimeType || MimeTypeAudio.WAV;'
+    - '            const audioBlob = new Blob(this.audioChunks, { type: mimeType });'
+    - ''
+    - '            this.cleanup();'
+    - ''
+    - '            resolve(audioBlob);'
+    - '        };'
+    - ''
+    - '        this.mediaRecorder.onerror = (event) => {'
+    - '            console.error(''Recording error:'', event);'
+    - '            this.cleanup();'
+    - '            reject(new Error(''Recording failed''));'
+    - '        };'
+    - ''
+    - '        this.mediaRecorder.stop();'
+    - '    });'
+    - '}'
+    desc: Stops the active recording session and returns a Promise resolving to the
+      recorded audio Blob with the appropriate MIME type, handling cleanup and error
+      states.
+    line: 46-71
+    name: stopRecording
+  - code:
+    - 'isRecording(): boolean {'
+    - '    return this.recordingState;'
+    - '}'
+    desc: Returns the current recording state as a boolean indicating whether recording
+      is in progress.
+    line: 73-75
+    name: isRecording
+  - code:
+    - 'cancelRecording(): void {'
+    - '    if (this.mediaRecorder && this.mediaRecorder.state !== ''inactive'') {'
+    - '        this.mediaRecorder.stop();'
+    - '    }'
+    - '    this.cleanup();'
+    - '}'
+    desc: Cancels the current recording by stopping the MediaRecorder (if active)
+      and performing cleanup of all resources without returning the recorded data.
+    line: 77-82
+    name: cancelRecording
+  - code:
+    - 'private initializeRecorder(stream: MediaStream): void {'
+    - '    const options: MediaRecorderOptions = {};'
+    - ''
+    - '    if (MediaRecorder.isTypeSupported(MimeTypeAudio.WAV)) {'
+    - '        options.mimeType = MimeTypeAudio.WAV;'
+    - '    } else if (MediaRecorder.isTypeSupported(MimeTypeAudio.WEBM_OPUS)) {'
+    - '        options.mimeType = MimeTypeAudio.WEBM_OPUS;'
+    - '    } else if (MediaRecorder.isTypeSupported(MimeTypeAudio.WEBM)) {'
+    - '        options.mimeType = MimeTypeAudio.WEBM;'
+    - '    } else if (MediaRecorder.isTypeSupported(MimeTypeAudio.MP4)) {'
+    - '        options.mimeType = MimeTypeAudio.MP4;'
+    - '    } else {'
+    - '        console.warn(''No preferred audio format supported, using default'');'
+    - '    }'
+    - ''
+    - '    this.mediaRecorder = new MediaRecorder(stream, options);'
+    - ''
+    - '    this.mediaRecorder.ondataavailable = (event) => {'
+    - '        if (event.data.size > 0) {'
+    - '            this.audioChunks.push(event.data);'
+    - '        }'
+    - '    };'
+    - ''
+    - '    this.mediaRecorder.onstop = () => {'
+    - '        this.recordingState = false;'
+    - '    };'
+    - ''
+    - '    this.mediaRecorder.onerror = (event) => {'
+    - '        console.error(''MediaRecorder error:'', event);'
+    - '        this.recordingState = false;'
+    - '    };'
+    - '}'
+    desc: 'Private method that configures the MediaRecorder with optimal audio format
+      selection (fallback chain: WAV → WebM Opus → WebM → MP4) and sets up event handlers
+      for data collection and error handling.'
+    line: 84-116
+    name: initializeRecorder
+  - code:
+    - 'private cleanup(): void {'
+    - '    if (this.stream) {'
+    - '        for (const track of this.stream.getTracks()) {'
+    - '            track.stop();'
+    - '        }'
+    - ''
+    - '        this.stream = null;'
+    - '    }'
+    - '    this.mediaRecorder = null;'
+    - '    this.audioChunks = [];'
+    - '    this.recordingState = false;'
+    - '}'
+    desc: Private method that performs resource cleanup by stopping all media stream
+      tracks, nullifying references, and resetting the recording state to false.
+    line: 118-130
+    name: cleanup
+  name: AudioRecorder
+desc: This file provides a comprehensive audio recording solution for browser environments
+  using the MediaRecorder API. It includes an AudioRecorder class for capturing microphone
+  input with enhanced audio processing, along with utility functions for converting
+  audio to WAV format (via PCM encoding), creating File objects from audio blobs,
+  and checking browser compatibility for audio recording features. The module handles
+  format fallback across WAV, WebM, MP4, and AAC formats while managing proper resource
+  cleanup and error states.
+file: tools/server/webui/src/lib/utils/audio-recording.ts
+funcs:
+- code:
+  - 'export async function convertToWav(audioBlob: Blob): Promise<Blob> {'
+  - '    try {'
+  - '        if (audioBlob.type.includes(''wav'')) {'
+  - '            return audioBlob;'
+  - '        }'
+  - ''
+  - '        const arrayBuffer = await audioBlob.arrayBuffer();'
+  - ''
+  - '        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();'
+  - ''
+  - '        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);'
+  - ''
+  - '        const wavBlob = audioBufferToWav(audioBuffer);'
+  - ''
+  - '        audioContext.close();'
+  - ''
+  - '        return wavBlob;'
+  - '    } catch (error) {'
+  - '        console.error(''Failed to convert audio to WAV:'', error);'
+  - '        return audioBlob;'
+  - '    }'
+  - '}'
+  desc: Asynchronously converts any audio Blob to WAV format by decoding the audio
+    data and re-encoding it as PCM WAV; returns original blob if already WAV or if
+    conversion fails.
+  line: 132-154
+  name: convertToWav
+- code:
+  - 'function audioBufferToWav(buffer: AudioBuffer): Blob {'
+  - '    const length = buffer.length;'
+  - '    const numberOfChannels = buffer.numberOfChannels;'
+  - '    const sampleRate = buffer.sampleRate;'
+  - '    const bytesPerSample = 2;'
+  - '    const blockAlign = numberOfChannels * bytesPerSample;'
+  - '    const byteRate = sampleRate * blockAlign;'
+  - '    const dataSize = length * blockAlign;'
+  - '    const bufferSize = 44 + dataSize;'
+  - ''
+  - '    const arrayBuffer = new ArrayBuffer(bufferSize);'
+  - '    const view = new DataView(arrayBuffer);'
+  - ''
+  - '    const writeString = (offset: number, string: string) => {'
+  - '        for (let i = 0; i < string.length; i++) {'
+  - '            view.setUint8(offset + i, string.charCodeAt(i));'
+  - '        }'
+  - '    };'
+  - ''
+  - '    writeString(0, ''RIFF'');'
+  - '    view.setUint32(4, bufferSize - 8, true);'
+  - '    writeString(8, ''WAVE'');'
+  - '    writeString(12, ''fmt '');'
+  - '    view.setUint32(16, 16, true);'
+  - '    view.setUint16(20, 1, true);'
+  - '    view.setUint16(22, numberOfChannels, true);'
+  - '    view.setUint32(24, sampleRate, true);'
+  - '    view.setUint32(28, byteRate, true);'
+  - '    view.setUint16(32, blockAlign, true);'
+  - '    view.setUint16(34, 16, true);'
+  - '    writeString(36, ''data'');'
+  - '    view.setUint32(40, dataSize, true);'
+  - ''
+  - '    let offset = 44;'
+  - '    for (let i = 0; i < length; i++) {'
+  - '        for (let channel = 0; channel < numberOfChannels; channel++) {'
+  - '            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));'
+  - '            view.setInt16(offset, sample * 0x7fff, true);'
+  - '            offset += 2;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    return new Blob([arrayBuffer], { type: MimeTypeAudio.WAV });'
+  - '}'
+  desc: Internal helper function that converts a Web Audio API AudioBuffer to a WAV
+    format Blob by manually constructing the RIFF/WAVE header and encoding PCM audio
+    data as 16-bit integers.
+  line: 156-205
+  name: audioBufferToWav
+- code:
+  - 'export function createAudioFile(audioBlob: Blob, filename?: string): File {'
+  - '    const timestamp = new Date().toISOString().replace(/[:.]/g, ''-'');'
+  - '    const extension = audioBlob.type.includes(''wav'') ? ''wav'' : ''mp3'';'
+  - '    const defaultFilename = `recording-${timestamp}.${extension}`;'
+  - ''
+  - '    return new File([audioBlob], filename || defaultFilename, {'
+  - '        type: audioBlob.type,'
+  - '        lastModified: Date.now()'
+  - '    });'
+  - '}'
+  desc: Creates a File object from an audio Blob with a timestamp-based filename (or
+    custom name), automatically determining extension from MIME type.
+  line: 212-221
+  name: createAudioFile
+- code:
+  - 'export function isAudioRecordingSupported(): boolean {'
+  - '    return !!('
+  - '        typeof navigator !== ''undefined'' &&'
+  - '        navigator.mediaDevices &&'
+  - '        typeof navigator.mediaDevices.getUserMedia === ''function'' &&'
+  - '        typeof window !== ''undefined'' &&'
+  - '        window.MediaRecorder'
+  - '    );'
+  - '}'
+  desc: Checks browser compatibility for audio recording by verifying the existence
+    of required APIs (navigator.mediaDevices.getUserMedia and window.MediaRecorder).
+  line: 227-235
+  name: isAudioRecordingSupported

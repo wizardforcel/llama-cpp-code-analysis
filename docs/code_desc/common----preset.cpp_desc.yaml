@@ -1,0 +1,468 @@
+classes:
+- desc: 表示一组命令行或运行时配置选项，并提供序列化、修改、合并及应用到参数对象的能力。
+  methods:
+  - code:
+    - std::vector<std::string> common_preset::to_args(const std::string & bin_path)
+      const {
+    - '    std::vector<std::string> args;'
+    - '    if (!bin_path.empty()) {'
+    - '        args.push_back(bin_path);'
+    - '    }'
+    - '    for (const auto & [opt, value] : options) {'
+    - '        if (opt.is_preset_only) {'
+    - '            continue;'
+    - '        }'
+    - '        args.push_back(opt.args.back());'
+    - '        if (opt.value_hint == nullptr && opt.value_hint_2 == nullptr) {'
+    - '            if (common_arg_utils::is_falsey(value)) {'
+    - '                if (!opt.args_neg.empty()) {'
+    - '                    args.back() = opt.args_neg.back();'
+    - '                } else {'
+    - '                    args.pop_back();'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        if (opt.value_hint != nullptr) {'
+    - '            args.push_back(value);'
+    - '        }'
+    - '        if (opt.value_hint != nullptr && opt.value_hint_2 != nullptr) {'
+    - '            throw std::runtime_error(string_format('
+    - '                "common_preset::to_args(): option ''%s'' has two values, which
+      is not supported yet",'
+    - '                opt.args.back()'
+    - '            ));'
+    - '        }'
+    - '    }'
+    - '    return args;'
+    - '}'
+    desc: 将预设选项转换为命令行参数列表，并处理布尔选项、负向选项和参数值。
+    line: 43-83
+    name: to_args
+  - code:
+    - std::string common_preset::to_ini() const {
+    - '    std::ostringstream ss;'
+    - '    ss << "[" << name << "]\n";'
+    - '    for (const auto & [opt, value] : options) {'
+    - '        auto espaced_value = value;'
+    - '        string_replace_all(espaced_value, "\n", "\\\n");'
+    - '        ss << rm_leading_dashes(opt.args.back()) << " = ";'
+    - '        ss << espaced_value << "\n";'
+    - '    }'
+    - '    ss << "\n";'
+    - '    return ss.str();'
+    - '}'
+    desc: 将预设序列化为 INI 配置文本。
+    line: 85-100
+    name: to_ini
+  - code:
+    - void common_preset::set_option(const common_preset_context & ctx, const std::string
+      & env, const std::string & value) {
+    - '    for (auto & [opt, val] : options) {'
+    - '        if (opt.env && env == opt.env) {'
+    - '            val = value;'
+    - '            return;'
+    - '        }'
+    - '    }'
+    - '    if (ctx.key_to_opt.find(env) == ctx.key_to_opt.end()) {'
+    - '        throw std::runtime_error(string_format('
+    - '            "%s: option with env ''%s'' not found in ctx_params",'
+    - '            __func__, env.c_str()'
+    - '        ));'
+    - '    }'
+    - '    options[ctx.key_to_opt.at(env)] = value;'
+    - '}'
+    desc: 根据环境变量名称更新已有选项，或从上下文中查找并新增选项。
+    line: 102-119
+    name: set_option
+  - code:
+    - void common_preset::unset_option(const std::string & env) {
+    - '    for (auto it = options.begin(); it != options.end(); ) {'
+    - '        const common_arg & opt = it->first;'
+    - '        if (opt.env && env == opt.env) {'
+    - '            it = options.erase(it);'
+    - '            return;'
+    - '        } else {'
+    - '            ++it;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 按照环境变量名称从预设中移除对应选项。
+    line: 121-133
+    name: unset_option
+  - code:
+    - bool common_preset::get_option(const std::string & env, std::string & value)
+      const {
+    - '    for (const auto & [opt, val] : options) {'
+    - '        if (opt.env && env == opt.env) {'
+    - '            value = val;'
+    - '            return true;'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 按照环境变量名称查找选项值，并返回是否找到。
+    line: 135-144
+    name: get_option
+  - code:
+    - void common_preset::merge(const common_preset & other) {
+    - '    for (const auto & [opt, val] : other.options) {'
+    - '        options[opt] = val;'
+    - '    }'
+    - '}'
+    desc: 将另一个预设中的选项合并到当前预设，并覆盖同名选项。
+    line: 146-151
+    name: merge
+  - code:
+    - void common_preset::apply_to_params(common_params & params) const {
+    - '    for (const auto & [opt, val] : options) {'
+    - '        if (opt.handler_string) {'
+    - '            opt.handler_string(params, val);'
+    - '        } else if (opt.handler_int) {'
+    - '            opt.handler_int(params, std::stoi(val));'
+    - '        } else if (opt.handler_bool) {'
+    - '            opt.handler_bool(params, common_arg_utils::is_truthy(val));'
+    - '        } else if (opt.handler_str_str) {'
+    - '            throw std::runtime_error(string_format('
+    - '                "%s: option with two values is not supported yet",'
+    - '                __func__'
+    - '            ));'
+    - '        } else if (opt.handler_void) {'
+    - '            opt.handler_void(params);'
+    - '        } else {'
+    - '            GGML_ABORT("unknown handler type");'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 根据选项处理器类型，将预设中的值应用到运行参数对象。
+    line: 153-178
+    name: apply_to_params
+  name: common_preset
+- desc: 维护预设解析所需的参数上下文、选项映射和远程预设安全策略，并负责从多种来源加载和级联预设。
+  methods:
+  - code:
+    - common_preset_context::common_preset_context(llama_example ex, bool only_remote_allowed)
+    - '        : ctx_params(common_params_parser_init(default_params, ex)) {'
+    - '    common_params_add_preset_options(ctx_params.options);'
+    - '    key_to_opt = get_map_key_opt(ctx_params);'
+    - '    if (only_remote_allowed) {'
+    - '        filter_allowed_keys = true;'
+    - '        allowed_keys = get_remote_preset_whitelist(key_to_opt);'
+    - '    }'
+    - '}'
+    desc: 初始化参数解析上下文和选项映射，并在需要时建立远程预设白名单。
+    line: 255-264
+    name: common_preset_context
+  - code:
+    - common_presets common_preset_context::load_from_ini(const std::string & path,
+      common_preset & global) const {
+    - '    common_presets out;'
+    - '    auto ini_data = parse_ini_from_file(path);'
+    - '    for (auto section : ini_data) {'
+    - '        common_preset preset;'
+    - '        if (section.first.empty()) {'
+    - '            preset.name = COMMON_PRESET_DEFAULT_NAME;'
+    - '        } else {'
+    - '            preset.name = section.first;'
+    - '        }'
+    - '        for (const auto & [key, value] : section.second) {'
+    - '            if (key == "version") {'
+    - '                continue;'
+    - '            }'
+    - '            if (filter_allowed_keys && allowed_keys.find(key) == allowed_keys.end())
+      {'
+    - '                throw std::runtime_error(string_format('
+    - '                    "option ''%s'' is not allowed in remote presets",'
+    - '                    key.c_str()'
+    - '                ));'
+    - '            }'
+    - '            if (key_to_opt.find(key) != key_to_opt.end()) {'
+    - '                const auto & opt = key_to_opt.at(key);'
+    - '                if (is_bool_arg(opt)) {'
+    - '                    preset.options[opt] = parse_bool_arg(opt, key, value);'
+    - '                } else {'
+    - '                    preset.options[opt] = value;'
+    - '                }'
+    - '            } else {'
+    - '                throw std::runtime_error(string_format('
+    - '                    "option ''%s'' not recognized in preset ''%s''",'
+    - '                    key.c_str(), preset.name.c_str()'
+    - '                ));'
+    - '            }'
+    - '        }'
+    - '        if (preset.name == "*") {'
+    - '            global = preset;'
+    - '        } else {'
+    - '            out[preset.name] = preset;'
+    - '        }'
+    - '    }'
+    - '    return out;'
+    - '}'
+    desc: 读取并解析 INI 文件，将各个配置节转换为预设，同时支持全局预设和远程选项白名单校验。
+    line: 266-315
+    name: load_from_ini
+  - code:
+    - common_presets common_preset_context::load_from_cache() const {
+    - '    common_presets out;'
+    - '    auto cached_models = common_list_cached_models();'
+    - '    for (const auto & model : cached_models) {'
+    - '        common_preset preset;'
+    - '        preset.name = model.to_string();'
+    - '        preset.set_option(*this, "LLAMA_ARG_HF_REPO", model.to_string());'
+    - '        out[preset.name] = preset;'
+    - '    }'
+    - '    return out;'
+    - '}'
+    desc: 从缓存模型列表中生成以模型标识为名称、以 Hugging Face 仓库为参数的预设。
+    line: 317-329
+    name: load_from_cache
+  - code:
+    - common_presets common_preset_context::load_from_models_dir(const std::string
+      & models_dir) const {
+    - '    if (!std::filesystem::exists(models_dir) || !std::filesystem::is_directory(models_dir))
+      {'
+    - '        throw std::runtime_error(string_format("error: ''%s'' does not exist
+      or is not a directory\n", models_dir.c_str()));'
+    - '    }'
+    - '    std::vector<local_model> models;'
+    - '    auto scan_subdir = [&models](const std::string & subdir_path, const std::string
+      & name) {'
+    - '        auto files = fs_list(subdir_path, false);'
+    - '        common_file_info model_file;'
+    - '        common_file_info first_shard_file;'
+    - '        common_file_info mmproj_file;'
+    - '        for (const auto & file : files) {'
+    - '            if (string_ends_with(file.name, ".gguf")) {'
+    - '                if (file.name.find("mmproj") != std::string::npos) {'
+    - '                    mmproj_file = file;'
+    - '                } else if (file.name.find("-00001-of-") != std::string::npos)
+      {'
+    - '                    first_shard_file = file;'
+    - '                } else {'
+    - '                    model_file = file;'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        local_model model{'
+    - '            name,'
+    - '            first_shard_file.path.empty() ? model_file.path : first_shard_file.path,'
+    - '            mmproj_file.path'
+    - '        };'
+    - '        if (!model.path.empty()) {'
+    - '            models.push_back(model);'
+    - '        }'
+    - '    };'
+    - '    auto files = fs_list(models_dir, true);'
+    - '    for (const auto & file : files) {'
+    - '        if (file.is_dir) {'
+    - '            scan_subdir(file.path, file.name);'
+    - '        } else if (string_ends_with(file.name, ".gguf")) {'
+    - '            std::string name = file.name;'
+    - '            string_replace_all(name, ".gguf", "");'
+    - '            local_model model{ name, file.path, "" };'
+    - '            models.push_back(model);'
+    - '        }'
+    - '    }'
+    - '    common_presets out;'
+    - '    for (const auto & model : models) {'
+    - '        common_preset preset;'
+    - '        preset.name = model.name;'
+    - '        preset.set_option(*this, "LLAMA_ARG_MODEL", model.path);'
+    - '        if (!model.path_mmproj.empty()) {'
+    - '            preset.set_option(*this, "LLAMA_ARG_MMPROJ", model.path_mmproj);'
+    - '        }'
+    - '        out[preset.name] = preset;'
+    - '    }'
+    - '    return out;'
+    - '}'
+    desc: 扫描本地模型目录及其子目录，识别 GGUF 模型和 mmproj 文件并生成本地模型预设。
+    line: 338-394
+    name: load_from_models_dir
+  - code:
+    - common_preset common_preset_context::load_from_args(int argc, char ** argv)
+      const {
+    - '    common_preset preset;'
+    - '    preset.name = COMMON_PRESET_DEFAULT_NAME;'
+    - '    bool ok = common_params_to_map(argc, argv, ctx_params.ex, preset.options);'
+    - '    if (!ok) {'
+    - '        throw std::runtime_error("failed to parse CLI arguments into preset");'
+    - '    }'
+    - '    return preset;'
+    - '}'
+    desc: 将命令行参数解析为默认名称的预设。
+    line: 396-406
+    name: load_from_args
+  - code:
+    - common_presets common_preset_context::cascade(const common_presets & base, const
+      common_presets & added) const {
+    - '    common_presets out = base;'
+    - '    for (const auto & [name, preset_added] : added) {'
+    - '        if (out.find(name) != out.end()) {'
+    - '            common_preset & target = out[name];'
+    - '            target.merge(preset_added);'
+    - '        } else {'
+    - '            out[name] = preset_added;'
+    - '        }'
+    - '    }'
+    - '    return out;'
+    - '}'
+    desc: 将新增预设集合级联到基础预设集合中，按名称合并或添加预设。
+    line: 408-421
+    name: cascade
+  - code:
+    - common_presets common_preset_context::cascade(const common_preset & base, const
+      common_presets & presets) const {
+    - '    common_presets out;'
+    - '    for (const auto & [name, preset] : presets) {'
+    - '        common_preset tmp = base;'
+    - '        tmp.name = name;'
+    - '        tmp.merge(preset);'
+    - '        out[name] = std::move(tmp);'
+    - '    }'
+    - '    return out;'
+    - '}'
+    desc: 将一个基础预设应用到预设集合中的每个预设，并按集合名称生成结果。
+    line: 423-434
+    name: cascade
+  name: common_preset_context
+desc: 该文件实现预设配置管理功能：将命令行参数和 INI 配置解析为模型预设，支持预设参数转换为命令行或 INI 格式、参数设置与合并、应用到运行参数、从缓存模型和本地模型目录加载预设，并通过白名单限制远程预设可使用的参数。
+file: common/preset.cpp
+funcs:
+- code:
+  - static std::string rm_leading_dashes(const std::string & str) {
+  - '    size_t pos = 0;'
+  - '    while (pos < str.size() && str[pos] == ''-'') {'
+  - '        ++pos;'
+  - '    }'
+  - '    return str.substr(pos);'
+  - '}'
+  desc: 移除字符串开头连续的连字符。
+  line: 8-14
+  name: rm_leading_dashes
+- code:
+  - static std::set<std::string> get_remote_preset_whitelist(const std::map<std::string,
+    common_arg> & key_to_opt) {
+  - '    static const std::set<std::string> allowed_options = {'
+  - '        "model-url", "hf-repo", "hf-repo-draft", "hf-repo-v", "hf-file-v",'
+  - '        "mmproj-url", "pooling", "jinja", "batch-size", "ubatch-size",'
+  - '        "cache-reuse", "chat-template-kwargs", "mmap"'
+  - '    };'
+  - '    std::set<std::string> allowed_keys;'
+  - '    for (const auto & it : key_to_opt) {'
+  - '        const std::string & key = it.first;'
+  - '        const common_arg & opt = it.second;'
+  - '        if (allowed_options.find(key) != allowed_options.end() || opt.is_sparam)
+    {'
+  - '            allowed_keys.insert(key);'
+  - '            for (const auto & arg : opt.get_args()) {'
+  - '                allowed_keys.insert(rm_leading_dashes(arg));'
+  - '            }'
+  - '            for (const auto & env : opt.get_env()) {'
+  - '                allowed_keys.insert(env);'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return allowed_keys;'
+  - '}'
+  desc: 根据参数定义生成远程预设允许使用的选项白名单，并包含选项别名和环境变量名称。
+  line: 20-41
+  name: get_remote_preset_whitelist
+- code:
+  - static std::map<std::string, std::map<std::string, std::string>> parse_ini_from_file(const
+    std::string & path) {
+  - '    std::map<std::string, std::map<std::string, std::string>> parsed;'
+  - '    if (!std::filesystem::exists(path)) {'
+  - '        throw std::runtime_error("preset file does not exist: " + path);'
+  - '    }'
+  - '    std::ifstream file(path);'
+  - '    if (!file.good()) {'
+  - '        throw std::runtime_error("failed to open server preset file: " + path);'
+  - '    }'
+  - '    std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());'
+  - '    static const auto parser = build_peg_parser([](auto & p) {'
+  - '        auto newline = p.rule("newline", p.literal("\r\n") | p.literal("\n")
+    | p.literal("\r"));'
+  - '        auto ws = p.rule("ws", p.chars("[ \t]", 0, -1));'
+  - '        auto comment = p.rule("comment", p.chars("[;#]", 1, 1) + p.zero_or_more(p.negate(newline)
+    + p.any()));'
+  - '        auto eol = p.rule("eol", ws + p.optional(comment) + (newline | p.end()));'
+  - '        auto ident = p.rule("ident", p.chars("[a-zA-Z_]", 1, 1) + p.chars("[a-zA-Z0-9_.-]",
+    0, -1));'
+  - '        auto eol_start = p.rule("eol-start", ws + (p.chars("[;#]", 1, 1) | newline
+    | p.end()));'
+  - '        auto value = p.rule("value", p.zero_or_more(p.negate(eol_start) + p.any()));'
+  - '        auto header_line = p.rule("header-line", "[" + ws + p.tag("section-name",
+    p.chars("[^]]")) + ws + "]" + eol);'
+  - '        auto kv_line = p.rule("kv-line", p.tag("key", ident) + ws + "=" + ws
+    + p.tag("value", value) + eol);'
+  - '        auto comment_line = p.rule("comment-line", ws + comment + (newline |
+    p.end()));'
+  - '        auto blank_line = p.rule("blank-line", ws + (newline | p.end()));'
+  - '        auto line = p.rule("line", header_line | kv_line | comment_line | blank_line);'
+  - '        auto ini = p.rule("ini", p.zero_or_more(line) + p.end());'
+  - '        return ini;'
+  - '    });'
+  - '    common_peg_parse_context ctx(contents);'
+  - '    const auto result = parser.parse(ctx);'
+  - '    if (!result.success()) {'
+  - '        throw std::runtime_error("failed to parse server config file: " + path);'
+  - '    }'
+  - '    std::string current_section = COMMON_PRESET_DEFAULT_NAME;'
+  - '    std::string current_key;'
+  - '    ctx.ast.visit(result, [&](const auto & node) {'
+  - '        if (node.tag == "section-name") {'
+  - '            current_section = std::string(node.text);'
+  - '            parsed[current_section] = {};'
+  - '        } else if (node.tag == "key") {'
+  - '            current_key = std::string(node.text);'
+  - '        } else if (node.tag == "value" && !current_key.empty() && !current_section.empty())
+    {'
+  - '            parsed[current_section][current_key] = std::string(node.text);'
+  - '            current_key.clear();'
+  - '        }'
+  - '    });'
+  - '    return parsed;'
+  - '}'
+  desc: 读取并解析 INI 文件，提取配置节、键和值，并返回分组后的配置映射。
+  line: 180-253
+  name: parse_ini_from_file
+- code:
+  - static std::map<std::string, common_arg> get_map_key_opt(common_params_context
+    & ctx_params) {
+  - '    std::map<std::string, common_arg> mapping;'
+  - '    for (const auto & opt : ctx_params.options) {'
+  - '        for (const auto & env : opt.get_env()) {'
+  - '            mapping[env] = opt;'
+  - '        }'
+  - '        for (const auto & arg : opt.get_args()) {'
+  - '            mapping[rm_leading_dashes(arg)] = opt;'
+  - '        }'
+  - '    }'
+  - '    return mapping;'
+  - '}'
+  desc: 建立环境变量名及去除连字符后的命令行参数名到参数定义的映射。
+  line: 236-247
+  name: get_map_key_opt
+- code:
+  - static bool is_bool_arg(const common_arg & arg) {
+  - '    return !arg.args_neg.empty();'
+  - '}'
+  desc: 判断参数是否为支持负向形式的布尔参数。
+  line: 249-251
+  name: is_bool_arg
+- code:
+  - static std::string parse_bool_arg(const common_arg & arg, const std::string &
+    key, const std::string & value) {
+  - '    for (const auto & neg_arg : arg.args_neg) {'
+  - '        if (rm_leading_dashes(neg_arg) == key) {'
+  - '            return common_arg_utils::is_truthy(value) ? "false" : "true";'
+  - '        }'
+  - '    }'
+  - '    return value;'
+  - '}'
+  desc: 解析布尔参数值，并在输入键为负向参数时反转其逻辑值。
+  line: 253-263
+  name: parse_bool_arg
+- code: []
+  desc: 文件级全局代码主要定义预设转换、INI 解析、参数映射、布尔值处理以及预设上下文相关实现。
+  line: 1-434
+  name: __main__

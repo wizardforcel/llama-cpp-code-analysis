@@ -1,0 +1,80 @@
+classes: []
+desc: 该文件是 Hexagon DSP 的 HMX 内联工具头文件，提供 FP16 32x32 分块计算的低层辅助函数，包括设置输出缩放、加载分块到硬件加速器、消费累加器、点积计算以及基于顺序分配的
+  VTCM 内存分配器，并封装了硬件特定的 asm 指令以优化矩阵运算性能。
+file: ggml/src/ggml-hexagon/htp/hmx-utils.h
+funcs:
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_set_output_scales(const void *scales) {
+  - '    asm volatile("bias = mxmem2(%0)" :: "r"(scales));'
+  - '}'
+  desc: 通过硬件指令设置输出缩放向量
+  line: 18-20
+  name: hmx_set_output_scales
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_init_column_scales(void *out_scales, HVX_Vector
+    v_scale) {
+  - '    HVX_Vector *pv = (HVX_Vector *)out_scales;'
+  - '    *pv++ = v_scale;'
+  - '    *pv   = Q6_V_vzero();'
+  - '}'
+  desc: 初始化对齐的 256 字节区域，填充缩放向量和零填充
+  line: 23-27
+  name: hmx_init_column_scales
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_load_tiles_fp16(const __fp16 *row_tiles,
+  - '                                                   const __fp16 *col_tiles,'
+  - '                                                   size_t n_tiles) {'
+  - '    size_t limit = n_tiles * HMX_FP16_TILE_SIZE - 1;'
+  - '    asm volatile('
+  - '        "{ activation.hf = mxmem(%0, %1):deep\n"'
+  - '        "weight.hf = mxmem(%2, %3) }\n"'
+  - '        :: "r"(row_tiles), "r"(limit), "r"(col_tiles), "r"(limit)'
+  - '        : "memory");'
+  - '}'
+  desc: 加载多个连续分块并使用 deep 流式传输，含 VTCM 4MB 对齐约束，错误会触发总线错误
+  line: 34-45
+  name: hmx_load_tiles_fp16
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_load_tile_pair_fp16(const __fp16 *act_tile,
+  - '                                                       const __fp16 *wt_tile)
+    {'
+  - '    asm volatile('
+  - '        "{ activation.hf = mxmem(%0, %1)\n"'
+  - '        "weight.hf = mxmem(%2, %3) }\n"'
+  - '        :: "r"(act_tile), "r"(2047),'
+  - '           "r"(wt_tile),  "r"(2047)'
+  - '        : "memory");'
+  - '}'
+  desc: 加载单个激活和权重分块对（非流式），使用 Rt=2047 限制区域避免跨 4MB 边界错误
+  line: 50-58
+  name: hmx_load_tile_pair_fp16
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_consume_accumulator_fp16(__fp16 *out) {
+  - '    asm volatile('
+  - '        "mxmem(%0, %1):after.hf = acc\n"'
+  - '        :: "r"(out), "r"(0)'
+  - '        : "memory");'
+  - '}'
+  desc: 将累加器数据转换并存储到输出缓冲区，使用硬件转换指令
+  line: 61-67
+  name: hmx_consume_accumulator_fp16
+- code:
+  - static HMX_INLINE_ALWAYS void hmx_dot_fp16(__fp16 *out,
+  - '                                            const __fp16 *row_tiles,'
+  - '                                            const __fp16 *col_tiles,'
+  - '                                            size_t n_tiles) {'
+  - '    hmx_load_tiles_fp16(row_tiles, col_tiles, n_tiles);'
+  - '    hmx_consume_accumulator_fp16(out);'
+  - '}'
+  desc: 计算两个分块向量的内积并将结果存储到输出
+  line: 72-78
+  name: hmx_dot_fp16
+- code:
+  - static inline uint8_t *vtcm_seq_alloc(uint8_t **vtcm_ptr, size_t size) {
+  - '    uint8_t *p = *vtcm_ptr;'
+  - '    *vtcm_ptr += size;'
+  - '    return p;'
+  - '}'
+  desc: 顺序分配 VTCM 内存，返回当前指针并向前移动指定大小
+  line: 82-86
+  name: vtcm_seq_alloc

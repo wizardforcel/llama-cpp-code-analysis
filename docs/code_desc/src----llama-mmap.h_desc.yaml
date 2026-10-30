@@ -1,0 +1,144 @@
+classes:
+- desc: 文件操作抽象类，封装文件读写、定位、大小查询等基础操作，特别支持直接IO模式和内存对齐读取，并持有内部实现指针（pimpl）以隔离平台差异。
+  methods:
+  - code:
+    - llama_file(const char * fname, const char * mode, bool use_direct_io = false);
+    - llama_file(FILE * file);
+    desc: 构造函数，根据路径和模式（如读写、二进制、直接IO选项）打开文件，或从已有FILE*指针构建对象，初始化内部实现。
+    line: 20-21
+    name: llama_file
+  - code:
+    - ~llama_file();
+    desc: 析构函数，负责关闭文件并释放内部实现资源。
+    line: '22'
+    name: ~llama_file
+  - code:
+    - size_t tell() const;
+    desc: 查询当前文件读写位置（字节偏移量）。
+    line: '24'
+    name: tell
+  - code:
+    - size_t size() const;
+    desc: 获取文件总大小（字节数）。
+    line: '25'
+    name: size
+  - code:
+    - int file_id() const; // fileno overload
+    desc: 获取文件描述符（fileno），用于需要文件标识符的系统调用场景。
+    line: '27'
+    name: file_id
+  - code:
+    - void seek(size_t offset, int whence) const;
+    desc: 定位文件指针到指定偏移量，偏移方向由whence参数指定（如文件开头、当前位置等）。
+    line: '29'
+    name: seek
+  - code:
+    - void read_raw(void * ptr, size_t len);
+    desc: 从文件当前偏移量处读取指定长度的原始字节到缓冲区，并自动更新文件偏移量。
+    line: '31'
+    name: read_raw
+  - code:
+    - void read_raw_unsafe(void * ptr, size_t len);
+    desc: 直接读取指定长度的原始字节到缓冲区，不执行任何对齐或安全检查，用于性能关键路径。
+    line: '32'
+    name: read_raw_unsafe
+  - code:
+    - void read_aligned_chunk(void * dest, size_t size);
+    desc: 以对齐方式读取数据块到指定目标地址，确保读取满足底层存储（如SSD）的对齐要求，提升IO性能。
+    line: '33'
+    name: read_aligned_chunk
+  - code:
+    - uint32_t read_u32();
+    desc: 从文件读取一个32位无符号整数（小端序），并推进文件偏移量。
+    line: '34'
+    name: read_u32
+  - code:
+    - void write_raw(const void * ptr, size_t len) const;
+    desc: 将原始数据缓冲区写入文件当前偏移量处，并更新文件偏移量。
+    line: '36'
+    name: write_raw
+  - code:
+    - void write_u32(uint32_t val) const;
+    desc: 将32位无符号整数写入文件，并推进文件偏移量。
+    line: '37'
+    name: write_u32
+  - code:
+    - size_t read_alignment() const;
+    desc: 获取当前文件的读取对齐字节数，用于指导调用方进行对齐读操作。
+    line: '39'
+    name: read_alignment
+  - code:
+    - bool has_direct_io() const;
+    desc: 查询当前文件是否启用了直接IO模式（绕过操作系统页缓存）。
+    line: '40'
+    name: has_direct_io
+  name: llama_file
+- desc: 内存映射文件管理类，负责将文件内容映射到进程地址空间以支持随机访问，提供分片取消映射功能和大小查询。
+  methods:
+  - code:
+    - llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1, bool numa
+      = false);
+    desc: 构造函数，从给定的llama_file对象创建内存映射，支持指定预取大小（-1表示全部）和NUMA感知选项。
+    line: 55-56
+    name: llama_mmap
+  - code:
+    - ~llama_mmap();
+    desc: 析构函数，解除内存映射并释放相关资源。
+    line: '57'
+    name: ~llama_mmap
+  - code:
+    - size_t size() const;
+    desc: 获取映射的内存区域总大小（字节数）。
+    line: '59'
+    name: size
+  - code:
+    - void * addr() const;
+    desc: 返回映射内存区域的起始地址，用于直接访问文件内容。
+    line: '60'
+    name: addr
+  - code:
+    - void unmap_fragment(size_t first, size_t last);
+    desc: 取消映射指定范围内的内存段（从first字节到last字节），用于部分释放物理内存。
+    line: '62'
+    name: unmap_fragment
+  name: llama_mmap
+- desc: 内存锁定类，将指定的内存区域锁定到物理内存中（无法被换出到交换空间），用于性能敏感的关键数据。
+  methods:
+  - code:
+    - llama_mlock();
+    desc: 默认构造函数，创建空的内存锁定对象。
+    line: '70'
+    name: llama_mlock
+  - code:
+    - ~llama_mlock();
+    desc: 析构函数，解除所有已锁定的内存区域。
+    line: '71'
+    name: ~llama_mlock
+  - code:
+    - void init(void * ptr);
+    desc: 初始化锁定对象，指定要锁定的内存起始地址，为后续扩展大小做准备。
+    line: '73'
+    name: init
+  - code:
+    - void grow_to(size_t target_size);
+    desc: 将锁定范围扩展到目标大小（字节数），确保地址空间从init指针开始到目标大小内的内存均被锁定。
+    line: '74'
+    name: grow_to
+  name: llama_mlock
+desc: 该文件是llama.cpp项目中用于内存映射文件（mmap）和文件锁定的平台抽象层头文件。它声明了三个核心类：llama_file（文件读写抽象，支持直接IO和内存对齐读操作）、llama_mmap（内存映射文件管理，支持分片映射和取消映射）、llama_mlock（内存锁定管理，用于将映射内存锁进物理内存），同时定义了存储这些对象容器的类型别名（llama_files、llama_mmaps、llama_mlocks），以及全局函数llama_path_max（返回系统路径最大长度）。该头文件体现了Pimpl（指针到实现）设计模式，隐藏平台相关的具体实现细节。
+file: src/llama-mmap.h
+funcs:
+- code:
+  - using llama_files  = std::vector<std::unique_ptr<llama_file>>;
+  - using llama_mmaps  = std::vector<std::unique_ptr<llama_mmap>>;
+  - using llama_mlocks = std::vector<std::unique_ptr<llama_mlock>>;
+  - static const bool SUPPORTED;
+  - size_t llama_path_max();
+  desc: 文件全局作用域，包含类型别名定义和函数声明，包括容器类型别名（llama_files/mmaps/mlocks）以及全局函数llama_path_max，但不包含可执行代码。
+  line: 13-16, 46, 66, 83
+  name: __main__
+- code:
+  - size_t llama_path_max();
+  desc: 全局函数，返回当前操作系统所支持的文件路径字符串最大长度，用于缓冲区大小分配。
+  line: '83'
+  name: llama_path_max

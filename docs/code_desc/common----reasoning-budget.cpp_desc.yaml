@@ -1,0 +1,249 @@
+classes:
+- desc: 用于匹配连续 token 序列并在完整匹配后触发成功结果。
+  methods:
+  - code:
+    - bool advance(llama_token token) {
+    - '    if (tokens.empty()) {'
+    - '        return false;'
+    - '    }'
+    - ''
+    - '    if (token == tokens[pos]) {'
+    - '        pos++;'
+    - '        if (pos >= tokens.size()) {'
+    - '            pos = 0;'
+    - '            return true;'
+    - '        }'
+    - '    } else {'
+    - '        pos = 0;'
+    - '        if (token == tokens[0]) {'
+    - '            pos = 1;'
+    - '        }'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 推进 token 序列匹配状态，并在完整匹配目标序列时返回 true。
+    line: 14-34
+    name: advance
+  - code:
+    - void reset() { pos = 0; }
+    desc: 将 token 匹配位置重置到序列起始位置。
+    line: '36'
+    name: reset
+  name: token_matcher
+- desc: 保存 reasoning budget sampler 的词表、匹配器、预算、强制 token 和当前状态。
+  methods: []
+  name: common_reasoning_budget_ctx
+desc: 该文件实现了一个用于控制模型推理区块长度的 llama sampler。它通过匹配推理起始和结束 token 序列，在空闲、计数、等待 UTF-8 完成、强制结束和完成等状态之间切换；当推理预算耗尽时，可等待当前
+  UTF-8 字符完成，并通过限制 logits 强制生成指定的结束 token 序列。同时提供 sampler 的初始化、克隆、重置、释放和状态查询功能。
+file: common/reasoning-budget.cpp
+funcs:
+- code:
+  - static const char * common_reasoning_budget_name(const struct llama_sampler *
+    /*smpl*/) {
+  - '    return "reasoning-budget";'
+  - '}'
+  desc: 返回 sampler 的固定名称 reasoning-budget。
+  line: 48-50
+  name: common_reasoning_budget_name
+- code:
+  - static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_token
+    token) {
+  - '    auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;'
+  - ''
+  - '    switch (ctx->state) {'
+  - '        case REASONING_BUDGET_IDLE:'
+  - '            if (ctx->start_matcher.advance(token)) {'
+  - '                ctx->state = REASONING_BUDGET_COUNTING;'
+  - '                ctx->remaining = ctx->budget;'
+  - '                if (ctx->remaining <= 0) {'
+  - '                    ctx->state = REASONING_BUDGET_FORCING;'
+  - '                    ctx->force_pos = 0;'
+  - '                }'
+  - '            }'
+  - '            break;'
+  - '        case REASONING_BUDGET_COUNTING:'
+  - '        case REASONING_BUDGET_WAITING_UTF8:'
+  - '            if (ctx->end_matcher.advance(token)) {'
+  - '                ctx->state = REASONING_BUDGET_DONE;'
+  - '                break;'
+  - '            }'
+  - '            bool utf8_complete = true;'
+  - '            if (ctx->vocab != nullptr) {'
+  - '                const std::string piece = common_token_to_piece(ctx->vocab, token,
+    false);'
+  - '                utf8_complete = common_utf8_is_complete(piece);'
+  - '            }'
+  - '            if (ctx->state == REASONING_BUDGET_WAITING_UTF8) {'
+  - '                if (utf8_complete) {'
+  - '                    ctx->state = REASONING_BUDGET_FORCING;'
+  - '                    ctx->force_pos = 0;'
+  - '                    ctx->end_matcher.reset();'
+  - '                }'
+  - '            } else if (ctx->state == REASONING_BUDGET_COUNTING) {'
+  - '                ctx->remaining--;'
+  - '                if (ctx->remaining <= 0) {'
+  - '                    if (utf8_complete) {'
+  - '                        ctx->state = REASONING_BUDGET_FORCING;'
+  - '                        ctx->force_pos = 0;'
+  - '                        ctx->end_matcher.reset();'
+  - '                    } else {'
+  - '                        ctx->state = REASONING_BUDGET_WAITING_UTF8;'
+  - '                        ctx->end_matcher.reset();'
+  - '                    }'
+  - '                }'
+  - '            }'
+  - '            break;'
+  - '        case REASONING_BUDGET_FORCING:'
+  - '            ctx->force_pos++;'
+  - '            if (ctx->force_pos >= ctx->forced_tokens.size()) {'
+  - '                ctx->state = REASONING_BUDGET_DONE;'
+  - '            }'
+  - '            break;'
+  - '        case REASONING_BUDGET_DONE:'
+  - '            break;'
+  - '    }'
+  - '}'
+  desc: 接收新 token 并根据推理起始、结束序列、预算和 UTF-8 完整性更新 sampler 状态。
+  line: 52-111
+  name: common_reasoning_budget_accept
+- code:
+  - static void common_reasoning_budget_apply(struct llama_sampler * smpl, llama_token_data_array
+    * cur_p) {
+  - '    auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;'
+  - ''
+  - '    if (ctx->state != REASONING_BUDGET_FORCING) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    if (ctx->force_pos >= ctx->forced_tokens.size()) {'
+  - '        return;'
+  - '    }'
+  - ''
+  - '    const llama_token forced = ctx->forced_tokens[ctx->force_pos];'
+  - '    for (size_t i = 0; i < cur_p->size; i++) {'
+  - '        if (cur_p->data[i].id != forced) {'
+  - '            cur_p->data[i].logit = -INFINITY;'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 在强制结束阶段屏蔽除当前指定 token 外的所有候选 token logits。
+  line: 113-132
+  name: common_reasoning_budget_apply
+- code:
+  - static void common_reasoning_budget_reset(struct llama_sampler * smpl) {
+  - '    auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;'
+  - '    ctx->state = REASONING_BUDGET_IDLE;'
+  - '    ctx->remaining = ctx->budget;'
+  - '    ctx->start_matcher.reset();'
+  - '    ctx->end_matcher.reset();'
+  - '    ctx->force_pos = 0;'
+  - '}'
+  desc: 将 sampler 恢复到空闲状态，并重置预算、匹配器和强制 token 位置。
+  line: 134-141
+  name: common_reasoning_budget_reset
+- code:
+  - static struct llama_sampler * common_reasoning_budget_init_state(
+  - '        const struct llama_vocab * vocab, const std::vector<llama_token> & start_tokens,'
+  - '        const std::vector<llama_token> & end_tokens, const std::vector<llama_token>
+    & forced_tokens,'
+  - '        int32_t budget, common_reasoning_budget_state initial_state) {'
+  - '    if (initial_state == REASONING_BUDGET_COUNTING && budget <= 0) {'
+  - '        initial_state = REASONING_BUDGET_FORCING;'
+  - '    }'
+  - ''
+  - '    return llama_sampler_init('
+  - '        &common_reasoning_budget_i,'
+  - '        new common_reasoning_budget_ctx {'
+  - '            vocab,'
+  - '            { start_tokens, 0 },'
+  - '            { end_tokens, 0 },'
+  - '            forced_tokens,'
+  - '            budget,'
+  - '            budget,'
+  - '            initial_state,'
+  - '            0,'
+  - '        }'
+  - '    );'
+  - '}'
+  desc: 根据给定参数和初始状态创建并初始化 reasoning budget sampler。
+  line: 145-172
+  name: common_reasoning_budget_init_state
+- code:
+  - static struct llama_sampler * common_reasoning_budget_clone(const struct llama_sampler
+    * smpl) {
+  - '    const auto * ctx = (const common_reasoning_budget_ctx *) smpl->ctx;'
+  - '    return common_reasoning_budget_init_state('
+  - '        ctx->vocab,'
+  - '        ctx->start_matcher.tokens,'
+  - '        ctx->end_matcher.tokens,'
+  - '        ctx->forced_tokens,'
+  - '        ctx->budget,'
+  - '        ctx->state);'
+  - '}'
+  desc: 复制现有 sampler 的配置和当前状态，创建一个新的 sampler 实例。
+  line: 175-184
+  name: common_reasoning_budget_clone
+- code:
+  - static void common_reasoning_budget_free(struct llama_sampler * smpl) {
+  - '    delete (common_reasoning_budget_ctx *) smpl->ctx;'
+  - '}'
+  desc: 释放 sampler 上下文对象占用的内存。
+  line: 186-188
+  name: common_reasoning_budget_free
+- code:
+  - struct llama_sampler * common_reasoning_budget_init(
+  - '        const struct llama_vocab * vocab,'
+  - '        const std::vector<llama_token> & start_tokens,'
+  - '        const std::vector<llama_token> & end_tokens,'
+  - '        const std::vector<llama_token> & forced_tokens,'
+  - '        int32_t budget,'
+  - '        const std::vector<llama_token> & prefill_tokens) {'
+  - '    common_reasoning_budget_state initial_state = REASONING_BUDGET_IDLE;'
+  - '    if (!prefill_tokens.empty() && !start_tokens.empty() &&'
+  - '            prefill_tokens.size() >= start_tokens.size() &&'
+  - '            std::equal(start_tokens.begin(), start_tokens.end(), prefill_tokens.begin()))
+    {'
+  - '        initial_state = REASONING_BUDGET_COUNTING;'
+  - '        if (!end_tokens.empty() &&'
+  - '                prefill_tokens.size() >= start_tokens.size() + end_tokens.size())
+    {'
+  - '            auto end_start = prefill_tokens.end() - (ptrdiff_t) end_tokens.size();'
+  - '            if (end_start >= prefill_tokens.begin() + (ptrdiff_t) start_tokens.size()
+    &&'
+  - '                    std::equal(end_tokens.begin(), end_tokens.end(), end_start))
+    {'
+  - '                initial_state = REASONING_BUDGET_IDLE;'
+  - '            }'
+  - '        }'
+  - '    }'
+  - '    return common_reasoning_budget_init_state(vocab, start_tokens, end_tokens,
+    forced_tokens, budget, initial_state);'
+  - '}'
+  desc: 根据预填充 token 判断 sampler 初始状态，并创建 reasoning budget sampler；该重载接受 prefill_tokens。
+  line: 194-219
+  name: common_reasoning_budget_init
+- code:
+  - struct llama_sampler * common_reasoning_budget_init(
+  - '        const struct llama_vocab * vocab,'
+  - '        const std::vector<llama_token> & start_tokens,'
+  - '        const std::vector<llama_token> & end_tokens,'
+  - '        const std::vector<llama_token> & forced_tokens,'
+  - '        int32_t budget,'
+  - '        common_reasoning_budget_state initial_state) {'
+  - '    return common_reasoning_budget_init_state(vocab, start_tokens, end_tokens,
+    forced_tokens, budget, initial_state);'
+  - '}'
+  desc: 使用显式指定的初始状态创建 reasoning budget sampler。
+  line: 221-229
+  name: common_reasoning_budget_init
+- code:
+  - common_reasoning_budget_state common_reasoning_budget_get_state(const struct llama_sampler
+    * smpl) {
+  - '    if (!smpl) {'
+  - '        return REASONING_BUDGET_IDLE;'
+  - '    }'
+  - '    return ((const common_reasoning_budget_ctx *)smpl->ctx)->state;'
+  - '}'
+  desc: 返回 sampler 当前的 reasoning budget 状态；传入空指针时返回空闲状态。
+  line: 231-237
+  name: common_reasoning_budget_get_state

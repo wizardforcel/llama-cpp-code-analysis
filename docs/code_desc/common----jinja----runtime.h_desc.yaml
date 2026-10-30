@@ -1,0 +1,946 @@
+classes:
+- desc: 模板辅助结构，用于提取普通类型或 unique_ptr 所指向的元素类型。
+  methods: []
+  name: extract_pointee_unique<T>
+- desc: 保存模板执行期间的变量环境、源代码信息、当前时间和统计开关，并支持创建嵌套作用域。
+  methods:
+  - code:
+    - 'context(std::string src = "") : src(std::make_shared<std::string>(std::move(src)))
+      {'
+    - '    env = mk_val<value_object>();'
+    - '    env->has_builtins = false;'
+    - '    env->insert("true",  mk_val<value_bool>(true));'
+    - '    env->insert("True",  mk_val<value_bool>(true));'
+    - '    env->insert("false", mk_val<value_bool>(false));'
+    - '    env->insert("False", mk_val<value_bool>(false));'
+    - '    env->insert("none",  mk_val<value_none>());'
+    - '    env->insert("None",  mk_val<value_none>());'
+    - '    current_time = std::time(nullptr);'
+    - '}'
+    desc: 初始化执行上下文、内置布尔值和空值，并记录当前时间。
+    line: 45-57
+    name: context(std::string src = "")
+  - code:
+    - ~context() = default;
+    desc: 使用默认析构逻辑销毁执行上下文。
+    line: 58-58
+    name: ~context()
+  - code:
+    - 'context(const context & parent) : context() {'
+    - '    auto & pvar = parent.env->as_ordered_object();'
+    - '    for (const auto & pair : pvar) {'
+    - '        set_val(pair.first, pair.second);'
+    - '    }'
+    - '    current_time = parent.current_time;'
+    - '    is_get_stats = parent.is_get_stats;'
+    - '    src = parent.src;'
+    - '}'
+    desc: 从父上下文复制变量和运行状态，创建新的作用域上下文。
+    line: 60-70
+    name: context(const context & parent)
+  - code:
+    - value get_val(const std::string & name) {
+    - '    value default_val = mk_val<value_undefined>(name);'
+    - '    return env->at(name, default_val);'
+    - '}'
+    desc: 按名称获取上下文变量，不存在时返回未定义值。
+    line: 72-75
+    name: get_val
+  - code:
+    - void set_val(const std::string & name, const value & val) {
+    - '    env->insert(name, val);'
+    - '}'
+    desc: 按字符串名称设置上下文变量。
+    line: 77-79
+    name: set_val
+  - code:
+    - void set_val(const value & name, const value & val) {
+    - '    env->insert(name, val);'
+    - '}'
+    desc: 使用 value 类型的名称设置上下文变量。
+    line: 81-83
+    name: set_val
+  - code:
+    - void print_vars() const {
+    - '    printf("Context Variables:\n%s\n", value_to_json(env, 2).c_str());'
+    - '}'
+    desc: 以 JSON 格式打印当前上下文中的全部变量。
+    line: 85-87
+    name: print_vars
+  name: context
+- desc: 所有 AST 语句和表达式节点的基类，提供类型识别和带错误处理的执行接口。
+  methods:
+  - code:
+    - virtual ~statement() = default;
+    desc: 通过虚析构函数支持多态节点安全销毁。
+    line: 96-96
+    name: ~statement
+  - code:
+    - virtual std::string type() const { return "Statement"; }
+    desc: 返回当前节点的默认类型名称。
+    line: 97-97
+    name: type
+  - code:
+    - virtual value execute_impl(context &) {
+    - '    throw std::runtime_error("cannot exec " + type());'
+    - '}'
+    desc: 执行节点的内部接口，基类默认抛出不可执行异常。
+    line: 99-101
+    name: execute_impl
+  - code:
+    - value execute(context &);
+    desc: 执行节点并提供统一的错误处理入口。
+    line: 103-103
+    name: execute
+  name: statement
+- desc: 表示运行时会产生 value 的 AST 表达式基类。
+  methods:
+  - code:
+    - std::string type() const override { return "Expression"; }
+    desc: 返回 Expression 类型名称。
+    line: 110-110
+    name: type
+  name: expression
+- desc: 表示由多个顶层语句组成的模板程序。
+  methods:
+  - code:
+    - program() = default;
+    desc: 构造空程序。
+    line: 116-116
+    name: program
+  - code:
+    - 'explicit program(statements && body) : body(std::move(body)) {}'
+    desc: 使用语句列表构造程序。
+    line: 117-117
+    name: program(statements && body)
+  - code:
+    - std::string type() const override { return "Program"; }
+    desc: 返回 Program 类型名称。
+    line: 118-118
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    throw std::runtime_error("Cannot execute program directly, use jinja::runtime
+      instead");'
+    - '}'
+    desc: 禁止直接执行程序节点，要求通过 runtime 执行。
+    line: 119-121
+    name: execute_impl
+  name: program
+- desc: 实现 Jinja 条件分支，根据测试表达式选择主体或备选语句块执行。
+  methods:
+  - code:
+    - if_statement(statement_ptr && test, statements && body, statements && alternate)
+    - '    : test(std::move(test)), body(std::move(body)), alternate(std::move(alternate))
+      {'
+    - '    chk_type<expression>(this->test);'
+    - '}'
+    desc: 构造条件语句并验证测试节点是表达式。
+    line: 129-132
+    name: if_statement
+  - code:
+    - std::string type() const override { return "If"; }
+    desc: 返回 If 类型名称。
+    line: 134-134
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行条件分支逻辑。
+    line: 135-135
+    name: execute_impl
+  name: if_statement
+- desc: 遍历序列并为每个元素执行循环主体，支持无迭代时的默认块。
+  methods:
+  - code:
+    - for_statement(statement_ptr && loopvar, statement_ptr && iterable, statements
+      && body, statements && default_block)
+    - '    : loopvar(std::move(loopvar)), iterable(std::move(iterable)),'
+    - '      body(std::move(body)), default_block(std::move(default_block)) {'
+    - '    chk_type<identifier, tuple_literal>(this->loopvar);'
+    - '    chk_type<expression>(this->iterable);'
+    - '}'
+    desc: 构造循环语句并验证循环变量和可迭代表达式类型。
+    line: 146-151
+    name: for_statement
+  - code:
+    - std::string type() const override { return "For"; }
+    desc: 返回 For 类型名称。
+    line: 153-153
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行序列遍历和循环控制逻辑。
+    line: 154-154
+    name: execute_impl
+  name: for_statement
+- desc: 表示循环终止语句，通过异常信号跳出当前循环。
+  methods:
+  - code:
+    - std::string type() const override { return "Break"; }
+    desc: 返回 Break 类型名称。
+    line: 158-158
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    throw break_statement::signal();'
+    - '}'
+    desc: 抛出 break 信号终止循环。
+    line: 166-168
+    name: execute_impl
+  name: break_statement
+- desc: break 控制流专用异常信号。
+  methods:
+  - code:
+    - const char* what() const noexcept override {
+    - '    return "Break statement executed";'
+    - '}'
+    desc: 返回 break 信号的错误描述。
+    line: 161-163
+    name: what
+  name: break_statement::signal
+- desc: 表示循环继续语句，通过异常信号跳过当前迭代。
+  methods:
+  - code:
+    - std::string type() const override { return "Continue"; }
+    desc: 返回 Continue 类型名称。
+    line: 172-172
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    throw continue_statement::signal();'
+    - '}'
+    desc: 抛出 continue 信号跳过当前循环迭代。
+    line: 180-182
+    name: execute_impl
+  name: continue_statement
+- desc: continue 控制流专用异常信号。
+  methods:
+  - code:
+    - const char* what() const noexcept override {
+    - '    return "Continue statement executed";'
+    - '}'
+    desc: 返回 continue 信号的错误描述。
+    line: 175-177
+    name: what
+  name: continue_statement::signal
+- desc: 表示不执行任何操作的语句节点。
+  methods:
+  - code:
+    - std::string type() const override { return "Noop"; }
+    desc: 返回 Noop 类型名称。
+    line: 187-187
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_undefined>();'
+    - '}'
+    desc: 执行时返回未定义值。
+    line: 188-190
+    name: execute_impl
+  name: noop_statement
+- desc: 实现变量赋值或块级 set 语句。
+  methods:
+  - code:
+    - set_statement(statement_ptr && assignee, statement_ptr && value, statements
+      && body)
+    - '    : assignee(std::move(assignee)), val(std::move(value)), body(std::move(body))
+      {'
+    - '    chk_type<expression>(this->assignee);'
+    - '    chk_type<expression>(this->val);'
+    - '}'
+    desc: 构造赋值语句并验证被赋值对象和值均为表达式。
+    line: 200-204
+    name: set_statement
+  - code:
+    - std::string type() const override { return "Set"; }
+    desc: 返回 Set 类型名称。
+    line: 206-206
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行赋值和相关语句块。
+    line: 207-207
+    name: execute_impl
+  name: set_statement
+- desc: 表示用户定义的宏及其参数和主体。
+  methods:
+  - code:
+    - macro_statement(statement_ptr && name, statements && args, statements && body)
+    - '    : name(std::move(name)), args(std::move(args)), body(std::move(body)) {'
+    - '    chk_type<identifier>(this->name);'
+    - '    for (const auto& arg : this->args) chk_type<expression>(arg);'
+    - '}'
+    desc: 构造宏节点并验证名称和参数类型。
+    line: 214-218
+    name: macro_statement
+  - code:
+    - std::string type() const override { return "Macro"; }
+    desc: 返回 Macro 类型名称。
+    line: 220-220
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 注册或执行用户定义宏。
+    line: 221-221
+    name: execute_impl
+  name: macro_statement
+- desc: 表示模板注释，运行时不产生输出。
+  methods:
+  - code:
+    - 'explicit comment_statement(const std::string & v) : val(v) {}'
+    desc: 使用注释文本构造注释节点。
+    line: 227-227
+    name: comment_statement
+  - code:
+    - std::string type() const override { return "Comment"; }
+    desc: 返回 Comment 类型名称。
+    line: 228-228
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_undefined>();'
+    - '}'
+    desc: 执行注释节点并返回未定义值。
+    line: 229-231
+    name: execute_impl
+  name: comment_statement
+- desc: 表示计算成员访问中的空表达式，例如 a[]。
+  methods:
+  - code:
+    - std::string type() const override { return "BlankExpression"; }
+    desc: 返回 BlankExpression 类型名称。
+    line: 237-237
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_undefined>();'
+    - '}'
+    desc: 执行时返回未定义值。
+    line: 238-240
+    name: execute_impl
+  name: blank_expression
+- desc: 实现对象属性访问和下标访问表达式。
+  methods:
+  - code:
+    - member_expression(statement_ptr && object, statement_ptr && property, bool computed)
+    - '    : object(std::move(object)), property(std::move(property)), computed(computed)
+      {'
+    - '    chk_type<expression>(this->object);'
+    - '    chk_type<expression>(this->property);'
+    - '}'
+    desc: 构造成员表达式并验证对象和属性均为表达式。
+    line: 248-252
+    name: member_expression
+  - code:
+    - std::string type() const override { return "MemberExpression"; }
+    desc: 返回 MemberExpression 类型名称。
+    line: 254-254
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行对象成员或下标访问。
+    line: 255-255
+    name: execute_impl
+  name: member_expression
+- desc: 表示函数或可调用对象调用及其参数。
+  methods:
+  - code:
+    - call_expression(statement_ptr && callee, statements && args)
+    - '    : callee(std::move(callee)), args(std::move(args)) {'
+    - '    chk_type<expression>(this->callee);'
+    - '    for (const auto& arg : this->args) chk_type<expression>(arg);'
+    - '}'
+    desc: 构造调用表达式并验证被调用对象和参数类型。
+    line: 263-267
+    name: call_expression
+  - code:
+    - std::string type() const override { return "CallExpression"; }
+    desc: 返回 CallExpression 类型名称。
+    line: 269-269
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行函数调用表达式。
+    line: 270-270
+    name: execute_impl
+  name: call_expression
+- desc: 表示模板中的用户变量或符号。
+  methods:
+  - code:
+    - 'explicit identifier(const std::string & val) : val(val) {}'
+    desc: 使用变量名构造标识符节点。
+    line: 277-277
+    name: identifier
+  - code:
+    - std::string type() const override { return "Identifier"; }
+    desc: 返回 Identifier 类型名称。
+    line: 278-278
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 从执行上下文中解析标识符的值。
+    line: 279-279
+    name: execute_impl
+  name: identifier
+- desc: 表示整数常量表达式。
+  methods:
+  - code:
+    - 'explicit integer_literal(int64_t val) : val(val) {}'
+    desc: 使用整数值构造字面量节点。
+    line: 285-285
+    name: integer_literal
+  - code:
+    - std::string type() const override { return "IntegerLiteral"; }
+    desc: 返回 IntegerLiteral 类型名称。
+    line: 286-286
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_int>(val);'
+    - '}'
+    desc: 将整数常量包装为运行时整数值。
+    line: 287-289
+    name: execute_impl
+  name: integer_literal
+- desc: 表示浮点数常量表达式。
+  methods:
+  - code:
+    - 'explicit float_literal(double val) : val(val) {}'
+    desc: 使用浮点值构造字面量节点。
+    line: 294-294
+    name: float_literal
+  - code:
+    - std::string type() const override { return "FloatLiteral"; }
+    desc: 返回 FloatLiteral 类型名称。
+    line: 295-295
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_float>(val);'
+    - '}'
+    desc: 将浮点常量包装为运行时浮点值。
+    line: 296-298
+    name: execute_impl
+  name: float_literal
+- desc: 表示字符串常量表达式。
+  methods:
+  - code:
+    - 'explicit string_literal(const std::string & val) : val(val) {}'
+    desc: 使用字符串构造字面量节点。
+    line: 303-303
+    name: string_literal
+  - code:
+    - std::string type() const override { return "StringLiteral"; }
+    desc: 返回 StringLiteral 类型名称。
+    line: 304-304
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    return mk_val<value_string>(val);'
+    - '}'
+    desc: 将字符串常量包装为运行时字符串值。
+    line: 305-307
+    name: execute_impl
+  name: string_literal
+- desc: 表示数组字面量并按顺序计算其中的元素。
+  methods:
+  - code:
+    - 'explicit array_literal(statements && val) : val(std::move(val)) {'
+    - '    for (const auto& item : this->val) chk_type<expression>(item);'
+    - '}'
+    desc: 使用表达式列表构造数组字面量。
+    line: 312-314
+    name: array_literal
+  - code:
+    - std::string type() const override { return "ArrayLiteral"; }
+    desc: 返回 ArrayLiteral 类型名称。
+    line: 315-315
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override {
+    - '    auto arr = mk_val<value_array>();'
+    - '    for (const auto & item_stmt : val) {'
+    - '        arr->push_back(item_stmt->execute(ctx));'
+    - '    }'
+    - '    return arr;'
+    - '}'
+    desc: 计算所有数组元素并构造运行时数组。
+    line: 316-322
+    name: execute_impl
+  name: array_literal
+- desc: 表示元组字面量并将表达式结果转换为运行时元组。
+  methods:
+  - code:
+    - 'explicit tuple_literal(statements && val) : val(std::move(val)) {'
+    - '    for (const auto& item : this->val) chk_type<expression>(item);'
+    - '}'
+    desc: 使用表达式列表构造元组字面量。
+    line: 327-329
+    name: tuple_literal
+  - code:
+    - std::string type() const override { return "TupleLiteral"; }
+    desc: 返回 TupleLiteral 类型名称。
+    line: 330-330
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override {
+    - '    auto arr = mk_val<value_array>();'
+    - '    for (const auto & item_stmt : val) {'
+    - '        arr->push_back(item_stmt->execute(ctx));'
+    - '    }'
+    - '    return mk_val<value_tuple>(std::move(arr->as_array()));'
+    - '}'
+    desc: 计算元组元素并构造运行时元组值。
+    line: 331-337
+    name: execute_impl
+  name: tuple_literal
+- desc: 表示由键值表达式对组成的对象字面量。
+  methods:
+  - code:
+    - explicit object_literal(std::vector<std::pair<statement_ptr, statement_ptr>>
+      && val)
+    - '    : val(std::move(val)) {'
+    - '    for (const auto & pair : this->val) {'
+    - '        chk_type<expression>(pair.first);'
+    - '        chk_type<expression>(pair.second);'
+    - '    }'
+    - '}'
+    desc: 构造对象字面量并验证键和值都是表达式。
+    line: 343-349
+    name: object_literal
+  - code:
+    - std::string type() const override { return "ObjectLiteral"; }
+    desc: 返回 ObjectLiteral 类型名称。
+    line: 350-350
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 计算键值对并构造运行时对象。
+    line: 351-351
+    name: execute_impl
+  name: object_literal
+- desc: 表示由二元运算符连接左右操作数的复杂表达式。
+  methods:
+  - code:
+    - binary_expression(token op, statement_ptr && left, statement_ptr && right)
+    - '    : op(std::move(op)), left(std::move(left)), right(std::move(right)) {'
+    - '    chk_type<expression>(this->left);'
+    - '    chk_type<expression>(this->right);'
+    - '}'
+    desc: 构造二元表达式并验证两个操作数。
+    line: 363-367
+    name: binary_expression
+  - code:
+    - std::string type() const override { return "BinaryExpression"; }
+    desc: 返回 BinaryExpression 类型名称。
+    line: 369-369
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行二元运算并返回运算结果。
+    line: 370-370
+    name: execute_impl
+  name: binary_expression
+- desc: 表示通过管道运算符对表达式或值应用过滤器。
+  methods:
+  - code:
+    - filter_expression(statement_ptr && operand, statement_ptr && filter)
+    - '    : operand(std::move(operand)), filter(std::move(filter)) {'
+    - '    chk_type<expression>(this->operand);'
+    - '    chk_type<identifier, call_expression>(this->filter);'
+    - '}'
+    desc: 使用表达式操作数和过滤器构造过滤表达式。
+    line: 380-384
+    name: filter_expression
+  - code:
+    - filter_expression(value_string && val, statement_ptr && filter)
+    - '    : val(std::move(val)), filter(std::move(filter)) {'
+    - '    chk_type<identifier, call_expression>(this->filter);'
+    - '}'
+    desc: 使用字符串值和过滤器构造过滤表达式。
+    line: 386-389
+    name: filter_expression
+  - code:
+    - std::string type() const override { return "FilterExpression"; }
+    desc: 返回 FilterExpression 类型名称。
+    line: 391-391
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 计算操作数并应用过滤器。
+    line: 392-392
+    name: execute_impl
+  name: filter_expression
+- desc: 表示对主体输出应用过滤器的语句块。
+  methods:
+  - code:
+    - filter_statement(statement_ptr && filter, statements && body)
+    - '    : filter(std::move(filter)), body(std::move(body)) {'
+    - '    chk_type<identifier, call_expression>(this->filter);'
+    - '}'
+    desc: 构造过滤语句并验证过滤器类型。
+    line: 399-402
+    name: filter_statement
+  - code:
+    - std::string type() const override { return "FilterStatement"; }
+    desc: 返回 FilterStatement 类型名称。
+    line: 404-404
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行主体并对结果应用过滤器。
+    line: 405-405
+    name: execute_impl
+  name: filter_statement
+- desc: 根据测试结果选择是否返回左侧表达式值，支持序列过滤或条件快捷形式。
+  methods:
+  - code:
+    - select_expression(statement_ptr && lhs, statement_ptr && test)
+    - '    : lhs(std::move(lhs)), test(std::move(test)) {'
+    - '    chk_type<expression>(this->lhs);'
+    - '    chk_type<expression>(this->test);'
+    - '}'
+    desc: 构造选择表达式并验证操作数和测试节点。
+    line: 418-422
+    name: select_expression
+  - code:
+    - std::string type() const override { return "SelectExpression"; }
+    desc: 返回 SelectExpression 类型名称。
+    line: 424-424
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override {
+    - '    auto predicate = test->execute_impl(ctx);'
+    - '    if (!predicate->as_bool()) {'
+    - '        return mk_val<value_undefined>();'
+    - '    }'
+    - '    return lhs->execute_impl(ctx);'
+    - '}'
+    desc: 执行测试表达式，测试为真时返回左值，否则返回未定义值。
+    line: 425-432
+    name: execute_impl
+  name: select_expression
+- desc: 表示使用 is 运算符调用测试函数的表达式。
+  methods:
+  - code:
+    - test_expression(statement_ptr && operand, bool negate, statement_ptr && test)
+    - '    : operand(std::move(operand)), negate(negate), test(std::move(test)) {'
+    - '    chk_type<expression>(this->operand);'
+    - '    chk_type<identifier, call_expression>(this->test);'
+    - '}'
+    desc: 构造测试表达式并验证操作数和测试节点。
+    line: 444-448
+    name: test_expression
+  - code:
+    - std::string type() const override { return "TestExpression"; }
+    desc: 返回 TestExpression 类型名称。
+    line: 450-450
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行 is 测试并根据 negate 标志返回结果。
+    line: 451-451
+    name: execute_impl
+  name: test_expression
+- desc: 表示带有单个操作数的前缀一元运算表达式。
+  methods:
+  - code:
+    - unary_expression(token op, statement_ptr && argument)
+    - '    : op(std::move(op)), argument(std::move(argument)) {'
+    - '    chk_type<expression>(this->argument);'
+    - '}'
+    desc: 构造一元表达式并验证参数类型。
+    line: 459-462
+    name: unary_expression
+  - code:
+    - std::string type() const override { return "UnaryExpression"; }
+    desc: 返回 UnaryExpression 类型名称。
+    line: 464-464
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行一元运算。
+    line: 465-465
+    name: execute_impl
+  name: unary_expression
+- desc: 表示序列切片的起始、结束和步长表达式。
+  methods:
+  - code:
+    - slice_expression(statement_ptr && start_expr, statement_ptr && stop_expr, statement_ptr
+      && step_expr)
+    - '    : start_expr(std::move(start_expr)), stop_expr(std::move(stop_expr)), step_expr(std::move(step_expr))
+      {'
+    - '    chk_type<expression>(this->start_expr);'
+    - '    chk_type<expression>(this->stop_expr);'
+    - '    chk_type<expression>(this->step_expr);'
+    - '}'
+    desc: 构造切片表达式并验证各部分类型。
+    line: 473-478
+    name: slice_expression
+  - code:
+    - std::string type() const override { return "SliceExpression"; }
+    desc: 返回 SliceExpression 类型名称。
+    line: 480-480
+    name: type
+  - code:
+    - value execute_impl(context &) override {
+    - '    throw std::runtime_error("must be handled by MemberExpression");'
+    - '}'
+    desc: 禁止独立执行，切片必须由 MemberExpression 处理。
+    line: 481-483
+    name: execute_impl
+  name: slice_expression
+- desc: 表示函数调用中的关键字参数。
+  methods:
+  - code:
+    - keyword_argument_expression(statement_ptr && key, statement_ptr && val)
+    - '    : key(std::move(key)), val(std::move(val)) {'
+    - '    chk_type<identifier>(this->key);'
+    - '    chk_type<expression>(this->val);'
+    - '}'
+    desc: 构造关键字参数并验证键和值的类型。
+    line: 491-495
+    name: keyword_argument_expression
+  - code:
+    - std::string type() const override { return "KeywordArgumentExpression"; }
+    desc: 返回 KeywordArgumentExpression 类型名称。
+    line: 497-497
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override;
+    desc: 执行关键字参数表达式。
+    line: 498-498
+    name: execute_impl
+  name: keyword_argument_expression
+- desc: 表示调用参数中的展开表达式。
+  methods:
+  - code:
+    - 'explicit spread_expression(statement_ptr && argument) : argument(std::move(argument))
+      {'
+    - '    chk_type<expression>(this->argument);'
+    - '}'
+    desc: 使用待展开的表达式构造展开节点。
+    line: 504-506
+    name: spread_expression
+  - code: []
+    desc: 继承表达式类型接口，未定义专用类型覆盖。
+    line: 501-507
+    name: type
+  name: spread_expression
+- desc: 表示带调用者参数和主体块的宏调用语句。
+  methods:
+  - code:
+    - call_statement(statement_ptr && call, statements && caller_args, statements
+      && body)
+    - '    : call(std::move(call)), caller_args(std::move(caller_args)), body(std::move(body))
+      {'
+    - '    chk_type<call_expression>(this->call);'
+    - '    for (const auto & arg : this->caller_args) chk_type<expression>(arg);'
+    - '}'
+    desc: 构造调用语句并验证调用对象和调用者参数。
+    line: 514-518
+    name: call_statement
+  - code:
+    - std::string type() const override { return "CallStatement"; }
+    desc: 返回 CallStatement 类型名称。
+    line: 520-520
+    name: type
+  name: call_statement
+- desc: 表示基于条件在两个表达式之间进行选择的三元表达式。
+  methods:
+  - code:
+    - ternary_expression(statement_ptr && condition, statement_ptr && true_expr, statement_ptr
+      && false_expr)
+    - '    : condition(std::move(condition)), true_expr(std::move(true_expr)), false_expr(std::move(false_expr))
+      {'
+    - '    chk_type<expression>(this->condition);'
+    - '    chk_type<expression>(this->true_expr);'
+    - '    chk_type<expression>(this->false_expr);'
+    - '}'
+    desc: 构造三元表达式并验证三个子表达式。
+    line: 528-533
+    name: ternary_expression
+  - code:
+    - std::string type() const override { return "Ternary"; }
+    desc: 返回 Ternary 类型名称。
+    line: 535-535
+    name: type
+  - code:
+    - value execute_impl(context & ctx) override {
+    - '    value cond_val = condition->execute(ctx);'
+    - '    if (cond_val->as_bool()) {'
+    - '        return true_expr->execute(ctx);'
+    - '    } else {'
+    - '        return false_expr->execute(ctx);'
+    - '    }'
+    - '}'
+    desc: 计算条件并执行对应的真分支或假分支表达式。
+    line: 536-544
+    name: execute_impl
+  name: ternary_expression
+- desc: 表示运行时抛出的带有自定义消息的异常。
+  methods:
+  - code:
+    - 'raised_exception(const std::string & msg) : message(msg) {}'
+    desc: 使用指定消息构造异常。
+    line: 550-550
+    name: raised_exception
+  - code:
+    - const char* what() const noexcept override {
+    - '    return message.c_str();'
+    - '}'
+    desc: 返回异常消息。
+    line: 551-553
+    name: what
+  name: raised_exception
+- desc: 表示重新包装并抛出的、带有修改后消息的异常。
+  methods:
+  - code:
+    - 'rethrown_exception(const std::string & msg) : message(msg) {}'
+    desc: 使用修改后的消息构造重新抛出异常。
+    line: 558-558
+    name: rethrown_exception
+  - code:
+    - const char* what() const noexcept override {
+    - '    return message.c_str();'
+    - '}'
+    desc: 返回重新包装后的异常消息。
+    line: 559-561
+    name: what
+  name: rethrown_exception
+- desc: 模板运行时执行器，负责执行程序中的顶层 AST 节点并收集字符串片段。
+  methods:
+  - code:
+    - 'explicit runtime(context & ctx) : ctx(ctx) {}'
+    desc: 绑定执行上下文，创建运行时执行器。
+    line: 580-580
+    name: runtime
+  - code:
+    - value_array execute(const program & prog) {
+    - '    value_array results = mk_val<value_array>();'
+    - '    for (const auto & stmt : prog.body) {'
+    - '        value res = stmt->execute(ctx);'
+    - '        results->push_back(std::move(res));'
+    - '    }'
+    - '    return results;'
+    - '}'
+    desc: 依次执行程序主体中的所有语句，并将结果收集到数组中。
+    line: 582-590
+    name: execute
+  - code:
+    - static value_string gather_string_parts(const value & val) {
+    - '    value_string parts = mk_val<value_string>();'
+    - '    gather_string_parts_recursive(val, parts);'
+    - '    auto & p = parts->val_str.parts;'
+    - '    for (size_t i = 1; i < p.size(); ) {'
+    - '        if (p[i].is_input == p[i - 1].is_input) {'
+    - '            p[i - 1].val += p[i].val;'
+    - '            p.erase(p.begin() + i);'
+    - '        } else {'
+    - '            i++;'
+    - '        }'
+    - '    }'
+    - '    return parts;'
+    - '}'
+    desc: 递归收集值中的字符串片段，并合并相邻的同类型片段。
+    line: 592-607
+    name: gather_string_parts
+  name: runtime
+desc: 该头文件定义了 Jinja 模板运行时的核心抽象和 AST 节点体系，包括执行上下文、语句与表达式基类、控制流节点、字面量、复杂表达式、异常信号以及程序执行和字符串片段收集功能。各
+  AST 节点通过 execute_impl 在 context 中求值，runtime 负责执行程序并汇总结果。
+file: common/jinja/runtime.h
+funcs:
+- code:
+  - void enable_debug(bool enable);
+  desc: 启用或禁用 Jinja 运行时调试输出。
+  line: 39-39
+  name: enable_debug
+- code:
+  - template<typename T>
+  - bool is_stmt(const statement_ptr & ptr) {
+  - '    return dynamic_cast<const T*>(ptr.get()) != nullptr;'
+  - '}'
+  desc: 检查语句指针是否指向指定类型的 AST 节点。
+  line: 31-34
+  name: is_stmt<T>
+- code:
+  - template<typename T>
+  - T * cast_stmt(statement_ptr & ptr) {
+  - '    return dynamic_cast<T*>(ptr.get());'
+  - '}'
+  desc: 将可修改语句指针动态转换为指定类型指针。
+  line: 35-38
+  name: cast_stmt<T>
+- code:
+  - template<typename T>
+  - const T * cast_stmt(const statement_ptr & ptr) {
+  - '    return dynamic_cast<const T*>(ptr.get());'
+  - '}'
+  desc: 将常量语句指针动态转换为指定类型的常量指针。
+  line: 39-42
+  name: cast_stmt<T>
+- code:
+  - template<typename T>
+  - static void chk_type(const statement_ptr & ptr) {
+  - '    if (!ptr) return;'
+  - '    assert(dynamic_cast<T *>(ptr.get()) != nullptr);'
+  - '}'
+  desc: 断言非空 AST 节点指针属于指定类型。
+  line: 105-109
+  name: chk_type<T>
+- code:
+  - template<typename T, typename U>
+  - static void chk_type(const statement_ptr & ptr) {
+  - '    if (!ptr) return;'
+  - '    assert(dynamic_cast<T *>(ptr.get()) != nullptr || dynamic_cast<U *>(ptr.get())
+    != nullptr);'
+  - '}'
+  desc: 断言非空 AST 节点指针属于两个候选类型之一。
+  line: 111-115
+  name: chk_type<T, U>
+- code:
+  - static void gather_string_parts_recursive(const value & val, value_string & parts)
+    {
+  - '    if (is_val<value_string>(val)) {'
+  - '        const auto & str_val = cast_val<value_string>(val)->val_str;'
+  - '        parts->val_str.append(str_val);'
+  - '    } else if (is_val<value_int>(val) || is_val<value_float>(val) || is_val<value_bool>(val))
+    {'
+  - '        std::string str_val = val->as_string().str();'
+  - '        parts->val_str.append(str_val);'
+  - '    } else if (is_val<value_array>(val)) {'
+  - '        auto items = cast_val<value_array>(val)->as_array();'
+  - '        for (const auto & item : items) {'
+  - '            gather_string_parts_recursive(item, parts);'
+  - '        }'
+  - '    }'
+  - '}'
+  desc: 递归遍历运行时值，将字符串、基础标量和数组中的内容追加到字符串片段集合。
+  line: 564-578
+  name: gather_string_parts_recursive
+- code:
+  - static std::string render_string_parts(const value_string & parts) {
+  - '    std::ostringstream oss;'
+  - '    for (const auto & part : parts->val_str.parts) {'
+  - '        oss << part.val;'
+  - '    }'
+  - '    return oss.str();'
+  - '}'
+  desc: 将字符串片段集合中的各个片段按顺序拼接为标准字符串。
+  line: 572-579
+  name: render_string_parts
+- code:
+  - '#pragma once'
+  - ''
+  - '#include "lexer.h"'
+  - '#include "value.h"'
+  - ''
+  - extern bool g_jinja_debug;
+  - ''
+  - namespace jinja {
+  - // AST 节点、上下文、异常和运行时定义
+  - '}'
+  - ''
+  desc: 文件级全局声明、模板辅助函数、AST 类型定义和运行时辅助逻辑；该文件不包含独立的 main 函数或其他可执行全局代码块。
+  line: 1-612
+  name: __main__

@@ -1,0 +1,380 @@
+classes:
+- desc: 存储模板分析选项的结构体，包含模板路径列表和是否分析所有模板的标志。
+  methods: []
+  name: analysis_options
+desc: 该文件实现了聊天模板分析工具，通过读取模型模板文件，对比不同输入参数（工具调用、提示词生成、推理内容等）下的输出差异，并结合模板能力检测与推理变量探测，帮助开发者理解模板行为并排查问题，支持单模板分析、多模板批处理及自定义模板分析。
+file: tools/parser/template-analysis.cpp
+funcs:
+- code:
+  - static std::string read_file(const std::string & path) {
+  - '    std::ifstream fin(path, std::ios::binary);'
+  - '    if (!fin.is_open()) {'
+  - '        throw std::runtime_error("Could not open file: " + path);'
+  - '    }'
+  - '    std::ostringstream buf;'
+  - '    buf << fin.rdbuf();'
+  - '    return buf.str();'
+  - '}'
+  desc: 读取指定路径的文件内容并以字符串形式返回，处理文件打开失败异常。
+  line: 62-70
+  name: read_file
+- code:
+  - static void print_usage(const char * program_name) {
+  - '    LOG_ERR("Usage: %s [options]\n", program_name);'
+  - '    LOG_ERR("\nOptions:\n");'
+  - '    LOG_ERR("  --template <name>       Analyze specific template from test suite
+    (e.g., ''deepseek'' or ''DeepSeek-V3.1'')\n");'
+  - '    LOG_ERR("  --template-file <path>  Analyze custom template file\n");'
+  - '    LOG_ERR("  --all                   Analyze all templates from test suite\n");'
+  - '    LOG_ERR("\nExamples:\n");'
+  - '    LOG_ERR("  %s --all\n", program_name);'
+  - '    LOG_ERR("  %s --template deepseek\n", program_name);'
+  - '    LOG_ERR("  %s --template-file my-template.jinja\n", program_name);'
+  - '}'
+  desc: 打印程序的使用说明，包括支持的选项和示例。
+  line: 72-82
+  name: print_usage
+- code:
+  - static bool parse_options(int argc, char ** argv, analysis_options & opts) {
+  - '    if (argc < 2) {'
+  - '        print_usage(argv[0]);'
+  - '        return false;'
+  - '    }'
+  - ''
+  - '    for (int i = 1; i < argc; ++i) {'
+  - '        std::string arg = argv[i];'
+  - ''
+  - '        if (arg == "--all") {'
+  - '            opts.analyze_all = true;'
+  - '        } else if (arg == "--template") {'
+  - '            if (i + 1 >= argc) {'
+  - '                LOG_ERR("--template requires an argument\n");'
+  - '                return false;'
+  - '            }'
+  - '            std::string pattern = argv[++i];'
+  - '            std::transform(pattern.begin(), pattern.end(), pattern.begin(), ::tolower);'
+  - ''
+  - '            // Find matching templates'
+  - '            bool found = false;'
+  - '            for (const auto & path : ALL_TEMPLATE_PATHS) {'
+  - '                std::string path_lower = path;'
+  - '                std::transform(path_lower.begin(), path_lower.end(), path_lower.begin(),
+    ::tolower);'
+  - '                if (path_lower.find(pattern) != std::string::npos) {'
+  - '                    opts.template_paths.push_back(path);'
+  - '                    found = true;'
+  - '                }'
+  - '            }'
+  - ''
+  - '            if (!found) {'
+  - '                LOG_ERR("No templates found matching: %s\n", pattern.c_str());'
+  - '                return false;'
+  - '            }'
+  - '        } else if (arg == "--template-file") {'
+  - '            if (i + 1 >= argc) {'
+  - '                LOG_ERR("--template-file requires an argument\n");'
+  - '                return false;'
+  - '            }'
+  - '            opts.template_paths.push_back(argv[++i]);'
+  - '        } else {'
+  - '            LOG_ERR("Unknown option: %s\n", arg.c_str());'
+  - '            print_usage(argv[0]);'
+  - '            return false;'
+  - '        }'
+  - '    }'
+  - ''
+  - '    if (opts.analyze_all) {'
+  - '        opts.template_paths = ALL_TEMPLATE_PATHS;'
+  - '    }'
+  - ''
+  - '    if (opts.template_paths.empty()) {'
+  - '        LOG_ERR("No templates specified\n");'
+  - '        print_usage(argv[0]);'
+  - '        return false;'
+  - '    }'
+  - ''
+  - '    return true;'
+  - '}'
+  desc: 解析命令行参数，支持--all、--template和--template-file选项，并处理参数验证和匹配。
+  line: 84-123
+  name: parse_options
+- code:
+  - static json build_tools_definition() {
+  - '    json parameters_schema                    = json::object();'
+  - '    parameters_schema["type"]                 = "object";'
+  - '    parameters_schema["properties"]           = json::object();'
+  - '    parameters_schema["properties"]["param1"] = json::object({'
+  - '        { "type",        "string"          },'
+  - '        { "description", "First parameter" }'
+  - '    });'
+  - '    parameters_schema["properties"]["param2"] = json::object({'
+  - '        { "type",        "string"           },'
+  - '        { "description", "Second parameter" }'
+  - '    });'
+  - '    parameters_schema["required"]             = json::array({ "param1", "param2"
+    });'
+  - ''
+  - '    return json::array({'
+  - '        json{ { "type", "function" },'
+  - '             { "function", json{ { "name", "test_function_name" },'
+  - '                                  { "description", "A test function for debugging"
+    },'
+  - '                                  { "parameters", parameters_schema } } } }'
+  - '    });'
+  - '}'
+  desc: 构建测试用的工具定义JSON对象，包含两个字符串参数。
+  line: 125-139
+  name: build_tools_definition
+- code:
+  - static json build_tool_call(const std::string & name, const json & args_object,
+    const std::string & id = "call_001") {
+  - '    return json{'
+  - '        {"id", id},'
+  - '        {"type", "function"},'
+  - '        {"function", json{'
+  - '            {"name", name},'
+  - '            {"arguments", args_object}  // Pass as JSON object, not serialized
+    string'
+  - '        }}'
+  - '    };'
+  - '}'
+  desc: 构建工具调用消息的JSON对象，支持自定义参数和ID。
+  line: 142-149
+  name: build_tool_call
+- code:
+  - static json make_user_msg() {
+  - '    return json{'
+  - '        {"role", "user"},'
+  - '        {"content", "Hello, please help me."}'
+  - '    };'
+  - '}'
+  desc: 创建第一条用户消息的JSON对象。
+  line: 152-157
+  name: make_user_msg
+- code:
+  - static json make_user_msg2() {
+  - '    return json{'
+  - '        {"role", "user"},'
+  - '        {"content", "Thank you."}'
+  - '    };'
+  - '}'
+  desc: 创建第二条用户消息的JSON对象。
+  line: 159-164
+  name: make_user_msg2
+- code:
+  - static json make_user_msg2_continue() {
+  - '    return json{'
+  - '        {"role", "user"},'
+  - '        {"content", "Continue."}'
+  - '    };'
+  - '}'
+  desc: 创建继续请求的用户消息JSON对象。
+  line: 166-171
+  name: make_user_msg2_continue
+- code:
+  - static json make_assistant_no_tool() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", "Let me help you."}'
+  - '    };'
+  - '}'
+  desc: 创建无工具调用的助手消息JSON对象。
+  line: 173-178
+  name: make_assistant_no_tool
+- code:
+  - static json make_assistant_one_tool() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", nullptr},'
+  - '        {"tool_calls", json::array({'
+  - '            build_tool_call("test_function_name", json::object({{"param1", "value1"},
+    {"param2", "value2"}}))'
+  - '        })}'
+  - '    };'
+  - '}'
+  desc: 创建包含一次工具调用的助手消息JSON对象。
+  line: 180-187
+  name: make_assistant_one_tool
+- code:
+  - static json make_assistant_two_tools() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", nullptr},'
+  - '        {"tool_calls", json::array({'
+  - '            build_tool_call("test_function_name", json::object({{"param1", "value1"},
+    {"param2", "value2"}})),'
+  - '            build_tool_call("test_function_name", json::object({{"param1", "value3"},
+    {"param2", "value4"}}), "call_002")'
+  - '        })}'
+  - '    };'
+  - '}'
+  desc: 创建包含两次工具调用的助手消息JSON对象。
+  line: 189-196
+  name: make_assistant_two_tools
+- code:
+  - static json make_assistant_no_reasoning() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", "I can help you with that."}'
+  - '    };'
+  - '}'
+  desc: 创建无推理内容的助手消息JSON对象。
+  line: 198-203
+  name: make_assistant_no_reasoning
+- code:
+  - static json make_assistant_with_reasoning() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", "I can help you with that."},'
+  - '        {"reasoning_content", "The user is asking for help. I should respond
+    positively."}'
+  - '    };'
+  - '}'
+  desc: 创建包含推理内容的助手消息JSON对象。
+  line: 205-211
+  name: make_assistant_with_reasoning
+- code:
+  - static json make_assistant_one_tool_with_reasoning() {
+  - '    return json{'
+  - '        {"role", "assistant"},'
+  - '        {"content", nullptr},'
+  - '        {"tool_calls", json::array({'
+  - '            build_tool_call("test_function_name", json::object({{"param1", "value1"},
+    {"param2", "value2"}}))'
+  - '        })},"reasoning_content", "I need to call the tool first."}'
+  - '    };'
+  - '}'
+  desc: 创建同时包含工具调用和推理内容的助手消息JSON对象。
+  line: 213-220
+  name: make_assistant_one_tool_with_reasoning
+- code:
+  - static void print_diff_split(const std::string & title, const diff_split & diff)
+    {
+  - '    LOG_ERR("\n%s=== %s ===%s\n", ANSI_CYAN, title.c_str(), ANSI_RESET);'
+  - '    LOG_ERR("%sCommon Prefix:%s ''%s''\n", ANSI_PREFIX, ANSI_RESET, diff.prefix.c_str());'
+  - '    LOG_ERR("%sCommon Suffix:%s ''%s''\n", ANSI_SUFFIX, ANSI_RESET, diff.suffix.c_str());'
+  - '    LOG_ERR("%sLeft (difference):%s ''%s''\n", ANSI_GREEN, ANSI_RESET, diff.left.c_str());'
+  - '    LOG_ERR("%sRight (difference):%s ''%s''\n", ANSI_ORANGE, ANSI_RESET, diff.right.c_str());'
+  - '}'
+  desc: 以彩色的方式打印文本差异分析的详细结果，包括公共前缀、后缀和左右差异部分。
+  line: 222-229
+  name: print_diff_split
+- code:
+  - static void check_reasoning_variables(const common_chat_template & tmpl) {
+  - '    LOG_ERR("\n%s=== Checking Reasoning Variables ===%s\n", ANSI_CYAN, ANSI_RESET);'
+  - ''
+  - '    try {'
+  - '        // Create a list of candidate reasoning/thinking variable names to probe'
+  - '        std::vector<std::string> candidate_vars = {'
+  - '            "enable_reasoning", ... "think_enabled",'
+  - '        };'
+  - '        jinja::context ctx;'
+  - '        ctx.is_get_stats = true;'
+  - '        json messages = json::array({'
+  - '            json{ {"role", "user"}, {"content", "Test message"} },'
+  - '            json{ {"role", "assistant"}, {"content", "Response"}, {"reasoning_content",
+    "Some reasoning"} }'
+  - '        });'
+  - '        jinja::global_from_json(ctx, json{ ... }, true);'
+  - '        for (const auto & var_name : candidate_vars) {'
+  - '            ctx.set_val(var_name, jinja::mk_val<jinja::value_undefined_t>(var_name));'
+  - '        }'
+  - '        try {'
+  - '            jinja::runtime runtime(ctx);'
+  - '            runtime.execute(tmpl.prog);'
+  - '        } catch (const std::exception & e) { }'
+  - '        std::vector<std::string> accessed_vars;'
+  - '        for (const auto & var_name : candidate_vars) {'
+  - '            auto val = ctx.get_val(var_name);'
+  - '            if (!val->is_undefined()) { continue; }'
+  - '            if (val->stats.used) { accessed_vars.push_back(var_name); }'
+  - '        }'
+  - '        if (accessed_vars.empty()) {'
+  - '            LOG_ERR("%sNo reasoning/thinking-related variables were queried by
+    the template%s\n", ANSI_GRAY, ANSI_RESET);'
+  - '        } else {'
+  - '            LOG_ERR("Template queries the following reasoning/thinking-related
+    variables:\n");'
+  - '            for (const auto & var : accessed_vars) {'
+  - '                LOG_ERR("  %s- %s%s\n", ANSI_ORANGE, var.c_str(), ANSI_RESET);'
+  - '            }'
+  - '        }'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Error checking reasoning variables: %s\n", e.what());'
+  - '    }'
+  - '}'
+  desc: 通过设置候选推理相关变量为未定义值并执行模板，探测模板实际查询了哪些推理变量。
+  line: 231-270
+  name: check_reasoning_variables
+- code:
+  - static void analyze_template(const std::string & template_path) {
+  - '    LOG_ERR("\n");'
+  - '    LOG_ERR("%s", ANSI_PURPLE);'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("                    ANALYZING TEMPLATE: %s\n", template_path.c_str());'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("%s", ANSI_RESET);'
+  - '    std::string template_source;'
+  - '    try {'
+  - '        template_source = read_file(template_path);'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Error reading template: %s\n", e.what());'
+  - '        return;'
+  - '    }'
+  - '    try {'
+  - '        common_chat_template chat_template(template_source, "", "");'
+  - '        json tools = build_tools_definition();'
+  - '        LOG_ERR("\n%s=== Template Capabilities (from jinja::caps) ===%s\n", ANSI_CYAN,
+    ANSI_RESET);'
+  - '        auto caps = chat_template.original_caps();'
+  - '        LOG_ERR("%ssupports_tools:%s %s\n", ANSI_BLUE, ANSI_RESET, caps.supports_tools
+    ? "true" : "false");'
+  - '        LOG_ERR("%ssupports_tool_calls:%s %s\n", ANSI_BLUE, ANSI_RESET, caps.supports_tool_calls
+    ? "true" : "false");'
+  - '        LOG_ERR("%ssupports_system_role:%s %s\n", ANSI_BLUE, ANSI_RESET, caps.supports_system_role
+    ? "true" : "false");'
+  - '        LOG_ERR("%ssupports_parallel_tool_calls:%s %s\n", ANSI_BLUE, ANSI_RESET,
+    caps.supports_parallel_tool_calls ? "true" : "false");'
+  - '        LOG_ERR("%ssupports_typed_content:%s %s\n", ANSI_BLUE, ANSI_RESET, caps.supports_typed_content
+    ? "true" : "false");'
+  - '        LOG_ERR("%ssupports_string_content:%s %s\n", ANSI_BLUE, ANSI_RESET, caps.supports_string_content
+    ? "true" : "false");'
+  - '        // Test 1-9 definitions and diff analysis'
+  - '        ...'
+  - '        check_reasoning_variables(chat_template);'
+  - '    } catch (const std::exception & e) {'
+  - '        LOG_ERR("Analysis failed: %s\n", e.what());'
+  - '    }'
+  - '}'
+  desc: 分析单个模板文件，依次检测模板能力、9组差异化文本对比实验并输出差异结果，最后探测推理变量。
+  line: 272-378
+  name: analyze_template
+- code:
+  - int main(int argc, char ** argv) {
+  - '    common_log_set_verbosity_thold(99);'
+  - '    analysis_options opts;'
+  - '    if (!parse_options(argc, argv, opts)) {'
+  - '        return 1;'
+  - '    }'
+  - '    LOG_ERR("\n");'
+  - '    LOG_ERR("%s", ANSI_PURPLE);'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("                      TEMPLATE ANALYSIS TOOL\n");'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("%s", ANSI_RESET);'
+  - '    LOG_ERR("Analyzing %s%zu%s template(s)\n", ANSI_CYAN, opts.template_paths.size(),
+    ANSI_RESET);'
+  - '    for (const auto & path : opts.template_paths) {'
+  - '        analyze_template(path);'
+  - '    }'
+  - '    LOG_ERR("\n");'
+  - '    LOG_ERR("%s", ANSI_GREEN);'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("                      ANALYSIS COMPLETE\n");'
+  - '    LOG_ERR("================================================================================\n");'
+  - '    LOG_ERR("%s", ANSI_RESET);'
+  - '    return 0;'
+  - '}'
+  desc: 程序入口，设置日志级别，解析命令行参数，遍历分析所有指定模板并输出分析完成信息。
+  line: 380-398
+  name: main

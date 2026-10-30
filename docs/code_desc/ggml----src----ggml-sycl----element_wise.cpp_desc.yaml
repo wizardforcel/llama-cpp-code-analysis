@@ -1,0 +1,1621 @@
+classes: []
+desc: This file implements element-wise operations (unary, binary, and fused GLU variants)
+  for the SYCL backend of ggml, defining kernels and dispatch functions for operations
+  such as sigmoid, GELU, ReLU, arithmetic functions, accumulation, and gated linear
+  units, supporting both half and float precision.该文件为 SYCL 后端实现了各种逐元素操作的 GPU 内核调度逻辑，覆盖多种数学函数（如
+  sqrt、sin、cos、gelu、silu、exp、log 等）和融合门控激活函数（如 geglu、reglu、swiglu 等），每个操作通过统一的模板化调度机制将计算任务分发到
+  SYCL 设备上执行。
+file: ggml/src/ggml-sycl/element_wise.cpp
+funcs:
+- code:
+  - static void acc_f32(const float * x, const float * y, float * dst, const int64_t
+    ne,
+  - '        const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t
+    ne13,'
+  - '        const int64_t s11, const int64_t s12, const int64_t s13, const int64_t
+    offset) {'
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    const int64_t i = SYCL_LOCAL_ID_CALC(item_ct1, 2);'
+  - '    if (i >= ne) {'
+  - '        return;'
+  - '    }'
+  - '    int64_t src1_idx = i - offset;'
+  - '    int64_t tmp = src1_idx;'
+  - '    const int64_t i13 = tmp / s13;'
+  - '    tmp -= i13 * s13;'
+  - '    const int64_t i12 = tmp / s12;'
+  - '    tmp -= i12 * s12;'
+  - '    const int64_t i11 = tmp / s11;'
+  - '    tmp -= i11 * s11;'
+  - '    const int64_t i10 = tmp;'
+  - '    float val = x[i];'
+  - '    if (src1_idx >= 0 && i10 < ne10 && i11 < ne11 && i12 < ne12 && i13 < ne13)
+    {'
+  - '        val += y[((i13*ne12 + i12) * ne11 + i11) * ne10 + i10];'
+  - '    }'
+  - '    dst[i] = val;'
+  - '}'
+  desc: Performs an element-wise accumulation operation for 32-bit float tensors,
+    adding values from y to x with dimensional index decomposition.
+  line: 20-48
+  name: acc_f32
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_sgn(T x) {
+  - '    return x > static_cast<T>(0.f) ? static_cast<T>(1.f) : ((x < static_cast<T>(0.f)
+    ? static_cast<T>(-1.f) : static_cast<T>(0.f)));'
+  - '}'
+  desc: Template function that returns the sign of the input, returning 1 for positive,
+    -1 for negative, and 0 for zero.
+  line: 50-53
+  name: op_sgn
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_abs(T x) {
+  - '    return sycl::fabs(x);'
+  - '}'
+  desc: Template function that returns the absolute value of the input.
+  line: 55-58
+  name: op_abs
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_elu(T x) {
+  - '    return (x > static_cast<T>(0.f)) ? x : sycl::expm1(x);'
+  - '}'
+  desc: Template function that computes the Exponential Linear Unit (ELU) of the input.
+  line: 60-63
+  name: op_elu
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_gelu(T x) {
+  - '    const T GELU_COEF_A    = static_cast<T>(0.044715f);'
+  - '    const T SQRT_2_OVER_PI = static_cast<T>(0.79788456080286535587989211986876f);'
+  - '    return static_cast<T>(0.5f) * x *'
+  - '           (static_cast<T>(1.0f) +'
+  - '            sycl::tanh(SQRT_2_OVER_PI * x * (static_cast<T>(1.0f) + GELU_COEF_A
+    * x * x)));'
+  - '}'
+  desc: Template function that computes the Gaussian Error Linear Unit (GELU) approximation
+    of the input.
+  line: 65-73
+  name: op_gelu
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_silu(T x) {
+  - '    return x / (static_cast<T>(1.0f) + sycl::native::exp(-x));'
+  - '}'
+  desc: Template function that computes the Sigmoid Linear Unit (SiLU) of the input.
+  line: 75-78
+  name: op_silu
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_gelu_quick(T x) {
+  - '    const T GELU_QUICK_COEF_LOCAL = static_cast<T>(-1.702f);'
+  - '    return x * (static_cast<T>(1.0f) / (static_cast<T>(1.0f) + sycl::native::exp(GELU_QUICK_COEF_LOCAL
+    * x)));'
+  - '}'
+  desc: Template function that computes a quick approximation of GELU using a fixed
+    coefficient.
+  line: 80-84
+  name: op_gelu_quick
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_gelu_erf(T x) {
+  - '    const T SQRT_2_INV = static_cast<T>(0.70710678118654752440084436210484f);'
+  - '    return static_cast<T>(0.5f) * x * (static_cast<T>(1.0f) + sycl::erf(x * SQRT_2_INV));'
+  - '}'
+  desc: Template function that computes GELU using the exact error function (erf).
+  line: 86-90
+  name: op_gelu_erf
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_tanh(T x) {
+  - '    return sycl::tanh(x);'
+  - '}'
+  desc: Template function that computes the hyperbolic tangent of the input.
+  line: 92-95
+  name: op_tanh
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_relu(T x) {
+  - '    return sycl::fmax(x, static_cast<T>(0));'
+  - '}'
+  desc: Template function that computes the Rectified Linear Unit (ReLU) of the input.
+  line: 97-100
+  name: op_relu
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_sigmoid(T x) {
+  - '    return static_cast<T>(1.0f) / (static_cast<T>(1.0f) + sycl::native::exp(-x));'
+  - '}'
+  desc: Template function that computes the sigmoid function of the input.
+  line: 102-105
+  name: op_sigmoid
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_sqrt(T x) {
+  - '    return sycl::sqrt(x);'
+  - '}'
+  desc: Template function that computes the square root of the input.
+  line: 107-110
+  name: op_sqrt
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_sin(T x) {
+  - '    return sycl::sin(x);'
+  - '}'
+  desc: Template function that computes the sine of the input.
+  line: 112-115
+  name: op_sin
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_cos(T x) {
+  - '    return sycl::cos(x);'
+  - '}'
+  desc: Template function that computes the cosine of the input.
+  line: 117-120
+  name: op_cos
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_hardsigmoid(T x) {
+  - '    return sycl::fmin(static_cast<T>(1.0f), sycl::fmax(static_cast<T>(0.0f),
+    (x + static_cast<T>(3.0f)) / static_cast<T>(6.0f)));'
+  - '}'
+  desc: Template function that computes a hard sigmoid function of the input.
+  line: 122-125
+  name: op_hardsigmoid
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_hardswish(T x) {
+  - '    return x * sycl::fmin(static_cast<T>(1.0f), sycl::fmax(static_cast<T>(0.0f),
+    (x + static_cast<T>(3.0f)) / static_cast<T>(6.0f)));'
+  - '}'
+  desc: Template function that computes the hard swish activation function.
+  line: 127-130
+  name: op_hardswish
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_exp(T x) {
+  - '    return sycl::exp(x);'
+  - '}'
+  desc: Template function that computes the exponential of the input.
+  line: 132-135
+  name: op_exp
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_log(T x) {
+  - '    if (x <= static_cast<T>(0)) {'
+  - '        return neg_infinity<T>();'
+  - '    }'
+  - '    return sycl::log(x);'
+  - '}'
+  desc: Template function that computes the natural logarithm of the input, returning
+    negative infinity for non-positive inputs.
+  line: 137-143
+  name: op_log
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_softplus(T x) {
+  - '    const float xf = (float) x;'
+  - '    const float ax = sycl::fabs(xf);'
+  - '    const float m  = sycl::fmax(xf, 0.0f);'
+  - '    const float y  = m + sycl::log1p(sycl::exp(-ax));'
+  - '    return (T) y;'
+  - '}'
+  desc: Template function that computes the softplus activation function of the input.
+  line: 145-152
+  name: op_softplus
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_neg(T x) {
+  - '    return -x;'
+  - '}'
+  desc: Template function that negates the input.
+  line: 154-157
+  name: op_neg
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_step(T x) {
+  - '    return (x > static_cast<T>(0.0f)) ? static_cast<T>(1.0f) : static_cast<T>(0.0f);'
+  - '}'
+  desc: Template function that returns 1.0 for positive inputs and 0.0 otherwise.
+  line: 159-162
+  name: op_step
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_leaky_relu(T x, float negative_slope) {
+  - '    T neg_slope_T = static_cast<T>(negative_slope);'
+  - '    return sycl::fmax(x, static_cast<T>(0)) +'
+  - '           sycl::fmin(x, static_cast<T>(0.0f)) * neg_slope_T;'
+  - '}'
+  desc: Template function that computes the Leaky ReLU activation with a given negative
+    slope.
+  line: 164-169
+  name: op_leaky_relu
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_sqr(T x) {
+  - '    return x * x;'
+  - '}'
+  desc: Template function that computes the square of the input.
+  line: 171-174
+  name: op_sqr
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_clamp(T x, float min_val, float max_val) {
+  - '    return x < static_cast<T>(min_val) ? static_cast<T>(min_val) : (x > static_cast<T>(max_val)
+    ? static_cast<T>(max_val) : x);'
+  - '}'
+  desc: Template function that clamps the input to the given minimum and maximum values.
+  line: 176-179
+  name: op_clamp
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_floor(T x) {
+  - '    return sycl::floor(x);'
+  - '}'
+  desc: Template function that computes the floor of the input.
+  line: 181-184
+  name: op_floor
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_ceil(T x) {
+  - '    return sycl::ceil(x);'
+  - '}'
+  desc: Template function that computes the ceiling of the input.
+  line: 186-189
+  name: op_ceil
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_round(T x) {
+  - '    return sycl::round(x);'
+  - '}'
+  desc: Template function that rounds the input to the nearest integer.
+  line: 191-194
+  name: op_round
+- code:
+  - template<typename T>
+  - static __dpct_inline__ T op_trunc(T x) {
+  - '    return sycl::trunc(x);'
+  - '}'
+  desc: Template function that truncates the input to the integer part.
+  line: 196-199
+  name: op_trunc
+- code:
+  - template<typename T, typename F>
+  - static void unary_op_generic_kernel(
+  - '        const T * x,'
+  - '        T * dst,'
+  - '        const int k,'
+  - '        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t
+    ne3,'
+  - '        const size_t nb0,  const size_t nb1,  const size_t nb2,  const size_t
+    nb3,'
+  - '        const size_t nbd0, const size_t nbd1, const size_t nbd2, const size_t
+    nbd3,'
+  - '        const sycl::nd_item<1> & item_ct1,'
+  - '        F func) {'
+  - '        (void) ne3;'
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        const int64_t i0 =  i % ne0;'
+  - '        const int64_t i1 = (i / ne0)        % ne1;'
+  - '        const int64_t i2 = (i / (ne0*ne1))  % ne2;'
+  - '        const int64_t i3 =  i / (ne0*ne1*ne2);'
+  - '        const char * src_base = (const char *) x;'
+  - '        char       * dst_base = (char *) dst;'
+  - '        const T * srcp = (const T *)(src_base + i0*nb0  + i1*nb1  + i2*nb2  +
+    i3*nb3 );'
+  - '        T *       dstp = (T *)(dst_base + i0*nbd0 + i1*nbd1 + i2*nbd2 + i3*nbd3);'
+  - '        *dstp = func(*srcp);'
+  - '    }'
+  - '}'
+  desc: A generic SYCL kernel that applies a unary operation across a multi-dimensional
+    tensor with a given function object.
+  line: 202-232
+  name: unary_op_generic_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_sqrt_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_sqrt(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the square root operation to a contiguous array of
+    elements.
+  line: 234-239
+  name: unary_op_sqrt_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_sin_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_sin(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the sine operation to a contiguous array of elements.
+  line: 241-247
+  name: unary_op_sin_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_cos_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_cos(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the cosine operation to a contiguous array of elements.
+  line: 249-255
+  name: unary_op_cos_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_log_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_log(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the natural logarithm operation to a contiguous array
+    of elements.
+  line: 257-262
+  name: unary_op_log_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_leaky_relu_kernel(const T * x, T * dst, const int k, float
+    negative_slope, const sycl::nd_item<1> &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_leaky_relu(x[i], negative_slope);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the Leaky ReLU activation with a given negative slope
+    to a contiguous array of elements.
+  line: 264-270
+  name: unary_op_leaky_relu_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_sqr_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_sqr(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the square operation to a contiguous array of elements.
+  line: 272-278
+  name: unary_op_sqr_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_clamp_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1, float min_val, float max_val) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_clamp(x[i], min_val, max_val);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the clamping operation to a contiguous array of elements
+    with given min and max values.
+  line: 280-286
+  name: unary_op_clamp_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_floor_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_floor(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the floor operation to a contiguous array of elements.
+  line: 288-294
+  name: unary_op_floor_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_ceil_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_ceil(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the ceiling operation to a contiguous array of elements.
+  line: 296-302
+  name: unary_op_ceil_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_round_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_round(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the rounding operation to a contiguous array of elements.
+  line: 304-310
+  name: unary_op_round_kernel
+- code:
+  - template<typename T>
+  - static void unary_op_trunc_kernel(const T * x, T * dst, const int k, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = op_trunc(x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that applies the truncation operation to a contiguous array of
+    elements.
+  line: 312-318
+  name: unary_op_trunc_kernel
+- code:
+  - template<typename T>
+  - static void clamp(const T * x, T * dst, const float min, const float max, const
+    int k,
+  - '                      const sycl::nd_item<1> &item_ct1) {'
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = x[i] < static_cast<T>(min) ? static_cast<T>(min) : (x[i] > static_cast<T>(max)
+    ? static_cast<T>(max) : x[i]);'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that clamps each element of an array to a specified range.
+  line: 320-327
+  name: clamp
+- code:
+  - template<typename T>
+  - static void gated_op_fused_geglu(const T * x, const T * g, T * dst, const uint64_t
+    k, const uint64_t n, const uint64_t o0, const uint64_t o1, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '        const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '        dst[i] = op_gelu(x[j0]) * g[j1];'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that computes fused GELU-based gated linear unit (GEGLU) operation.
+  line: 329-337
+  name: gated_op_fused_geglu
+- code:
+  - template<typename T>
+  - static void gated_op_fused_reglu(const T * x, const T * g, T * dst, const uint64_t
+    k, const uint64_t n, const uint64_t o0, const uint64_t o1, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '        const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '        dst[i] = op_relu(x[j0]) * g[j1];'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that computes fused ReLU-based gated linear unit (ReGLU) operation.
+  line: 339-347
+  name: gated_op_fused_reglu
+- code:
+  - template<typename T>
+  - static void gated_op_fused_swiglu(const T * x, const T * g, T * dst, const uint64_t
+    k, const uint64_t n, const uint64_t o0, const uint64_t o1, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1)  {'
+  - '        const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '        const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '        dst[i] = op_silu(x[j0]) * g[j1];'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that computes fused SiLU-based gated linear unit (SwiGLU) operation.
+  line: 349-357
+  name: gated_op_fused_swiglu
+- code:
+  - template<typename T>
+  - static void gated_op_fused_geglu_erf(const T * x, const T * g, T * dst, const
+    uint64_t k, const uint64_t n, const uint64_t o0, const uint64_t o1, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '        const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '        dst[i] = op_gelu_erf(x[j0]) * g[j1];'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that computes GELU (erf-based) fused gated linear unit operation.
+  line: 359-367
+  name: gated_op_fused_geglu_erf
+- code:
+  - template<typename T>
+  - static void gated_op_fused_geglu_quick(const T * x, const T * g, T * dst, const
+    uint64_t k, const uint64_t n, const uint64_t o0, const uint64_t o1, const sycl::nd_item<1>
+    &item_ct1) {
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '        const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '        dst[i] = op_gelu_quick(x[j0]) * g[j1];'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that computes a quick GELU-based fused gated linear unit operation.
+  line: 369-377
+  name: gated_op_fused_geglu_quick
+- code:
+  - static void acc_f32_sycl(const float *x, const float *y, float *dst,
+  - '                         const int64_t n_elements, const int64_t ne10, const
+    int64_t ne11,'
+  - '                         const int64_t ne12, const int64_t ne13, const int64_t
+    s1, const int64_t s2, const int64_t s3,'
+  - '                         const int64_t offset, queue_ptr stream) {'
+  - '    const int num_blocks = (n_elements + SYCL_ACC_BLOCK_SIZE - 1) / SYCL_ACC_BLOCK_SIZE;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) *
+    sycl::range<3>(1, 1, SYCL_ACC_BLOCK_SIZE),'
+  - '                                           sycl::range<3>(1, 1, SYCL_ACC_BLOCK_SIZE)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             acc_f32(x, y, dst, n_elements, ne10, ne11, ne12,
+    ne13, s1, s2, s3, offset);'
+  - '                         });'
+  - '}'
+  desc: Launches the acc_f32 kernel on the SYCL device with proper block sizing.
+  line: 379-393
+  name: acc_f32_sycl
+- code:
+  - template<typename T>
+  - static void arange_kernel(T * dst, const int k, T start, T step,
+  - '                         const sycl::nd_item<1> &item_ct1) {'
+  - '    SYCL_GLOBAL_ID_LOOP(k, item_ct1) {'
+  - '        dst[i] = start + static_cast<T>(i) * step;'
+  - '    }'
+  - '}'
+  desc: SYCL kernel that generates a sequence of values starting from a start value
+    with a given step.
+  line: 395-401
+  name: arange_kernel
+- code:
+  - template<typename KernelInvoker, typename... Args>
+  - static inline void dispatch_ggml_sycl_op_unary(ggml_backend_sycl_context & ctx,
+    ggml_tensor * dst, KernelInvoker kernel_invoker, Args&&... args) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32 || dst->src[0]->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(dst->src[0]->type == dst->type);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    switch (dst->type) {'
+  - '        case GGML_TYPE_F16:'
+  - '            {'
+  - '                auto data_pts = cast_data<sycl::half>(dst);'
+  - '                kernel_invoker(data_pts.src, data_pts.dst, (int)ggml_nelements(dst->src[0]),
+    main_stream, std::forward<Args>(args)...);'
+  - '                break;'
+  - '            }'
+  - '        case GGML_TYPE_F32:'
+  - '            {'
+  - '                auto data_pts = cast_data<float>(dst);'
+  - '                kernel_invoker(data_pts.src, data_pts.dst, (int)ggml_nelements(dst->src[0]),
+    main_stream, std::forward<Args>(args)...);'
+  - '                break;'
+  - '            }'
+  - '        default:'
+  - '            GGML_ABORT("GGML tensor type not supported!\n");'
+  - '    }'
+  - '}'
+  desc: Dispatches a unary operation kernel based on the tensor data type (F16 or
+    F32).
+  line: 403-427
+  name: dispatch_ggml_sycl_op_unary
+- code:
+  - template<typename KernelInvoker, typename... Args>
+  - static inline void dispatch_ggml_sycl_op_fused_glu(ggml_backend_sycl_context &
+    ctx, ggml_tensor * dst, KernelInvoker kernel_invoker, Args&&... args) {
+  - '    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32 || dst->src[0]->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);'
+  - '    GGML_ASSERT(dst->src[0]->type == dst->type);'
+  - '    dpct::queue_ptr main_stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    const ggml_tensor * src1 = dst->src[1];'
+  - '    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;;'
+  - '    GGML_ASSERT(dst->ne[0] == nc);'
+  - '    GGML_ASSERT(ggml_is_contiguous_1(dst->src[0]));'
+  - '    GGML_ASSERT(ggml_is_contiguous(dst));'
+  - '    const int32_t swapped = ((const int32_t *) dst->op_params)[1];'
+  - '    void * src0_d = src0->data;'
+  - '    void * src1_d = src1 ? src1->data : src0->data;'
+  - '    const int64_t src0_o = src0->nb[1];'
+  - '    const int64_t src1_o = src1 ? src1->nb[1] : src0->nb[1];'
+  - '    void * dst_d = dst->data;'
+  - '    if (src1) {'
+  - '        GGML_ASSERT(ggml_is_contiguous_1(src1));'
+  - '        GGML_ASSERT(src1->nb[0] == ggml_element_size(src1));'
+  - '        GGML_ASSERT(src1->ne[0] == nc);'
+  - '        GGML_ASSERT(src0->type == src1->type);'
+  - '    }'
+  - '    switch (dst->type) {'
+  - '        case GGML_TYPE_F16:'
+  - '            {'
+  - '                sycl::half * src0_p = (sycl::half *) src0_d;'
+  - '                sycl::half * src1_p = (sycl::half *) src1_d;'
+  - '                    if (!src1) {'
+  - '                        src0_p += swapped ? nc : 0;'
+  - '                        src1_p += swapped ? 0 : nc;'
+  - '                    }'
+  - '                kernel_invoker(src0_p,'
+  - '                               src1_p,'
+  - '                               (sycl::half *) dst_d,'
+  - '                               ggml_nelements(dst),'
+  - '                               nc,'
+  - '                               src0_o / sizeof(sycl::half),'
+  - '                               src1_o / sizeof(sycl::half),'
+  - '                               main_stream,'
+  - '                               std::forward<Args>(args)...);'
+  - '                break;'
+  - '            }'
+  - '        case GGML_TYPE_F32:'
+  - '            {'
+  - '                float * src0_p = (float *) src0_d;'
+  - '                float * src1_p = (float *) src1_d;'
+  - '                    if (!src1) {'
+  - '                        src0_p += swapped ? nc : 0;'
+  - '                        src1_p += swapped ? 0 : nc;'
+  - '                    }'
+  - '                kernel_invoker(src0_p,'
+  - '                               src1_p,'
+  - '                               (float *) dst_d,'
+  - '                               ggml_nelements(dst),'
+  - '                               nc,'
+  - '                               src0_o / sizeof(float),'
+  - '                               src1_o / sizeof(float),'
+  - '                               main_stream,'
+  - '                               std::forward<Args>(args)...);'
+  - '                break;'
+  - '            }'
+  - '        default:'
+  - '            GGML_ABORT("GGML tensor type not supported!\n");'
+  - '    }'
+  - '}'
+  desc: Dispatches a fused GLU operation kernel based on the tensor data type and
+    handles the source tensors.
+  line: 429-499
+  name: dispatch_ggml_sycl_op_fused_glu
+- code:
+  - template<typename F>
+  - static inline void ggml_sycl_op_unary(
+  - '        ggml_backend_sycl_context & ctx, ggml_tensor * dst, F func) {'
+  - '    ggml_tensor * src0 = dst->src[0];'
+  - '    const int64_t ne0  = dst->ne[0];'
+  - '    const int64_t ne1  = dst->ne[1];'
+  - '    const int64_t ne2  = dst->ne[2];'
+  - '    const int64_t ne3  = dst->ne[3];'
+  - '    const size_t  nb0  = src0->nb[0];'
+  - '    const size_t  nb1  = src0->nb[1];'
+  - '    const size_t  nb2  = src0->nb[2];'
+  - '    const size_t  nb3  = src0->nb[3];'
+  - '    const size_t  nbd0 = dst->nb[0];'
+  - '    const size_t  nbd1 = dst->nb[1];'
+  - '    const size_t  nbd2 = dst->nb[2];'
+  - '    const size_t  nbd3 = dst->nb[3];'
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [=](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, 256);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256),'
+  - '                                  sycl::range<1>(256)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_generic_kernel('
+  - '                        src, dst_ptr, k_elements,'
+  - '                        ne0, ne1, ne2, ne3,'
+  - '                        nb0, nb1, nb2, nb3,'
+  - '                        nbd0, nbd1, nbd2, nbd3,'
+  - '                        item_ct1,'
+  - '                        func'
+  - '                    );'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: Configures the SYCL kernel launch for a generic unary operation on a tensor
+    and invokes the appropriate kernel.
+  line: 501-535
+  name: ggml_sycl_op_unary
+- code:
+  - static inline void ggml_sycl_op_arange(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    GGML_ASSERT(dst->type == GGML_TYPE_F32);'
+  - '    float start, stop, step;'
+  - '    memcpy(&start, dst->op_params, sizeof(float));'
+  - '    memcpy(&stop, (float *) dst->op_params + 1, sizeof(float));'
+  - '    memcpy(&step, (float *) dst->op_params + 2, sizeof(float));'
+  - '    dpct::queue_ptr stream = ctx.stream();'
+  - '    SYCL_CHECK(ggml_sycl_set_device(ctx.device));'
+  - '    float * dst_ptr = (float *)dst->data;'
+  - '    const int k = (int)ggml_nelements(dst);'
+  - '    const int num_blocks = ceil_div(k, SYCL_ARANGE_BLOCK_SIZE);'
+  - '    stream->parallel_for('
+  - '        sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_ARANGE_BLOCK_SIZE),'
+  - '                          sycl::range<1>(SYCL_ARANGE_BLOCK_SIZE)),'
+  - '        [=](sycl::nd_item<1> item_ct1) {'
+  - '            arange_kernel(dst_ptr, k, start, step, item_ct1);'
+  - '        });'
+  - '}'
+  desc: Generates a tensor with a sequence of values using the arange kernel, reading
+    parameters from op_params.
+  line: 537-557
+  name: ggml_sycl_op_arange
+- code:
+  - static inline void ggml_sycl_op_sgn(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_sgn(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the sign function operation on a tensor.
+  line: 559-565
+  name: ggml_sycl_op_sgn
+- code:
+  - static inline void ggml_sycl_op_abs(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_abs(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the absolute value operation on a tensor.
+  line: 567-573
+  name: ggml_sycl_op_abs
+- code:
+  - static inline void ggml_sycl_op_elu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_elu(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the ELU activation operation on a tensor.
+  line: 575-581
+  name: ggml_sycl_op_elu
+- code:
+  - static inline void ggml_sycl_op_silu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_silu(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the SiLU activation operation on a tensor.
+  line: 582-588
+  name: ggml_sycl_op_silu
+- code:
+  - static inline void ggml_sycl_op_gelu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_gelu(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the GELU activation operation on a tensor.
+  line: 590-596
+  name: ggml_sycl_op_gelu
+- code:
+  - static inline void ggml_sycl_op_gelu_quick(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_gelu_quick(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the quick GELU activation operation on a tensor.
+  line: 598-604
+  name: ggml_sycl_op_gelu_quick
+- code:
+  - static inline void ggml_sycl_op_gelu_erf(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_gelu_erf(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the erf-based GELU activation operation on a tensor.
+  line: 606-612
+  name: ggml_sycl_op_gelu_erf
+- code:
+  - static inline void ggml_sycl_op_tanh(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_tanh(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the hyperbolic tangent operation on a tensor.
+  line: 614-620
+  name: ggml_sycl_op_tanh
+- code:
+  - static inline void ggml_sycl_op_relu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_relu(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the ReLU activation operation on a tensor.
+  line: 622-628
+  name: ggml_sycl_op_relu
+- code:
+  - static inline void ggml_sycl_op_hardsigmoid(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_hardsigmoid(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the hard sigmoid activation operation on a tensor.
+  line: 630-636
+  name: ggml_sycl_op_hardsigmoid
+- code:
+  - static inline void ggml_sycl_op_hardswish(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_hardswish(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the hard swish activation operation on a tensor.
+  line: 638-644
+  name: ggml_sycl_op_hardswish
+- code:
+  - static inline void ggml_sycl_op_exp(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_exp(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the exponential operation on a tensor.
+  line: 646-652
+  name: ggml_sycl_op_exp
+- code:
+  - static inline void ggml_sycl_op_log(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_EXP_BLOCK_SIZE);
+    // Using EXP block size'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_EXP_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_EXP_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_log_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the natural logarithm operation on a tensor.
+  line: 654-669
+  name: ggml_sycl_op_log
+- code:
+  - static inline void ggml_sycl_op_softplus(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_softplus(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the softplus activation operation on a tensor.
+  line: 671-677
+  name: ggml_sycl_op_softplus
+- code:
+  - static inline void ggml_sycl_op_neg(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_neg(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the negation operation on a tensor.
+  line: 679-685
+  name: ggml_sycl_op_neg
+- code:
+  - static inline void ggml_sycl_op_step(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_step(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the step function operation on a tensor.
+  line: 687-693
+  name: ggml_sycl_op_step
+- code:
+  - static inline void ggml_sycl_op_sigmoid(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_sigmoid(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the sigmoid activation operation on a tensor.
+  line: 695-701
+  name: ggml_sycl_op_sigmoid
+- code:
+  - static inline void ggml_sycl_op_sqrt(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_SQRT_BLOCK_SIZE);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_SQRT_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_SQRT_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_sqrt_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the square root operation on a tensor.
+  line: 703-718
+  name: ggml_sycl_op_sqrt
+- code:
+  - static inline void ggml_sycl_op_sin(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_SIN_BLOCK_SIZE);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_SIN_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_SIN_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_sin_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the sine operation on a tensor.
+  line: 720-735
+  name: ggml_sycl_op_sin
+- code:
+  - static inline void ggml_sycl_op_cos(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_SIN_BLOCK_SIZE);
+    // Using SIN block size'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_SIN_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_SIN_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_cos_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the cosine operation on a tensor.
+  line: 737-753
+  name: ggml_sycl_op_cos
+- code:
+  - static inline void ggml_sycl_op_leaky_relu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    float negative_slope;'
+  - '    memcpy(&negative_slope, dst->op_params, sizeof(float));'
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream,
+    float slope) {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_RELU_BLOCK_SIZE);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_RELU_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_RELU_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_leaky_relu_kernel(src, dst_ptr, k_elements, slope,
+    item_ct1);'
+  - '                });'
+  - '        }, negative_slope);'
+  - '}'
+  desc: SYCL implementation of the Leaky ReLU activation operation on a tensor with
+    a negative slope parameter.
+  line: 755-771
+  name: ggml_sycl_op_leaky_relu
+- code:
+  - static inline void ggml_sycl_op_sqr(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_SQR_BLOCK_SIZE);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_SQR_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_SQR_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_sqr_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the square operation on a tensor.
+  line: 773-788
+  name: ggml_sycl_op_sqr
+- code:
+  - static inline void ggml_sycl_op_clamp(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    float min_val;'
+  - '    float max_val;'
+  - '    memcpy(&min_val, dst->op_params, sizeof(float));'
+  - '    memcpy(&max_val, (float *) dst->op_params + 1, sizeof(float));'
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream,
+    float min_arg, float max_arg) {'
+  - '            const int num_blocks = ceil_div(k_elements, SYCL_CLAMP_BLOCK_SIZE);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(SYCL_CLAMP_BLOCK_SIZE),'
+  - '                                  sycl::range<1>(SYCL_CLAMP_BLOCK_SIZE)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    clamp(src, dst_ptr, min_arg, max_arg, k_elements, item_ct1);'
+  - '                });'
+  - '        }, min_val, max_val);'
+  - '}'
+  desc: SYCL implementation of the clamp operation on a tensor with min and max parameters.
+  line: 790-809
+  name: ggml_sycl_op_clamp
+- code:
+  - static inline void ggml_sycl_op_floor(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, 256);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256),'
+  - '                                  sycl::range<1>(256)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_floor_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the floor operation on a tensor.
+  line: 811-826
+  name: ggml_sycl_op_floor
+- code:
+  - static inline void ggml_sycl_op_ceil(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::ggml_sycl_op_unary(ctx, dst, [](auto x) {'
+  - '        return op_ceil(x);'
+  - '    });'
+  - '}'
+  desc: SYCL implementation of the ceiling operation on a tensor.
+  line: 828-834
+  name: ggml_sycl_op_ceil
+- code:
+  - static inline void ggml_sycl_op_round(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, 256);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256),'
+  - '                                  sycl::range<1>(256)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_round_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the rounding operation on a tensor.
+  line: 836-851
+  name: ggml_sycl_op_round
+- code:
+  - static inline void ggml_sycl_op_trunc(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_unary(ctx, dst,'
+  - '        [](const auto* src, auto* dst_ptr, int k_elements, queue_ptr stream)
+    {'
+  - '            const int num_blocks = ceil_div(k_elements, 256);'
+  - '            stream->parallel_for('
+  - '                sycl::nd_range<1>(sycl::range<1>(num_blocks) * sycl::range<1>(256),'
+  - '                                  sycl::range<1>(256)),'
+  - '                [=](sycl::nd_item<1> item_ct1) {'
+  - '                    unary_op_trunc_kernel(src, dst_ptr, k_elements, item_ct1);'
+  - '                });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the truncation operation on a tensor.
+  line: 853-868
+  name: ggml_sycl_op_trunc
+- code:
+  - static inline void ggml_sycl_op_acc(ggml_backend_sycl_context & ctx, ggml_tensor
+    *dst) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    const ggml_tensor * src1 = dst->src[1];'
+  - '    const float * src0_d = (const float *) src0->data;'
+  - '    const float * src1_d = (const float *) src1->data;'
+  - '    float       * dst_d  = (float       *)  dst->data;'
+  - '    dpct::queue_ptr stream = ctx.stream();'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(src1->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(ggml_is_contiguous(src1));'
+  - '    GGML_ASSERT(dst->nb[0] == ggml_element_size(dst));'
+  - '    GGML_ASSERT(ggml_is_contiguously_allocated(dst));'
+  - '    const int64_t s1     = dst->op_params[0] / sizeof(float);'
+  - '    const int64_t s2     = dst->op_params[1] / sizeof(float);'
+  - '    const int64_t s3     = dst->op_params[2] / sizeof(float);'
+  - '    const int64_t offset = dst->op_params[3] / sizeof(float);'
+  - '    ggml_sycl_detail::acc_f32_sycl(src0_d, src1_d, dst_d, ggml_nelements(dst),'
+  - '        src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],'
+  - '        s1, s2, s3, offset, stream);'
+  - '}'
+  desc: SYCL implementation of the accumulation operation on a tensor with multiple
+    dimensions.
+  line: 870-893
+  name: ggml_sycl_op_acc
+- code:
+  - static inline void ggml_sycl_op_geglu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_fused_glu(ctx, dst,'
+  - '        [](const auto* x_ptr, const auto* g_ptr, auto* dst_ptr, uint64_t k, uint64_t
+    n, uint64_t o0, uint64_t o1, queue_ptr main_stream) {'
+  - '            const uint32_t num_blocks = ceil_div(k, SYCL_GELU_BLOCK_SIZE);'
+  - '            main_stream->parallel_for('
+  - '                    sycl::nd_range<1>((num_blocks * sycl::range<1>(SYCL_GELU_BLOCK_SIZE)),
+    sycl::range<1>(SYCL_GELU_BLOCK_SIZE)), [=](sycl::nd_item<1> item_ct1) {'
+  - '                gated_op_fused_geglu(x_ptr, g_ptr, dst_ptr, k, n, o0, o1, item_ct1);'
+  - '            });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the fused GEGLU operation on a tensor.
+  line: 895-906
+  name: ggml_sycl_op_geglu
+- code:
+  - static inline void ggml_sycl_op_reglu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_fused_glu(ctx, dst,'
+  - '        [](const auto* x_ptr, const auto* g_ptr, auto* dst_ptr, uint64_t k, uint64_t
+    n, uint64_t o0, uint64_t o1, queue_ptr main_stream) {'
+  - '            const uint32_t num_blocks = ceil_div((uint32_t)k, SYCL_RELU_BLOCK_SIZE);
+    // Using RELU block size for reglu'
+  - '            main_stream->parallel_for('
+  - '                    sycl::nd_range<1>((num_blocks * sycl::range<1>(SYCL_RELU_BLOCK_SIZE)),
+    sycl::range<1>(SYCL_RELU_BLOCK_SIZE)), [=](sycl::nd_item<1> item_ct1) {'
+  - '                gated_op_fused_reglu(x_ptr, g_ptr, dst_ptr, k, n, o0, o1, item_ct1);'
+  - '            });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the fused ReGLU operation on a tensor.
+  line: 908-920
+  name: ggml_sycl_op_reglu
+- code:
+  - static inline void ggml_sycl_op_swiglu(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_fused_glu(ctx, dst,'
+  - '        [](const auto* x_ptr, const auto* g_ptr, auto* dst_ptr, uint64_t k, uint64_t
+    n, uint64_t o0, uint64_t o1, queue_ptr main_stream) {'
+  - '            const uint32_t num_blocks = ceil_div((uint32_t)k, SYCL_SILU_BLOCK_SIZE);
+    // Using SILU block size for swiglu'
+  - '            main_stream->parallel_for('
+  - '                    sycl::nd_range<1>((num_blocks * sycl::range<1>(SYCL_SILU_BLOCK_SIZE)),
+    sycl::range<1>(SYCL_SILU_BLOCK_SIZE)), [=](sycl::nd_item<1> item_ct1) {'
+  - '                gated_op_fused_swiglu(x_ptr, g_ptr, dst_ptr, k, n, o0, o1, item_ct1);'
+  - '            });'
+  - '        });'
+  - '}'
+  desc: SYCL implementation of the fused SwiGLU operation on a tensor.
+  line: 922-934
+  name: ggml_sycl_op_swiglu
+- code:
+  - __dpct_inline__ float ggml_sycl_op_swiglu_oai_single(float x, float g, float alpha
+    = 1.702f, float limit = 7.0f) {
+  - '    x = sycl::fmin(x, limit);'
+  - '    g = sycl::fmax(sycl::fmin(g, limit), -limit);'
+  - '    float out_glu = x / (1.0f + sycl::native::exp(-x * alpha));'
+  - '    out_glu = out_glu * (1.0f + g);'
+  - '    return out_glu;'
+  - '}'
+  desc: Applies the OpenAI-specific SwiGLU variant, clamping inputs and scaling the
+    output by (1 + g).
+  line: 936-942
+  name: ggml_sycl_op_swiglu_oai_single
+- code:
+  - template <typename T>
+  - static void swiglu_oai_kernel(const T * x, const T * g, T * dst, const int64_t
+    k,
+  - '                              const int64_t n, const int64_t o0, const int64_t
+    o1,'
+  - '                              float alpha, float limit, sycl::nd_item<3> item_ct1)
+    {'
+  - '    const int64_t i = int64_t(item_ct1.get_local_range(2)) * item_ct1.get_group(2)
+    + item_ct1.get_local_id(2);'
+  - '    if (i >= k) {'
+  - '        return;'
+  - '    }'
+  - '    const int64_t j0 = (i / n) * o0 + (i % n);'
+  - '    const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);'
+  - '    float xi = x[j0];'
+  - '    float gi = g[j1];'
+  - '    dst[i] = ggml_sycl_op_swiglu_oai_single(xi, gi, alpha, limit);'
+  - '}'
+  desc: SYCL kernel that applies the OpenAI SwiGLU variant over a multi-dimensional
+    tensor.
+  line: 944-959
+  name: swiglu_oai_kernel
+- code:
+  - template <typename T>
+  - static void swiglu_oai_sycl(const T *       x,
+  - '                            const T *       g,'
+  - '                            T *             dst,'
+  - '                            const int64_t   k,'
+  - '                            const int64_t   n,'
+  - '                            const int64_t   o0,'
+  - '                            const int64_t   o1,'
+  - '                            const float     alpha,'
+  - '                            const float     limit,'
+  - '                            dpct::queue_ptr stream) {'
+  - '    const int64_t num_blocks = (k + SYCL_GLU_BLOCK_SIZE - 1) / SYCL_GLU_BLOCK_SIZE;'
+  - '    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, num_blocks) *
+    sycl::range<3>(1, 1, SYCL_GLU_BLOCK_SIZE),'
+  - '                                           sycl::range<3>(1, 1, SYCL_GLU_BLOCK_SIZE)),'
+  - '                         [=](sycl::nd_item<3> item_ct1) {'
+  - '                             swiglu_oai_kernel(x, g, dst, k, n, o0, o1, alpha,
+    limit, item_ct1);'
+  - '                         });'
+  - '}'
+  desc: Launches the OpenAI SwiGLU kernel on the SYCL device with block-based parallelization.
+  line: 961-978
+  name: swiglu_oai_sycl
+- code:
+  - void ggml_sycl_op_swiglu_oai(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - '    const ggml_tensor * src1 = dst->src[1];'
+  - '    void * src0_d = src0->data;'
+  - '    void * src1_d = src1 ? src1->data : src0->data;'
+  - '    const int64_t src0_o = src0->nb[1];'
+  - '    const int64_t src1_o = src1 ? src1->nb[1] : src0->nb[1];'
+  - '    void * dst_d = dst->data;'
+  - '    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;'
+  - '    dpct::queue_ptr     stream = ctx.stream();'
+  - '    GGML_ASSERT(ggml_is_contiguous_1(src0));'
+  - '    GGML_ASSERT(src0->nb[0] == ggml_element_size(src0));'
+  - '    GGML_ASSERT(ggml_is_contiguous(dst));'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(src0->type == dst->type);'
+  - '    GG'
+  desc: SYCL implementation of the OpenAI SwiGLU operation, handling source tensors
+    and launching the kernel.
+  line: 980-1000
+  name: ggml_sycl_op_swiglu_oai
+- code:
+  - static inline void ggml_sycl_op_geglu_erf(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_fused_glu(ctx, dst,'
+  - '        [](const auto* x_ptr, const auto* g_ptr, auto* dst_ptr, uint64_t k, uint64_t
+    n, uint64_t o0, uint64_t o1, queue_ptr main_stream) {'
+  - '            const uint32_t num_blocks = ceil_div(k, SYCL_GELU_BLOCK_SIZE);'
+  - '            main_stream->parallel_for('
+  - '                    sycl::nd_range<1>((num_blocks * sycl::range<1>(SYCL_GELU_BLOCK_SIZE)),
+    sycl::range<1>(SYCL_GELU_BLOCK_SIZE)), [=](sycl::nd_item<1> item_ct1) {'
+  - '                gated_op_fused_geglu_erf(x_ptr, g_ptr, dst_ptr, k, n, o0, o1,
+    item_ct1);'
+  - '            });'
+  - '        });'
+  - '}'
+  desc: 静态内联函数，用于调度 GEGLU（GELU 门控线性单元）的 Erf 变体计算，通过并行循环在整个张量上执行融合门控激活操作。
+  line: 940-951
+  name: ggml_sycl_op_geglu_erf
+- code:
+  - static inline void ggml_sycl_op_geglu_quick(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_sycl_detail::dispatch_ggml_sycl_op_fused_glu(ctx, dst,'
+  - '        [](const auto* x_ptr, const auto* g_ptr, auto* dst_ptr, uint64_t k, uint64_t
+    n, uint64_t o0, uint64_t o1, queue_ptr main_stream) {'
+  - '            const uint32_t num_blocks = ceil_div(k, SYCL_GELU_BLOCK_SIZE);'
+  - '            main_stream->parallel_for('
+  - '                    sycl::nd_range<1>((num_blocks * sycl::range<1>(SYCL_GELU_BLOCK_SIZE)),
+    sycl::range<1>(SYCL_GELU_BLOCK_SIZE)), [=](sycl::nd_item<1> item_ct1) {'
+  - '                gated_op_fused_geglu_quick(x_ptr, g_ptr, dst_ptr, k, n, o0, o1,
+    item_ct1);'
+  - '            });'
+  - '        });'
+  - '}'
+  desc: 静态内联函数，用于调度 GEGLU（GELU 门控线性单元）的 Quick 变体计算，通过并行循环在整个张量上执行融合门控激活操作。
+  line: 953-964
+  name: ggml_sycl_op_geglu_quick
+- code:
+  - void ggml_sycl_sqrt(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_sqrt(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的平方根，用户可调用此函数在 SYCL 设备上执行 sqrt 操作。
+  line: 966-969
+  name: ggml_sycl_sqrt
+- code:
+  - void ggml_sycl_sin(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_sin(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的正弦值，用户可调用此函数在 SYCL 设备上执行 sin 操作。
+  line: 971-974
+  name: ggml_sycl_sin
+- code:
+  - void ggml_sycl_cos(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_cos(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的余弦值，用户可调用此函数在 SYCL 设备上执行 cos 操作。
+  line: 976-979
+  name: ggml_sycl_cos
+- code:
+  - void ggml_sycl_acc(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);'
+  - '    ggml_sycl_op_acc(ctx, dst);'
+  - '}'
+  desc: 对一个张量执行累加操作，将另一个张量的值加到目标张量上，用户可调用此函数在 SYCL 设备上执行 acc 操作。
+  line: 981-984
+  name: ggml_sycl_acc
+- code:
+  - void ggml_sycl_gelu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_gelu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 GELU 激活函数值，用户可调用此函数在 SYCL 设备上执行 GELU 操作。
+  line: 986-989
+  name: ggml_sycl_gelu
+- code:
+  - void ggml_sycl_silu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_silu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 SiLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 SiLU 操作。
+  line: 991-994
+  name: ggml_sycl_silu
+- code:
+  - void ggml_sycl_gelu_quick(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_gelu_quick(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的快速 GELU 激活函数值，用户可调用此函数在 SYCL 设备上执行快速 GELU 操作。
+  line: 996-999
+  name: ggml_sycl_gelu_quick
+- code:
+  - void ggml_sycl_gelu_erf(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_gelu_erf(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Erf 变体 GELU 激活函数值，用户可调用此函数在 SYCL 设备上执行 Erf GELU 操作。
+  line: 1001-1004
+  name: ggml_sycl_gelu_erf
+- code:
+  - void ggml_sycl_tanh(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_tanh(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的双曲正切值，用户可调用此函数在 SYCL 设备上执行 tanh 操作。
+  line: 1006-1009
+  name: ggml_sycl_tanh
+- code:
+  - void ggml_sycl_relu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_relu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 ReLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 ReLU 操作。
+  line: 1011-1014
+  name: ggml_sycl_relu
+- code:
+  - void ggml_sycl_sigmoid(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_sigmoid(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Sigmoid 激活函数值，用户可调用此函数在 SYCL 设备上执行 Sigmoid 操作。
+  line: 1016-1019
+  name: ggml_sycl_sigmoid
+- code:
+  - void ggml_sycl_hardsigmoid(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_hardsigmoid(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Hard Sigmoid 激活函数值，用户可调用此函数在 SYCL 设备上执行 Hard Sigmoid 操作。
+  line: 1021-1024
+  name: ggml_sycl_hardsigmoid
+- code:
+  - void ggml_sycl_hardswish(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_hardswish(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Hard Swish 激活函数值，用户可调用此函数在 SYCL 设备上执行 Hard Swish 操作。
+  line: 1026-1029
+  name: ggml_sycl_hardswish
+- code:
+  - void ggml_sycl_exp(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_exp(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的指数值，用户可调用此函数在 SYCL 设备上执行 exp 操作。
+  line: 1031-1034
+  name: ggml_sycl_exp
+- code:
+  - void ggml_sycl_log(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_log(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的自然对数值，用户可调用此函数在 SYCL 设备上执行 log 操作。
+  line: 1036-1039
+  name: ggml_sycl_log
+- code:
+  - void ggml_sycl_softplus(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_softplus(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Softplus 激活函数值，用户可调用此函数在 SYCL 设备上执行 Softplus 操作。
+  line: 1041-1044
+  name: ggml_sycl_softplus
+- code:
+  - void ggml_sycl_neg(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_neg(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的相反数，用户可调用此函数在 SYCL 设备上执行 neg 操作。
+  line: 1046-1049
+  name: ggml_sycl_neg
+- code:
+  - void ggml_sycl_step(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_step(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的阶跃函数值，用户可调用此函数在 SYCL 设备上执行 step 操作。
+  line: 1051-1054
+  name: ggml_sycl_step
+- code:
+  - void ggml_sycl_leaky_relu(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_leaky_relu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Leaky ReLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 Leaky ReLU 操作。
+  line: 1056-1059
+  name: ggml_sycl_leaky_relu
+- code:
+  - void ggml_sycl_sqr(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_sqr(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的平方值，用户可调用此函数在 SYCL 设备上执行 sqr 操作。
+  line: 1061-1064
+  name: ggml_sycl_sqr
+- code:
+  - void ggml_sycl_clamp(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_clamp(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的钳位函数值，防止超出指定范围，用户可调用此函数在 SYCL 设备上执行 clamp 操作。
+  line: 1066-1069
+  name: ggml_sycl_clamp
+- code:
+  - void ggml_sycl_sgn(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_sgn(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的符号（正为 1，负为 -1，零为 0），用户可调用此函数在 SYCL 设备上执行 sgn 操作。
+  line: 1071-1074
+  name: ggml_sycl_sgn
+- code:
+  - void ggml_sycl_abs(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_abs(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的绝对值，用户可调用此函数在 SYCL 设备上执行 abs 操作。
+  line: 1076-1079
+  name: ggml_sycl_abs
+- code:
+  - void ggml_sycl_elu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_elu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 ELU 激活函数值，用户可调用此函数在 SYCL 设备上执行 ELU 操作。
+  line: 1081-1084
+  name: ggml_sycl_elu
+- code:
+  - void ggml_sycl_geglu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_geglu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 GEGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 GEGLU 操作。
+  line: 1086-1089
+  name: ggml_sycl_geglu
+- code:
+  - void ggml_sycl_reglu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_reglu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 ReGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 ReGLU 操作。
+  line: 1091-1094
+  name: ggml_sycl_reglu
+- code:
+  - void ggml_sycl_swiglu(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_swiglu(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 SwiGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 SwiGLU 操作。
+  line: 1096-1099
+  name: ggml_sycl_swiglu
+- code:
+  - void ggml_sycl_swiglu_oai(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_swiglu_oai(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 OpenAI 版本 SwiGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 SwiGLU-OAI 操作。
+  line: 1101-1104
+  name: ggml_sycl_swiglu_oai
+- code:
+  - void ggml_sycl_geglu_erf(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_geglu_erf(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Erf 版本 GEGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 Erf GEGLU 操作。
+  line: 1106-1109
+  name: ggml_sycl_geglu_erf
+- code:
+  - void ggml_sycl_geglu_quick(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_geglu_quick(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的 Quick 版本 GEGLU 激活函数值，用户可调用此函数在 SYCL 设备上执行 Quick GEGLU 操作。
+  line: 1111-1114
+  name: ggml_sycl_geglu_quick
+- code:
+  - void ggml_sycl_arange(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/0);'
+  - '    ggml_sycl_detail::ggml_sycl_op_arange(ctx, dst);'
+  - '}'
+  desc: 生成一个从起始值到终止值按步长递增的张量，无源张量，用户可调用此函数在 SYCL 设备上执行 arange 操作。
+  line: 1116-1119
+  name: ggml_sycl_arange
+- code:
+  - void ggml_sycl_floor(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_floor(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的向下取整值，用户可调用此函数在 SYCL 设备上执行 floor 操作。
+  line: 1121-1124
+  name: ggml_sycl_floor
+- code:
+  - void ggml_sycl_ceil(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_ceil(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的向上取整值，用户可调用此函数在 SYCL 设备上执行 ceil 操作。
+  line: 1126-1129
+  name: ggml_sycl_ceil
+- code:
+  - void ggml_sycl_round(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_round(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的四舍五入值，用户可调用此函数在 SYCL 设备上执行 round 操作。
+  line: 1131-1134
+  name: ggml_sycl_round
+- code:
+  - void ggml_sycl_trunc(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+  - '    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/1);'
+  - '    ggml_sycl_op_trunc(ctx, dst);'
+  - '}'
+  desc: 计算张量中每个元素的截断取整值（向零取整），用户可调用此函数在 SYCL 设备上执行 trunc 操作。
+  line: 1136-1139
+  name: ggml_sycl_trunc
+- code:
+  - static inline void ggml_sycl_op_swiglu_oai(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    GGML_ASSERT(dst->src[0] != nullptr);'
+  - '    GGML_ASSERT(dst->src[1] == nullptr);'
+  - '    ggml_tensor * src0 = dst->src[0];'
+  - '    ggml_tensor * src1 = dst->src[1];'
+  - '    const int64_t ne00 = src0 ? src0->ne[0] : 0;'
+  - '    const int64_t ne01 = src0 ? src0->ne[1] : 0;'
+  - '    const int64_t ne02 = src0 ? src0->ne[2] : 0;'
+  - '    const int64_t ne03 = src0 ? src0->ne[3] : 0;'
+  - '    const int64_t dims_0 = (int64_t) dst->ne[0];'
+  - '    const int64_t dims_1 = (int64_t) dst->ne[1];'
+  - '    GGML_ASSERT(ne00 == dims_0 * 2);'
+  - '    GGML_ASSERT(ne01 == dims_1);'
+  - '    GGML_ASSERT(ne02 == dst->ne[2]);'
+  - '    GGML_ASSERT(ne03 == dst->ne[3]);'
+  - '    const void * src0_d = (const void *) src0->data;'
+  - '    const void * src1_d = src1 ? src1->data : nullptr;'
+  - '    void * dst_d = dst->data;'
+  - '    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;'
+  - '    dpct::queue_ptr     stream = ctx.stream();'
+  - '    GGML_ASSERT(ggml_is_contiguous_1(src0));'
+  - '    GGML_ASSERT(src0->nb[0] == ggml_element_size(src0));'
+  - '    GGML_ASSERT(ggml_is_contiguous(dst));'
+  - '    GGML_ASSERT(src0->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT( dst->type == GGML_TYPE_F32);'
+  - '    GGML_ASSERT(src0->type == dst->type);'
+  - '    GGML_ASSERT(dst->ne[0] == nc);'
+  - '    GGML_ASSERT(ggml_nrows(dst) == ggml_nrows(src0));'
+  - '    if (src1) {'
+  - '        GGML_ASSERT(ggml_is_contiguous_1(src1));'
+  - '        GGML_ASSERT(src1->nb[0] == ggml_element_size(src1));'
+  - '        GGML_ASSERT(src1->ne[0] == nc);'
+  - '        GGML_ASSERT(src0->type == src1->type);'
+  - '    }'
+  - '    const int32_t swapped = ggml_get_op_params_i32(dst, 1);'
+  - '    const float alpha = ggml_get_op_params_f32(dst, 2);'
+  - '    const float limit = ggml_get_op_params_f32(dst, 3);'
+  - '    float * src0_p = (float *) src0_d;'
+  - '    float * src1_p = (float *) src1_d;'
+  - '    if (!src1) {'
+  - '        src0_p += swapped ? nc : 0;'
+  - '        src1_p += swapped ? 0 : nc;'
+  - '    }'
+  - '    swiglu_oai_sycl(src0_p, src1_p, (float *)dst_d, ggml_nelements(dst), nc,
+    src0->nb[1] / sizeof(float), src1 ? src1->nb[1] / sizeof(float) : src0->nb[1]
+    / sizeof(float), alpha, limit, stream);'
+  - '}'
+  desc: 静态内联函数，实现 OpenAI 版本的 SwiGLU 门控线性单元计算，通过参数验证和张量维度检查后，在 SYCL 设备上并行执行融合操作。
+  line: 902-940
+  name: ggml_sycl_op_swiglu_oai

@@ -1,0 +1,224 @@
+classes:
+- desc: 用于配置 ggml 库初始化参数的 ctypes 结构体，包含内存大小、缓冲区指针和分配标志。
+  methods: []
+  name: ggml_init_params
+- desc: 封装 C 语言 libggml 库的量化与反量化函数，提供 Python 可调用的高层接口，支持多种 GGMLQuantizationType 类型。
+  methods:
+  - code:
+    - 'def __init__(self, libggml: Path):'
+    - '    self.libggml = ctypes.CDLL(str(libggml))'
+    - '    self.libggml.ggml_quantize_chunk.restype = ctypes.c_size_t'
+    - '    self.libggml.ggml_quantize_chunk.argtypes = ('
+    - '        ctypes.c_int,'
+    - '        ctypes.POINTER(ctypes.c_float),'
+    - '        ctypes.c_void_p,'
+    - '        ctypes.c_int64,'
+    - '        ctypes.c_int64,'
+    - '        ctypes.c_int64,'
+    - '        ctypes.POINTER(ctypes.c_float),'
+    - '    )'
+    - '    self.libggml.ggml_quantize_requires_imatrix.restype = ctypes.c_bool'
+    - '    self.libggml.ggml_quantize_requires_imatrix.argtypes = (ctypes.c_int,)'
+    - '    for t in ('
+    - '        "q4_0", "q4_1", "q5_0", "q5_1", "q8_0",'
+    - '        "q2_K", "q3_K", "q4_K", "q5_K", "q6_K",'
+    - '        "tq1_0", "tq2_0",'
+    - '        "mxfp4",'
+    - '        "nvfp4",'
+    - '        "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s", "iq1_s", "iq1_m",'
+    - '        "iq4_nl", "iq4_xs",'
+    - '    ):'
+    - '        dequant_func = getattr(self.libggml, "dequantize_row_" + t)'
+    - '        dequant_func.restype = None'
+    - '        dequant_func.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_float),
+      ctypes.c_int64)'
+    - '    self.libggml.ggml_fp16_to_fp32_row.restype = None'
+    - '    self.libggml.ggml_fp16_to_fp32_row.argtypes = (ctypes.POINTER(ctypes.c_uint16),
+      ctypes.POINTER(ctypes.c_float), ctypes.c_int64)'
+    - '    self.libggml.ggml_bf16_to_fp32_row.restype = None'
+    - '    self.libggml.ggml_bf16_to_fp32_row.argtypes = (ctypes.POINTER(ctypes.c_uint16),
+      ctypes.POINTER(ctypes.c_float), ctypes.c_int64)'
+    - '    self.libggml.ggml_init.argtypes = (ggml_init_params,)'
+    - '    self.libggml.ggml_init(ggml_init_params(1 * 1024 * 1024, 0, False))'
+    desc: 加载 libggml 动态库，配置 ctypes 函数原型（参数类型和返回值类型），并初始化 ggml 上下文。
+    line: 30-63
+    name: __init__
+  - code:
+    - 'def dequantize(self, tensor: np.ndarray, qtype: GGMLQuantizationType) -> np.ndarray:'
+    - '    result = np.zeros(gguf.quant_shape_from_byte_shape(tensor.shape, qtype),
+      dtype=np.float32, order="C")'
+    - '    if qtype == GGMLQuantizationType.F32:'
+    - '        # no-op'
+    - '        result = tensor.view(np.float32)'
+    - '    elif qtype == GGMLQuantizationType.F16:'
+    - '        self.libggml.ggml_fp16_to_fp32_row(tensor.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)),
+      result.ctypes.data_as(c_float_p), result.size)'
+    - '    elif qtype == GGMLQuantizationType.BF16:'
+    - '        self.libggml.ggml_bf16_to_fp32_row(tensor.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)),
+      result.ctypes.data_as(c_float_p), result.size)'
+    - '    else:'
+    - '        lw_qname = qtype.name.lower()'
+    - '        if lw_qname[-1] == "k":'
+    - '            lw_qname = lw_qname[:-1] + "K"'
+    - '        dequant_func = getattr(self.libggml, "dequantize_row_" + lw_qname)'
+    - '        dequant_func(tensor.ctypes.data_as(ctypes.c_void_p), result.ctypes.data_as(c_float_p),
+      result.size)'
+    - '    return result'
+    desc: 将量化张量反量化为 float32 张量，支持 F32/F16/BF16 和所有已知的量化类型，通过调用对应的 C 函数实现。
+    line: 64-79
+    name: dequantize
+  - code:
+    - 'def quantize(self, data: np.ndarray, qtype: GGMLQuantizationType) -> np.ndarray:'
+    - '    result = np.zeros(gguf.quant_shape_to_byte_shape(data.shape, qtype), dtype=np.uint8,
+      order="C")'
+    - '    if self.libggml.ggml_quantize_requires_imatrix(qtype.value):'
+    - '        # TODO: is a column-wise sum of squares appropriate?'
+    - '        qw = np.sum((data * data).reshape((-1, data.shape[-1])), axis=0).ctypes.data_as(c_float_p)'
+    - '    else:'
+    - '        qw = ctypes.cast(0, c_float_p)'
+    - '    result_size = self.libggml.ggml_quantize_chunk(qtype.value, data.ctypes.data_as(c_float_p),
+      result.ctypes.data_as(ctypes.c_void_p), 0, prod(data.shape[:-1]), data.shape[-1],
+      qw)'
+    - '    assert result.size == result_size'
+    - '    return result'
+    desc: 将 float32 张量量化为指定类型的 uint8 字节张量，根据类型决定是否需要 imatrix，并调用 C 的 ggml_quantize_chunk
+      函数。
+    line: 80-88
+    name: quantize
+  name: GGMLQuants
+desc: 该文件是 gguf-py 包的量化测试脚本，用于验证 Python 实现的 gguf.quants 模块中的量化和反量化功能与 C 实现的 libggml
+  库完全一致。它通过 ctypes 加载动态链接库，对多种量化类型逐一进行对比测试，包括对随机数据、全零块和随机 f16 数据（作为反量化输入）进行量化与反量化，并比较结果是否位级一致，输出详细的差异统计。
+file: gguf-py/tests/test_quants.py
+funcs:
+- code:
+  - 'def compare_tensors(t1: np.ndarray, t2: np.ndarray, qtype: GGMLQuantizationType)
+    -> bool:'
+  - '    same = np.array_equal(t1, t2)'
+  - '    if same:'
+  - '        return True'
+  - '    else:'
+  - '        block_size, type_size = gguf.GGML_QUANT_SIZES[qtype]'
+  - '        if t1.dtype == np.float32:'
+  - '            t1 = t1.reshape((-1, block_size))'
+  - '            t2 = t2.reshape((-1, block_size))'
+  - '        else:'
+  - '            t1 = t1.reshape((-1, type_size))'
+  - '            t2 = t2.reshape((-1, type_size))'
+  - '        x = t1.view(np.uint8) ^ t2.view(np.uint8)'
+  - '        diff_bits = np.count_nonzero(np.unpackbits(x, axis=-1), axis=-1)'
+  - '        num_bad_blocks = np.count_nonzero(diff_bits, axis=0)'
+  - '        if num_bad_blocks == 0 and t1.shape == t2.shape:'
+  - '            logger.debug("Bits are equal, but arrays don''t match, likely contains
+    NANs")'
+  - '            return True'
+  - '        logger.debug(f"{num_bad_blocks} bad blocks ({100 * num_bad_blocks / x.shape[0]:.6f}%)")'
+  - '        bad_block_id = np.argmax(diff_bits, axis=0)'
+  - '        logger.debug(f"Worst block id: {bad_block_id}")'
+  - '        logger.debug(f"Sample bad block ({diff_bits[bad_block_id]} differing
+    bits):\n{t1[bad_block_id]}\nReference:\n{t2[bad_block_id]}")'
+  - '        sum_diff_bits = np.sum(diff_bits)'
+  - '        logger.debug(f"{sum_diff_bits} bits differ ({100 * sum_diff_bits / (x.size
+    * 8):.6f}%)")'
+  - '        return False'
+  desc: 比较两个 numpy 张量是否一致；对于不一致的浮点或字节张量，进一步按块分析位差异，诊断是否仅因 NaN 导致，并输出位差异统计。
+  line: 90-110
+  name: compare_tensors
+- code:
+  - 'def do_test(libggml_path: Path, quick: bool = False, user_type: GGMLQuantizationType
+    | None = None):'
+  - '    ggml_quants = GGMLQuants(libggml_path)'
+  - '    np.set_printoptions(precision=None, threshold=(4 * 256) + 1, formatter={"int":
+    lambda n: "0x%02X" % n})'
+  - '    r = np.random.randn(8, 1024, 1024).astype(np.float32, copy=False)'
+  - '    # test zero blocks'
+  - '    r[0, 0, :] = 0'
+  - '    for qtype in ((GGMLQuantizationType.F16, *gguf.quants._type_traits.keys())
+    if user_type is None else (user_type,)):'
+  - '        has_dequantize = False'
+  - '        has_quantize = False'
+  - '        try:'
+  - '            gguf.dequantize(np.zeros((gguf.GGML_QUANT_SIZES[qtype][1]), dtype=np.uint8),
+    qtype)'
+  - '            has_dequantize = True'
+  - '        except (NotImplementedError, AssertionError) as e:'
+  - '            if isinstance(e, AssertionError):'
+  - '                logger.error(f"Error with {qtype.name}: {e}")'
+  - '                raise e'
+  - '        try:'
+  - '            gguf.quantize(np.zeros((gguf.GGML_QUANT_SIZES[qtype][0]), dtype=np.float32),
+    qtype)'
+  - '            has_quantize = True'
+  - '        except (NotImplementedError, AssertionError) as e:'
+  - '            if isinstance(e, AssertionError):'
+  - '                logger.error(f"Error with {qtype.name}: {e}")'
+  - '                raise e'
+  - '        if not has_dequantize and not has_quantize:'
+  - '            continue'
+  - '        logger.info(f"Testing {qtype.name}")'
+  - '        rc = r.copy(order="C")'
+  - '        pyq = None'
+  - '        ggq = None'
+  - '        if has_quantize:'
+  - '            logger.debug(f"Quantizing to {qtype.name} with Python")'
+  - '            pyq = gguf.quants.quantize(rc, qtype)'
+  - '            logger.debug(f"Quantizing to {qtype.name} with C")'
+  - '            ggq = ggml_quants.quantize(rc, qtype)'
+  - '            if qtype == GGMLQuantizationType.F16:'
+  - '                pyq = pyq.view(np.uint8)'
+  - '            quant_equal = compare_tensors(pyq, ggq, qtype)'
+  - '            if not quant_equal:'
+  - '                logger.error(f"Quantization to {qtype.name} does not match ❌")'
+  - '            else:'
+  - '                logger.info(f"Quantization to {qtype.name} matches exactly ✅")'
+  - '        if has_dequantize:'
+  - '            if ggq is None and not quick:'
+  - '                logger.debug(f"Quantizing to {qtype.name} with C")'
+  - '                ggq = ggml_quants.quantize(rc, qtype)'
+  - '            if ggq is not None:'
+  - '                logger.debug(f"Dequantizing from {qtype.name} with Python")'
+  - '                pydq = gguf.quants.dequantize(ggq, qtype)'
+  - '                logger.debug(f"Dequantizing from {qtype.name} with C")'
+  - '                ggdq = ggml_quants.dequantize(ggq, qtype)'
+  - '                dequant_equal = compare_tensors(pydq, ggdq, qtype)'
+  - '                if not dequant_equal:'
+  - '                    logger.error(f"Dequantization from {qtype.name} does not
+    match ❌")'
+  - '                else:'
+  - '                    logger.info(f"Dequantization from {qtype.name} matches exactly
+    ✅")'
+  - '            rq_shape = gguf.quants.quant_shape_to_byte_shape((8, 1024, 1024 //
+    2), qtype)'
+  - '            rq = np.random.random(rq_shape).astype(np.float16).view(np.uint8)'
+  - '            logger.debug(f"Dequantizing random f16 data as {qtype.name} with
+    Python")'
+  - '            pydq = gguf.quants.dequantize(rq, qtype)'
+  - '            logger.debug(f"Dequantizing random f16 data as {qtype.name} with
+    C")'
+  - '            ggdq = ggml_quants.dequantize(rq, qtype)'
+  - '            dequant_equal = compare_tensors(pydq, ggdq, qtype)'
+  - '            if not dequant_equal:'
+  - '                logger.error(f"Dequantization from random f16 data as {qtype.name}
+    does not match ❌")'
+  - '            else:'
+  - '                logger.info(f"Dequantization from random f16 data as {qtype.name}
+    matches exactly ✅")'
+  desc: 主测试函数。加载 GGMLQuants 实例，生成随机测试数据（含全零块），对每种（或指定）量化类型执行 Python 与 C 的量化和反量化对比，并分别输出匹配结果。
+  line: 112-151
+  name: do_test
+- code:
+  - 'if __name__ == "__main__":'
+  - '    parser = argparse.ArgumentParser(description="Test Python (de)quantization
+    against the reference C implementation")'
+  - '    parser.add_argument("--libggml", type=Path, default=Path(__file__).parent.parent.parent
+    / "build" / "bin" / "libggml.so", help="The path to libggml.so")'
+  - '    parser.add_argument("--quick", action="store_true", help="Don''t quantize
+    with C when it''s not strictly necessary")'
+  - '    parser.add_argument("--type", type=str, help="The quant type to test (all
+    by default)")'
+  - '    args = parser.parse_args()'
+  - '    logging.basicConfig(level=logging.DEBUG)'
+  - '    do_test(args.libggml, args.quick, GGMLQuantizationType[args.type.upper()]
+    if args.type is not None else None)'
+  desc: 脚本入口：解析命令行参数（libggml 路径、quick 模式、指定类型），配置日志并调用 do_test 执行测试。
+  line: 153-159
+  name: __main__

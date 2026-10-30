@@ -1,0 +1,59 @@
+classes: []
+desc: 该文件是一个用于拆分MiniCPM-V多模态模型的工具脚本。其核心功能是从完整的MiniCPM-V模型中提取出多模态投影器（resampler）和视觉编码器（vpm）的权重，分别保存为独立的.gguf格式兼容的权重文件，同时对语言模型部分进行配置调整并重新保存，以便后续转换为标准的LLaMA
+  GGUF文件，从而实现模型的模块化部署和转换。
+file: tools/mtmd/legacy-models/minicpmv-surgery.py
+funcs:
+- code:
+  - import argparse
+  - import os
+  - import torch
+  - from transformers import AutoModel, AutoTokenizer
+  - ''
+  - ap = argparse.ArgumentParser()
+  - ap.add_argument("-m", "--model", help="Path to MiniCPM-V model")
+  - args = ap.parse_args()
+  - ''
+  - '# find the model part that includes the the multimodal projector weights'
+  - model = AutoModel.from_pretrained(args.model, trust_remote_code=True, local_files_only=True,
+    torch_dtype=torch.bfloat16)
+  - checkpoint = model.state_dict()
+  - ''
+  - '# get a list of mm tensor names'
+  - mm_tensors = [k for k, v in checkpoint.items() if k.startswith("resampler")]
+  - ''
+  - '# store these tensors in a new dictionary and torch.save them'
+  - 'projector = {name: checkpoint[name].float() for name in mm_tensors}'
+  - 'if ''resampler.proj'' in projector.keys() and hasattr(model.llm.config,''scale_emb'')
+    is True:'
+  - '    projector[''resampler.proj''] = projector[''resampler.proj''] / model.llm.config.scale_emb'
+  - torch.save(projector, f"{args.model}/minicpmv.projector")
+  - ''
+  - clip_tensors = [k for k, v in checkpoint.items() if k.startswith("vpm")]
+  - 'if len(clip_tensors) > 0:'
+  - '    clip = {name.replace("vpm.", ""): checkpoint[name].float() for name in clip_tensors}'
+  - '    torch.save(clip, f"{args.model}/minicpmv.clip")'
+  - ''
+  - '    # added tokens should be removed to be able to convert Mistral models'
+  - '    if os.path.exists(f"{args.model}/added_tokens.json"):'
+  - '        with open(f"{args.model}/added_tokens.json", "w") as f:'
+  - '            f.write("{}\n")'
+  - ''
+  - config = model.llm.config
+  - config.auto_map = {
+  - '    "AutoConfig": "configuration_minicpm.MiniCPMConfig",'
+  - '    "AutoModel": "modeling_minicpm.MiniCPMModel",'
+  - '    "AutoModelForCausalLM": "modeling_minicpm.MiniCPMForCausalLM",'
+  - '    "AutoModelForSeq2SeqLM": "modeling_minicpm.MiniCPMForCausalLM",'
+  - '    "AutoModelForSequenceClassification": "modeling_minicpm.MiniCPMForSequenceClassification"'
+  - '}'
+  - model.llm.save_pretrained(f"{args.model}/model")
+  - tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+  - tok.save_pretrained(f"{args.model}/model")
+  - ''
+  - print("Done!")
+  - print(f"Now you can convert {args.model} to a regular LLaMA GGUF file.")
+  - print(f"Also, use {args.model}/minicpmv.projector to prepare a minicpmv-encoder.gguf
+    file.")
+  desc: 该全局代码段实现了模型拆分的完整流程：加载MiniCPM-V模型，分离投影器和视觉编码器权重并以浮点格式保存，调整语言模型配置的auto_map映射，保存调整后的语言模型和分词器，最后输出提示信息。
+  line: 1-47
+  name: __main__

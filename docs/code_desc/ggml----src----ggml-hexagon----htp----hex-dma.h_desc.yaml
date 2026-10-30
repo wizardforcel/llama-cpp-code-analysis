@@ -1,0 +1,302 @@
+classes:
+- desc: 一维DMA硬件描述符，通过位域精确控制大小、绕过模式和地址等字段，用于基本内存拷贝
+  methods: []
+  name: dma_descriptor_1d
+- desc: 二维DMA硬件描述符，包含行列尺寸、步长和偏移量字段，支持两种构架版本的位域布局（HVX_ARCH < 75 与 >= 75）
+  methods: []
+  name: dma_descriptor_2d
+- desc: DMA操作的目标和源地址封装结构体，简单存储一对指针
+  methods: []
+  name: dma_ptr
+- desc: DMA传输队列结构，管理环形描述符缓冲区、指针数组，以及入队/出队索引，支撑异步DMA操作
+  methods: []
+  name: dma_queue
+- desc: 小而实用的DMA缓存管理器，通过最近最少使用（LRU）策略缓存常用源地址，复用内存行以减少重复传输
+  methods: []
+  name: dma_cache
+desc: 该文件是HTP（Hexagon Tensor Processor）平台下DMA（直接内存访问）的封装头文件，定义了一维/二维DMA描述符、DMA队列（dma_queue）、DMA缓存（dma_cache）等数据结构，并提供了从底层硬件指令（如dmstart/dmlink/dmpoll）到高层队列管理（push/pop）的完整API。核心功能包括：通过硬件描述符控制DMA传输、支持一维和二维批量传输、处理队列满与缓存容量等边界情况、提供溢出安全的传输拆分策略（针对不同HVX架构版本），并以inline函数形式实现，避免库调用开销。
+file: ggml/src/ggml-hexagon/htp/hex-dma.h
+funcs:
+- code:
+  - dma_queue * dma_queue_create(size_t capacity);
+  - // 声明函数，具体实现位于对应.c文件
+  desc: 创建并初始化一个DMA队列，分配描述符和指针数组的内存
+  line: 101-101
+  name: dma_queue_create
+- code:
+  - void        dma_queue_delete(dma_queue * q);
+  - // 声明函数，具体实现位于对应.c文件
+  desc: 删除并释放DMA队列占用的内存资源
+  line: 102-102
+  name: dma_queue_delete
+- code:
+  - void        dma_queue_flush(dma_queue * q);
+  - // 声明函数，具体实现位于对应.c文件
+  desc: 清空DMA队列，重置所有索引为初始状态
+  line: 103-103
+  name: dma_queue_flush
+- code:
+  - static inline void dmstart(void * next) {
+  - '    asm volatile(" release(%0):at" : : "r"(next));'
+  - '    asm volatile(" dmstart(%0)" : : "r"(next));'
+  - '}'
+  desc: 启动一次DMA传输，向硬件发布释放信号并启动首个描述符
+  line: 108-111
+  name: dmstart
+- code:
+  - static inline void dmlink(void * cur, void * next) {
+  - '    asm volatile(" release(%0):at" : : "r"(next));'
+  - '    asm volatile(" dmlink(%0, %1)" : : "r"(cur), "r"(next));'
+  - '}'
+  desc: 将当前描述符链接到下一个描述符，支持链式传输
+  line: 113-117
+  name: dmlink
+- code:
+  - static inline unsigned int dmpoll(void) {
+  - '    unsigned int ret = 0;'
+  - '    asm volatile(" %0 = dmpoll" : "=r"(ret) : : "memory");'
+  - '    return ret;'
+  - '}'
+  desc: 轮询DMA完成标志，返回当前是否还有完成的传输待处理
+  line: 119-124
+  name: dmpoll
+- code:
+  - static inline unsigned int dmwait(void) {
+  - '    unsigned int ret = 0;'
+  - '    asm volatile(" %0 = dmwait" : "=r"(ret) : : "memory");'
+  - '    return ret;'
+  - '}'
+  desc: 等待所有DMA传输完成，返回完成状态
+  line: 126-131
+  name: dmwait
+- code:
+  - static inline dma_ptr dma_make_ptr(void *dst, const void *src)
+  - '{'
+  - '    dma_ptr p = { dst, src };'
+  - '    return p;'
+  - '}'
+  desc: 从目标地址和源地址构造一个dma_ptr结构体，用于后续传输调用
+  line: 137-142
+  name: dma_make_ptr
+- code:
+  - static inline bool dma_queue_push_single_1d(dma_queue * q, dma_ptr dptr, size_t
+    size) {
+  - '    if (((q->push_idx + 1) & q->idx_mask) == q->pop_idx) {'
+  - '        FARF(HIGH, "dma-push: queue full\n");'
+  - '        return false;'
+  - '    }'
+  - '    dma_descriptor_1d * desc = (dma_descriptor_1d *) &q->desc[q->push_idx];'
+  - '    desc->next       = NULL;'
+  - '    desc->desc_size  = 0; // 1D mode'
+  - '    desc->src_bypass = dma_src_l2_bypass_on;'
+  - '    desc->dst_bypass = dma_dst_l2_bypass_on;'
+  - '    desc->order      = 0;'
+  - '    desc->done       = 0;'
+  - '    desc->src        = (void *) dptr.src;'
+  - '    desc->dst        = (void *) dptr.dst;'
+  - '    desc->size       = size;'
+  - '    q->dptr[q->push_idx] = dptr;'
+  - '    if (size) {'
+  - '        dmlink(q->tail, desc);'
+  - '        q->tail = (dma_descriptor_2d *) desc;'
+  - '    } else {'
+  - '        desc->done = 1;'
+  - '    }'
+  - '    q->push_idx = (q->push_idx + 1) & q->idx_mask;'
+  - '    return true;'
+  - '}'
+  desc: 向DMA队列推入单个一维传输任务，处理队列满条件和空尺寸的边界情况
+  line: 153-181
+  name: dma_queue_push_single_1d
+- code:
+  - static inline bool dma_queue_push_single_2d(dma_queue * q, dma_ptr dptr, size_t
+    dst_stride, size_t src_stride, size_t row_size, size_t nrows) {
+  - '    if (((q->push_idx + 1) & q->idx_mask) == q->pop_idx) {'
+  - '        FARF(HIGH, "dma-push: queue full\n");'
+  - '        return false;'
+  - '    }'
+  - '    dma_descriptor_2d * desc = &q->desc[q->push_idx];'
+  - '    desc->next           = NULL;'
+  - '    desc->reserved0      = 0;'
+  - '    desc->reserved1      = 0;'
+  - '    desc->desc_size      = 1; // 2d mode'
+  - '    desc->src_bypass     = dma_src_l2_bypass_on;'
+  - '    desc->dst_bypass     = dma_dst_l2_bypass_on;'
+  - '    desc->src_comp       = 0;'
+  - '    desc->dst_comp       = 0;'
+  - '    desc->order          = 0;'
+  - '    desc->done           = 0;'
+  - '    desc->src_stride     = src_stride;'
+  - '    desc->dst_stride     = dst_stride;'
+  - '    desc->src            = (void *) dptr.src;'
+  - '    desc->dst            = (void *) dptr.dst;'
+  - '    desc->row_size       = row_size;'
+  - '#if __HVX_ARCH__ < 75'
+  - '    desc->desc_type      = 0; // 2d (16-bit) mode'
+  - '    desc->nrows          = nrows;'
+  - '    desc->src_offset     = 0;'
+  - '    desc->dst_offset     = 0;'
+  - '#else'
+  - '    desc->desc_type      = 9; // 2d (24-bit) mode'
+  - '    desc->nrows_lo       = (nrows & 0xff);'
+  - '    desc->nrows_hi       = (nrows >> 8);'
+  - '    desc->offset         = 0;'
+  - '#endif'
+  - '    q->dptr[q->push_idx] = dptr;'
+  - '    if (nrows) {'
+  - '        dmlink(q->tail, desc);'
+  - '        q->tail = desc;'
+  - '    } else {'
+  - '        desc->done = 1;'
+  - '    }'
+  - '    q->push_idx = (q->push_idx + 1) & q->idx_mask;'
+  - '    return true;'
+  - '}'
+  desc: 向DMA队列推入单个二维传输任务，根据架构版本配置描述符字段，处理行列参数
+  line: 184-231
+  name: dma_queue_push_single_2d
+- code:
+  - static inline dma_ptr dma_queue_pop(dma_queue * q) {
+  - '    dma_ptr dptr  = { NULL };'
+  - '    if (q->push_idx == q->pop_idx) {'
+  - '        return dptr;'
+  - '    }'
+  - '    dma_descriptor_2d * desc = &q->desc[q->pop_idx];'
+  - '    while (!desc->done) {'
+  - '        dmpoll();'
+  - '    }'
+  - '    dptr = q->dptr[q->pop_idx];'
+  - '    q->pop_idx = (q->pop_idx + 1) & q->idx_mask;'
+  - '    return dptr;'
+  - '}'
+  desc: 从队列头部取出完成的传输结果，阻塞等待直到传输完成
+  line: 234-253
+  name: dma_queue_pop
+- code:
+  - static inline dma_ptr dma_queue_pop_nowait(dma_queue * q) {
+  - '    dma_ptr dptr  = { NULL };'
+  - '    if (q->push_idx == q->pop_idx) {'
+  - '        return dptr;'
+  - '    }'
+  - '    dptr = q->dptr[q->pop_idx];'
+  - '    q->pop_idx = (q->pop_idx + 1) & q->idx_mask;'
+  - '    return dptr;'
+  - '}'
+  desc: 从队列头部取出传输结果而不等待完成，立即返回指针
+  line: 256-267
+  name: dma_queue_pop_nowait
+- code:
+  - static inline bool dma_queue_empty(dma_queue * q) {
+  - '    return q->push_idx == q->pop_idx;'
+  - '}'
+  desc: 检查DMA队列是否为空，返回布尔值
+  line: 269-271
+  name: dma_queue_empty
+- code:
+  - static inline uint32_t dma_queue_depth(dma_queue * q) {
+  - '    return (q->push_idx - q->pop_idx) & q->idx_mask;'
+  - '}'
+  desc: 返回当前队列中待处理的传输任务数量
+  line: 273-275
+  name: dma_queue_depth
+- code:
+  - static inline uint32_t dma_queue_capacity(dma_queue * q) {
+  - '    return q->capacity;'
+  - '}'
+  desc: 返回DMA队列的最大容量
+  line: 277-279
+  name: dma_queue_capacity
+- code:
+  - static inline bool dma_queue_push(dma_queue *q, dma_ptr dptr, size_t dst_stride,
+    size_t src_stride, size_t row_size, size_t nrows) {
+  - '    // Fast path: everything fits in 16 bits'
+  - '    if (nrows == 0 || __builtin_expect('
+  - '            row_size   <= DMA_MAX_FIELD_VAL &&'
+  - '            nrows      <= DMA_MAX_FIELD_VAL &&'
+  - '            src_stride <= DMA_MAX_FIELD_VAL &&'
+  - '            dst_stride <= DMA_MAX_FIELD_VAL, 1)) {'
+  - '        return dma_queue_push_single_2d(q, dptr, dst_stride, src_stride, row_size,
+    nrows);'
+  - '    }'
+  - '    // Contiguous block'
+  - '    if (nrows == 1 || (row_size == src_stride && row_size == dst_stride)) {'
+  - '        size_t total = row_size * nrows;'
+  - '        return dma_queue_push_single_1d(q, dptr, total);'
+  - '    }'
+  - '    // Stride overflow — fall back to row-by-row.'
+  - '    {'
+  - '        const uint8_t *src = (const uint8_t *) dptr.src;'
+  - '        uint8_t       *dst = (uint8_t *)       dptr.dst;'
+  - '        for (size_t r = 0; r < nrows; ++r) {'
+  - '            dma_ptr p = dma_make_ptr(dst + r * dst_stride, src + r * src_stride);'
+  - '            if (!dma_queue_push_single_1d(q, p, row_size))'
+  - '                return false;'
+  - '            if (r + 1 < nrows)'
+  - '                dma_queue_pop(q);'
+  - '        }'
+  - '        return true;'
+  - '    }'
+  - '}'
+  desc: 面向调用者的DMA传输入口，根据架构选择路径并处理溢出安全（HVX_ARCH < 75）或直接二维传输（>= 75）
+  line: 288-316
+  name: dma_queue_push
+- code:
+  - static inline bool dma_queue_push_ddr_to_vtcm(dma_queue * q, dma_ptr dptr, size_t
+    dst_row_size, size_t src_row_size, size_t nrows) {
+  - '    return dma_queue_push(q, dptr, dst_row_size, src_row_size, src_row_size,
+    nrows);'
+  - '}'
+  desc: 将DDR内存数据搬运到VTCM内存，源步长设为行大小以实现连续读取
+  line: 337-339
+  name: dma_queue_push_ddr_to_vtcm
+- code:
+  - static inline bool dma_queue_push_vtcm_to_ddr(dma_queue * q, dma_ptr dptr, size_t
+    dst_row_size, size_t src_row_size, size_t nrows) {
+  - '    return dma_queue_push(q, dptr, dst_row_size, src_row_size, dst_row_size,
+    nrows);'
+  - '}'
+  desc: 将VTCM内存数据搬运到DDR内存，目标步长设为行大小以实现连续写回
+  line: 342-344
+  name: dma_queue_push_vtcm_to_ddr
+- code:
+  - static inline void dma_cache_init(dma_cache *c, uint8_t *base, uint32_t line_size,
+    uint32_t capacity)
+  - '{'
+  - '    c->capacity  = (capacity > DMA_CACHE_MAX_SIZE) ? DMA_CACHE_MAX_SIZE : capacity;'
+  - '    c->base      = base;'
+  - '    c->line_size = line_size;'
+  - '    for (unsigned i=0; i < c->capacity; i++) {'
+  - '        c->src[i] = 0;'
+  - '        c->age[i] = 0;'
+  - '    }'
+  - '}'
+  desc: 初始化DMA缓存结构，设置基地址、行大小和容量，并清零所有缓存条目
+  line: 408-420
+  name: dma_cache_init
+- code:
+  - static inline bool dma_cache_push(dma_queue *q, dma_cache *c, const uint8_t *
+    src, uint32_t dst_stride, uint32_t src_stride, uint32_t row_size, uint32_t nrows)
+  - '{'
+  - '    uint32_t o_idx = 0;'
+  - '    uint16_t o_age = 0;'
+  - '    uint8_t *  dst = 0;'
+  - '    for (unsigned i=0; i < c->capacity; i++) {'
+  - '        if (c->src[i] == (uint32_t) src) {'
+  - '            c->age[i] = 0;'
+  - '            dst = c->base + (i * c->line_size); nrows = 0; // dummy dma'
+  - '        } else {'
+  - '            c->age[i]++;'
+  - '            if (c->age[i] > o_age) { o_age = c->age[i]; o_idx = i; }'
+  - '        }'
+  - '    }'
+  - '    if (!dst) {'
+  - '        c->age[o_idx] = 0;'
+  - '        c->src[o_idx] = (uint32_t) src;'
+  - '        dst = c->base + o_idx * c->line_size; // normal nrows dma'
+  - '    }'
+  - '    return dma_queue_push(q, dma_make_ptr(dst, src), dst_stride, src_stride,
+    row_size, nrows);'
+  - '}'
+  desc: 用最近最少使用（LRU）策略向缓存中推入DMA任务，若源地址已缓存则复用内存行，否则淘汰最旧条目
+  line: 422-444
+  name: dma_cache_push

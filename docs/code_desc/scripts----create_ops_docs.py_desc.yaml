@@ -1,0 +1,230 @@
+classes:
+- desc: 用于解析 GGML 操作支持文件并生成 Markdown 文档的生成器类。
+  methods:
+  - code:
+    - 'def __init__(self, ggml_root: str, output_filename: str = "ops.md"):'
+    - '    self.ggml_root = Path(ggml_root)'
+    - '    self.ops_dir = self.ggml_root / "docs" / "ops"'
+    - '    self.output_filename = output_filename'
+    - '    self.backend_support: dict[str, dict[str, list[bool]]] = defaultdict('
+    - '        lambda: defaultdict(list)'
+    - '    )'
+    - '    self.all_operations: set[str] = set()'
+    - '    self.all_backends: set[str] = set()'
+    - '    self.logger = logging.getLogger(__name__)'
+    desc: 初始化 DocsGenerator 实例，设置路径、输出文件名、数据结构和日志记录器。
+    line: 13-24
+    name: __init__
+  - code:
+    - 'def parse_support_files(self) -> None:'
+    - '    if not self.ops_dir.exists():'
+    - '        self.logger.warning(f"ops directory not found: {self.ops_dir}")'
+    - '        return'
+    - ''
+    - '    self.logger.info(f"Parsing support files from {self.ops_dir}...")'
+    - ''
+    - '    for support_file in self.ops_dir.glob("*.csv"):'
+    - '        self.logger.info(f"  Reading: {support_file.name}")'
+    - '        self._parse_support_file(support_file)'
+    desc: 遍历 ops 目录下的所有 CSV 文件，并调用 _parse_support_file 解析每个文件。
+    line: 26-37
+    name: parse_support_files
+  - code:
+    - 'def _parse_support_file(self, file_path: Path) -> None:'
+    - '    try:'
+    - '        with open(file_path, "r", newline='''') as f:'
+    - '            reader = csv.DictReader(f)'
+    - ''
+    - '            for row in reader:'
+    - '                # Skip rows that don''t have support mode'
+    - '                if row.get(''test_mode'') != ''support'':'
+    - '                    continue'
+    - ''
+    - '                backend_name = row.get(''backend_name'', '''').strip()'
+    - '                operation = row.get(''op_name'', '''').strip()'
+    - '                supported_str = row.get(''error_message'', '''').strip()  #
+      "yes" or "no"'
+    - '                backend_reg_name = row.get(''backend_reg_name'', '''').strip()'
+    - ''
+    - '                # Skip invalid or error operations'
+    - '                if not operation or not backend_name or operation in ['
+    - '                    "CONTEXT_ERROR",'
+    - '                    "BUILD_ERROR",'
+    - '                ]:'
+    - '                    continue'
+    - ''
+    - '                is_supported = supported_str.lower() == "yes"'
+    - ''
+    - '                # Use backend_reg_name for grouping, fallback to backend_name'
+    - '                backend_key = backend_reg_name if backend_reg_name else backend_name'
+    - ''
+    - '                self.all_backends.add(backend_key)'
+    - '                self.backend_support[backend_key][operation].append(is_supported)'
+    - '                self.all_operations.add(operation)'
+    - ''
+    - '    except Exception as e:'
+    - '        self.logger.error(f"    Error parsing {file_path}: {e}")'
+    desc: 解析单个 CSV 文件，提取操作支持信息，并更新后端支持和操作集合。
+    line: 39-75
+    name: _parse_support_file
+  - code:
+    - 'def get_backend_support_status(self, backend: str, operation: str) -> str:'
+    - '    support_list = self.backend_support[backend].get(operation, [])'
+    - ''
+    - '    if not support_list:'
+    - '        return "unsupported"'
+    - ''
+    - '    all_supported = all(support_list)'
+    - '    any_supported = any(support_list)'
+    - ''
+    - '    if all_supported:'
+    - '        return "supported"'
+    - '    elif any_supported:'
+    - '        return "partially supported"'
+    - '    else:'
+    - '        return "unsupported"'
+    desc: 根据给定的后端和操作，返回该后端的支持状态（supported、partially supported 或 unsupported）。
+    line: 77-94
+    name: get_backend_support_status
+  - code:
+    - 'def get_support_status(self, operation: str) -> str:'
+    - '    if operation not in self.all_operations:'
+    - '        return "unsupported"'
+    - ''
+    - '    support_count = 0'
+    - '    total_backends = len(self.all_backends)'
+    - ''
+    - '    for backend in self.all_backends:'
+    - '        if self.backend_support[backend].get(operation, False):'
+    - '            support_count += 1'
+    - ''
+    - '    if support_count == 0:'
+    - '        return "unsupported"'
+    - '    elif support_count == total_backends:'
+    - '        return "supported"'
+    - '    else:'
+    - '        return "partially supported"'
+    desc: 返回操作在所有后端中的整体支持状态（supported、partially supported 或 unsupported）。
+    line: 96-114
+    name: get_support_status
+  - code:
+    - 'def get_support_symbol(self, status: str) -> str:'
+    - '    symbols = {"supported": "✅", "partially supported": "🟡", "unsupported":
+      "❌"}'
+    - '    return symbols.get(status, "❓")'
+    desc: 根据支持状态返回对应的符号表示（✅、🟡、❌ 或 ❓）。
+    line: 116-119
+    name: get_support_symbol
+  - code:
+    - 'def generate_markdown(self) -> str:'
+    - '    lines = []'
+    - ''
+    - '    lines.append("# GGML Operations")'
+    - '    lines.append("")'
+    - '    lines.append("List of GGML operations and backend support status.")'
+    - '    lines.append("")'
+    - '    lines.append("## How to add a backend to this table:")'
+    - '    lines.append("")'
+    - '    lines.append("1. Run `test-backend-ops support --output csv` with your
+      backend name and redirect output to a csv file in `docs/ops/` (e.g., `docs/ops/CUDA.csv`)")'
+    - '    lines.append("2. Regenerate `/docs/ops.md` via `./scripts/create_ops_docs.py`")'
+    - '    lines.append("")'
+    - '    lines.append("Legend:")'
+    - '    lines.append("- ✅ Fully supported by this backend")'
+    - '    lines.append("- 🟡 Partially supported by this backend")'
+    - '    lines.append("- ❌ Not supported by this backend")'
+    - '    lines.append("")'
+    - ''
+    - '    backends = sorted(self.all_backends)'
+    - '    header = "| Operation |"'
+    - '    for backend in backends:'
+    - '        header += f" {backend} |"'
+    - ''
+    - '    separator = "|-----------|"'
+    - '    for _ in backends:'
+    - '        separator += "------|"'
+    - ''
+    - '    lines.append(header)'
+    - '    lines.append(separator)'
+    - ''
+    - '    sorted_operations = sorted(self.all_operations)'
+    - ''
+    - '    for operation in sorted_operations:'
+    - '        row = f"| {operation:>32} |"'
+    - ''
+    - '        for backend in backends:'
+    - '            status = self.get_backend_support_status(backend, operation)'
+    - '            if status == "supported":'
+    - '                symbol = "✅"'
+    - '            elif status == "partially supported":'
+    - '                symbol = "🟡"'
+    - '            else:'
+    - '                symbol = "❌"'
+    - '            row += f" {symbol} |"'
+    - ''
+    - '        lines.append(row)'
+    - ''
+    - '    lines.append("")'
+    - ''
+    - '    return "\n".join(lines)'
+    desc: 生成 Markdown 格式的文档内容，包含标题、说明、图例和操作支持表格。
+    line: 121-167
+    name: generate_markdown
+  - code:
+    - 'def run(self) -> None:'
+    - '    self.logger.info("Parsing GGML operation support files...")'
+    - '    self.parse_support_files()'
+    - ''
+    - '    if not self.all_operations:'
+    - '        self.logger.error('
+    - '            "No operations found. Make sure to run test-backend-ops support
+      --output csv > docs/ops/file.csv first."'
+    - '        )'
+    - '        return'
+    - ''
+    - '    self.logger.info('
+    - '        f"Found {len(self.all_operations)} operations across {len(self.all_backends)}
+      backends"'
+    - '    )'
+    - ''
+    - '    self.logger.info("Generating markdown...")'
+    - '    markdown_content = self.generate_markdown()'
+    - ''
+    - '    docs_dir = self.ggml_root / "docs"'
+    - '    docs_dir.mkdir(exist_ok=True)'
+    - ''
+    - '    ops_file = docs_dir / self.output_filename'
+    - '    with open(ops_file, "w") as f:'
+    - '        f.write(markdown_content)'
+    - ''
+    - '    self.logger.info(f"Generated: {ops_file}")'
+    - '    self.logger.info(f"Operations: {len(self.all_operations)}")'
+    - '    self.logger.info(f"Backends: {len(self.all_backends)}")'
+    desc: 执行文档生成的主要流程：解析支持文件、检查操作、生成 Markdown 并写入文件。
+    line: 169-194
+    name: run
+  name: DocsGenerator
+desc: 该脚本解析 docs/ops/*.csv 文件，生成 ops.md 文档，记录 ggml 各个后端对各种操作的支持情况。它通过读取 CSV 文件中的支持信息，统计各后端对各操作的支持状态（完全支持、部分支持、不支持），并生成
+  Markdown 格式的表格。
+file: scripts/create_ops_docs.py
+funcs:
+- code:
+  - 'def main():'
+  - '    logging.basicConfig(level=logging.INFO)'
+  - ''
+  - '    if len(sys.argv) > 1:'
+  - '        output_filename = sys.argv[1]'
+  - '    else:'
+  - '        output_filename = "ops.md"'
+  - ''
+  - '    generator = DocsGenerator(".", output_filename)'
+  - '    generator.run()'
+  desc: 主函数，配置日志、处理命令行参数、创建 DocsGenerator 实例并执行文档生成。
+  line: 197-205
+  name: main
+- code:
+  - 'if __name__ == "__main__":'
+  - '    main()'
+  desc: 文件主入口，调用 main 函数启动脚本执行。
+  line: 207-208
+  name: __main__

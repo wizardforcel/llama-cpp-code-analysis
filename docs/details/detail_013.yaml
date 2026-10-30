@@ -1,0 +1,1233 @@
+code_map:
+- src/llama-mmap.h
+- '├── struct llama_file              # 文件抽象（Pimpl 模式）'
+- │   ├── llama_file(const char*, const char*, bool use_direct_io = false)
+- '│   ├── llama_file(FILE*)          # 接管已有 FILE*'
+- │   ├── ~llama_file()
+- │   ├── tell() / size() / file_id()
+- │   ├── seek(offset, whence)
+- │   ├── read_raw() / read_raw_unsafe() / read_aligned_chunk() / read_u32()
+- │   ├── write_raw() / write_u32()
+- │   └── read_alignment() / has_direct_io()
+- '├── struct llama_mmap              # 内存映射抽象'
+- │   ├── llama_mmap(llama_file*, prefetch, numa)
+- │   ├── ~llama_mmap()
+- │   ├── addr() / size() / unmap_fragment()
+- │   └── static SUPPORTED
+- '├── struct llama_mlock             # 内存锁定抽象'
+- │   ├── llama_mlock() / ~llama_mlock()
+- │   ├── init(void* ptr) / grow_to(size_t)
+- │   └── static SUPPORTED
+- └── size_t llama_path_max()
+- src/llama-mmap.cpp
+- '├── llama_format_win_err()                        # Windows 错误信息格式化'
+- ├── struct llama_file::impl
+- '│   ├── GetErrorMessageWin32()                    # Windows 专用错误消息'
+- '│   ├── impl(const char*, const char*, bool)      # Windows 分支：ggml_fopen'
+- '│   ├── impl(FILE*)                              # 接管已有 FILE*'
+- │   ├── ~impl()
+- '│   ├── tell() / seek()                          # Windows: SetFilePointerEx'
+- '│   ├── read_raw() / read_u32() / write_raw() / write_u32()  # Windows: ReadFile/WriteFile'
+- '│   ├── has_direct_io()                          # Windows 恒返回 true'
+- '│   ├── impl(const char*, const char*, bool)      # POSIX 分支：尝试 O_DIRECT'
+- '│   ├── init_fd()                                # Linux 下 open(O_RDONLY | O_DIRECT)'
+- '│   ├── init_fp(mode)                            # 回退到 fopen'
+- '│   ├── impl(FILE*)                              # POSIX 接管 FILE*'
+- '│   ├── tell() / seek()                          # POSIX: ftell/lseek'
+- '│   ├── read_raw_unsafe()                        # EINTR 重试 + EFAULT/EINVAL 回退'
+- '│   ├── read_aligned_chunk()                     # DMA 对齐读取，posix_memalign + memcpy'
+- '│   ├── read_raw()                               # 自动选择 aligned/unsafe'
+- │   ├── read_u32() / write_raw() / write_u32()
+- '│   ├── has_direct_io()                          # fd != -1 && alignment > 1'
+- │   ├── read_alignment()
+- │   └── 成员：fd / fname / alignment / fp / size / owns_fp
+- ├── llama_file 构造/析构/成员函数（tell, size, file_id, seek, read_raw, read_raw_unsafe,
+  read_aligned_chunk, read_u32, write_raw, write_u32, read_alignment, has_direct_io）
+- ├── struct llama_mmap::impl
+- '│   ├── impl(file, prefetch, numa)               # POSIX: mmap(MAP_SHARED) + fadvise
+  + madvise'
+- '│   ├── align_range()                            # 按页对齐边界'
+- '│   ├── unmap_fragment()                         # POSIX 粒度 munmap + mapped_fragments
+  跟踪'
+- '│   ├── ~impl()                                  # 析构时 munmap 全部剩余片段'
+- │   └── Windows 分支：CreateFileMappingA + MapViewOfFile + PrefetchVirtualMemory
+- ├── llama_mmap 构造/析构/size()/addr()/unmap_fragment()
+- ├── struct llama_mlock::impl
+- '│   ├── lock_granularity()                       # sysconf(_SC_PAGESIZE) / Windows
+  dwPageSize'
+- '│   ├── raw_lock() / raw_unlock()                # POSIX: mlock/munlock + RLIMIT_MEMLOCK
+  诊断'
+- '│   ├── impl() / init() / grow_to()              # 按页粒度扩展加载区域'
+- │   └── Windows 分支：VirtualLock + GetProcessWorkingSetSize/SetProcessWorkingSetSize
+- ├── llama_mlock 构造/析构/init()/grow_to()
+- └── static SUPPORTED 常量 + llama_path_max()
+- src/llama-model-loader.h
+- '├── struct llama_tensor_weight                   # idx + offs + ggml_tensor*'
+- '├── struct weight_name_comparer                  # blk.X. 排序'
+- '├── struct ggml_backend_buft_comparator          # 按 buft 名字排序 ctx_map'
+- ├── enum llama_fver { V1, V2, V3 }
+- ├── const char* llama_file_version_name(llama_fver)
+- ├── struct llama_model_loader
+- │   ├── 标志位：TENSOR_NOT_REQUIRED/DUPLICATED/SKIP/SKIP_IF_VIRTUAL
+- │   ├── 成员：files, contexts, weights_map, kv_overrides, ctx_map, mappings, mmaps_used
+- │   ├── 构造：13 个参数（metadata, fname, splits, file, use_mmap, use_direct_io...）
+- │   ├── get_arr_n / get_arr / get_key / get_key_or_arr（模板家族）
+- │   ├── get_arch / get_arch_name / get_weight / require_weight
+- │   ├── get_tensor_meta / require_tensor_meta / check_tensor_dims
+- │   ├── create_tensor / create_tensor_as_view / done_getting_tensors
+- │   ├── init_mappings / get_mapping_range / load_data_for / load_all_data
+- │   ├── ftype_name / print_info
+- │   └── using llama_buf_map / buft_list_t
+- └── struct llama_tensor_weight 构造（file, idx, gguf_ctx, tensor）
+- src/llama-model-loader.cpp
+- ├── 辅助函数：llama_file_version_name / llama_model_ftype_name / llama_get_list_splits
+- ├── namespace GGUFMeta
+- │   ├── GKV_Base_Type<T, gt_, gfun> + getter()
+- │   ├── GKV_Base 特化（bool/u8/u16/.../float/double/string/ArrayInfo）
+- │   ├── struct ArrayInfo { gt, length, data }
+- │   ├── GKV<T>：get_kv / override_type_to_str / validate_override
+- │   ├── try_override 四种 SFINAE 分发（bool/整型/浮点/string）
+- │   └── GKV<T>::set（override → 文件）
+- ├── get_arr_n / get_arr（vector/std::array_str 特化 + GGUF_TYPE 校验）
+- ├── get_key / get_key_or_arr（标量/数组自动展开）
+- ├── llama_model_loader::llama_model_loader
+- │   ├── 主 GGUF 加载 + arch_name + llm_kv
+- │   ├── use_mmap && use_direct_io 互斥处理
+- │   ├── 主文件权重收集 → weights_map
+- │   ├── n_split > 1 时遍历 splits + idx 校验
+- │   ├── ftype 推断（统计 ggml_type 最高者 + LLM_KV_GENERAL_FILE_TYPE 覆盖）
+- │   ├── KV 全部 dump + 类型统计
+- │   └── 设置 use_mmap/use_direct_io/check_tensors/no_alloc 标志
+- '├── weight_buft_supported                          # 算子能力探测（GET_ROWS/MUL_MAT/MUL_MAT_ID/ROPE/SSM_CONV/SSM_SCAN/RWKV_WKV6/IM2COL/SCALE）'
+- '├── select_weight_buft                            # 在 buft_list 中挑选首个支持的 buft'
+- '├── create_tensor                                 # ctx_for_buft + buft_for_tensor
+  + TENSOR_DUPLICATED 处理'
+- '├── create_tensor_as_view                         # ggml_view_4d 零拷贝视图'
+- '├── done_getting_tensors                          # 张数量校验 + tensor_moved 警告'
+- '├── check_tensor_dims                             # 形状校验与错误抛出'
+- ├── get_weight / require_weight / get_tensor_meta / require_tensor_meta
+- '├── init_mappings / get_mapping_range             # NUMA 探测 + mmap + mlock'
+- '├── load_data_for                                 # mmap 或 read_raw 单张量加载'
+- └── load_all_data
+- '    ├── 4 个 pinned buffer 的 staged upload'
+- '    ├── upload_backend 异步能力探测'
+- '    ├── mmap 路径：zero-copy + ggml_backend_tensor_alloc'
+- '    ├── host buffer 路径：read_raw + ggml_validate_row_data'
+- '    ├── GPU 路径：aligned 读取 + ptr_data 偏移 + ggml_backend_tensor_set_async'
+- '    └── 加载完成后 unmap_fragment 回收虚拟地址'
+- src/llama-model-saver.h
+- ├── bool llama_model_saver_supports_arch(llm_arch)
+- ├── struct llama_model_saver
+- │   ├── 构造：(llama_model*) / (llm_arch, gguf_context*)
+- │   ├── 析构：gguf_free（若 owns）
+- │   ├── add_kv 重载（u32/i32/float/bool/const char*/char[noreturn]）
+- │   ├── add_kv<Container> 模板（per_layer 优化 + 类型分发）
+- │   ├── add_kv(vector<string>) → gguf_set_arr_str
+- │   ├── add_tensor / add_kv_from_model / add_tensors_from_model
+- │   └── save(string) / save(FILE*)
+- src/llama-model-saver.cpp
+- '├── llama_model_saver_supports_arch              # 排除 Qwen3Next/Qwen35/Gemma3/Gemma3N/BitNet/T5/Step35
+  等'
+- ├── llama_model_saver 构造 / 析构（gguf_init_empty / gguf_free）
+- ├── add_kv 各类型重载 → gguf_set_val_*
+- '├── add_kv<Container>(per_layer=true)             # 同值降级为标量 + 类型分发 gguf_set_arr_data'
+- ├── add_kv(vector<string>) → gguf_set_arr_str
+- '├── add_tensor                                    # gguf_find_tensor 去重（rope_freqs/rope_factors_*）'
+- '├── add_kv_from_model                             # hparams + vocab 字段全量写入'
+- '├── add_tensors_from_model                        # model->tok_embd/output/cls
+  + 每层所有张量指针'
+- └── save → gguf_write_to_file / gguf_write_to_file_ptr
+- src/llama.cpp
+- ├── struct llama_device_memory_data
+- '├── llama_get_device_memory_data                 # 二次加载模型 + memory_breakdown +
+  ggml_backend_dev_memory'
+- ├── enum layer_fraction_t { NONE/ATTN/UP/GATE/MOE }
+- ├── class llama_params_fit_exception
+- ├── llama_params_fit_impl
+- '│   ├── Step 1: dmds_full 测量 + 判断是否需要修改'
+- '│   ├── Step 2: n_ctx 收缩（256 对齐 + 多设备 safety margin）'
+- '│   ├── Step 3: back-to-front dense 层填充（试位法 false position）'
+- '│   ├── Step 4: MoE 升级（dense-only → full，LAYER_FRACTION_UP/GATE/ATTN 渐进）'
+- │   └── set_ngl_tensor_split_tbo 设置 n_gpu_layers/tensor_split/tensor_buft_overrides
+- '├── llama_params_fit                              # 状态返回 SUCCESS/FAILURE/ERROR'
+- ├── llama_max_devices / llama_max_tensor_buft_overrides
+- ├── llama_supports_mmap / mlock / gpu_offload / rpc
+- ├── llama_backend_init / llama_numa_init / llama_backend_free
+- ├── llama_time_us / llama_model_load / llama_model_load_from_file_impl
+- ├── llama_model_load_from_file / _from_splits / _from_file_ptr
+- ├── llama_model_init_from_user / llama_model_save_to_file
+- ├── llama_chat_apply_template / llama_split_path / llama_split_prefix
+- ├── llama_sampler_chain_default_params
+- ├── llama_print_system_info
+- └── llama_load_model_from_file / llama_flash_attn_type_name（顶层接口）
+- src/llama-ext.h
+- ├── llama_graph_reserve / llama_ftype_get_default_type
+- ├── struct quantize_state_impl
+- ├── llama_quant_init / llama_quant_free
+- ├── struct llama_quant_model_desc / llama_quant_model_from_metadata
+- ├── llama_quant_tensor_allows_quantization / llama_quant_compute_types
+- └── llama_load_model_from_file（顶层入口）
+exercises:
+- contents:
+  - 阅读 `src/llama-mmap.cpp` 第 157-165 行 `impl(const char*, const char*, bool)`、第 168-182
+    行 `init_fd()`，第 258-276 行 `read_aligned_chunk()`，理解：
+  - 1. 为什么 `O_DIRECT` 需要把任意 offset 对齐到块设备边界？
+  - 2. 当 `EFAULT/EINVAL` 触发时，`read_raw_unsafe()`（第 218-256 行）如何回退到 buffered I/O？
+  - 3. 在 `llama_model_loader` 构造函数中，`use_mmap && use_direct_io` 同时为 true 时为什么必须强制关闭
+    mmap？
+  - 阅读 `src/llama-mmap.cpp` 第 398-430 行 `llama_mmap::impl::impl()`，回答：
+  - 4. `MAP_POPULATE + POSIX_MADV_WILLNEED` 组合使用的目的是什么？
+  - 5. 当 `numa=true` 时为什么要把 `prefetch` 置 0 并切到 `POSIX_MADV_RANDOM`？
+  - 动手：在你的 Linux 工作站上用 `strace -e trace=mmap,read,openat llama-cli -m model.gguf`
+    观察真实加载行为，记录 mmap 调用次数与 Direct I/O 是否生效。
+  'no': 1
+  title: 理解 Direct I/O 与 mmap 的工程取舍
+- contents:
+  - 阅读 `src/llama-model-loader.cpp` 第 128-244 行 `GGUFMeta` 命名空间，回答：
+  - 1. `GKV_Base_Type` 与 `GKV_Base` 的分层设计是如何把「类型 → gguf_type → getter 函数」三步合一的？
+  - 2. `GKV_Base<std::string>` 为什么不能复用 `GKV_Base_Type`？
+  - 3. `ArrayInfo` 为什么把数据指针单独存？字符串数组的数据指针为什么强制为 nullptr？
+  - 4. `GKV<T>::set()` 中 `try_override` 与文件读取的优先级是怎样的？
+  - 5. `try_override` 通过 SFINAE 派分了哪 4 种 override 类型？类型不匹配时会怎样？
+  - 动手实验：写一段小程序，构造一个 `bool` 字段 + 一个 `int32_t` 字段，然后用一个 `LLAMA_KV_OVERRIDE_TYPE_STR`
+    的 override 去覆盖 `int32_t` 字段，观察日志输出。
+  'no': 2
+  title: 理解 GGUFMeta::GKV 模板体系
+- contents:
+  - 阅读 `src/llama-model-loader.cpp` 第 85-107 行 `llama_get_list_splits` 与第 490-630
+    行构造函数，回答：
+  - 1. `llama_split_prefix` 是如何从 `<name>-00002-of-00004.gguf` 反推出前缀的？
+  - 2. 构造时如果 `n_split > 1` 但 splits 为空，函数会做什么？
+  - 3. 加载 split 文件时为什么要校验 `LLM_KV_SPLIT_NO` 与文件 idx 一致？
+  - 4. `use_direct_io=true` 但内核不支持 O_DIRECT 时，构造函数如何降级？
+  - 5. ftype 的推断是先读 KV 还是先统计张量类型？两者的优先级是什么？
+  - 动手：把一个模型用 `llama-gguf-split` 切成 4 份，再用 `strace` 跟踪 `llama_model_load_from_splits`
+    的 `open`/`mmap` 调用，确认加载顺序是否先主文件后从文件。
+  'no': 3
+  title: 理解模型加载器与 split 文件自动发现
+- contents:
+  - 阅读 `src/llama-model-loader.cpp` 第 770-1010 行，回答：
+  - 1. `weight_buft_supported` 为不同算子（GET_ROWS / MUL_MAT / MUL_MAT_ID / ROPE / SSM_SCAN）构造测试张量时为什么要用
+    0 字节的临时 buffer？
+  - 2. `ctx_for_buft` 计算 `max_n_tensors` 时为什么在没有 files 时额外预留 `n_layer * 256`？
+  - 3. `buft_for_tensor` 中的 `TENSOR_DUPLICATED` 路径为什么要把 `LLM_TENSOR_TOKEN_EMBD` 切换为
+    `LLM_TENSOR_OUTPUT`？
+  - 4. `tensor_buft_overrides` 与 `use_mmap` 同时开启时为什么要 WARN「consider using --no-mmap」？
+  - 5. `create_tensor_as_view` 为什么要求 `cur->type == base->type`？零拷贝视图节省了多少内存？
+  - 动手：打开一个 7B 的 Q4_K 模型，在 `create_tensor` 入口打日志，记录每个张量被分配到了哪种 buft，观察 token_embd
+    与 output 是否共享同一份 buffer。
+  'no': 4
+  title: 理解 create_tensor 的多缓冲区调度
+- contents:
+  - 阅读 `src/llama-model-loader.cpp` 第 1110-1330 行 `load_all_data`，回答：
+  - 1. 4 个 pinned buffer 轮转的目的什么？为什么是 64MB+2*alignment 而不是更大的尺寸？
+  - 2. `upload_backend` lambda 探测 async/host_buffer/events 三个 cap 的目的是什么？
+  - 3. Direct I/O 文件在 GPU 路径下，`aligned_chunk`、`offset_from_alignment`、`ptr_data` 三个变量分别起什么作用？
+  - 4. 为什么 `bytes_read == 0` 时跳过首部 padding，而最后一块要减去尾部 padding？
+  - 5. `ggml_backend_event_synchronize` 与 `buffer_idx %= n_buffers` 是如何保证 buffer 不被并发重用的？
+  - 动手：用 `nsys profile` 或 `rocm-smi --progs` 跟踪一次 70B Q4_K 模型在 ROCm 后端的加载过程，统计 pinned
+    buffer 的分配次数与同步等待时间占比。
+  'no': 5
+  title: 理解 staged upload 与 Direct I/O 对齐读取
+- contents:
+  - 阅读 `src/llama-model-saver.cpp` 第 15-35 行 `llama_model_saver_supports_arch`、第 75-260
+    行，回答：
+  - 1. 哪些架构被显式排除？为什么这些架构目前不支持 save？
+  - 2. `add_kv<Container>` 在 `per_layer=true` 时如何检测「全层同值」并降级为标量？
+  - 3. `add_kv(vector<string>)` 为什么需要先转成 `vector<const char*>`？
+  - 4. `add_tensor` 中 GGUF 已存在同名张量时会跳过，rope_freqs 为什么被特殊处理？
+  - 5. `add_kv_from_model` 写入了多少个 hparams + vocab 字段？这些字段与 llama-quantize 的写入是否一致？
+  - 动手：尝试把一个不支持的架构（如 Gemma3）传入 `llama_model_saver` 构造，观察是否立即抛出断言。
+  'no': 6
+  title: 理解 llama_model_saver 的镜像逻辑
+- contents:
+  - 阅读 `src/llama.cpp` 第 60-460 行，回答：
+  - 1. Step 1 中如果设备返回 free=0 且 total=0，函数会怎么处理？
+  - 2. Step 2 缩小 n_ctx 时为什么要按 256 对齐？为什么多设备下要预留 `model_per_layer * (nd+1) / (2 or
+    6)` 的余量？
+  - 3. Step 3 dense 层 back-to-front 填充时，为什么 `low=0层`、`high=剩余层`？
+  - 4. Step 4 MoE 升级中，`global_surplus_cpu_moe > 0` 的判定为什么需要先做一次「把所有 MoE tensor 移走」的探测？
+  - 5. `LAYER_FRACTION_UP` 与 `LAYER_FRACTION_GATE` 的区别是什么？为什么 ATTN 是最弱的升级？
+  - 动手：把一个 70B Q4_K 模型放到一台只有 16GB 显存的 GPU 上，开启 `--fit-params`，观察 n_gpu_layers 从 80
+    缩到多少、n_ctx 缩到多少。
+  'no': 7
+  title: 理解 llama_params_fit 的四步预算
+learning_targets:
+- 理解 llama.cpp 自研的 llama_file / llama_mmap / llama_mlock 跨平台抽象及其 Direct I/O、NUMA、mlock
+  等高级特性的实现原理
+- 掌握 GGUFMeta::GKV 模板体系如何为不同的元数据类型提供类型安全的访问接口
+- 理解 llama_model_loader 的拆箱流程：从文件打开、多 split 文件自动发现、Direct I/O 与 mmap 互斥、KV/Tensor
+  元数据加载到 ftype 推断
+- 深入 create_tensor / create_tensor_as_view 的多缓冲区调度与 zero-copy 视图机制
+- 了解 load_all_data 中 mmap、staged upload、Direct I/O 对齐读取三套加载路径的工程取舍
+- 理解 llama_model_saver 如何作为加载器的镜像把内存中的模型写回 GGUF，以及它的 KV 类型分发、per_layer 优化、张量去重逻辑
+- 掌握 llama_params_fit 如何按设备内存自动收缩 GPU 层数与上下文大小，并对 MoE 模型做 dense-only → full 的渐进升级
+- 了解 Direct I/O 与 mmap 的工程权衡、对齐读取的回退机制以及平台差异（POSIX/Windows/macOS）的处理策略
+- 掌握 llama_file / llama_mmap / llama_mlock 全部公开接口与内部 impl 的协作关系
+- 理解 GGUFMeta 模板体系中 GKV_Base、ArrayInfo、get_kv、try_override、validate_override 的完整调用链
+- 掌握 llama_model_loader 的权重索引、张量元信息查询、形状校验与创建全链路
+- 理解 llama.cpp 中模型加载入口、后端初始化、能力查询与系统信息打印的顶层流程
+life_analogy:
+- 想象 GGUF 文件是一座**巨型立体仓库**，而 llama.cpp 的模型加载/保存模块就是这座仓库的**门卫 + 装卸队 + 自动分拣机器人**
+- '- **GGUF 文件** = 一座多楼层仓库（KV 元数据在门口，张量在货架上）'
+- '- **llama_file** = 仓库的**卷帘门**：既能推开（新文件）也能接管已有的卷帘门（FILE*）'
+- '- **Direct I/O (O_DIRECT)** = 给卷帘门加了**直通快车道**，绕过前台缓存直达货架'
+- '- **read_aligned_chunk** = 叉车按**托盘尺寸**搬货，块没对齐就重新码齐'
+- '- **llama_mmap** = 给仓库装了一扇**全景观光窗**（MAP_SHARED），不用开门就能看货架'
+- '- **posix_madvise(WILLNEED)** = 提前跟仓库说「明天这批货要发，请先摆好」'
+- '- **posix_madvise(RANDOM)** = NUMA 模式下「别让货乱窜到隔壁仓库」'
+- '- **unmap_fragment** = 把**暂时用不到的货架**用幕布拉上，腾出虚拟地址空间'
+- '- **llama_mlock** = 把最常用的货架**焊死**在仓库地板上，不准被踢到回收站'
+- '- **VirtualLock + WorkingSet** = Windows 上的「把货架钉在承重墙」'
+- '- **GGUFMeta::GKV<T>** = 仓库门口的**翻译官**：把仓库里「五花八门的标签」翻译成统一的 C++ 类型'
+- '- **try_override** = 翻译官手里的**优先通行证**，可绕过文件直接用对讲机告诉装卸队'
+- '- **llama_model_loader** = **拆箱流水线**：核对门牌（arch）→ 登记货架（权重表）→ 决定装卸策略（mmap/Direct
+  I/O）'
+- '- **llama_get_list_splits** = 看到一节车厢的车号，自动派出剩下 N 节'
+- '- **ctx_map** = 给每种搬运设备（CPU/GPU/host）分配**独立的临时库房**'
+- '- **select_weight_buft** = 给每个货架试一下「这台叉车能不能搬」（supports_op 探测）'
+- '- **create_tensor_as_view** = 给某个货架贴个**副标签**，零成本引用同一堆货'
+- '- **staged upload（4 buffer 轮转）** = **4 个传送带接力赛**：每个传送带搬运时其他传送带还在跑'
+- '- **alignment padding + ptr_data** = 给货品包上一层**泡沫塑料**保证叉车不伤货，搬到目标后再撕掉'
+- '- **llama_model_saver** = 装卸队的**回程班列**：把内存里的仓库按原样重新装车'
+- '- **add_tensor 去重（rope_freqs）** = 装车时发现「这箱货和前面那箱一样」，直接跳过'
+- '- **per_layer 优化** = 装车时发现「全车层都一样」，压缩成一箱'
+- '- **llama_params_fit** = 仓库**自动算账员**：先把全部货架摆进去看会不会挤爆，再一排一排往后挪'
+- '- **false position（试位法）** = 算账员拿尺子量「再挪一格就刚好塞下」'
+- '- **MoE 升级（dense-only → full）** = 先把所有**专家箱**搬到 CPU 仓库，腾出 GPU 空间，最后再把专家一件件搬回来'
+- '- **LAYER_FRACTION_UP/GATE/ATTN** = 三档精度的**专家搬家工具**：UP 只推上半身，GATE 推上下半身，ATTN 全推走'
+- 就像一位优秀的仓库经理既要让大卡车（GPU）跑得快，又要让货架（模型权重）摆得下，llama.cpp 的加载与保存模块就是用 Direct I/O、mmap、mlock、staged
+  upload 等工程技巧在「I/O 速度」、「内存占用」、「跨平台兼容」三者之间精妙平衡。
+'no': 12
+summary:
+- concept: '`llama_file`'
+  desc: Pimpl 模式的跨平台文件抽象，统一支持 buffered I/O 与 Direct I/O，并按块设备对齐读取
+- concept: '`O_DIRECT` / `read_aligned_chunk`'
+  desc: 绕过页缓存的 DMA 读取，通过 posix_memalign 把任意偏移对齐到块边界
+- concept: '`llama_mmap`'
+  desc: POSIX mmap + fadvise/madvise 预取，NUMA 下切到 RANDOM 防跨节点污染，Windows 用 CreateFileMapping
+    等价
+- concept: '`llama_mlock`'
+  desc: 按页粒度把模型锁进物理内存，POSIX 检查 RLIMIT_MEMLOCK 输出建议，Windows 调 working set
+- concept: '`unmap_fragment`'
+  desc: POSIX 上按页 munmap 并跟踪 mapped_fragments，Windows 上未实现
+- concept: '`GGUFMeta::GKV<T>`'
+  desc: 模板体系为每种类型生成 getter + 统一 type 校验，业务代码无需 switch
+- concept: '`GGUFMeta::ArrayInfo`'
+  desc: 把数组类型/长度/数据指针一次性打包，字符串数组特殊处理（数据指针为空）
+- concept: '`try_override` / SFINAE'
+  desc: 按 bool/整型/浮点/string 派发 override，类型不匹配只 WARN 不抛异常
+- concept: '`llama_get_list_splits`'
+  desc: 根据 `<name>-00002-of-00004.gguf` 自动推导所有 split 路径，校验 idx
+- concept: '`use_mmap && use_direct_io` 互斥'
+  desc: Direct I/O 与 mmap 同时存在时强制关闭 mmap，因为 mmap 仍走页缓存
+- concept: '`ftype` 推断与 GUESSED 标志'
+  desc: 统计最高频 ggml_type 作为猜测，再用 LLM_KV_GENERAL_FILE_TYPE 覆盖猜测结果
+- concept: '`weight_buft_supported`'
+  desc: 构造最小算子调用 supports_op，对 GET_ROWS/MUL_MAT/MUL_MAT_ID/ROPE/SSM_SCAN/RWKV_WKV6/IM2COL/SCALE
+    等做能力探测
+- concept: '`select_weight_buft`'
+  desc: 在 buft_list 中挑选首个能力支持的 buft 分配张量
+- concept: '`ctx_map` / `ggml_backend_buft_comparator`'
+  desc: 按 buft 名字排序的 ggml_context map，每种 buffer 共享一个 context
+- concept: '`create_tensor` + TENSOR_DUPLICATED'
+  desc: TOKEN_EMBD 复用为 OUTPUT 时切换张量类型并重新计算 size_data
+- concept: '`create_tensor_as_view`'
+  desc: 通过 ggml_view_4d 创建零拷贝视图，类型必须与 base 一致
+- concept: '`load_all_data` 三套路径'
+  desc: mmap zero-copy / host buffer read_raw / 4-buffer 轮转的 async upload
+- concept: '`staged upload`'
+  desc: n_buffers=4 pinned buffer 轮转 + event 同步，避免等待 GPU 完成
+- concept: '`alignment padding`'
+  desc: 对齐块首尾加 padding，ptr_data 偏移跳过 padding 只把真实数据上传
+- concept: '`mmap_used` + `unmap_fragment`'
+  desc: 记录每个文件实际被引用的区间，加载完成后回收首尾未使用片段
+- concept: '`progress_callback` 取消'
+  desc: 回调返回 false 立即终止后续张量加载，已分配资源会被自动释放
+- concept: '`llama_model_saver_supports_arch`'
+  desc: 白名单机制：显式排除 Gemma3/Gemma3N/Qwen3Next/Qwen35/BitNet/T5/Step35/Plamo3 等未实现 save
+    的架构
+- concept: '`add_kv` 模板分发'
+  desc: 按 Container::value_type 分发到 uint8/int8/uint32/int32/float/string 不同的 gguf
+    调用
+- concept: '`per_layer=true` 优化'
+  desc: 检查所有层是否同值，同值则降级为标量，节省 GGUF 体积
+- concept: '`add_tensor` 去重'
+  desc: rope_freqs/rope_factors_long/rope_factors_short 在 GGUF 中只写一次
+- concept: '`llama_params_fit` Step 1-4'
+  desc: 基线测量 → 缩小 ctx → dense 层 back-to-front 填充 → MoE 升级
+- concept: '`false position` 试位法'
+  desc: 用 mem[low] 与 mem[high] 线性插值逼近 target，直到 delta=1 时返回下界
+- concept: '`LAYER_FRACTION_*` 三级渐进'
+  desc: ATTN < UP < GATE < MOE，按权重粒度逐级释放空间
+- concept: '`llama_params_fit_status`'
+  desc: SUCCESS=完成、FAILURE=用户配置冲突、ERROR=底层 ggml 错误
+- concept: '`llama_supports_*` 能力查询'
+  desc: mmap/mlock/gpu_offload/rpc 通过静态 SUPPORTED 常量与后端注册表运行时探测
+- concept: '`llama_split_path` / `llama_split_prefix`'
+  desc: '`<name>-00002-of-00004.gguf` 与前缀的双向转换，供 split 自动发现使用'
+- concept: '`llama_model_save_to_file`'
+  desc: 一行入口：add_kv_from_model → add_tensors_from_model → save，与加载器严格镜像
+units:
+- codes:
+  - file: src/llama-mmap.h
+    line: 16-41
+    method_or_func: llama_file
+  - file: src/llama-mmap.h
+    line: '17'
+    method_or_func: llama_file::llama_file(const char*, const char*, bool)
+  - file: src/llama-mmap.h
+    line: '18'
+    method_or_func: llama_file::llama_file(FILE*)
+  - file: src/llama-mmap.h
+    line: '19'
+    method_or_func: llama_file::~llama_file()
+  - file: src/llama-mmap.h
+    line: '21'
+    method_or_func: llama_file::tell()
+  - file: src/llama-mmap.h
+    line: '22'
+    method_or_func: llama_file::size()
+  - file: src/llama-mmap.h
+    line: '24'
+    method_or_func: llama_file::file_id()
+  - file: src/llama-mmap.h
+    line: '26'
+    method_or_func: llama_file::seek()
+  - file: src/llama-mmap.h
+    line: '28'
+    method_or_func: llama_file::read_raw()
+  - file: src/llama-mmap.h
+    line: '29'
+    method_or_func: llama_file::read_raw_unsafe()
+  - file: src/llama-mmap.h
+    line: '30'
+    method_or_func: llama_file::read_aligned_chunk()
+  - file: src/llama-mmap.h
+    line: '31'
+    method_or_func: llama_file::read_u32()
+  - file: src/llama-mmap.h
+    line: '33'
+    method_or_func: llama_file::write_raw()
+  - file: src/llama-mmap.h
+    line: '34'
+    method_or_func: llama_file::write_u32()
+  - file: src/llama-mmap.h
+    line: '36'
+    method_or_func: llama_file::read_alignment()
+  - file: src/llama-mmap.h
+    line: '37'
+    method_or_func: llama_file::has_direct_io()
+  - file: src/llama-mmap.h
+    line: 43-57
+    method_or_func: llama_mmap
+  - file: src/llama-mmap.h
+    line: '45'
+    method_or_func: llama_mmap::llama_mmap()
+  - file: src/llama-mmap.h
+    line: '46'
+    method_or_func: llama_mmap::~llama_mmap()
+  - file: src/llama-mmap.h
+    line: '48'
+    method_or_func: llama_mmap::size()
+  - file: src/llama-mmap.h
+    line: '49'
+    method_or_func: llama_mmap::addr()
+  - file: src/llama-mmap.h
+    line: '51'
+    method_or_func: llama_mmap::unmap_fragment()
+  - file: src/llama-mmap.h
+    line: 59-70
+    method_or_func: llama_mlock
+  - file: src/llama-mmap.h
+    line: '60'
+    method_or_func: llama_mlock::llama_mlock()
+  - file: src/llama-mmap.h
+    line: '61'
+    method_or_func: llama_mlock::~llama_mlock()
+  - file: src/llama-mmap.h
+    line: '63'
+    method_or_func: llama_mlock::init()
+  - file: src/llama-mmap.h
+    line: '64'
+    method_or_func: llama_mlock::grow_to()
+  - file: src/llama-mmap.h
+    line: '72'
+    method_or_func: llama_path_max()
+  - file: src/llama-mmap.cpp
+    line: 45-54
+    method_or_func: llama_format_win_err()
+  - file: src/llama-mmap.cpp
+    line: 62-74
+    method_or_func: llama_file::impl::GetErrorMessageWin32()
+  - file: src/llama-mmap.cpp
+    line: 76-85
+    method_or_func: llama_file::impl::impl(const char*, const char*, bool)
+  - file: src/llama-mmap.cpp
+    line: 87-93
+    method_or_func: llama_file::impl::impl(FILE*)
+  - file: src/llama-mmap.cpp
+    line: 153-155
+    method_or_func: llama_file::impl::~impl()
+  - file: src/llama-mmap.cpp
+    line: 95-103
+    method_or_func: llama_file::impl::tell()
+  - file: src/llama-mmap.cpp
+    line: 105-113
+    method_or_func: llama_file::impl::seek()
+  - file: src/llama-mmap.cpp
+    line: 115-125
+    method_or_func: llama_file::impl::read_raw()
+  - file: src/llama-mmap.cpp
+    line: 127-131
+    method_or_func: llama_file::impl::read_u32()
+  - file: src/llama-mmap.cpp
+    line: 133-143
+    method_or_func: llama_file::impl::write_raw()
+  - file: src/llama-mmap.cpp
+    line: 145-147
+    method_or_func: llama_file::impl::write_u32()
+  - file: src/llama-mmap.cpp
+    line: 149-151
+    method_or_func: llama_file::impl::has_direct_io()
+  - file: src/llama-mmap.cpp
+    line: 157-165
+    method_or_func: llama_file::impl::impl(const char*, const char*, bool)
+  - file: src/llama-mmap.cpp
+    line: 168-182
+    method_or_func: llama_file::impl::init_fd()
+  - file: src/llama-mmap.cpp
+    line: 185-191
+    method_or_func: llama_file::impl::init_fp()
+  - file: src/llama-mmap.cpp
+    line: 193-198
+    method_or_func: llama_file::impl::impl(FILE*)
+  - file: src/llama-mmap.cpp
+    line: 200-209
+    method_or_func: llama_file::impl::tell()
+  - file: src/llama-mmap.cpp
+    line: 211-216
+    method_or_func: llama_file::impl::seek()
+  - file: src/llama-mmap.cpp
+    line: 218-256
+    method_or_func: llama_file::impl::read_raw_unsafe()
+  - file: src/llama-mmap.cpp
+    line: 258-276
+    method_or_func: llama_file::impl::read_aligned_chunk()
+  - file: src/llama-mmap.cpp
+    line: 278-281
+    method_or_func: llama_file::impl::read_raw()
+  - file: src/llama-mmap.cpp
+    line: 283-287
+    method_or_func: llama_file::impl::read_u32()
+  - file: src/llama-mmap.cpp
+    line: 289-294
+    method_or_func: llama_file::impl::write_raw()
+  - file: src/llama-mmap.cpp
+    line: 296-298
+    method_or_func: llama_file::impl::write_u32()
+  - file: src/llama-mmap.cpp
+    line: 300-302
+    method_or_func: llama_file::impl::has_direct_io()
+  - file: src/llama-mmap.cpp
+    line: 304-307
+    method_or_func: llama_file::impl::~impl()
+  - file: src/llama-mmap.cpp
+    line: '312'
+    method_or_func: llama_file::impl::read_alignment()
+  - file: src/llama-mmap.cpp
+    line: 358-359
+    method_or_func: llama_file::llama_file()
+  - file: src/llama-mmap.cpp
+    line: '361'
+    method_or_func: llama_file::llama_file(FILE*)
+  - file: src/llama-mmap.cpp
+    line: '363'
+    method_or_func: llama_file::~llama_file()
+  - file: src/llama-mmap.cpp
+    line: '365'
+    method_or_func: llama_file::tell()
+  - file: src/llama-mmap.cpp
+    line: '366'
+    method_or_func: llama_file::size()
+  - file: src/llama-mmap.cpp
+    line: '367'
+    method_or_func: llama_file::read_alignment()
+  - file: src/llama-mmap.cpp
+    line: '368'
+    method_or_func: llama_file::has_direct_io()
+  - file: src/llama-mmap.cpp
+    line: 370-380
+    method_or_func: llama_file::file_id()
+  - file: src/llama-mmap.cpp
+    line: '382'
+    method_or_func: llama_file::seek()
+  - file: src/llama-mmap.cpp
+    line: '383'
+    method_or_func: llama_file::read_raw()
+  - file: src/llama-mmap.cpp
+    line: 384-386
+    method_or_func: llama_file::read_raw_unsafe()
+  - file: src/llama-mmap.cpp
+    line: '388'
+    method_or_func: llama_file::read_u32()
+  - file: src/llama-mmap.cpp
+    line: '390'
+    method_or_func: llama_file::write_raw()
+  - file: src/llama-mmap.cpp
+    line: '392'
+    method_or_func: llama_file::write_u32()
+  - file: src/llama-mmap.cpp
+    line: 398-430
+    method_or_func: llama_mmap::impl::impl()
+  - file: src/llama-mmap.cpp
+    line: 432-442
+    method_or_func: llama_mmap::impl::align_range()
+  - file: src/llama-mmap.cpp
+    line: 444-480
+    method_or_func: llama_mmap::impl::unmap_fragment()
+  - file: src/llama-mmap.cpp
+    line: 482-490
+    method_or_func: llama_mmap::impl::~impl()
+  - file: src/llama-mmap.cpp
+    line: '500'
+    method_or_func: llama_mmap::llama_mmap()
+  - file: src/llama-mmap.cpp
+    line: '501'
+    method_or_func: llama_mmap::~llama_mmap()
+  - file: src/llama-mmap.cpp
+    line: '503'
+    method_or_func: llama_mmap::size()
+  - file: src/llama-mmap.cpp
+    line: '504'
+    method_or_func: llama_mmap::addr()
+  - file: src/llama-mmap.cpp
+    line: '506'
+    method_or_func: llama_mmap::unmap_fragment()
+  - file: src/llama-mmap.cpp
+    line: 520-524
+    method_or_func: llama_mlock::impl::lock_granularity()
+  - file: src/llama-mmap.cpp
+    line: 526-560
+    method_or_func: llama_mlock::impl::raw_lock()
+  - file: src/llama-mmap.cpp
+    line: 562-566
+    method_or_func: llama_mlock::impl::raw_unlock()
+  - file: src/llama-mmap.cpp
+    line: '568'
+    method_or_func: llama_mlock::impl::impl()
+  - file: src/llama-mmap.cpp
+    line: 570-573
+    method_or_func: llama_mlock::impl::init()
+  - file: src/llama-mmap.cpp
+    line: 575-587
+    method_or_func: llama_mlock::impl::grow_to()
+  - file: src/llama-mmap.cpp
+    line: '590'
+    method_or_func: llama_mlock::llama_mlock()
+  - file: src/llama-mmap.cpp
+    line: '591'
+    method_or_func: llama_mlock::~llama_mlock()
+  - file: src/llama-mmap.cpp
+    line: '593'
+    method_or_func: llama_mlock::init()
+  - file: src/llama-mmap.cpp
+    line: '594'
+    method_or_func: llama_mlock::grow_to()
+  - file: src/llama-mmap.cpp
+    line: 596-598
+    method_or_func: llama_path_max()
+  name: 底层文件与内存映射 —— 跨平台的「读写管道工」
+  'no': 1
+  points:
+  - '**为什么需要自己的 `llama_file` 抽象？**'
+  - '- 直接用 `FILE*` 难以跨平台支持 O_DIRECT、NUMA 提示与对齐块读取'
+  - '- 把 Direct I/O、对齐块读取、DMA 缓冲区回退统一封装在一个 Pimpl 类中'
+  - '- 同时支持文件路径打开与已存在的 `FILE*` 接管两种入口'
+  - '- `llama_file::file_id()` 统一暴露底层 fd/HANDLE，供 mmap 与 mlock 使用'
+  - '...'
+  - '**Direct I/O（O_DIRECT）的工程价值**'
+  - '- 通过 `init_fd()` 用 `open(O_RDONLY | O_DIRECT)` 绕过系统页缓存'
+  - '- 在 NVMe 等高速设备上减少 double buffering 与 CPU 拷贝'
+  - '- 通过 `read_aligned_chunk()` 把任意偏移对齐到块设备边界，避免 DMA 越界'
+  - '- `read_raw()` 根据 `has_direct_io()` 自动选择对齐读取或裸读取'
+  - '...'
+  - '**POSIX mmap 与 NUMA 优化**'
+  - '- `llama_mmap::impl` 使用 `MAP_SHARED` 把整个文件映射进虚拟地址'
+  - '- 通过 `posix_fadvise(POSIX_FADV_SEQUENTIAL)` 提示顺序预取'
+  - '- 通过 `MAP_POPULATE + posix_madvise(WILLNEED)` 实现主动预取'
+  - '- `numa=true` 时切换到 `POSIX_MADV_RANDOM` 防止跨节点页面污染'
+  - '- `align_range()` 把取消映射的首尾边界对齐到页边界'
+  - '...'
+  - '**Windows 平台的 mmap 等价物**'
+  - '- 用 `CreateFileMappingA` + `MapViewOfFile` 实现只读映射'
+  - '- 通过 `PrefetchVirtualMemory`（Win8+）主动预取'
+  - '- `unmap_fragment()` 在 Windows 上是空实现（仅记录）'
+  - '...'
+  - '**mlock 把模型锁进物理内存**'
+  - '- `llama_mlock::grow_to` 按页粒度逐步扩大加载区域'
+  - '- 失败时根据 `RLIMIT_MEMLOCK` 输出可读的排查建议'
+  - '- macOS 上输出 `vm.user_wire_limit` 等专属建议信息'
+  - '- Windows 上通过 `VirtualLock` + 动态调整 working set 适配'
+  - '- `lock_granularity()` 屏蔽 POSIX/Windows 的页大小差异'
+- codes:
+  - file: src/llama-model-loader.cpp
+    line: 128-142
+    method_or_func: GGUFMeta::GKV_Base_Type<T, gt_, gfun>
+  - file: src/llama-model-loader.cpp
+    line: 144-156
+    method_or_func: GGUFMeta::GKV_Base<bool/uint8_t/.../double/const char*>
+  - file: src/llama-model-loader.cpp
+    line: 158-165
+    method_or_func: GGUFMeta::GKV_Base<std::string>
+  - file: src/llama-model-loader.cpp
+    line: 167-174
+    method_or_func: GGUFMeta::ArrayInfo
+  - file: src/llama-model-loader.cpp
+    line: 176-185
+    method_or_func: GGUFMeta::GKV_Base<ArrayInfo>
+  - file: src/llama-model-loader.cpp
+    line: 187-195
+    method_or_func: GGUFMeta::GKV<T>::get_kv()
+  - file: src/llama-model-loader.cpp
+    line: 197-208
+    method_or_func: GGUFMeta::GKV<T>::override_type_to_str()
+  - file: src/llama-model-loader.cpp
+    line: 210-233
+    method_or_func: GGUFMeta::GKV<T>::validate_override()
+  - file: src/llama-model-loader.cpp
+    line: 235-241
+    method_or_func: GGUFMeta::GKV<T>::try_override(bool)
+  - file: src/llama-model-loader.cpp
+    line: 243-249
+    method_or_func: GGUFMeta::GKV<T>::try_override(整型)
+  - file: src/llama-model-loader.cpp
+    line: 251-257
+    method_or_func: GGUFMeta::GKV<T>::try_override(浮点)
+  - file: src/llama-model-loader.cpp
+    line: 259-265
+    method_or_func: GGUFMeta::GKV<T>::try_override(string)
+  - file: src/llama-model-loader.cpp
+    line: 267-273
+    method_or_func: GGUFMeta::GKV<T>::set(ctx, k, T&, override)
+  - file: src/llama-model-loader.cpp
+    line: 275-281
+    method_or_func: GGUFMeta::GKV<T>::set(ctx, key, T&, override)
+  - file: src/llama-model-loader.cpp
+    line: 285-305
+    method_or_func: llama_model_loader::get_arr_n(std::string, T&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 307-310
+    method_or_func: llama_model_loader::get_arr_n(enum llm_kv, T&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 312-350
+    method_or_func: llama_model_loader::get_arr(std::string, vector<T>&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 352-395
+    method_or_func: llama_model_loader::get_arr(std::string, array<T,N>&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 440-455
+    method_or_func: llama_model_loader::get_key(std::string, T&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 457-460
+    method_or_func: llama_model_loader::get_key(enum llm_kv, T&, bool)
+  - file: src/llama-model-loader.cpp
+    line: 478-510
+    method_or_func: llama_model_loader::get_key_or_arr(std::string, array<T,N>&, uint32_t,
+      bool)
+  - file: src/llama-model-loader.cpp
+    line: 512-515
+    method_or_func: llama_model_loader::get_key_or_arr(enum llm_kv, T&, uint32_t,
+      bool)
+  - file: src/llama-model-loader.cpp
+    line: 517-535
+    method_or_func: llama_model_loader::get_key_or_arr(enum llm_kv, uint32_t&, bool)
+  name: GGUF 元数据访问器 —— 类型安全的「键值翻译官」
+  'no': 2
+  points:
+  - '**为什么需要 GGUFMeta::GKV 模板体系？**'
+  - '- GGUF 的元数据支持多种基本类型 + 数组类型，调用方希望用 C++ 原生类型'
+  - '- 通过模板特化为每种类型生成对应的 `gt` 类型常量与 `getter` 函数'
+  - '- 在 `get_kv` 中统一做类型校验，避免业务代码到处写 switch'
+  - '...'
+  - '**ArrayInfo 与嵌套数组的递归访问**'
+  - '- `ArrayInfo` 一次性把数组类型、长度与数据指针取出'
+  - '- 通过 `gguf_get_arr_n` 取出长度，`gguf_get_arr_data` 取原始指针'
+  - '- 字符串数组特殊处理：数据指针为空，调用 `gguf_get_arr_str` 按下标取'
+  - '...'
+  - '**KV 覆盖（override）的优先级机制**'
+  - '- `GKV::set` 先尝试 `try_override`，命中即返回，跳过文件读取'
+  - '- `try_override` 通过 SFINAE 区分 bool、整型、浮点、字符串四种类型'
+  - '- 覆盖值的类型不匹配时输出 WARN 日志而不抛异常'
+  - '- `validate_override` 负责打印 override 命中的详细日志'
+  - '...'
+  - '**按 KV 枚举取值的统一入口**'
+  - '- `get_key(enum llm_kv, T&, bool)` 把 llm_arch 的 key 名空间自动展开'
+  - '- `get_arr_n` 支持 `std::string` 与 `enum llm_kv` 两种 key 形式'
+  - '- `get_arr` 自动展开 vector 与 std::array 两种返回容器'
+  - '- `get_key_or_arr` 允许标量自动广播为指定长度的数组'
+- codes:
+  - file: src/llama-model-loader.h
+    line: 73-170
+    method_or_func: llama_model_loader
+  - file: src/llama-model-loader.h
+    line: 79-95
+    method_or_func: llama_tensor_weight::llama_tensor_weight()
+  - file: src/llama-model-loader.h
+    line: 97-108
+    method_or_func: weight_name_comparer::operator()
+  - file: src/llama-model-loader.h
+    line: 155-160
+    method_or_func: ggml_backend_buft_comparator::operator()
+  - file: src/llama-model-loader.h
+    line: 63-66
+    method_or_func: llama_file_version_name()
+  - file: src/llama-model-loader.h
+    line: '120'
+    method_or_func: llama_model_loader::get_arch_name()
+  - file: src/llama-model-loader.h
+    line: '122'
+    method_or_func: llama_model_loader::get_arch()
+  - file: src/llama-model-loader.h
+    line: '124'
+    method_or_func: llama_model_loader::get_weight()
+  - file: src/llama-model-loader.h
+    line: '126'
+    method_or_func: llama_model_loader::require_weight()
+  - file: src/llama-model-loader.h
+    line: '128'
+    method_or_func: llama_model_loader::get_tensor_meta()
+  - file: src/llama-model-loader.h
+    line: '130'
+    method_or_func: llama_model_loader::require_tensor_meta()
+  - file: src/llama-model-loader.h
+    line: '132'
+    method_or_func: llama_model_loader::check_tensor_dims()
+  - file: src/llama-model-loader.h
+    line: 134-140
+    method_or_func: llama_model_loader::create_tensor()
+  - file: src/llama-model-loader.h
+    line: 142-144
+    method_or_func: llama_model_loader::create_tensor_as_view()
+  - file: src/llama-model-loader.h
+    line: '146'
+    method_or_func: llama_model_loader::done_getting_tensors()
+  - file: src/llama-model-loader.h
+    line: '148'
+    method_or_func: llama_model_loader::init_mappings()
+  - file: src/llama-model-loader.h
+    line: '150'
+    method_or_func: llama_model_loader::get_mapping_range()
+  - file: src/llama-model-loader.h
+    line: '152'
+    method_or_func: llama_model_loader::load_data_for()
+  - file: src/llama-model-loader.h
+    line: 154-158
+    method_or_func: llama_model_loader::load_all_data()
+  - file: src/llama-model-loader.h
+    line: '160'
+    method_or_func: llama_model_loader::ftype_name()
+  - file: src/llama-model-loader.h
+    line: '162'
+    method_or_func: llama_model_loader::print_info()
+  - file: src/llama-model-loader.cpp
+    line: 22-72
+    method_or_func: llama_model_ftype_name()
+  - file: src/llama-model-loader.cpp
+    line: 85-107
+    method_or_func: llama_get_list_splits()
+  - file: src/llama-model-loader.cpp
+    line: 490-630
+    method_or_func: llama_model_loader::llama_model_loader()
+  - file: src/llama-model-loader.cpp
+    line: 632-634
+    method_or_func: llama_model_loader::get_arch_name()
+  - file: src/llama-model-loader.cpp
+    line: 636-638
+    method_or_func: llama_model_loader::get_arch()
+  - file: src/llama-model-loader.cpp
+    line: 640-648
+    method_or_func: llama_model_loader::get_weight()
+  - file: src/llama-model-loader.cpp
+    line: 650-658
+    method_or_func: llama_model_loader::require_weight()
+  - file: src/llama-model-loader.cpp
+    line: 660-668
+    method_or_func: llama_model_loader::get_tensor_meta()
+  - file: src/llama-model-loader.cpp
+    line: 670-678
+    method_or_func: llama_model_loader::require_tensor_meta()
+  - file: src/llama-model-loader.cpp
+    line: 680-710
+    method_or_func: llama_model_loader::check_tensor_dims()
+  - file: src/llama-model-loader.cpp
+    line: 1040-1070
+    method_or_func: llama_model_loader::init_mappings()
+  - file: src/llama-model-loader.cpp
+    line: 1072-1084
+    method_or_func: llama_model_loader::get_mapping_range()
+  - file: src/llama-model-loader.cpp
+    line: 1085-1108
+    method_or_func: llama_model_loader::load_data_for()
+  - file: src/llama-model-loader.cpp
+    line: 1332-1336
+    method_or_func: llama_model_loader::ftype_name()
+  - file: src/llama-model-loader.cpp
+    line: 1338-1350
+    method_or_func: llama_model_loader::print_info()
+  name: 模型加载器 llama_model_loader —— GGUF 的「拆箱流水线」
+  'no': 3
+  points:
+  - '**加载器承担的核心职责**'
+  - '- 打开主 GGUF 与所有 split 文件，建立 ggml_context 与文件句柄的映射'
+  - '- 遍历所有张量构建 `weights_map`，把 `tensor_name → (file_idx, offs, ggml_tensor)` 绑定'
+  - '- 通过 `n_split` + 文件名前缀自动发现剩余 split 文件'
+  - '- 统计 `n_elements` / `n_bytes`，根据类型分布猜测 ftype'
+  - '...'
+  - '**Split 文件的自动发现机制**'
+  - '- `llama_get_list_splits` 根据 `<name>-00002-of-00004.gguf` 推导出全部 4 个 split'
+  - '- `llama_split_prefix` 提取前缀，`llama_split_path` 生成单文件路径'
+  - '- 校验每个 split 的 `LLM_KV_SPLIT_NO` 与文件名中的 idx 一致'
+  - '- 用户显式给出 splits 时仍需校验数量与 `n_split` 一致'
+  - '...'
+  - '**Direct I/O 与 mmap 的互斥策略**'
+  - '- `use_direct_io=true` 时尝试 Direct I/O，若不支持则降级到 buffered I/O'
+  - '- `use_mmap && use_direct_io` 同时开启时强制关闭 mmap 并打印 WARN'
+  - '- Direct I/O 与 mmap 同时存在会让 mmap 失去意义，因为 mmap 仍然走页缓存'
+  - '...'
+  - '**FTYPE 推断与 override 链**'
+  - '- 遍历所有张量统计 ggml_type 出现次数，最高者作为猜测的 `ftype`'
+  - '- 再读取 `LLM_KV_GENERAL_FILE_TYPE`，如果存在则覆盖猜测结果'
+  - '- `LLAMA_FTYPE_GUESSED` 标志位标识 ftype 是猜测出来的'
+  - '...'
+  - '**KV/Tensor 元数据转储**'
+  - '- 加载完成后把所有 KV 对打印出来（值截断到 40 字符）'
+  - '- 类型用 `GGUF_TYPE_ARRAY[T,n]` 的格式表达数组维度'
+  - '- 同时输出每个张量类型的张量数统计'
+  - '- `print_info()` 输出文件格式、类型、大小与 BPW'
+- codes:
+  - file: src/llama-model-loader.cpp
+    line: 770-870
+    method_or_func: weight_buft_supported()
+  - file: src/llama-model-loader.cpp
+    line: 875-885
+    method_or_func: select_weight_buft()
+  - file: src/llama-model-loader.cpp
+    line: 890-1010
+    method_or_func: llama_model_loader::create_tensor()
+  - file: src/llama-model-loader.cpp
+    line: 1015-1037
+    method_or_func: llama_model_loader::create_tensor_as_view()
+  - file: src/llama-model-loader.cpp
+    line: 1039-1050
+    method_or_func: llama_model_loader::done_getting_tensors()
+  name: 张量创建与多缓冲区分配 —— 「按层分配内存」的调度员
+  'no': 4
+  points:
+  - '**为什么需要 `create_tensor` 这么复杂的工厂？**'
+  - '- 不同模型架构、层类型、是否复用决定了张量应该放在哪种 buffer type 上'
+  - '- 输入张量、输出张量、循环层张量要分别走 input/output/layer 三类 buft 列表'
+  - '- 同一 buft 上的张量共享一个 ggml_context，避免反复分配'
+  - '...'
+  - '**`select_weight_buft` 的能力探测**'
+  - '- 通过 `weight_buft_supported` 构造一个最小算子调用 `supports_op`'
+  - '- 对 GET_ROWS / MUL_MAT / MUL_MAT_ID / ROPE / SSM_CONV / SSM_SCAN / RWKV_WKV6
+    / IM2COL / SCALE 等算子分别构造测试张量'
+  - '- 在 buft 上分配 0 字节的临时 buffer 仅用于能力探测，用后即释放'
+  - '...'
+  - '**`ctx_map` 与每种 buffer 的 ggml_context**'
+  - '- 使用 `std::map` 按 buft 名字排序，保证分配顺序确定性'
+  - '- 预留的张量数：`n_tensors + 1`（重复 output）+ `n_layer * 2`（rope freqs）'
+  - '- 在没有文件句柄时额外预留 `n_layer * 256` 张量，避免动态扩容'
+  - '...'
+  - '**Duplicated token embedding 的特殊路径**'
+  - '- 很多架构把 `token_embd` 与 `output` 共享同一份权重'
+  - '- `TENSOR_DUPLICATED` 标志位 + `LLM_TENSOR_TOKEN_EMPD → LLM_TENSOR_OUTPUT` 切换'
+  - '- 在重复路径下 `size_data` 会重新计算以反映真实写入量'
+  - '...'
+  - '**`create_tensor_as_view` 的零拷贝视图**'
+  - '- 当一个张量是另一个张量的子区域时（如 RoPE 因子）创建视图'
+  - '- 通过 `ggml_view_4d` 指定 offset 和 stride，类型必须与 base 一致'
+  - '- 视图不分配新内存，节省大模型的 DRAM 占用'
+  - '**`done_getting_tensors` 的校验**'
+  - '- 比较 `n_created` 与 `n_tensors`，不一致时抛出运行时错误'
+  - '- 若有张量被迫移动 buffer，打印第一条移动信息与总数'
+- codes:
+  - file: src/llama-model-loader.cpp
+    line: 1110-1330
+    method_or_func: llama_model_loader::load_all_data()
+  - file: src/llama-model-loader.cpp
+    line: 1085-1108
+    method_or_func: llama_model_loader::load_data_for()
+  name: 异步加载与数据上传 —— 「并行搬运」的工程艺术
+  'no': 5
+  points:
+  - '**`load_all_data` 的多策略加载路径**'
+  - '- mmap 路径：直接把 mapping 地址赋给 `cur->data`，零拷贝'
+  - '- 文件读取路径：通过 `read_raw` 顺序读取到 host buffer'
+  - '- 异步上传路径：把分片读入 host pinned buffer，再异步拷贝到 GPU'
+  - '...'
+  - '**4 个 buffer 轮转的 staged upload**'
+  - '- 使用 `n_buffers = 4` 个 pinned buffer 轮转避免同步等待'
+  - '- `buffer_size = 64MB + 2*alignment` 兼顾 I/O 效率与内存占用'
+  - '- 每个 buffer 通过 event 跟踪上传完成状态，复用前等待上一轮完成'
+  - '- `buffer_idx %= n_buffers` 保证循环复用'
+  - '...'
+  - '**对 Direct I/O 文件的对齐读取**'
+  - '- 计算 `aligned_offset` 与 `offset_from_alignment`，把数据起点对齐到块边界'
+  - '- `read_raw_unsafe` 把整个对齐块读入 pinned buffer'
+  - '- 通过 `ptr_data` 偏移跳过首尾的对齐 padding，只把真实数据上传'
+  - '- `bytes_read == 0` 时跳过首部 padding，最后一块减去尾部 padding'
+  - '...'
+  - '**异步能力探测**'
+  - '- `upload_backend` lambda 探测 device 是否同时支持 async + host_buffer + events'
+  - '- 必须使用 device 的默认 buffer type（不能是 host 类型）'
+  - '- 失败时静默降级到同步路径，不影响模型可用性'
+  - '...'
+  - '**验证与取消支持**'
+  - '- 通过 `std::async` 并行触发 `ggml_validate_row_data` 验证每个张量'
+  - '- 进度回调返回 false 时立即终止后续张量加载'
+  - '- 加载完成后对未使用的 mmap 区域调用 `unmap_fragment` 回收虚拟地址'
+  - '- 上传完成后释放 event 与 host buffer，关闭 upload_backend'
+- codes:
+  - file: src/llama-model-saver.h
+    line: 1-5
+    method_or_func: llama_model_saver_supports_arch()
+  - file: src/llama-model-saver.h
+    line: 15-44
+    method_or_func: llama_model_saver
+  - file: src/llama-model-saver.h
+    line: '26'
+    method_or_func: llama_model_saver::~llama_model_saver()
+  - file: src/llama-model-saver.h
+    line: 28-36
+    method_or_func: llama_model_saver::add_kv(uint32_t/int32_t/float/bool/const char*)
+  - file: src/llama-model-saver.h
+    line: 38-40
+    method_or_func: llama_model_saver::add_kv(char)
+  - file: src/llama-model-saver.h
+    line: '42'
+    method_or_func: llama_model_saver::add_kv<Container>()
+  - file: src/llama-model-saver.h
+    line: '44'
+    method_or_func: llama_model_saver::add_kv(vector<string>)
+  - file: src/llama-model-saver.h
+    line: '46'
+    method_or_func: llama_model_saver::add_tensor()
+  - file: src/llama-model-saver.h
+    line: '48'
+    method_or_func: llama_model_saver::add_kv_from_model()
+  - file: src/llama-model-saver.h
+    line: '50'
+    method_or_func: llama_model_saver::add_tensors_from_model()
+  - file: src/llama-model-saver.h
+    line: 52-54
+    method_or_func: llama_model_saver::save(string)/save(FILE*)
+  - file: src/llama-model-saver.cpp
+    line: 7-24
+    method_or_func: llama_model_saver_supports_arch()
+  - file: src/llama-model-saver.cpp
+    line: 26-34
+    method_or_func: llama_model_saver::llama_model_saver()
+  - file: src/llama-model-saver.cpp
+    line: 36-41
+    method_or_func: llama_model_saver::~llama_model_saver()
+  - file: src/llama-model-saver.cpp
+    line: 43-58
+    method_or_func: llama_model_saver::add_kv(uint32_t/int32_t/float/bool/const char*)
+  - file: src/llama-model-saver.cpp
+    line: 60-64
+    method_or_func: llama_model_saver::add_kv(char)
+  - file: src/llama-model-saver.cpp
+    line: 66-108
+    method_or_func: llama_model_saver::add_kv<Container>()
+  - file: src/llama-model-saver.cpp
+    line: 110-118
+    method_or_func: llama_model_saver::add_kv(vector<string>)
+  - file: src/llama-model-saver.cpp
+    line: 120-129
+    method_or_func: llama_model_saver::add_tensor()
+  - file: src/llama-model-saver.cpp
+    line: 135-330
+    method_or_func: llama_model_saver::add_kv_from_model()
+  - file: src/llama-model-saver.cpp
+    line: 332-348
+    method_or_func: llama_model_saver::add_tensors_from_model()
+  - file: src/llama-model-saver.cpp
+    line: 350-356
+    method_or_func: llama_model_saver::save(string)/save(FILE*)
+  name: 模型保存器 llama_model_saver —— GGUF 的「重写打包机」
+  'no': 6
+  points:
+  - '**保存器与加载器是镜像关系**'
+  - '- `llama_model_loader` 把 GGUF 拆成内存中的 `llama_model`'
+  - '- `llama_model_saver` 把 `llama_model` 重新打包回 GGUF'
+  - '- 两者共用 `llm_kv` key 命名空间，避免 hardcode 字符串'
+  - '...'
+  - '**支持的架构白名单**'
+  - '- `llama_model_saver_supports_arch` 显式无法保存的架构'
+  - '- 例如 Gemma3/Gemma3N、Qwen3Next/Qwen35、BitNet、T5、Step35、Plamo3 等新架构尚未实现 save 路径'
+  - '- 默认 fallback 到 true 表示大多数架构可保存'
+  - '...'
+  - '**`add_kv` 重载体系**'
+  - '- 针对 u32/i32/float/bool/const char* 各有一个特化版本'
+  - '- `add_kv(char)` 被标记为 `[[noreturn]]` 仅用于模板编译'
+  - '- 数组类型使用模板 `add_kv<Container>`，按 `value_type` 分发到不同 gguf 调用'
+  - '- `per_layer=true` 时检查所有层是否同值，同值则降级为标量'
+  - '- `add_kv(vector<string>)` 先转成 `vector<const char*>` 再调用 `gguf_set_arr_str`'
+  - '...'
+  - '**`add_tensor` 的去重与跳过逻辑**'
+  - '- 如果 GGUF 中已存在同名 tensor 则跳过（典型：rope_freqs）'
+  - '- 通过 `gguf_add_tensor` 把 tensor 注册进 gguf_context'
+  - '- `add_tensors_from_model` 按模型结构遍历所有 layer 的所有张量字段'
+  - '...'
+  - '**词汇表与 tokenizer 字段**'
+  - '- 遍历 `vocab.get_token_data` 把 token text/score/attr 收集到 vector'
+  - '- token attr 枚举映射成 GGUF 的 `LLAMA_TOKEN_TYPE_*`'
+  - '- tokenizer fields（merge/bpe/特殊 token id）通过 vocab 接口读取'
+  - '- `add_kv_from_model` 全量写入 hparams + vocab 字段，与量化工具写入保持一致'
+- codes:
+  - file: src/llama.cpp
+    line: 33-42
+    method_or_func: llama_flash_attn_type_name()
+  - file: src/llama.cpp
+    line: 60-130
+    method_or_func: llama_get_device_memory_data()
+  - file: src/llama.cpp
+    line: 100-420
+    method_or_func: llama_params_fit_impl()
+  - file: src/llama.cpp
+    line: 430-460
+    method_or_func: llama_params_fit()
+  - file: src/llama.cpp
+    line: 462-466
+    method_or_func: llama_max_devices()
+  - file: src/llama.cpp
+    line: 468-471
+    method_or_func: llama_max_tensor_buft_overrides()
+  - file: src/llama.cpp
+    line: 473-475
+    method_or_func: llama_supports_mmap()
+  - file: src/llama.cpp
+    line: 477-479
+    method_or_func: llama_supports_mlock()
+  - file: src/llama.cpp
+    line: 481-486
+    method_or_func: llama_supports_gpu_offload()
+  - file: src/llama.cpp
+    line: 488-490
+    method_or_func: llama_supports_rpc()
+  - file: src/llama.cpp
+    line: 492-505
+    method_or_func: llama_backend_init()
+  - file: src/llama.cpp
+    line: 507-520
+    method_or_func: llama_numa_init()
+  - file: src/llama.cpp
+    line: 522-525
+    method_or_func: llama_backend_free()
+  - file: src/llama.cpp
+    line: 527-529
+    method_or_func: llama_time_us()
+  - file: src/llama.cpp
+    line: 531-580
+    method_or_func: llama_model_load()
+  - file: src/llama.cpp
+    line: 582-760
+    method_or_func: llama_model_load_from_file_impl()
+  - file: src/llama.cpp
+    line: 762-770
+    method_or_func: llama_model_init_from_user()
+  - file: src/llama.cpp
+    line: 772-776
+    method_or_func: llama_load_model_from_file()
+  - file: src/llama.cpp
+    line: 778-790
+    method_or_func: llama_model_load_from_file()
+  - file: src/llama.cpp
+    line: 792-798
+    method_or_func: llama_model_load_from_splits()
+  - file: src/llama.cpp
+    line: 800-810
+    method_or_func: llama_model_load_from_file_ptr()
+  - file: src/llama.cpp
+    line: 812-818
+    method_or_func: llama_model_save_to_file()
+  - file: src/llama.cpp
+    line: 820-845
+    method_or_func: llama_chat_apply_template()
+  - file: src/llama.cpp
+    line: 850-870
+    method_or_func: llama_split_path()
+  - file: src/llama.cpp
+    line: 872-895
+    method_or_func: llama_split_prefix()
+  - file: src/llama.cpp
+    line: 897-905
+    method_or_func: llama_sampler_chain_default_params()
+  - file: src/llama.cpp
+    line: 907-end
+    method_or_func: llama_print_system_info()
+  - file: src/llama-ext.h
+    line: 1-5
+    method_or_func: llama_graph_reserve()
+  - file: src/llama-ext.h
+    line: 7-9
+    method_or_func: llama_ftype_get_default_type()
+  - file: src/llama-ext.h
+    line: 11-13
+    method_or_func: llama_quant_init()
+  - file: src/llama-ext.h
+    line: 15-17
+    method_or_func: llama_quant_free()
+  - file: src/llama-ext.h
+    line: 23-25
+    method_or_func: llama_quant_model_from_metadata()
+  - file: src/llama-ext.h
+    line: 27-29
+    method_or_func: llama_quant_tensor_allows_quantization()
+  - file: src/llama-ext.h
+    line: 31-33
+    method_or_func: llama_quant_compute_types()
+  name: 设备内存自适应 llama_params_fit —— 「自动算账」的预算管家
+  'no': 7
+  points:
+  - '**为什么需要自动参数适配？**'
+  - '- 用户给出的 GPU 卸载层数与上下文大小经常超出设备显存'
+  - '- llama.cpp 应当自动把参数收缩到能塞进设备为止'
+  - '- 多设备场景还要考虑 tensor_split 与 buft_override 的协调'
+  - '...'
+  - '**Step 1：基线测量**'
+  - '- 用 `no_alloc + use_mmap=false + use_mlock=false` 加载模型'
+  - '- `llama_init_from_model` 触发实际内存分配，统计各 buffer type 占用'
+  - '- `ggml_backend_dev_memory` 拿到 free/total，对 0 内存设备回退到 CPU'
+  - '- 设备返回 free=0 且 total=0 时回退到 CPU 后端的内存数据'
+  - '...'
+  - '**Step 2：缩小上下文**'
+  - '- 当 n_ctx=0（自动模式）且 `n_ctx_train > n_ctx_min` 时按比例缩减'
+  - '- 多设备场景考虑「层不能跨设备」的浪费，按 `model_per_layer` 预留安全余量'
+  - '- 把 n_ctx 按 256 对齐，避免 CUDA 后端的奇怪行为'
+  - '...'
+  - '**Step 3：dense 模型的 back-to-front 层分配**'
+  - '- 用 false position（试位法）求解每个设备能容纳的层数下界'
+  - '- `low=0层`、`high=剩余层`，线性插值逼近目标 memory'
+  - '- 直到差值只剩 1 层时停止，返回刚好满足的下界'
+  - '- 最后一设备的 output 层必须始终是完整层'
+  - '...'
+  - '**Step 4：MoE 模型的 dense-only → full 升级**'
+  - '- 先把所有 MoE tensor 用正则移动到 CPU buffer（pattern_moe_all）'
+  - '- 计算 dense-only 能容纳的总层数 `global_surplus_cpu_moe`'
+  - '- 如果有富余，把后端的 dense-only 层逐步升级为 full 层'
+  - '- 升级后溢出部分按 `LAYER_FRACTION_UP/GATE/ATTN` 三级渐进'
+  - '- 尝试把下一设备的部分层以 UP/GATE/ATTN 溢出到相邻设备或系统内存'
+  - '...'
+  - '**异常分类与状态返回**'
+  - '- `llama_params_fit_exception`：用户配置冲突（如 tensor_split 已设置）'
+  - '- `std::runtime_error`：底层 ggml 错误'
+  - '- 状态码 `SUCCESS/FAILURE/ERROR` 区分可恢复与不可恢复'
+  - '- 同时暴露 `llama_max_devices()` 与 `llama_max_tensor_buft_overrides()` 上限'
+  - '...'
+  - '**顶层入口与能力查询**'
+  - '- `llama_load_model_from_file` 兼容旧 API 直接转调 `llama_model_load_from_file`'
+  - '- `llama_flash_attn_type_name` 输出 FlashAttention 模式的人类可读字符串'
+  - '- `llama_supports_mmap/mlock/gpu_offload/rpc` 通过静态常量与后端注册表判定能力'

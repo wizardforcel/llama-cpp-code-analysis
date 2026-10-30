@@ -1,0 +1,680 @@
+code_map:
+- common/download.h
+- '├── __main__                           # 头文件包含、common_header/common_header_list
+  类型别名'
+- '├── struct common_remote_params        # HTTP 请求配置（headers/timeout/max_size）'
+- '├── struct common_cached_model_info    # 缓存模型信息 DTO'
+- '│   └── to_string()                    # 格式化为 repo:tag 字符串'
+- '├── struct common_download_model_opts  # 下载行为开关（download_mmproj/offline）'
+- ├── struct common_download_model_result# 统一返回结果（model_path/mmproj_path）
+- '├── common_remote_get_content()        # 发送 HTTP GET 获取内容（声明）'
+- '├── common_download_split_repo_tag()   # 解析 HF repo:tag 语法（声明）'
+- '├── common_download_model()            # 模型下载主入口（声明）'
+- '├── common_list_cached_models()        # 列出本地缓存模型（声明）'
+- '├── common_download_file_single()      # 单文件下载（在线/离线，声明）'
+- '└── common_docker_resolve_model()      # Docker Registry 模型解析（声明）'
+- ''
+- common/download.cpp
+- ├── 文件写入与 ETag 管理
+- '│   ├── write_file()                   # 临时文件+原子重命名写入'
+- '│   ├── write_etag()                   # 写入 .etag 缓存文件'
+- '│   └── read_etag()                    # 读取 .etag 缓存文件'
+- ├── HTTP 工具
+- '│   ├── is_http_status_ok()            # 状态码 2xx/3xx 判断'
+- '│   └── common_remote_get_content()    # 通用 GET 内容抓取（大小限制/错误处理）'
+- ├── HF 仓库解析
+- '│   └── common_download_split_repo_tag() # repo:tag 字符串分离'
+- ├── 单文件下载核心
+- '│   ├── common_pull_file()             # 流式下载+断点续传+进度更新'
+- '│   ├── common_download_file_single_online()  # 在线下载（HEAD 检查/ETag/重试）'
+- '│   └── common_download_file_single()  # 离线/在线路由入口'
+- ├── 进度条系统
+- '│   └── class ProgressBar              # 并发进度条管理'
+- '│       ├── ProgressBar()              # 构造：URL提取文件名、UTF-8截断'
+- '│       ├── ~ProgressBar()             # 析构：清理共享状态'
+- '│       ├── update()                   # 更新：ANSI转义多行刷新'
+- '│       ├── ProgressBar(const&) = delete # 禁用拷贝构造'
+- '│       └── operator=(const&) = delete # 禁用拷贝赋值'
+- ├── GGUF 分片与选择
+- '│   ├── get_gguf_split_info()          # 解析分片命名（prefix/index/count/tag）'
+- '│   ├── extract_quant_bits()           # 从 tag 提取量化位数'
+- '│   ├── get_split_files()              # 获取同一模型全部分片'
+- '│   ├── gguf_filename_is_model()       # 排除 mmproj/imatrix 文件'
+- '│   ├── find_best_mmproj()             # 按目录深度+量化位数匹配 mmproj'
+- '│   ├── find_best_model()              # 按 tag 优先级匹配主模型'
+- '│   └── list_available_gguf_files()    # 列出可用 GGUF 文件清单'
+- ├── HF 集成
+- '│   ├── get_hf_plan()                  # 构建下载计划（主模型+mmproj）'
+- '│   ├── get_url_tasks()                # URL 分片批量展开'
+- '│   ├── common_download_model()        # 并发下载调度（std::async）'
+- '│   └── common_list_cached_models()    # 扫描缓存并按 repo:tag 汇总'
+- └── Docker Registry 支持
+- '    ├── common_docker_get_token()      # 获取匿名拉取令牌'
+- '    └── common_docker_resolve_model()  # OCI Manifest 解析与下载'
+- ''
+- common/http.h
+- '├── struct common_http_url             # URL 解析结果（scheme/user/pass/host/port/path）'
+- '├── common_http_parse_url()            # URL 语义解析（含端口自动补全）'
+- '├── common_http_client()               # 客户端工厂（Basic Auth/重定向/HTTPS检测）'
+- '└── common_http_show_masked_url()      # 安全 URL 显示（掩码凭据）'
+- ''
+- common/hf-cache.h
+- '├── struct hf_file                     # HF 文件元数据（repo/path/url/oid/size/local_path/final_path）'
+- '├── get_repo_files()                   # 通过 API 获取仓库文件列表（声明）'
+- '├── get_cached_files()                 # 获取本地缓存文件列表（声明）'
+- '├── finalize_file()                    # 缓存落盘（符号链接/移动/复制，声明）'
+- '└── migrate_old_cache_to_hf_cache()    # 旧版缓存迁移入口（声明）'
+- ''
+- common/hf-cache.cpp
+- ├── 缓存目录管理
+- '│   ├── get_cache_directory()          # 多级环境变量优先级（LLAMA_CACHE→HF_HOME→~/.cache）'
+- '│   ├── folder_name_to_repo()          # 目录名 → repo_id 转换'
+- '│   ├── repo_to_folder_name()          # repo_id → 目录名转换'
+- '│   └── get_repo_path()                # 获取仓库缓存根路径'
+- ├── 安全校验
+- │   ├── is_hex_char() / is_hex_string()# 十六进制字符/字符串校验
+- '│   ├── is_alphanum() / is_special_char() # 字母数字/特殊字符判断'
+- '│   ├── is_valid_repo_id()             # 仓库 ID 格式校验（长度/斜杠/特殊字符）'
+- '│   ├── is_valid_hf_token()            # HF Token 格式校验（hf_前缀+长度）'
+- '│   ├── is_valid_commit()              # 提交哈希校验（40位十六进制）'
+- '│   ├── is_valid_oid()                 # 对象标识校验（40/64位十六进制）'
+- '│   └── is_valid_subpath()             # 路径遍历防护（防止 ../../ 攻击）'
+- ├── 文件写入
+- '│   └── safe_write_file()              # 临时文件+原子重命名安全写入'
+- ├── HF API 交互
+- '│   ├── api_get()                      # 统一 API GET 封装（认证/JSON解析/错误处理）'
+- '│   ├── get_repo_commit()              # 获取分支提交（优先 main 分支）'
+- '│   ├── get_repo_files()               # 递归获取文件树（LFS oid/size 提取）'
+- '│   └── get_cached_ref()               # 读取本地 refs 获取缓存提交'
+- ├── 缓存扫描
+- '│   └── get_cached_files()             # 遍历 snapshots/<commit>/ 扫描缓存'
+- ├── 缓存落盘
+- '│   └── finalize_file()                # 三级策略：符号链接→移动→复制'
+- └── 旧版迁移
+- '    ├── get_gguf_split_info()          # 解析旧版分片命名（无 tag 版本）'
+- '    ├── parse_manifest_name()          # 解析 manifest=owner=repo=*.json'
+- '    ├── make_old_cache_filename()      # 生成旧版缓存文件名'
+- '    ├── collect_file()                 # 校验并收集单个旧缓存文件'
+- '    ├── collect_files()                # 处理分片文件的批量收集'
+- '    ├── migrate_file()                 # 执行单文件移动+finalize'
+- '    └── migrate_old_cache_to_hf_cache()# 主迁移流程（manifest解析/校验/迁移）'
+exercises:
+- contents:
+  - 阅读 `common/download.cpp` 第 137-207 行的 `common_pull_file()`、第 209-348 行的 `common_download_file_single_online()`，以及第
+    68-92 行的 `write_etag()` / `read_etag()` / `is_http_status_ok()`。
+  - 回答问题：
+  - '- 断点续传时发送的 HTTP 请求头是什么？格式如何？'
+  - '- 如果服务器返回 416（Requested Range Not Satisfiable）状态码，代码如何处理？'
+  - '- 下载失败时的重试策略是什么？最大重试次数是多少？'
+  - '- 临时文件的后缀名是什么？成功下载后如何变为正式文件？'
+  - '- ETag 匹配时返回的状态码是多少？它在上层 `common_download_file_single()` 中被如何解读？'
+  'no': 1
+  title: 分析断点续传与 ETag 协商的实现细节
+- contents:
+  - 阅读 `common/download.cpp` 第 74-135 行的 `ProgressBar` 类完整实现（构造、析构、update、被禁用的拷贝语义）。
+  - 回答问题：
+  - '- `lines` 和 `max_line` 这两个静态成员变量的作用是什么？'
+  - '- ANSI 转义序列 `\033[A` 和 `\033[B` 分别实现什么功能？'
+  - '- 为什么在非 TTY 环境（如 CI 日志）中进度条会自动静默？通过什么函数检测？'
+  - '- 进度条文件名最多显示多少个字符？如何处理 UTF-8 多字节字符的截断？'
+  - '- 为什么要显式 `delete` 拷贝构造与拷贝赋值？如果被允许会发生什么并发问题？'
+  'no': 2
+  title: 理解进度条的多行刷新机制
+- contents:
+  - 阅读 `common/download.cpp` 第 563-704 行的 `get_hf_plan()` 和 `common_download_model()`，以及第
+    822-839 行的 `common_list_cached_models()`。
+  - 画出 `TheBloke/Llama-2-7B-GGUF:Q4_K_M` 从解析到下载完成的完整流程图。
+  - 回答问题：
+  - '- `common_download_split_repo_tag()` 如何验证 repo 格式？不合法时抛出什么异常？'
+  - '- 在线模式和离线模式分别调用 `hf_cache` 的哪个函数获取文件列表？'
+  - '- `std::async` 并发下载的任务粒度是什么？主模型分片和 mmproj 是否并发下载？'
+  - '- 如果用户未指定 tag，`find_best_model()` 的默认匹配优先级是什么？'
+  - '- `common_list_cached_models()` 依据什么规则去重，为什么只保留 `index==1` 的分片？'
+  'no': 3
+  title: 追踪 HF 模型下载的完整流程
+- contents:
+  - 阅读 `common/hf-cache.cpp` 第 34-202 行的目录管理与安全校验函数群（含 `get_cache_directory`、`repo_to_folder_name`、`folder_name_to_repo`、`get_repo_path`
+    以及 `is_*` 系列）。
+  - 回答问题：
+  - '- 缓存目录的决策链包含哪些环境变量？优先级顺序是什么？非 Windows 系统如何回退？'
+  - '- `is_valid_repo_id()` 校验了哪些规则？为什么要求「恰好一个 `/`」？为什么特殊字符不能连续出现或结尾？'
+  - '- `is_valid_subpath()` 如何防止 `../../etc/passwd` 路径遍历攻击？'
+  - '- HF Token 的格式要求是什么（前缀、长度、字符集）？非法 Token 会导致什么后果？'
+  - '- `repo_to_folder_name()` 与 `folder_name_to_repo()` 为什么必须用 `--` 而不是 `-` 作为分隔？'
+  'no': 4
+  title: 分析缓存目录的安全防护
+- contents:
+  - 阅读 `common/hf-cache.cpp` 第 450-487 行的 `finalize_file()` 函数。
+  - 回答问题：
+  - '- 三级策略的执行顺序是什么？每级失败时如何降级？'
+  - '- `symlinks_disabled` 静态原子变量的作用是什么？如何避免重复尝试失败的方案？'
+  - '- 为什么优先使用相对路径符号链接而不是绝对路径？'
+  - '- 在什么场景下会触发 `rename` 失败而进入 `copy` 降级？'
+  'no': 5
+  title: 理解缓存落盘的三级策略
+- contents:
+  - 阅读 `common/hf-cache.cpp` 第 498-723 行的旧版迁移相关函数（`get_gguf_split_info`、`parse_manifest_name`、`make_old_cache_filename`、`collect_file`、`collect_files`、`migrate_file`、`migrate_old_cache_to_hf_cache`）。
+  - 假设你有一个旧版缓存目录，包含以下文件：
+  - '  - `~/.cache/llama.cpp/manifest=TheBloke=Llama-2-7B-GGUF=12345.json`'
+  - '  - `~/.cache/llama.cpp/TheBloke_Llama-2-7B-GGUF_llama-2-7b.Q4_K_M.gguf`'
+  - '  - `~/.cache/llama.cpp/TheBloke_Llama-2-7B-GGUF_llama-2-7b.Q4_K_M.gguf.etag`'
+  - 回答问题：
+  - '- `parse_manifest_name()` 如何从这个 manifest 文件名提取 owner 和 repo？'
+  - '- `collect_file()` 校验哪些条件？SHA256 不匹配时会怎样？'
+  - '- 迁移成功后旧文件和 manifest 会被删除吗？失败时如何处理现场？'
+  - '- 设计一个测试用例矩阵，覆盖：正常迁移、SHA256 不匹配、大小不匹配、目标已存在四种场景。'
+  'no': 6
+  title: 设计旧版缓存迁移的测试用例
+learning_targets:
+- 理解统一下载抽象层的设计：common_remote_params、common_download_model_opts、common_download_model_result、common_cached_model_info
+  四大核心数据结构与 __main__ 类型别名
+- 掌握 HTTP 基础设施：URL 解析（common_http_parse_url）、客户端工厂（common_http_client）、安全掩码显示与通用内容获取（common_remote_get_content）
+- 深入单文件下载引擎：临时文件+原子重命名、ETag 读写与 304 协商、断点续传、离线降级、状态码判定与失败重试
+- 理解多任务进度条系统：ANSI 转义序列、并发下载的行号管理、TTY 检测与静默降级、禁用拷贝语义
+- 掌握 GGUF 分片与智能选择策略：分片命名解析、量化位数提取、同组分片收集、模型文件甄别、mmproj 配对与可用文件清单
+- 熟悉 Hugging Face 集成流程：repo:tag 语法解析、hf_plan 构建、URL 任务展开、并发任务调度与缓存模型列表汇总
+- 了解 Docker Registry 支持：OCI Manifest 解析、GGUF 层识别、blob 下载流程
+- 掌握 HF 缓存目录管理：多级环境变量优先级、目录命名互转规则、路径与凭据的安全防护校验、原子写文件
+- 理解 HF API 交互层：统一 api_get 封装、分支解析、文件树递归获取、本地 refs 读取与离线缓存扫描
+- 了解缓存落盘与旧版迁移：符号链接三级降级策略、manifest 解析、逐文件校验收集与迁移执行
+life_analogy:
+- 想象 llama.cpp 的模型下载系统是一家**智能物流调度中心**：
+- '- **下载抽象层（download.h）** = 货运总柜台（统一受理 HF 专线、URL 直送、Docker 集装箱三种托运单）'
+- '- **ETag 缓存** = 快递单号比对（已签收过的包裹不再重复取件）'
+- '- **断点续传（Range 请求）** = 搬家中途休息（记住已搬到第几箱，下次接着搬）'
+- '- **ProgressBar** = 多条流水线的电子看板（同时显示 8 个包裹的配送进度）'
+- '- **mmproj 配对** = 为相机选配镜头（同品牌、焦距越接近越好）'
+- '- **HF 缓存目录** = 标准化仓库货架（models--user--repo 的统一编码）'
+- '- **finalize_file** = 包裹上架策略（优先挂链接牌→同区搬运→跨区快递）'
+- '- **旧版迁移** = 老仓库改造（先验货、再搬入新货架、最后撕旧标签）'
+- 就像物流中心需要处理多种运输方式、确保包裹安全送达、管理库存货架，llama.cpp 的下载系统也需要统一调度多种模型来源、保证文件完整性、管理本地缓存。
+'no': 51
+summary:
+- concept: '`common_remote_params`'
+  desc: HTTP 请求配置（headers、timeout、max_size），控制网络层行为
+- concept: '`common_download_model_opts`'
+  desc: 下载行为开关（offline 离线模式、download_mmproj 多模态投影）
+- concept: '`common_download_model_result`'
+  desc: 统一返回模型路径与可选 mmproj 路径的结果结构
+- concept: '`common_cached_model_info`'
+  desc: 缓存模型信息 DTO，提供 `repo:tag` 格式化输出
+- concept: '`download.h __main__`'
+  desc: 头文件公共区域，定义 common_header/common_header_list 类型别名
+- concept: '`common_http_url`'
+  desc: URL 解析结果结构（scheme、user、password、host、port、path）
+- concept: '`common_http_parse_url()`'
+  desc: 完整 URL 语义解析，支持 auth 提取与端口自动补全
+- concept: '`common_http_client()`'
+  desc: HTTP 客户端工厂，自动配置 Basic Auth、重定向与 HTTPS 检测
+- concept: '`common_http_show_masked_url()`'
+  desc: 安全 URL 显示，用户凭据替换为 `****:****@`
+- concept: '`common_remote_get_content()`'
+  desc: 通用 HTTP GET，把响应体收集为字节数组并遵循 max_size 限制
+- concept: '`write_file()` / `safe_write_file()`'
+  desc: 临时文件 + 原子重命名模式，防止写入中断导致文件损坏
+- concept: '`write_etag()` / `read_etag()`'
+  desc: ETag 缓存读写，支持 HTTP 304 Not Modified 协商
+- concept: '`is_http_status_ok()`'
+  desc: 把 2xx/3xx 视为成功，是下载流程的统一判定尺子
+- concept: '`common_pull_file()`'
+  desc: 流式下载核心，支持 Range 断点续传与进度回调
+- concept: '`common_download_file_single_online()`'
+  desc: 在线下载完整流程：HEAD 检查 → ETag 匹配 → 断点续传 → 重试
+- concept: '`common_download_file_single()`'
+  desc: 离线/在线路由：在线走网络，离线校验本地文件存在性
+- concept: '`ProgressBar`'
+  desc: 并发进度条管理，基于 ANSI 转义序列的多行刷新，禁用拷贝
+- concept: '`get_gguf_split_info()`'
+  desc: 解析 GGUF 分片命名：`model-00001-of-00008.gguf` → prefix/index/count/tag
+- concept: '`extract_quant_bits()`'
+  desc: 从量化标签（如 Q4_K_M）提取数字部分用于比较
+- concept: '`get_split_files()`'
+  desc: 按 prefix+count 收集同一模型的全部分片文件
+- concept: '`gguf_filename_is_model()`'
+  desc: 过滤掉 mmproj 与 imatrix，只保留主模型 GGUF
+- concept: '`find_best_model()`'
+  desc: 按优先级匹配模型：用户指定 tag → Q4_K_M → Q4_0
+- concept: '`find_best_mmproj()`'
+  desc: mmproj 智能配对：同目录优先、量化位数差最小
+- concept: '`list_available_gguf_files()`'
+  desc: 把仓库里可用的 GGUF 文件打到日志，辅助用户选择
+- concept: '`get_hf_plan()`'
+  desc: HF 下载计划构建：主模型分片 + 可选 mmproj
+- concept: '`common_download_model()`'
+  desc: 统一下载入口：HF 仓库 / URL / 本地路径三路分支并并发调度
+- concept: '`common_list_cached_models()`'
+  desc: 汇总本地缓存中的模型为 repo:tag 列表（去重、跳过 mmproj）
+- concept: '`common_docker_resolve_model()`'
+  desc: Docker Registry 模型解析：OCI Manifest → GGUF blob 下载
+- concept: '`hf_file`'
+  desc: HF 文件元数据结构：repo/path/url/oid/size/local_path/final_path
+- concept: '`get_cache_directory()`'
+  desc: 缓存目录决策链：LLAMA_CACHE → HF_HUB_CACHE → HF_HOME → ~/.cache
+- concept: '`repo_to_folder_name()` / `folder_name_to_repo()`'
+  desc: 仓库 ID 与缓存目录名互转：`user/repo` ↔ `models--user--repo`
+- concept: '`get_repo_path()`'
+  desc: 组合缓存根目录与仓库目录名得到仓库根路径
+- concept: '`is_hex_char()/is_hex_string()/is_alphanum()/is_special_char()`'
+  desc: 基础字符判定工具，是所有合法性格式校验的积木
+- concept: '`is_valid_repo_id()` / `is_valid_subpath()`'
+  desc: 安全校验：仓库 ID 格式、路径遍历防护
+- concept: '`is_valid_hf_token()` / `is_valid_commit()` / `is_valid_oid()`'
+  desc: 令牌与哈希格式校验，防止注入与脏数据进入缓存
+- concept: '`api_get()`'
+  desc: HF API 统一封装：User-Agent、Accept、Authorization、JSON 解析
+- concept: '`get_repo_commit()`'
+  desc: 分支解析：优先 main 分支，写入 refs/<branch> 供离线使用
+- concept: '`get_repo_files()`'
+  desc: 递归获取文件树，提取 LFS oid/size 构建完整 hf_file 列表
+- concept: '`get_cached_ref()` / `get_cached_files()`'
+  desc: 离线缓存扫描：读取 refs → 遍历 snapshots/<commit>/
+- concept: '`finalize_file()`'
+  desc: 缓存落盘三级策略：符号链接 → rename 移动 → copy 复制
+- concept: '`parse_manifest_name()` / `make_old_cache_filename()` / `collect_file()`'
+  desc: 旧版缓存的清单解析、文件名还原与单文件校验收集
+- concept: '`migrate_old_cache_to_hf_cache()`'
+  desc: 旧版缓存迁移：manifest 解析 → SHA256 校验 → 移动 → 快照链接
+units:
+- codes:
+  - file: common/download.h
+    line: 1-6
+    method_or_func: __main__
+  - file: common/download.h
+    line: 24-26
+    method_or_func: common_cached_model_info.to_string()
+  - file: common/download.h
+    line: 47-52
+    method_or_func: common_download_model()
+  - file: common/download.h
+    line: 55-56
+    method_or_func: common_list_cached_models()
+  name: 下载体系总览 —— 模型到家的「四车道高速公路」
+  'no': 1
+  points:
+  - '**为什么需要统一的下载抽象层？**'
+  - '- llama.cpp 支持多种模型来源：Hugging Face 仓库、直接 URL、Docker Registry、本地路径'
+  - '- 用户期望的透明性：无论来源如何，最终都是本地路径 + 可选 mmproj'
+  - '- 命令行体验的统一：`-hf user/repo:tag`、`-m model.gguf`、`docker://...` 等语法糖'
+  - '**核心数据结构设计哲学**'
+  - '- `common_remote_params`：HTTP 层可配参数（headers、timeout、max_size）'
+  - '- `common_download_model_opts`：下载行为开关（offline、download_mmproj）'
+  - '- `common_download_model_result`：统一返回模型路径与可选 mmproj 路径'
+  - '- `common_cached_model_info`：缓存模型列表的 DTO（Data Transfer Object），`to_string()`
+    输出 `repo:tag`'
+  - '**头文件的『门面』布局**'
+  - '- `__main__` 区域集中了 `#include`、`common_header` / `common_header_list` 类型别名与前置声明'
+  - '- 所有对外 API（下载、列表、Docker 解析）以纯函数声明形式暴露，隐藏实现细节'
+  - '**与上游 common 模块的关系**'
+  - '- 依赖 `common_params_model` 定义（来自 arg.h）作为输入'
+  - '- 被 `common_params_handle_model` 调用以自动触发下载流程'
+  - '- 通过 `common_list_cached_models` 支撑 `--list-models` 类调试功能'
+- codes:
+  - file: common/http.h
+    line: 15-68
+    method_or_func: common_http_parse_url()
+  - file: common/http.h
+    line: 70-96
+    method_or_func: common_http_client()
+  - file: common/http.h
+    line: 98-100
+    method_or_func: common_http_show_masked_url()
+  - file: common/download.h
+    line: 15-16
+    method_or_func: common_remote_get_content()
+  - file: common/download.cpp
+    line: 350-384
+    method_or_func: common_remote_get_content()
+  name: HTTP 基础设施 —— 网络世界的「翻译与安全官」
+  'no': 2
+  points:
+  - '**URL 解析的艺术**'
+  - '- `common_http_parse_url` 处理完整的 URL 语义：scheme://user:pass@host:port/path'
+  - '- 端口自动补全：http → 80，https → 443'
+  - '- 认证信息分离：支持从 URL 提取 user/password 用于 Basic Auth'
+  - '**客户端工厂的工程考量**'
+  - '- `common_http_client` 返回 pair<Client, UrlParts> 的双重结果'
+  - '- HTTPS 编译时检测：未启用 OpenSSL/BoringSSL 时给出明确的构建指导'
+  - '- 默认开启 follow_location 以支持 Hugging Face 的 CDN 重定向'
+  - '**安全显示：掩码 URL**'
+  - '- 日志中绝不泄露用户凭据，统一替换为 `****:****@`'
+  - '- 防止终端历史、日志文件、CI 输出中泄露 token'
+  - '**通用内容抓取：common_remote_get_content**'
+  - '- download.h 中的声明与 download.cpp 中的实现构成『声明-定义』对照'
+  - '- 支持自定义 headers、超时与 `max_size` 上限，避免把超大响应体读进内存'
+  - '- 返回 `{status, bytes}`，供 ETag 之外的所有小体量 HTTP 交互复用（如 Docker token、manifest）'
+- codes:
+  - file: common/download.cpp
+    line: 39-66
+    method_or_func: write_file()
+  - file: common/download.cpp
+    line: 68-73
+    method_or_func: write_etag()
+  - file: common/download.cpp
+    line: 75-88
+    method_or_func: read_etag()
+  - file: common/download.cpp
+    line: 90-92
+    method_or_func: is_http_status_ok()
+  - file: common/download.cpp
+    line: 137-207
+    method_or_func: common_pull_file()
+  - file: common/download.cpp
+    line: 209-348
+    method_or_func: common_download_file_single_online()
+  - file: common/download.cpp
+    line: 386-404
+    method_or_func: common_download_file_single()
+  - file: common/download.h
+    line: 65-70
+    method_or_func: common_download_file_single()
+  name: 单文件下载引擎 —— 带断点续传的「可靠搬运工」
+  'no': 3
+  points:
+  - '**临时文件 + 原子重命名模式**'
+  - '- 所有下载先写入 `.tmp` 后缀文件，成功后才 rename 到目标路径'
+  - '- 避免 Ctrl+C 或崩溃导致的「半个模型文件」灾难'
+  - '- `write_file` 与 hf-cache 的 `safe_write_file` 均遵循此模式'
+  - '**ETag 缓存协商三件套**'
+  - '- `write_etag` / `read_etag` 把远端 ETag 落到 `path.etag` 并读回'
+  - '- 再次下载时先 HEAD 请求对比 ETag，匹配则返回 304 跳过下载'
+  - '- `is_http_status_ok` 把 2xx/3xx 统一视作成功，简化上层判断'
+  - '**断点续传实现**'
+  - '- 检测本地 `.tmp` 文件大小，发送 `Range: bytes=N-` 头'
+  - '- `common_pull_file` 中流式写入并实时更新进度条'
+  - '- 失败自动重试（默认最多 3 次），指数退避策略'
+  - '**离线模式的优雅降级**'
+  - '- `offline=true` 时跳过网络请求，直接校验本地文件存在性'
+  - '- 配合 `HF_HUB_OFFLINE=1` 环境变量实现完全离线运行'
+  - '- `common_download_file_single` 作为统一入口封装在线/离线分支'
+- codes:
+  - file: common/download.cpp
+    line: 74-92
+    method_or_func: ProgressBar.ProgressBar()
+  - file: common/download.cpp
+    line: 94-97
+    method_or_func: ProgressBar.~ProgressBar()
+  - file: common/download.cpp
+    line: 99-132
+    method_or_func: ProgressBar.update()
+  - file: common/download.cpp
+    line: 135-135
+    method_or_func: ProgressBar.operator=()
+  name: 进度条系统 —— 终端里的「多任务仪表盘」
+  'no': 4
+  points:
+  - '**并发下载的视觉挑战**'
+  - '- 多分片模型可能同时下载 8 个文件，传统单行进度条无法胜任'
+  - '- 需要支持 ANSI 转义序列（\033[A 上移、\033[B 下移）的多行刷新'
+  - '**ProgressBar 类的状态管理**'
+  - '- 静态成员 `lines` 与 `max_line` 维护所有活跃进度条的行号映射'
+  - '- 构造函数从 URL 提取并截断文件名（UTF-8 安全，最多 40 字符）'
+  - '- 析构与完成时调用 `cleanup` 释放行号供后续任务复用'
+  - '**为什么禁用拷贝？**'
+  - '- `ProgressBar(const&) = delete` 与 `operator=(const&) = delete` 禁止拷贝'
+  - '- 防止两个实例共享同一行号导致的竞态与错行刷新'
+  - '**绘制算法**'
+  - '- 使用 Unicode 全角字符「—」绘制 55 字符宽度进度条'
+  - '- 百分比计算：`(100 * current) / total`，位置：`bar * current / total`'
+  - '- 非 TTY 环境（如 CI 日志）自动静默，避免污染输出'
+- codes:
+  - file: common/download.cpp
+    line: 412-443
+    method_or_func: get_gguf_split_info()
+  - file: common/download.cpp
+    line: 445-455
+    method_or_func: extract_quant_bits()
+  - file: common/download.cpp
+    line: 457-474
+    method_or_func: get_split_files()
+  - file: common/download.cpp
+    line: 511-523
+    method_or_func: gguf_filename_is_model()
+  - file: common/download.cpp
+    line: 476-509
+    method_or_func: find_best_mmproj()
+  - file: common/download.cpp
+    line: 525-552
+    method_or_func: find_best_model()
+  - file: common/download.cpp
+    line: 554-561
+    method_or_func: list_available_gguf_files()
+  name: GGUF 分片与选择策略 —— 模型文件的「智能导购」
+  'no': 5
+  points:
+  - '**分片命名规范的解析**'
+  - '- 正则 `^(.+)-([0-9]{5})-of-([0-9]{5})$` 匹配 `model-00001-of-00008.gguf`'
+  - '- `get_gguf_split_info` 返回 prefix/tag/index/count 四元组'
+  - '- `extract_quant_bits` 从标签（如 Q4_K_M）提取数字部分用于比较'
+  - '**同组分片的归队**'
+  - '- `get_split_files` 依据 prefix + count 把同一模型的所有分片收拢'
+  - '- 为后续的并发下载任务列表做准备'
+  - '**模型文件的智能筛选**'
+  - '- `gguf_filename_is_model` 排除 mmproj 和 imatrix 文件'
+  - '- `find_best_model` 按优先级匹配：用户指定 tag → Q4_K_M → Q4_0'
+  - '- 大小写不敏感的正则匹配，兼容社区各种命名习惯'
+  - '**mmproj 的配对策略**'
+  - '- 按目录深度优先：同目录 > 子目录，避免误选其他模型的投影'
+  - '- 同深度时按量化位数差：mmproj 与主模型位数越接近越好'
+  - '- 未找到时返回空，多模态功能自动禁用而非报错'
+  - '**可见性辅助**'
+  - '- `list_available_gguf_files` 把可用 GGUF 列表打到日志，帮助用户拼对 tag'
+- codes:
+  - file: common/download.h
+    line: 21-22
+    method_or_func: common_download_split_repo_tag()
+  - file: common/download.cpp
+    line: 94-103
+    method_or_func: common_download_split_repo_tag()
+  - file: common/download.cpp
+    line: 563-613
+    method_or_func: get_hf_plan()
+  - file: common/download.cpp
+    line: 619-641
+    method_or_func: get_url_tasks()
+  - file: common/download.cpp
+    line: 643-704
+    method_or_func: common_download_model()
+  - file: common/download.cpp
+    line: 822-839
+    method_or_func: common_list_cached_models()
+  name: Hugging Face 集成 —— 仓库到本地的「直通车」
+  'no': 6
+  points:
+  - '**repo:tag 语法解析**'
+  - '- `TheBloke/Llama-2-7B-GGUF:Q4_K_M` → repo + tag 分离'
+  - '- 必须包含恰好一个 `/`（user/repo 格式），否则抛出异常'
+  - '**下载计划的构建（hf_plan）**'
+  - '- 在线模式：调用 `hf_cache::get_repo_files` 获取最新文件树'
+  - '- 离线模式：回退到 `hf_cache::get_cached_files` 读取本地快照'
+  - '- file_selection 支持索引（0,1,2...）或直接文件名两种指定方式'
+  - '**主流程：common_download_model**'
+  - '- 三路分支：HF 仓库 → get_hf_plan；URL → get_url_tasks；本地路径 → 直接返回'
+  - '- 使用 `std::async` 并发下载所有任务（主模型分片 + mmproj）'
+  - '- 聚合结果填充 `model_path` 与 `mmproj_path`'
+  - '**缓存模型的可见化**'
+  - '- `common_list_cached_models` 扫描本地缓存并按 `repo:tag` 去重'
+  - '- 只统计 `index==1` 的分片并跳过 mmproj，避免列表噪音'
+  - '**与 hf_cache 模块的边界**'
+  - '- download.cpp 负责「网络传输与策略」'
+  - '- hf-cache.cpp 负责「API 交互与缓存目录管理」'
+- codes:
+  - file: common/download.h
+    line: 73-74
+    method_or_func: common_docker_resolve_model()
+  - file: common/download.cpp
+    line: 710-727
+    method_or_func: common_docker_get_token()
+  - file: common/download.cpp
+    line: 729-820
+    method_or_func: common_docker_resolve_model()
+  name: Docker Registry 支持 —— OCI 镜像中的「GGUF 寻宝」
+  'no': 7
+  points:
+  - '**Docker 模型引用的规范**'
+  - '- 支持 `ai/model:tag` 简写，自动补全为 `ai/model` 命名空间'
+  - '- 完整形式：`registry.io/user/repo:tag`'
+  - '**OCI Manifest 解析流程**'
+  - '- 第一步：`common_docker_get_token` 从 auth.docker.io 换取匿名拉取令牌'
+  - '- 第二步：携带 token 请求 `/v2/<repo>/manifests/<tag>`'
+  - '- Accept 头包含 `application/vnd.oci.image.manifest.v1+json` 等 OCI 类型'
+  - '**GGUF 层的识别与下载**'
+  - '- 遍历 `layers` 数组，匹配 mediaType 为 `application/vnd.docker.ai.gguf.v3`'
+  - '- digest 格式校验（`sha256:` 前缀 + 64 位十六进制）'
+  - '- 最终通过 `common_download_file_single` 下载 blob 到本地缓存'
+  - '**与 HF 下载的差异**'
+  - '- 无分片概念（Docker 层通常是单一 blob）'
+  - '- 无 mmproj 概念（纯文本模型场景）'
+  - '- 复用 ETag 与断点续传机制'
+- codes:
+  - file: common/hf-cache.cpp
+    line: 34-69
+    method_or_func: get_cache_directory()
+  - file: common/hf-cache.cpp
+    line: 71-80
+    method_or_func: folder_name_to_repo()
+  - file: common/hf-cache.cpp
+    line: 82-87
+    method_or_func: repo_to_folder_name()
+  - file: common/hf-cache.cpp
+    line: 89-91
+    method_or_func: get_repo_path()
+  - file: common/hf-cache.cpp
+    line: 93-97
+    method_or_func: is_hex_char()
+  - file: common/hf-cache.cpp
+    line: 99-109
+    method_or_func: is_hex_string()
+  - file: common/hf-cache.cpp
+    line: 111-115
+    method_or_func: is_alphanum()
+  - file: common/hf-cache.cpp
+    line: 117-119
+    method_or_func: is_special_char()
+  - file: common/hf-cache.cpp
+    line: 125-148
+    method_or_func: is_valid_repo_id()
+  - file: common/hf-cache.cpp
+    line: 150-161
+    method_or_func: is_valid_hf_token()
+  - file: common/hf-cache.cpp
+    line: 163-165
+    method_or_func: is_valid_commit()
+  - file: common/hf-cache.cpp
+    line: 167-169
+    method_or_func: is_valid_oid()
+  - file: common/hf-cache.cpp
+    line: 171-181
+    method_or_func: is_valid_subpath()
+  - file: common/hf-cache.cpp
+    line: 183-202
+    method_or_func: safe_write_file()
+  name: HF 缓存目录管理 —— 本地模型的「标准化仓库」
+  'no': 8
+  points:
+  - '**缓存目录的决策链**'
+  - '- 环境变量优先级：LLAMA_CACHE → HF_HUB_CACHE → HUGGINGFACE_HUB_CACHE → HF_HOME → XDG_CACHE_HOME
+    → ~/.cache/huggingface/hub'
+  - '- 非 Windows 下通过 `getpwuid` 回退获取用户主目录'
+  - '- 静态局部变量确保进程内只计算一次'
+  - '**目录命名约定**'
+  - '- 仓库 ID ↔ 文件夹名：`user/repo` ↔ `models--user--repo`'
+  - '- `repo_to_folder_name` 与 `folder_name_to_repo` 互逆转换'
+  - '- `get_repo_path` 拼装出仓库缓存根路径'
+  - '**安全防护体系**'
+  - '- 字符级积木：`is_hex_char` / `is_hex_string` / `is_alphanum` / `is_special_char` 是所有校验的地基'
+  - '- `is_valid_repo_id`：长度 ≤256、恰好一个 `/`、特殊字符（/.-）不能连续出现或结尾'
+  - '- `is_valid_subpath`：防止 `../../etc/passwd` 路径遍历攻击'
+  - '- `is_valid_commit` / `is_valid_oid`：40 位（SHA1）或 64 位（SHA256）十六进制校验'
+  - '- `is_valid_hf_token`：`hf_` 前缀 + 37~256 位字母数字'
+  - '**原子写文件：safe_write_file**'
+  - '- 临时文件 + rename，确保 refs、manifest 等元数据文件不会写一半'
+  - '- 与 download.cpp 的 `write_file` 思路一致，但基于 `std::filesystem`'
+- codes:
+  - file: common/hf-cache.h
+    line: 20-23
+    method_or_func: get_repo_files()
+  - file: common/hf-cache.h
+    line: 25-25
+    method_or_func: get_cached_files()
+  - file: common/hf-cache.cpp
+    line: 204-238
+    method_or_func: api_get()
+  - file: common/hf-cache.cpp
+    line: 240-298
+    method_or_func: get_repo_commit()
+  - file: common/hf-cache.cpp
+    line: 300-377
+    method_or_func: get_repo_files()
+  - file: common/hf-cache.cpp
+    line: 379-402
+    method_or_func: get_cached_ref()
+  - file: common/hf-cache.cpp
+    line: 404-448
+    method_or_func: get_cached_files()
+  name: HF API 交互层 —— 与 Hugging Face Hub 的「对话协议」
+  'no': 9
+  points:
+  - '**统一的 API 请求封装**'
+  - '- `api_get` 封装 httplib::Client + JSON 解析 + 错误处理'
+  - '- 自动附加 User-Agent、Accept，有条件地附加 Authorization'
+  - '- 非 200 响应尝试解析 `error` 字段并抛出带状态码的异常'
+  - '**分支与提交的解析**'
+  - '- `GET /api/models/{repo}/refs` 获取分支列表'
+  - '- 优先选择 `main` 分支，否则取第一个有效分支'
+  - '- 将 commit hash 写入 `refs/<branch>` 文件供离线使用'
+  - '**文件树的递归获取**'
+  - '- `GET /api/models/{repo}/tree/{commit}?recursive=true`'
+  - '- 提取 path、lfs.oid（SHA256）、lfs.size 构建完整 hf_file 列表'
+  - '- `local_path` 指向 blobs/<oid>，`final_path` 指向 snapshots/<commit>/<path>'
+  - '**离线缓存的扫描**'
+  - '- `get_cached_ref` 读取 refs/main 获取上次同步的 commit'
+  - '- `get_cached_files` 遍历 snapshots/<commit>/ 下的所有文件'
+  - '- 头文件 hf-cache.h 中的 `get_repo_files` / `get_cached_files` 声明即为此层对外的『门面』'
+- codes:
+  - file: common/hf-cache.h
+    line: 28-28
+    method_or_func: finalize_file()
+  - file: common/hf-cache.h
+    line: 31-31
+    method_or_func: migrate_old_cache_to_hf_cache()
+  - file: common/hf-cache.cpp
+    line: 450-487
+    method_or_func: finalize_file()
+  - file: common/hf-cache.cpp
+    line: 498-515
+    method_or_func: get_gguf_split_info()
+  - file: common/hf-cache.cpp
+    line: 517-524
+    method_or_func: parse_manifest_name()
+  - file: common/hf-cache.cpp
+    line: 526-532
+    method_or_func: make_old_cache_filename()
+  - file: common/hf-cache.cpp
+    line: 543-586
+    method_or_func: collect_file()
+  - file: common/hf-cache.cpp
+    line: 588-624
+    method_or_func: collect_files()
+  - file: common/hf-cache.cpp
+    line: 626-648
+    method_or_func: migrate_file()
+  - file: common/hf-cache.cpp
+    line: 650-723
+    method_or_func: migrate_old_cache_to_hf_cache()
+  name: 缓存落盘与旧版迁移 —— 历史包袱的「搬运工」
+  'no': 10
+  points:
+  - '**finalize_file 的三级策略**'
+  - '- 首选：创建相对路径符号链接（blobs/<oid> → snapshots/<commit>/<path>）'
+  - '- 降级一： rename 移动文件（同一文件系统内高效）'
+  - '- 降级二： copy 复制（跨文件系统或 Windows 权限受限时）'
+  - '- `symlinks_disabled` 静态标志避免重复尝试失败的链接方案'
+  - '**旧版缓存格式的问题**'
+  - '- 旧版：`~/.cache/llama.cpp/<owner>_<repo>_<filename>` + manifest=xxx.json'
+  - '- 新版：标准 HF 缓存结构，与 transformers/huggingface_hub 生态互通'
+  - '**迁移流程的严谨性**'
+  - '- `parse_manifest_name` 从 manifest 文件名提取 owner/repo'
+  - '- `make_old_cache_filename` 还原旧文件名，`collect_file` 校验 SHA256、大小、冲突'
+  - '- `collect_files` 处理多分片文件的成组收集'
+  - '- `migrate_file` 执行实际移动并调用 `finalize_file` 建立快照链接'
+  - '- 全部成功后删除旧 manifest，失败则保留现场不破坏数据'

@@ -1,0 +1,216 @@
+classes: []
+desc: 该脚本实现了一个基于 OuteTTS 架构的 TTS 客户端，调用 LLM 服务生成音频 token 序列，再调用解码服务将 token 转为声谱嵌入，通过
+  iSTFT 算法将嵌入转换为音频波形，最终保存为 WAV 文件。
+file: tools/tts/tts-outetts.py
+funcs:
+- code:
+  - 'def fill_hann_window(size, periodic=True):'
+  - '    if periodic:'
+  - '        return np.hanning(size + 1)[:-1]'
+  - '    return np.hanning(size)'
+  desc: 生成汉宁窗。
+  line: 11-14
+  name: fill_hann_window
+- code:
+  - 'def irfft(n_fft, complex_input):'
+  - '    return np.fft.irfft(complex_input, n=n_fft)'
+  desc: 对复数输入执行逆实数快速傅里叶变换。
+  line: 17-18
+  name: irfft
+- code:
+  - 'def fold(buffer, n_out, n_win, n_hop, n_pad):'
+  - '    result = np.zeros(n_out)'
+  - '    n_frames = len(buffer) // n_win'
+  - ''
+  - '    for i in range(n_frames):'
+  - '        start = i * n_hop'
+  - '        end = start + n_win'
+  - '        result[start:end] += buffer[i * n_win:(i + 1) * n_win]'
+  - ''
+  - '    return result[n_pad:-n_pad] if n_pad > 0 else result'
+  desc: 通过重叠添加法将分帧缓冲折叠为连续信号并在必要时去除首尾填充。
+  line: 21-30
+  name: fold
+- code:
+  - 'def process_frame(args):'
+  - '    l, n_fft, ST, hann = args'
+  - '    frame = irfft(n_fft, ST[l])'
+  - '    frame = frame * hann'
+  - '    hann2 = hann * hann'
+  - '    return frame, hann2'
+  desc: 对单帧频谱执行逆 FFT 加窗并同时计算平方汉宁窗，用于重叠归一化。
+  line: 33-38
+  name: process_frame
+- code:
+  - 'def embd_to_audio(embd, n_codes, n_embd, n_thread=4):'
+  - '    embd = np.asarray(embd, dtype=np.float32).reshape(n_codes, n_embd)'
+  - ''
+  - '    n_fft = 1280'
+  - '    n_hop = 320'
+  - '    n_win = 1280'
+  - '    n_pad = (n_win - n_hop) // 2'
+  - '    n_out = (n_codes - 1) * n_hop + n_win'
+  - ''
+  - '    hann = fill_hann_window(n_fft, True)'
+  - ''
+  - '    E = np.zeros((n_embd, n_codes), dtype=np.float32)'
+  - '    for l in range(n_codes):'
+  - '        for k in range(n_embd):'
+  - '            E[k, l] = embd[l, k]'
+  - ''
+  - '    half_embd = n_embd // 2'
+  - '    S = np.zeros((n_codes, half_embd + 1), dtype=np.complex64)'
+  - ''
+  - '    for k in range(half_embd):'
+  - '        for l in range(n_codes):'
+  - '            mag = E[k, l]'
+  - '            phi = E[k + half_embd, l]'
+  - ''
+  - '            mag = np.clip(np.exp(mag), 0, 1e2)'
+  - '            S[l, k] = mag * np.exp(1j * phi)'
+  - ''
+  - '    res = np.zeros(n_codes * n_fft)'
+  - '    hann2_buffer = np.zeros(n_codes * n_fft)'
+  - ''
+  - '    with ThreadPoolExecutor(max_workers=n_thread) as executor:'
+  - '        args = [(l, n_fft, S, hann) for l in range(n_codes)]'
+  - '        results = list(executor.map(process_frame, args))'
+  - ''
+  - '        for l, (frame, hann2) in enumerate(results):'
+  - '            res[l*n_fft:(l+1)*n_fft] = frame'
+  - '            hann2_buffer[l*n_fft:(l+1)*n_fft] = hann2'
+  - ''
+  - '    audio = fold(res, n_out, n_win, n_hop, n_pad)'
+  - '    env = fold(hann2_buffer, n_out, n_win, n_hop, n_pad)'
+  - ''
+  - '    mask = env > 1e-10'
+  - '    audio[mask] /= env[mask]'
+  - ''
+  - '    return audio'
+  desc: 将解码模型输出的嵌入重构为复数频谱并通过 iSTFT 与多线程合成为音频采样。
+  line: 41-81
+  name: embd_to_audio
+- code:
+  - 'def save_wav(filename, audio_data, sample_rate):'
+  - '    num_channels = 1'
+  - '    bits_per_sample = 16'
+  - '    bytes_per_sample = bits_per_sample // 8'
+  - '    data_size = len(audio_data) * bytes_per_sample'
+  - '    byte_rate = sample_rate * num_channels * bytes_per_sample'
+  - '    block_align = num_channels * bytes_per_sample'
+  - '    chunk_size = 36 + data_size  # 36 = size of header minus first 8 bytes'
+  - ''
+  - '    header = struct.pack('
+  - '        ''<4sI4s4sIHHIIHH4sI'','
+  - '        b''RIFF'','
+  - '        chunk_size,'
+  - '        b''WAVE'','
+  - '        b''fmt '','
+  - '        16,                # fmt chunk size'
+  - '        1,                 # audio format (PCM)'
+  - '        num_channels,'
+  - '        sample_rate,'
+  - '        byte_rate,'
+  - '        block_align,'
+  - '        bits_per_sample,'
+  - '        b''data'','
+  - '        data_size'
+  - '    )'
+  - ''
+  - '    audio_data = np.clip(audio_data * 32767, -32768, 32767)'
+  - '    pcm_data = audio_data.astype(np.int16)'
+  - ''
+  - '    with open(filename, ''wb'') as f:'
+  - '        f.write(header)'
+  - '        f.write(pcm_data.tobytes())'
+  desc: 把浮点音频按 16 位 PCM 写入 WAV 文件头并保存到指定文件。
+  line: 84-113
+  name: save_wav
+- code:
+  - 'def process_text(text: str):'
+  - '    text = re.sub(r''\d+(\.\d+)?'', lambda x: x.group(), text.lower()) # TODO
+    this needs to be fixed'
+  - '    text = re.sub(r''[-_/,\.\\]'', '' '', text)'
+  - '    text = re.sub(r''[^a-z\s]'', '''', text)'
+  - '    text = re.sub(r''\s+'', '' '', text).strip()'
+  - '    return text.split()'
+  desc: 对输入文本进行简单归一化和清理并拆分为小写单词列表。
+  line: 116-120
+  name: process_text
+- code:
+  - '# usage:'
+  - '# python tts-outetts.py http://server-llm:port http://server-dec:port "text"'
+  - ''
+  - 'if len(sys.argv) <= 3:'
+  - '    print("usage: python tts-outetts.py http://server-llm:port http://server-dec:port
+    \"text\"")'
+  - '    exit(1)'
+  - ''
+  - host_llm = sys.argv[1]
+  - host_dec = sys.argv[2]
+  - text = sys.argv[3]
+  - ''
+  - prefix = """<|im_start|>
+  - <|text_start|>the<|text_sep|>overall<|text_sep|>package<|text_sep|>from<|text_sep|>just<|text_sep|>two<|text_sep|>people<|text_sep|>is<|text_sep|>pretty<|text_sep|>remarkable<|text_sep|>sure<|text_sep|>i<|text_sep|>have<|text_sep|>some<|text_sep|>critiques<|text_sep|>about<|text_sep|>some<|text_sep|>of<|text_sep|>the<|text_sep|>gameplay<|text_sep|>aspects<|text_sep|>but<|text_sep|>its<|text_sep|>still<|text_sep|>really<|text_sep|>enjoyable<|text_sep|>and<|text_sep|>it<|text_sep|>looks<|text_sep|>lovely<|text_sep|>"""
+  - ''
+  - words = process_text(text)
+  - words = "<|text_sep|>".join([i.strip() for i in words])
+  - words += "<|text_end|>\n"
+  - ''
+  - '# voice data'
+  - '# TODO: load from json'
+  - '#suffix = """<|audio_start|>'
+  - '...（大量注释掉的参考语音数据）...'
+  - '"""'
+  - ''
+  - '# TODO: tokenization is slow for some reason - here is pre-tokenized input'
+  - 'suffix = [ 151667, 198, 1782, 155780, 151669, ... ]  # 预分词的参考 token 列表'
+  - ''
+  - response = requests.post(
+  - '    host_llm + "/completion",'
+  - '    json={'
+  - '        "prompt": [prefix + words, *suffix],'
+  - '        "n_predict": 1024,'
+  - '        "cache_prompt": True,'
+  - '        "return_tokens": True,'
+  - '        "samplers": ["top_k"],'
+  - '        "top_k": 16,'
+  - '        "seed": 1003,'
+  - '    }'
+  - )
+  - ''
+  - response_json = response.json()
+  - ''
+  - codes = response_json["tokens"]
+  - codes = [t - 151672 for t in codes if t >= 151672 and t <= 155772]
+  - ''
+  - response = requests.post(
+  - '    host_dec + "/embeddings",'
+  - '    json={'
+  - '        "input": [*codes],'
+  - '    }'
+  - )
+  - ''
+  - response_json = response.json()
+  - ''
+  - embd = response_json[0]["embedding"]
+  - ''
+  - n_codes = len(embd)
+  - n_embd = len(embd[0])
+  - ''
+  - 'print(''spectrogram generated: n_codes: %d, n_embd: %d'' % (n_codes, n_embd))'
+  - ''
+  - print('converting to audio ...')
+  - audio = embd_to_audio(embd, n_codes, n_embd)
+  - 'print(''audio generated: %d samples'' % len(audio))'
+  - ''
+  - filename = "output.wav"
+  - 'sample_rate = 24000 # sampling rate'
+  - ''
+  - audio[:24000 // 4] = 0.0
+  - ''
+  - save_wav(filename, audio, sample_rate)
+  - print('audio written to file "%s"' % filename)
+  desc: 解析命令行参数，构造提示并请求 LLM 生成 token，过滤 token 后请求嵌入服务，再将嵌入转换为音频并写入 output.wav。
+  line: 123-326
+  name: __main__

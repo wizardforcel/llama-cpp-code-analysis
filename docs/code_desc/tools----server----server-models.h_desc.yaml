@@ -1,0 +1,235 @@
+classes:
+- desc: 描述单个模型实例的元数据，包括名称、别名、标签、端口、状态、最近使用时间、启动参数及退出码等信息，并提供状态查询方法。
+  methods:
+  - code:
+    - bool is_ready() const {
+    - '    return status == SERVER_MODEL_STATUS_LOADED;'
+    - '}'
+    desc: 检查模型状态是否处于 LOADED（已加载就绪）状态。
+    line: 53-55
+    name: is_ready
+  - code:
+    - bool is_running() const {
+    - '    return status == SERVER_MODEL_STATUS_LOADED || status == SERVER_MODEL_STATUS_LOADING
+      || status == SERVER_MODEL_STATUS_SLEEPING;'
+    - '}'
+    desc: 检查模型是否处于运行中状态（LOADED、LOADING 或 SLEEPING）。
+    line: 57-59
+    name: is_running
+  - code:
+    - bool is_failed() const {
+    - '    return status == SERVER_MODEL_STATUS_UNLOADED && exit_code != 0;'
+    - '}'
+    desc: 检查模型是否加载失败（状态为 UNLOADED 且退出码非零）。
+    line: 61-63
+    name: is_failed
+  - code:
+    - void update_args(common_preset_context & ctx_presets, std::string bin_path);
+    desc: 根据预设上下文更新模型的启动参数（函数声明，未在头文件内实现）。
+    line: '66'
+    name: update_args
+  name: server_model_meta
+- desc: 核心模型管理类，维护模型实例映射表，支持并发安全的模型加载、卸载、状态更新、LRU 清理、请求代理以及子进程管理。
+  methods:
+  - code:
+    - void update_meta(const std::string & name, const server_model_meta & meta);
+    desc: 更新指定名称模型的元数据（私有，线程安全由调用方保证）。
+    line: '101'
+    name: update_meta
+  - code:
+    - void unload_lru();
+    desc: 当模型数量达到限制时，卸载最近最少使用的模型（私有，非线程安全需加锁调用）。
+    line: '104'
+    name: unload_lru
+  - code:
+    - void add_model(server_model_meta && meta);
+    desc: 向映射表添加新模型实例（私有，非线程安全需调用方持有互斥锁）。
+    line: '107'
+    name: add_model
+  - code:
+    - server_models(const common_params & params, int argc, char ** argv);
+    desc: 构造函数，根据公共参数和命令行参数初始化模型管理器。
+    line: '110'
+    name: server_models
+  - code:
+    - void load_models();
+    desc: 加载配置文件或命令行中指定的所有模型。
+    line: '112'
+    name: load_models
+  - code:
+    - bool has_model(const std::string & name);
+    - ''
+    - // return a copy of model metadata (thread-safe)
+    - std::optional<server_model_meta> get_meta(const std::string & name);
+    desc: 检查指定名称的模型实例是否存在（线程安全）。
+    line: 116-119
+    name: has_model
+  - code:
+    - std::optional<server_model_meta> get_meta(const std::string & name);
+    desc: 返回指定名称模型的元数据副本（线程安全）。
+    line: '119'
+    name: get_meta
+  - code:
+    - std::vector<server_model_meta> get_all_meta();
+    desc: 返回所有模型元数据的副本列表（线程安全）。
+    line: '122'
+    name: get_all_meta
+  - code:
+    - void load(const std::string & name);
+    desc: 加载指定名称的模型实例（线程安全）。
+    line: '126'
+    name: load
+  - code:
+    - void unload(const std::string & name);
+    desc: 卸载指定名称的模型实例（线程安全）。
+    line: '127'
+    name: unload
+  - code:
+    - void unload_all();
+    desc: 卸载所有模型实例（线程安全）。
+    line: '128'
+    name: unload_all
+  - code:
+    - void update_status(const std::string & name, server_model_status status, int
+      exit_code);
+    desc: 更新指定模型的状态和退出码（线程安全）。
+    line: '131'
+    name: update_status
+  - code:
+    - void wait_until_loading_finished(const std::string & name);
+    desc: 阻塞等待指定模型的加载流程完成（离开 loading 状态）（线程安全）。
+    line: '135'
+    name: wait_until_loading_finished
+  - code:
+    - bool ensure_model_ready(const std::string & name);
+    desc: 确保模型处于就绪状态，若未就绪则加载并阻塞等待就绪（线程安全）。
+    line: '140'
+    name: ensure_model_ready
+  - code:
+    - server_http_res_ptr proxy_request(const server_http_req & req, const std::string
+      & method, const std::string & name, bool update_last_used);
+    desc: 将 HTTP 请求代理转发给指定模型实例，并返回响应（线程安全）。
+    line: '144'
+    name: proxy_request
+  - code:
+    - static bool is_child_server();
+    desc: 判断当前进程是否是一个子服务器实例（静态方法）。
+    line: '147'
+    name: is_child_server
+  - code:
+    - static std::thread setup_child_server(const std::function<void(int)> & shutdown_handler);
+    desc: 设置子服务器监控线程，通知路由服务器模型已就绪，并返回监控线程供调用方 join（静态方法）。
+    line: '151'
+    name: setup_child_server
+  - code:
+    - static void notify_router_sleeping_state(bool sleeping);
+    desc: 通知路由服务器某模型的睡眠状态已变化（静态方法）。
+    line: '154'
+    name: notify_router_sleeping_state
+  name: server_models
+- desc: 模型相关的 HTTP 路由注册类，包含构造函数、初始化逻辑以及多个 HTTP 处理函数句柄，用于为客户端提供模型管理和代理接口。
+  methods:
+  - code:
+    - server_models_routes(const common_params & params, int argc, char ** argv)
+    - '        : params(params), models(params, argc, argv) {'
+    - '    if (!this->params.webui_config_json.empty()) {'
+    - '        try {'
+    - '            webui_settings = json::parse(this->params.webui_config_json);'
+    - '        } catch (const std::exception & e) {'
+    - '            LOG_ERR("%s: failed to parse webui config: %s\n", __func__, e.what());'
+    - '            throw;'
+    - '        }'
+    - '    }'
+    - '    init_routes();'
+    - '}'
+    desc: 构造函数，初始化参数、模型管理器，解析 WebUI 配置，并调用 init_routes() 注册路由。
+    line: 177-188
+    name: server_models_routes
+  - code:
+    - void init_routes();
+    desc: 初始化所有 HTTP 路由处理函数（声明，未在头文件内实现）。
+    line: '190'
+    name: init_routes
+  name: server_models_routes
+- desc: HTTP 代理类，负责将请求转发至另一服务器并中继响应，管理异步转发线程及清理回调。
+  methods:
+  - code:
+    - server_http_proxy(const std::string & method,
+    - '                  const std::string & scheme,'
+    - '                  const std::string & host,'
+    - '                  int port,'
+    - '                  const std::string & path,'
+    - '                  const std::map<std::string, std::string> & headers,'
+    - '                  const std::string & body,'
+    - '                  const std::function<bool()> should_stop,'
+    - '                  int32_t timeout_read,'
+    - '                  int32_t timeout_write'
+    - '                  );'
+    desc: 构造函数，根据请求参数和服务器地址发起异步代理转发。
+    line: 216-227
+    name: server_http_proxy
+  - code:
+    - ~server_http_proxy() {
+    - '    if (cleanup) {'
+    - '        cleanup();'
+    - '    }'
+    - '}'
+    desc: 析构函数，执行清理回调以释放资源。
+    line: 228-232
+    name: ~server_http_proxy
+  name: server_http_proxy
+desc: 该文件是 llama-server 路由器服务器的模型管理与代理核心头文件，定义了模型状态枚举、模型元数据结构、模型管理类（server_models）、HTTP
+  路由注册结构（server_models_routes）以及 HTTP 代理类（server_http_proxy），负责多模型的加载/卸载、生命周期管理、LRU
+  缓存策略及请求转发。
+file: tools/server/server-models.h
+funcs:
+- code:
+  - '#pragma once'
+  - ''
+  - '#include "common.h"'
+  - '#include "preset.h"'
+  - '#include "server-common.h"'
+  - '#include "server-http.h"'
+  - ''
+  - '#include <mutex>'
+  - '#include <condition_variable>'
+  - '#include <functional>'
+  - '#include <memory>'
+  - '#include <set>'
+  - ''
+  - enum server_model_status {
+  - '    SERVER_MODEL_STATUS_UNLOADED,'
+  - '    SERVER_MODEL_STATUS_LOADING,'
+  - '    SERVER_MODEL_STATUS_LOADED,'
+  - '    SERVER_MODEL_STATUS_SLEEPING'
+  - '};'
+  - ''
+  - static server_model_status server_model_status_from_string(const std::string &
+    status_str) {
+  - '    if (status_str == "unloaded") {'
+  - '        return SERVER_MODEL_STATUS_UNLOADED;'
+  - '    }'
+  - '    if (status_str == "loading") {'
+  - '        return SERVER_MODEL_STATUS_LOADING;'
+  - '    }'
+  - '    if (status_str == "loaded") {'
+  - '        return SERVER_MODEL_STATUS_LOADED;'
+  - '    }'
+  - '    if (status_str == "sleeping") {'
+  - '        return SERVER_MODEL_STATUS_SLEEPING;'
+  - '    }'
+  - '    throw std::runtime_error("invalid server model status");'
+  - '}'
+  - ''
+  - static std::string server_model_status_to_string(server_model_status status) {
+  - '    switch (status) {'
+  - '        case SERVER_MODEL_STATUS_UNLOADED: return "unloaded";'
+  - '        case SERVER_MODEL_STATUS_LOADING:  return "loading";'
+  - '        case SERVER_MODEL_STATUS_LOADED:   return "loaded";'
+  - '        case SERVER_MODEL_STATUS_SLEEPING: return "sleeping";'
+  - '        default:                           return "unknown";'
+  - '    }'
+  - '}'
+  desc: 全局作用域代码，包含状态枚举定义、状态字符串转换辅助函数及头文件的宏定义和包含声明。
+  line: 1-45
+  name: __main__

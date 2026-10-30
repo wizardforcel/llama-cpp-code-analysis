@@ -1,0 +1,308 @@
+classes:
+- desc: 该嵌套结构体保存模型单个权重的信息，包括张量实例、所在源文件索引及数据在文件中的偏移量。
+  methods:
+  - code:
+    - 'llama_tensor_weight(const llama_file * file, uint16_t idx, const struct gguf_context
+      * gguf_ctx, ggml_tensor * tensor) : idx(idx), tensor(tensor) {'
+    - '    const int tensor_idx = gguf_find_tensor(gguf_ctx,  ggml_get_name(tensor));'
+    - '    if (tensor_idx < 0) {'
+    - '        throw std::runtime_error(format("tensor ''%s'' not found in the model",
+      ggml_get_name(tensor)));'
+    - '    }'
+    - ''
+    - '    offs = gguf_get_data_offset(gguf_ctx) + gguf_get_tensor_offset(gguf_ctx,
+      tensor_idx);'
+    - '    if (offs + ggml_nbytes(tensor) < offs || offs + ggml_nbytes(tensor) > file->size())
+      {'
+    - '        throw std::runtime_error(format("tensor ''%s'' data is not within the
+      file bounds, model is corrupted or incomplete", ggml_get_name(tensor)));'
+    - '    }'
+    - '}'
+    desc: 构造函数，根据键从GGUF上下文中查找张量，并计算其在文件中的原始偏移量用于后续数据加载。
+    line: 42-51
+    name: llama_tensor_weight
+  name: llama_tensor_weight
+- desc: 该嵌套结构体定义了std::map的比较器，使得权重按照层号（blk.N）优先，然后按字典序进行排序。
+  methods:
+  - code:
+    - bool operator()(const std::string & a, const std::string & b) const {
+    - '    int a_layer = -1;'
+    - '    int b_layer = -1;'
+    - '    sscanf(a.c_str(), "blk.%d.", &a_layer);'
+    - '    sscanf(b.c_str(), "blk.%d.", &b_layer);'
+    - '    if (a_layer != b_layer) {'
+    - '        return a_layer < b_layer;'
+    - '    }'
+    - '    return a < b;'
+    - '}'
+    desc: 重载了函数调用运算符，定义了两个权重名称的比较逻辑，优先按层号排序，相同层号则按字符串顺序比较。
+    line: 54-62
+    name: operator()
+  name: weight_name_comparer
+- desc: 该主类负责加载和管理LLaMA模型，包括元数据解析、权重张量创建、数据映射以及数据加载的完整流程。
+  methods:
+  - code:
+    - llama_model_loader(
+    - '    struct gguf_context * metadata,'
+    - '    llama_model_set_tensor_data_t set_tensor_data,'
+    - '    void * set_tensor_data_ud,'
+    - '    const std::string & fname,'
+    - '    std::vector<std::string> & splits, // optional, only need if the split
+      does not follow naming scheme'
+    - '    FILE * file,'
+    - '    bool use_mmap,'
+    - '    bool use_direct_io,'
+    - '    bool check_tensors,'
+    - '    bool no_alloc,'
+    - '    const llama_model_kv_override * param_overrides_p,'
+    - '    const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);'
+    desc: 构造函数，接受GGUF元数据、张量数据回调、文件名等参数，初始化模型加载器的各种状态并准备读取模型文件。
+    line: 105-118
+    name: llama_model_loader
+  - code:
+    - template<typename T>
+    - typename std::enable_if<std::is_integral<T>::value, bool>::type
+    - get_arr_n(const std::string & key, T & result, bool required = true);
+    - ''
+    - template<typename T>
+    - typename std::enable_if<std::is_integral<T>::value, bool>::type
+    - get_arr_n(enum llm_kv kid, T & result, bool required = true);
+    desc: 模板函数，从元数据中获取整数数组元素，用于解析模型的张量维度等信息。
+    line: 119-126
+    name: get_arr_n
+  - code:
+    - template<typename T>
+    - bool get_arr(const std::string & key, std::vector<T> & result, bool required
+      = true);
+    - ''
+    - template<typename T, size_t N_MAX>
+    - bool get_arr(const std::string & key, std::array<T, N_MAX> & result, bool required
+      = true);
+    - ''
+    - template<typename T>
+    - bool get_arr(enum llm_kv kid, T & result, bool required = true);
+    desc: 模板函数，从元数据中获取数组数据，支持vector和std::array两种容器类型，用于读取模型配置数组。
+    line: 127-139
+    name: get_arr
+  - code:
+    - template<typename T>
+    - bool get_key(const std::string & key, T & result, bool required = true);
+    - ''
+    - template<typename T>
+    - bool get_key(enum llm_kv kid, T & result, bool required = true);
+    desc: 模板函数，根据键名获取单个模型元数据值，用于读取模型的超参数和配置信息。
+    line: 140-147
+    name: get_key
+  - code:
+    - template<typename T, size_t N_MAX>
+    - bool get_key_or_arr(const std::string & key, std::array<T, N_MAX> & result,
+      uint32_t n, bool required = true);
+    - ''
+    - template<typename T>
+    - bool get_key_or_arr(enum llm_kv kid, T & result, uint32_t n, bool required =
+      true);
+    - ''
+    - bool get_key_or_arr(enum llm_kv kid, uint32_t & result, bool required = true);
+    desc: 模板函数，从元数据中获取可能为单值或数组的键值，用于兼容不同版本的模型格式。
+    line: 148-158
+    name: get_key_or_arr
+  - code:
+    - std::string get_arch_name() const;
+    desc: 获取模型架构名称，用于确定模型类型和加载对应的权重映射配置。
+    line: '160'
+    name: get_arch_name
+  - code:
+    - enum llm_arch get_arch() const;
+    desc: 根据架构名称返回对应的模型架构枚举值，用于后续的张量创建和权重映射。
+    line: '162'
+    name: get_arch
+  - code:
+    - const llama_tensor_weight * get_weight(const char * name) const;
+    desc: 按名称从权重映射表中查找权重信息，若未找到则返回空指针。
+    line: '164'
+    name: get_weight
+  - code:
+    - const llama_tensor_weight & require_weight(const char * name) const;
+    desc: 按名称获取权重信息，若未找到则抛出异常，确保模型必须包含该权重。
+    line: '166'
+    name: require_weight
+  - code:
+    - struct ggml_tensor * get_tensor_meta(const char * name) const;
+    desc: 按名称获取张量元数据，用于查询张量属性而无需分配实际内存。
+    line: '168'
+    name: get_tensor_meta
+  - code:
+    - struct ggml_tensor * require_tensor_meta(const std::string & name) const;
+    desc: 按名称获取张量元数据，若不存在则抛出异常。
+    line: '170'
+    name: require_tensor_meta
+  - code:
+    - const struct ggml_tensor * check_tensor_dims(const std::string & name, const
+      std::vector<int64_t> & ne, bool required) const;
+    desc: 检查张量维度是否符合预期，可选择是否必需要求存在该张量，用于验证模型结构。
+    line: '172'
+    name: check_tensor_dims
+  - code:
+    - struct ggml_tensor * create_tensor(
+    - '    const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const
+      buft_list_t * buft_list_input, const buft_list_t * buft_list_output,'
+    - '    const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t>
+      & ne, int flags);'
+    desc: 根据模型参数、缓冲区类型列表及张量名称创建模型权重张量，用于构建完整计算图。
+    line: 173-176
+    name: create_tensor
+  - code:
+    - struct ggml_tensor * create_tensor_as_view(struct ggml_context * ctx, struct
+      ggml_tensor * base, const std::string & name, const std::initializer_list<int64_t>
+      & ne, size_t offset, bool required = true);
+    desc: 创建已有张量的视图张量，用于共享基础张量的内存区域，支持多种模型结构复用权重。
+    line: '178'
+    name: create_tensor_as_view
+  - code:
+    - void done_getting_tensors() const;
+    desc: 校验所有权重是否已被创建，确保模型加载的完整性和一致性。
+    line: '180'
+    name: done_getting_tensors
+  - code:
+    - void init_mappings(bool prefetch = true, llama_mlocks * mlock_mmaps = nullptr);
+    desc: 初始化内存映射，可选择预取数据并设置锁，用于高效读取模型文件。
+    line: '182'
+    name: init_mappings
+  - code:
+    - void get_mapping_range(size_t * first, size_t * last, void ** addr, int idx,
+      ggml_context * ctx) const;
+    desc: 获取指定索引映射的范围信息，包括起始地址、偏移量和映射长度，用于定位权重数据位置。
+    line: '184'
+    name: get_mapping_range
+  - code:
+    - // for backwards compatibility, does not support ggml-backend
+    - void load_data_for(struct ggml_tensor * cur) const;
+    desc: 加载单个张量的数据，兼容不支持ggml-backend的旧接口，用于传统方式加载模型权重。
+    line: 186-187
+    name: load_data_for
+  - code:
+    - // Returns false if cancelled by progress_callback
+    - bool load_all_data(
+    - '        struct ggml_context * ctx,'
+    - '        llama_buf_map & bufs,'
+    - '        llama_mlocks * lmlocks,'
+    - '        llama_progress_callback progress_callback,'
+    - '        void * progress_callback_user_data);'
+    desc: 加载所有张量的数据到缓冲区，支持进度回调，是模型加载的核心步骤之一。
+    line: 189-195
+    name: load_all_data
+  - code:
+    - std::string ftype_name() const;
+    desc: 获取文件类型名称，用于日志输出和调试，显示模型文件的精度类型。
+    line: '197'
+    name: ftype_name
+  - code:
+    - void print_info() const;
+    desc: 打印模型加载器的概要信息，包括张量数量、大小和数据字节数，用于日志展示。
+    line: '199'
+    name: print_info
+  name: llama_model_loader
+- desc: 该嵌套结构体定义了缓冲区类型的比较器，确保后端缓冲区类型的映射顺序有确定性。
+  methods:
+  - code:
+    - bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t
+      & rhs) const {
+    - '    return strcmp(ggml_backend_buft_name(lhs), ggml_backend_buft_name(rhs))
+      < 0;'
+    - '}'
+    desc: 重载函数调用运算符，比较两个缓冲区类型名称以确定偏序关系。
+    line: 89-92
+    name: operator()
+  name: ggml_backend_buft_comparator
+desc: 该文件定义了llama模型加载器的核心数据结构 llama_model_loader，负责管理模型权重元数据、张量创建、数据映射以及模型元数据的解析和加载。它包含了张量权重信息结构、权重名称比较器、元数据字段访问方法、张量创建与校验方法以及数据加载等核心功能。
+file: src/llama-model-loader.h
+funcs:
+- code:
+  - '#pragma once'
+  - ''
+  - '#include "llama.h"'
+  - ''
+  - '#include "llama-impl.h"'
+  - '#include "llama-arch.h"'
+  - '#include "llama-hparams.h"'
+  - '#include "llama-mmap.h"'
+  - ''
+  - '#include "ggml-cpp.h"'
+  - ''
+  - '#include <cstddef>'
+  - '#include <cstring>'
+  - '#include <map>'
+  - '#include <stdexcept>'
+  - '#include <unordered_map>'
+  - ''
+  - using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
+  - ''
+  - // lists of buffer types used for each layer
+  - using buft_list_t = std::vector<std::pair<ggml_backend_dev_t, ggml_backend_buffer_type_t>>;
+  - ''
+  - enum llama_fver {
+  - '    GGUF_FILE_VERSION_V1 = 1,'
+  - '    GGUF_FILE_VERSION_V2 = 2,'
+  - '    GGUF_FILE_VERSION_V3 = 3,'
+  - '};'
+  - ''
+  - const char * llama_file_version_name(llama_fver version);
+  - ''
+  - struct llama_model_loader {
+  - ''
+  - '    static const int TENSOR_NOT_REQUIRED    = 1 << 0;'
+  - '    static const int TENSOR_DUPLICATED      = 1 << 1;'
+  - '    static const int TENSOR_SKIP            = 1 << 2;'
+  - '    static const int TENSOR_SKIP_IF_VIRTUAL = 1 << 3;'
+  - ''
+  - '    int n_kv      = 0;'
+  - '    int n_tensors = 0;'
+  - '    int n_created = 0;'
+  - ''
+  - '    uint64_t n_elements = 0;'
+  - '    size_t   n_bytes    = 0;'
+  - ''
+  - '    bool use_mmap = false;'
+  - '    bool use_direct_io = false;'
+  - '    bool check_tensors;'
+  - '    bool no_alloc;'
+  - ''
+  - '    llama_files files;'
+  - '    llama_ftype ftype;'
+  - '    llama_fver  fver;'
+  - ''
+  - '    llama_mmaps mappings;'
+  - ''
+  - '    std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;'
+  - '    std::unordered_map<std::string, llama_model_kv_override> kv_overrides;'
+  - '    const llama_model_tensor_buft_override * tensor_buft_overrides;'
+  - ''
+  - '    gguf_context_ptr metadata_ptr;'
+  - '    struct gguf_context * metadata; // either metadata_ptr.get() or externally
+    set'
+  - '    llama_model_set_tensor_data_t set_tensor_data;'
+  - '    void * set_tensor_data_ud;'
+  - '    std::vector<ggml_context_ptr> contexts;'
+  - ''
+  - '    std::string arch_name;'
+  - '    LLM_KV      llm_kv    = LLM_KV(LLM_ARCH_UNKNOWN);'
+  - ''
+  - '    size_t size_done = 0;'
+  - '    size_t size_data = 0;'
+  - '    std::vector<std::pair<size_t, size_t>> mmaps_used;'
+  - ''
+  - '    // define a comparator for the buft -> ctx map to ensure that the order is
+    well-defined:'
+  - ''
+  - '    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator>
+    ctx_map;'
+  - ''
+  - '    // track tensors that had to be moved for debugging:'
+  - '    size_t n_tensors_moved = 0;'
+  - '    std::string first_tensor_moved_name;'
+  - '    std::string first_tensor_moved_type_name;'
+  - '    ggml_backend_buffer_type_t first_moved_from_buft = nullptr;'
+  - '    ggml_backend_buffer_type_t first_moved_to_buft = nullptr;'
+  desc: 该文件顶部的全局代码定义了常量、类型别名和枚举等声明，是后续类和函数定义的基础。
+  line: 1-103
+  name: __main__

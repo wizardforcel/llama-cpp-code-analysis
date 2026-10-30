@@ -1,0 +1,280 @@
+classes: []
+desc: The file provides clipboard utilities for the web UI, including copying text
+  or code with toast notifications, formatting message content with text or MCP prompt
+  attachments for clipboard export, parsing clipboard content back into structured
+  data, and validating attachment formats with type guards.
+file: tools/server/webui/src/lib/utils/clipboard.ts
+funcs:
+- code:
+  - export async function copyToClipboard(
+  - "\ttext: string,"
+  - "\tsuccessMessage = 'Copied to clipboard',"
+  - "\terrorMessage = 'Failed to copy to clipboard'"
+  - '): Promise<boolean> {'
+  - "\ttry {"
+  - "\t\t// Try modern clipboard API first (secure contexts only)"
+  - "\t\tif (navigator.clipboard && navigator.clipboard.writeText) {"
+  - "\t\t\tawait navigator.clipboard.writeText(text);"
+  - "\t\t\ttoast.success(successMessage);"
+  - "\t\t\treturn true;"
+  - "\t\t}"
+  - ''
+  - "\t\t// Fallback for non-secure contexts"
+  - "\t\tconst textArea = document.createElement('textarea');"
+  - "\t\ttextArea.value = text;"
+  - "\t\ttextArea.style.position = 'fixed';"
+  - "\t\ttextArea.style.left = '-999999px';"
+  - "\t\ttextArea.style.top = '-999999px';"
+  - "\t\tdocument.body.appendChild(textArea);"
+  - "\t\ttextArea.focus();"
+  - "\t\ttextArea.select();"
+  - ''
+  - "\t\tconst successful = document.execCommand('copy');"
+  - "\t\tdocument.body.removeChild(textArea);"
+  - ''
+  - "\t\tif (successful) {"
+  - "\t\t\ttoast.success(successMessage);"
+  - "\t\t\treturn true;"
+  - "\t\t} else {"
+  - "\t\t\tthrow new Error('execCommand failed');"
+  - "\t\t}"
+  - "\t} catch (error) {"
+  - "\t\tconsole.error('Failed to copy to clipboard:', error);"
+  - "\t\ttoast.error(errorMessage);"
+  - "\t\treturn false;"
+  - "\t}"
+  - '}'
+  desc: Copies text to the clipboard using the modern Clipboard API when available,
+    falling back to the legacy textarea + execCommand method, and shows toast notifications
+    for success or failure.
+  line: 23-59
+  name: copyToClipboard
+- code:
+  - export async function copyCodeToClipboard(
+  - "\trawCode: string,"
+  - "\tsuccessMessage = 'Code copied to clipboard',"
+  - "\terrorMessage = 'Failed to copy code'"
+  - '): Promise<boolean> {'
+  - "\treturn copyToClipboard(rawCode, successMessage, errorMessage);"
+  - '}'
+  desc: Copies raw code (potentially containing HTML entities) to the clipboard by
+    delegating to copyToClipboard with code-specific default messages.
+  line: 68-74
+  name: copyCodeToClipboard
+- code:
+  - export function formatMessageForClipboard(
+  - "\tcontent: string,"
+  - "\textras?: DatabaseMessageExtra[],"
+  - "\tasPlainText: boolean = false"
+  - '): string {'
+  - "\t// Filter text-like attachments (TEXT, LEGACY_CONTEXT, MCP_PROMPT, and MCP_RESOURCE\
+    \ types)"
+  - "\tconst textAttachments ="
+  - "\t\textras?.filter("
+  - "\t\t\t("
+  - "\t\t\t\textra"
+  - "\t\t\t): extra is"
+  - "\t\t\t\t| DatabaseMessageExtraTextFile"
+  - "\t\t\t\t| DatabaseMessageExtraLegacyContext"
+  - "\t\t\t\t| DatabaseMessageExtraMcpPrompt"
+  - "\t\t\t\t| DatabaseMessageExtraMcpResource =>"
+  - "\t\t\t\textra.type === AttachmentType.TEXT ||"
+  - "\t\t\t\textra.type === AttachmentType.LEGACY_CONTEXT ||"
+  - "\t\t\t\textra.type === AttachmentType.MCP_PROMPT ||"
+  - "\t\t\t\textra.type === AttachmentType.MCP_RESOURCE"
+  - "\t\t) ?? [];"
+  - ''
+  - "\tif (textAttachments.length === 0) {"
+  - "\t\treturn content;"
+  - "\t}"
+  - ''
+  - "\tif (asPlainText) {"
+  - "\t\tconst parts = [content];"
+  - "\t\tfor (const att of textAttachments) {"
+  - "\t\t\tparts.push(att.content);"
+  - "\t\t}"
+  - "\t\treturn parts.join('\\n\\n');"
+  - "\t}"
+  - ''
+  - "\tconst clipboardAttachments: ClipboardAttachment[] = textAttachments.map((att)\
+    \ => {"
+  - "\t\tif (att.type === AttachmentType.MCP_PROMPT) {"
+  - "\t\t\tconst mcpAtt = att as DatabaseMessageExtraMcpPrompt;"
+  - "\t\t\treturn {"
+  - "\t\t\t\ttype: AttachmentType.MCP_PROMPT,"
+  - "\t\t\t\tname: mcpAtt.name,"
+  - "\t\t\t\tserverName: mcpAtt.serverName,"
+  - "\t\t\t\tpromptName: mcpAtt.promptName,"
+  - "\t\t\t\tcontent: mcpAtt.content,"
+  - "\t\t\t\targuments: mcpAtt.arguments"
+  - "\t\t\t} as ClipboardMcpPromptAttachment;"
+  - "\t\t}"
+  - "\t\treturn {"
+  - "\t\t\ttype: AttachmentType.TEXT,"
+  - "\t\t\tname: att.name,"
+  - "\t\t\tcontent: att.content"
+  - "\t\t} as ClipboardTextAttachment;"
+  - "\t});"
+  - ''
+  - "\treturn `${JSON.stringify(content)}\\n${JSON.stringify(clipboardAttachments,\
+    \ null, 2)}`;"
+  - '}'
+  desc: Formats a message and its text-like attachments (TEXT, LEGACY_CONTEXT, MCP_PROMPT,
+    MCP_RESOURCE) into a clipboard string, either as plain text or as a JSON string
+    followed by a JSON attachments array.
+  line: 103-157
+  name: formatMessageForClipboard
+- code:
+  - 'export function parseClipboardContent(clipboardText: string): ParsedClipboardContent
+    {'
+  - "\tconst defaultResult: ParsedClipboardContent = {"
+  - "\t\tmessage: clipboardText,"
+  - "\t\ttextAttachments: [],"
+  - "\t\tmcpPromptAttachments: []"
+  - "\t};"
+  - ''
+  - "\tif (!clipboardText.startsWith('\"')) {"
+  - "\t\treturn defaultResult;"
+  - "\t}"
+  - ''
+  - "\ttry {"
+  - "\t\tlet stringEndIndex = -1;"
+  - "\t\tlet escaped = false;"
+  - ''
+  - "\t\tfor (let i = 1; i < clipboardText.length; i++) {"
+  - "\t\t\tconst char = clipboardText[i];"
+  - ''
+  - "\t\t\tif (escaped) {"
+  - "\t\t\t\tescaped = false;"
+  - "\t\t\t\tcontinue;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\tif (char === '\\\\') {"
+  - "\t\t\t\tescaped = true;"
+  - "\t\t\t\tcontinue;"
+  - "\t\t\t}"
+  - ''
+  - "\t\t\tif (char === '\"') {"
+  - "\t\t\t\tstringEndIndex = i;"
+  - "\t\t\t\tbreak;"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\tif (stringEndIndex === -1) {"
+  - "\t\t\treturn defaultResult;"
+  - "\t\t}"
+  - ''
+  - "\t\tconst jsonStringPart = clipboardText.substring(0, stringEndIndex + 1);"
+  - "\t\tconst remainingPart = clipboardText.substring(stringEndIndex + 1).trim();"
+  - ''
+  - "\t\tconst message = JSON.parse(jsonStringPart) as string;"
+  - ''
+  - "\t\tif (!remainingPart || !remainingPart.startsWith('[')) {"
+  - "\t\t\treturn {"
+  - "\t\t\t\tmessage,"
+  - "\t\t\t\ttextAttachments: [],"
+  - "\t\t\t\tmcpPromptAttachments: []"
+  - "\t\t\t};"
+  - "\t\t}"
+  - ''
+  - "\t\tconst attachments = JSON.parse(remainingPart) as unknown[];"
+  - ''
+  - "\t\tconst validTextAttachments: ClipboardTextAttachment[] = [];"
+  - "\t\tconst validMcpPromptAttachments: ClipboardMcpPromptAttachment[] = [];"
+  - ''
+  - "\t\tfor (const att of attachments) {"
+  - "\t\t\tif (isValidMcpPromptAttachment(att)) {"
+  - "\t\t\t\tvalidMcpPromptAttachments.push({"
+  - "\t\t\t\t\ttype: AttachmentType.MCP_PROMPT,"
+  - "\t\t\t\t\tname: att.name,"
+  - "\t\t\t\t\tserverName: att.serverName,"
+  - "\t\t\t\t\tpromptName: att.promptName,"
+  - "\t\t\t\t\tcontent: att.content,"
+  - "\t\t\t\t\targuments: att.arguments"
+  - "\t\t\t\t});"
+  - "\t\t\t} else if (isValidTextAttachment(att)) {"
+  - "\t\t\t\tvalidTextAttachments.push({"
+  - "\t\t\t\t\ttype: AttachmentType.TEXT,"
+  - "\t\t\t\t\tname: att.name,"
+  - "\t\t\t\t\tcontent: att.content"
+  - "\t\t\t\t});"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\treturn {"
+  - "\t\t\tmessage,"
+  - "\t\t\ttextAttachments: validTextAttachments,"
+  - "\t\t\tmcpPromptAttachments: validMcpPromptAttachments"
+  - "\t\t};"
+  - "\t} catch {"
+  - "\t\treturn defaultResult;"
+  - "\t}"
+  - '}'
+  desc: Parses raw clipboard text into a structured result containing the message,
+    text attachments, and MCP prompt attachments, handling both plain text and the
+    special JSON-based format produced by formatMessageForClipboard.
+  line: 165-241
+  name: parseClipboardContent
+- code:
+  - 'function isValidMcpPromptAttachment(obj: unknown): obj is {'
+  - "\ttype: string;"
+  - "\tname: string;"
+  - "\tserverName: string;"
+  - "\tpromptName: string;"
+  - "\tcontent: string;"
+  - "\targuments?: Record<string, string>;"
+  - '} {'
+  - "\tif (typeof obj !== 'object' || obj === null) {"
+  - "\t\treturn false;"
+  - "\t}"
+  - ''
+  - "\tconst record = obj as Record<string, unknown>;"
+  - ''
+  - "\treturn ("
+  - "\t\t(record.type === AttachmentType.MCP_PROMPT || record.type === 'MCP_PROMPT')\
+    \ &&"
+  - "\t\ttypeof record.name === 'string' &&"
+  - "\t\ttypeof record.serverName === 'string' &&"
+  - "\t\ttypeof record.promptName === 'string' &&"
+  - "\t\ttypeof record.content === 'string'"
+  - "\t);"
+  - '}'
+  desc: Type guard that validates whether an unknown object conforms to the MCP prompt
+    attachment shape, checking type, name, serverName, promptName, and content fields.
+  line: 248-268
+  name: isValidMcpPromptAttachment
+- code:
+  - function isValidTextAttachment(
+  - "\tobj: unknown"
+  - '): obj is { type: string; name: string; content: string } {'
+  - "\tif (typeof obj !== 'object' || obj === null) {"
+  - "\t\treturn false;"
+  - "\t}"
+  - ''
+  - "\tconst record = obj as Record<string, unknown>;"
+  - ''
+  - "\treturn ("
+  - "\t\t(record.type === AttachmentType.TEXT || record.type === 'TEXT') &&"
+  - "\t\ttypeof record.name === 'string' &&"
+  - "\t\ttypeof record.content === 'string'"
+  - "\t);"
+  - '}'
+  desc: Type guard that validates whether an unknown object is a valid text attachment,
+    requiring a TEXT type and string name and content fields.
+  line: 275-290
+  name: isValidTextAttachment
+- code:
+  - 'export function hasClipboardAttachments(clipboardText: string): boolean {'
+  - "\tif (!clipboardText.startsWith('\"')) {"
+  - "\t\treturn false;"
+  - "\t}"
+  - ''
+  - "\tconst parsed = parseClipboardContent(clipboardText);"
+  - "\treturn parsed.textAttachments.length > 0 || parsed.mcpPromptAttachments.length\
+    \ > 0;"
+  - '}'
+  desc: Checks whether raw clipboard text contains the special attachment-bearing
+    format by parsing it and verifying that at least one text or MCP prompt attachment
+    exists.
+  line: 297-304
+  name: hasClipboardAttachments

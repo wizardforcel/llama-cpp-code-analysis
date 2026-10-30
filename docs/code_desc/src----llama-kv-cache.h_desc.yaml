@@ -1,0 +1,520 @@
+classes:
+- desc: KV缓存核心管理类，继承llama_memory_i，存储并管理KV张量数据，提供序列操作、状态持久化、批次插入和图形构建等功能，采用多流机制支持SWA（滑动窗口注意力）。
+  methods:
+  - code:
+    - llama_kv_cache(
+    - '        const llama_model & model,'
+    - '                ggml_type   type_k,'
+    - '                ggml_type   type_v,'
+    - '                     bool   v_trans,'
+    - '                     bool   offload,'
+    - '                     bool   unified,'
+    - '                 uint32_t   kv_size,'
+    - '                 uint32_t   n_seq_max,'
+    - '                 uint32_t   n_pad,'
+    - '                 uint32_t   n_swa,'
+    - '           llama_swa_type   swa_type,'
+    - '        const layer_filter_cb & filter,'
+    - '        const layer_reuse_cb & reuse);'
+    desc: 构造函数，接收模型引用和KV缓存配置参数（类型、转置、卸载标志、大小、序列数、SWA等），初始化KV层和相关数据结构。
+    line: 53-67
+    name: llama_kv_cache
+  - code:
+    - llama_memory_context_ptr init_batch(
+    - '        llama_batch_allocr & balloc,'
+    - '        uint32_t n_ubatch,'
+    - '        bool embd_all) override;'
+    desc: 创建批处理处理上下文，根据批次分配器和ubatch大小构建llama_kv_cache_context对象。
+    line: 73-76
+    name: init_batch
+  - code:
+    - llama_memory_context_ptr init_full() override;
+    desc: 创建完整缓存处理上下文，代表缓存当前完整状态。
+    line: '78'
+    name: init_full
+  - code:
+    - llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
+    desc: 创建更新处理上下文，用于执行缓存更新操作（可能包含KV移位）。
+    line: '80'
+    name: init_update
+  - code:
+    - bool get_can_shift() const override;
+    desc: 返回缓存是否支持KV移位操作。
+    line: '82'
+    name: get_can_shift
+  - code:
+    - void clear(bool data) override;
+    desc: 清空缓存，可选择释放底层数据内存。
+    line: '84'
+    name: clear
+  - code:
+    - bool seq_rm  (llama_seq_id seq_id, llama_pos p0, llama_pos p1) override;
+    desc: 删除指定序列在[p0, p1)位置范围内的数据。
+    line: '86'
+    name: seq_rm
+  - code:
+    - void seq_cp (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0,
+      llama_pos p1) override;
+    desc: 复制源序列指定范围的数据到目标序列。
+    line: '87'
+    name: seq_cp
+  - code:
+    - void seq_keep(llama_seq_id seq_id) override;
+    desc: 保留指定序列的数据，删除其余序列数据。
+    line: '88'
+    name: seq_keep
+  - code:
+    - void seq_add (llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift)
+      override;
+    desc: 将指定序列的数据在[0, shift)范围内右移shift位置。
+    line: '89'
+    name: seq_add
+  - code:
+    - void seq_div (llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) override;
+    desc: 将指定序列的数据中位置被d整除的保留，其余删除。
+    line: '90'
+    name: seq_div
+  - code:
+    - llama_pos seq_pos_min(llama_seq_id seq_id) const override;
+    desc: 返回指定序列的最小位置。
+    line: '92'
+    name: seq_pos_min
+  - code:
+    - llama_pos seq_pos_max(llama_seq_id seq_id) const override;
+    desc: 返回指定序列的最大位置。
+    line: '93'
+    name: seq_pos_max
+  - code:
+    - std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+    desc: 返回内存分配明细，按后端缓冲区类型分组统计大小。
+    line: '95'
+    name: memory_breakdown
+  - code:
+    - void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0) const override;
+    desc: 将缓存状态写入IO对象，支持指定序列和标志以控制写入范围。
+    line: '98'
+    name: state_write
+  - code:
+    - void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags
+      flags = 0) override;
+    desc: 从IO对象读取缓存状态，恢复指定序列数据。
+    line: '99'
+    name: state_read
+  - code:
+    - uint32_t get_size() const;
+    desc: 返回KV缓存大小（cell总数）。
+    line: '105'
+    name: get_size
+  - code:
+    - uint32_t get_n_stream() const;
+    desc: 返回KV缓存的流数量。
+    line: '106'
+    name: get_n_stream
+  - code:
+    - bool get_has_shift() const;
+    desc: 返回缓存是否包含移位操作历史。
+    line: '108'
+    name: get_has_shift
+  - code:
+    - ggml_type type_k() const;
+    desc: 返回K张量的ggml数据类型。
+    line: '110'
+    name: type_k
+  - code:
+    - ggml_type type_v() const;
+    desc: 返回V张量的ggml数据类型。
+    line: '111'
+    name: type_v
+  - code:
+    - uint32_t get_n_kv(const slot_info & sinfo) const;
+    desc: 根据slot信息返回KV cell数量。
+    line: '117'
+    name: get_n_kv
+  - code:
+    - ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info
+      & sinfo) const;
+    desc: 在指定ggml上下文中获取指定层的K张量视图。
+    line: '119'
+    name: get_k
+  - code:
+    - ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info
+      & sinfo) const;
+    desc: 在指定ggml上下文中获取指定层的V张量视图。
+    line: '120'
+    name: get_v
+  - code:
+    - ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs,
+      int32_t il, const slot_info & sinfo) const;
+    desc: 根据k_idxs指示位置将k_cur张量数据拷贝到缓存中指定层。
+    line: '123'
+    name: cpy_k
+  - code:
+    - ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs,
+      int32_t il, const slot_info & sinfo) const;
+    desc: 根据v_idxs指示位置将v_cur张量数据拷贝到缓存中指定层。
+    line: '124'
+    name: cpy_v
+  - code:
+    - slot_info_vec_t prepare(const std::vector<llama_ubatch> & ubatches);
+    desc: 为给定的多个ubatch在缓存中寻找插入位置，返回对应的slot信息向量，失败时返回空向量。
+    line: '130'
+    name: prepare
+  - code:
+    - bool update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info);
+    desc: 执行缓存更新操作，可选执行KV移位，应用流复制操作。
+    line: '132'
+    name: update
+  - code:
+    - slot_info find_slot(const llama_ubatch & ubatch, bool cont) const;
+    desc: 寻找可以容纳ubatch的KV cell槽位，cont参数指定是否需要连续cell，失败时返回空slot_info。
+    line: '136'
+    name: find_slot
+  - code:
+    - void apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch);
+    desc: 将ubatch的数据实际插入到slot对应的缓存位置。
+    line: '139'
+    name: apply_ubatch
+  - code:
+    - ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch)
+      const;
+    desc: 构建计算图中K张量的目标索引张量。
+    line: '144'
+    name: build_input_k_idxs
+  - code:
+    - ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch)
+      const;
+    desc: 构建计算图中V张量的目标索引张量。
+    line: '145'
+    name: build_input_v_idxs
+  - code:
+    - ggml_tensor * build_input_k_rot(ggml_context * ctx) const;
+    desc: 构建旋转位置编码K输入张量。
+    line: '147'
+    name: build_input_k_rot
+  - code:
+    - ggml_tensor * build_input_v_rot(ggml_context * ctx) const;
+    desc: 构建旋转位置编码V输入张量。
+    line: '148'
+    name: build_input_v_rot
+  - code:
+    - void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const
+      slot_info & sinfo) const;
+    desc: 设置给定张量为K目标索引张量。
+    line: '150'
+    name: set_input_k_idxs
+  - code:
+    - void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const
+      slot_info & sinfo) const;
+    desc: 设置给定张量为V目标索引张量。
+    line: '151'
+    name: set_input_v_idxs
+  - code:
+    - void set_input_k_shift(ggml_tensor * dst) const;
+    desc: 设置KV移位输入张量。
+    line: '153'
+    name: set_input_k_shift
+  - code:
+    - void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool
+      causal_attn) const;
+    desc: 设置注意力掩码输入张量。
+    line: '155'
+    name: set_input_kq_mask
+  - code:
+    - void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    desc: 设置位置桶输入张量。
+    line: '156'
+    name: set_input_pos_bucket
+  - code:
+    - void set_input_k_rot(ggml_tensor * dst) const;
+    desc: 设置旋转K输入张量。
+    line: '158'
+    name: set_input_k_rot
+  - code:
+    - void set_input_v_rot(ggml_tensor * dst) const;
+    desc: 设置旋转V输入张量。
+    line: '159'
+    name: set_input_v_rot
+  - code:
+    - size_t total_size() const;
+    desc: 返回KV缓存总大小。
+    line: '205'
+    name: total_size
+  - code:
+    - size_t size_k_bytes() const;
+    desc: 返回K张量总内存大小。
+    line: '208'
+    name: size_k_bytes
+  - code:
+    - size_t size_v_bytes() const;
+    desc: 返回V张量总内存大小。
+    line: '209'
+    name: size_v_bytes
+  - code:
+    - ggml_tensor * build_rope_shift(
+    - '        const llama_cparams & cparams,'
+    - '               ggml_context * ctx,'
+    - '                ggml_tensor * cur,'
+    - '                ggml_tensor * shift,'
+    - '                ggml_tensor * rot,'
+    - '                ggml_tensor * factors,'
+    - '                      float   freq_base,'
+    - '                      float   freq_scale,'
+    - '                   uint32_t   il) const;'
+    desc: 构建旋转位置编码移位的计算图。
+    line: 211-222
+    name: build_rope_shift
+  - code:
+    - ggml_cgraph * build_graph_shift(
+    - '           llm_graph_result * res,'
+    - '              llama_context * lctx) const;'
+    desc: 构建完整的KV移位计算图。
+    line: 224-226
+    name: build_graph_shift
+  - code:
+    - void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id
+      seq_id = -1) const;
+    desc: 写入状态元数据到IO（如cell范围、序列信息等）。
+    line: '234'
+    name: state_write_meta
+  - code:
+    - void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
+    desc: 将KV张量数据写入IO对象。
+    line: '235'
+    name: state_write_data
+  - code:
+    - bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,   slot_info
+      & sinfo, llama_seq_id dest_seq_id = -1);
+    desc: 从IO读取状态元数据，恢复slot_info等信息。
+    line: '237'
+    name: state_read_meta
+  - code:
+    - bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,
+      const slot_info & sinfo);
+    desc: 从IO读取数据填充缓存指定区域。
+    line: '238'
+    name: state_read_data
+  - code:
+    - bool empty() const {
+    - '    assert(ssrc.size() == sdst.size());'
+    - '    return ssrc.empty();'
+    - '}'
+    desc: 检查流复制信息是否为空（无待复制流）。
+    line: 22-26
+    name: stream_copy_info::empty
+  - code:
+    - uint32_t head() const {
+    - '    GGML_ASSERT(idxs.size() == 1);'
+    - '    GGML_ASSERT(!idxs[0].empty());'
+    - '    return idxs[0][0];'
+    - '}'
+    desc: 返回slot的头部索引（第一个token对应的cell索引）。
+    line: 39-44
+    name: slot_info::head
+  - code:
+    - void resize(size_t n) {
+    - '    strm.resize(n);'
+    - '    idxs.resize(n);'
+    - '}'
+    desc: 调整stream和idxs向量大小。
+    line: 46-49
+    name: slot_info::resize
+  - code:
+    - size_t size() const {
+    - '    GGML_ASSERT(idxs.size() == strm.size());'
+    - '    GGML_ASSERT(!idxs.empty());'
+    - '    return idxs[0].size();'
+    - '}'
+    desc: 返回slot包含的token数量。
+    line: 51-56
+    name: slot_info::size
+  - code:
+    - size_t n_stream() const {
+    - '    return strm.size();'
+    - '}'
+    desc: 返回slot的流数量。
+    line: 58-60
+    name: slot_info::n_stream
+  - code:
+    - bool empty() const {
+    - '    return idxs.empty();'
+    - '}'
+    desc: 检查slot是否为空。
+    line: 62-64
+    name: slot_info::empty
+  - code:
+    - void clear() {
+    - '    idxs.clear();'
+    - '}'
+    desc: 清空idxs向量。
+    line: 66-68
+    name: slot_info::clear
+  - code:
+    - bool is_contiguous() const {
+    - '    if (idxs.empty() || idxs[0].empty()) {'
+    - '        return true;'
+    - '    }'
+    - '    if (idxs.size() > 1) {'
+    - '        return false;'
+    - '    }'
+    - '    const uint32_t h = idxs[0][0];'
+    - '    for (size_t i = 0; i < idxs[0].size(); ++i) {'
+    - '        if (idxs[0][i] != h + i) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 检查索引是否从head开始连续排列。
+    line: 70-83
+    name: slot_info::is_contiguous
+  name: llama_kv_cache
+- desc: KV缓存操作上下文类，继承llama_memory_context_i，封装批次处理、完整状态和更新三种模式的迭代API，提供next/apply遍历机制及KV张量访问函数。
+  methods:
+  - code:
+    - llama_kv_cache_context(llama_memory_status status);
+    desc: 构造函数（错误状态版本），记录错误信息。
+    line: '247'
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context(
+    - '        llama_kv_cache * kv);'
+    desc: 构造函数（完整缓存版本），创建代表缓存当前状态的上下文。
+    line: 250-252
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context(
+    - '        llama_kv_cache * kv,'
+    - '        llama_context * lctx,'
+    - '        bool do_shift,'
+    - '        stream_copy_info sc_info);'
+    desc: 构造函数（更新版本），创建用于执行更新的上下文，包含移位和流复制信息。
+    line: 255-261
+    name: llama_kv_cache_context
+  - code:
+    - llama_kv_cache_context(
+    - '        llama_kv_cache * kv,'
+    - '        slot_info_vec_t sinfos,'
+    - '        std::vector<llama_ubatch> ubatches);'
+    desc: 构造函数（批次处理版本），基于slot信息和ubatch列表创建工作上下文。
+    line: 264-269
+    name: llama_kv_cache_context
+  - code:
+    - bool next() override;
+    desc: 推进到下一个ubatch，返回是否有下一个可处理项目。
+    line: '277'
+    name: next
+  - code:
+    - bool apply() override;
+    desc: 应用当前ubatch到KV缓存，执行数据写入操作。
+    line: '278'
+    name: apply
+  - code:
+    - llama_memory_status get_status() const override;
+    desc: 返回当前状态（操作是否成功等）。
+    line: '280'
+    name: get_status
+  - code:
+    - const llama_ubatch & get_ubatch() const override;
+    desc: 返回当前正在处理的ubatch引用。
+    line: '281'
+    name: get_ubatch
+  - code:
+    - uint32_t get_n_kv() const;
+    desc: 返回当前上下文可用的KV数量。
+    line: '285'
+    name: get_n_kv
+  - code:
+    - ggml_type type_k() const;
+    desc: 返回K张量的ggml类型。
+    line: '287'
+    name: type_k
+  - code:
+    - ggml_type type_v() const;
+    desc: 返回V张量的ggml类型。
+    line: '288'
+    name: type_v
+  - code:
+    - ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
+    desc: 获取指定层的K张量视图。
+    line: '291'
+    name: get_k
+  - code:
+    - ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
+    desc: 获取指定层的V张量视图。
+    line: '292'
+    name: get_v
+  - code:
+    - ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs,
+      int32_t il) const;
+    desc: 根据k_idxs将k_cur拷贝到缓存指定层。
+    line: '300'
+    name: cpy_k
+  - code:
+    - ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs,
+      int32_t il) const;
+    desc: 根据v_idxs将v_cur拷贝到缓存指定层。
+    line: '301'
+    name: cpy_v
+  - code:
+    - ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch)
+      const;
+    desc: 构建K目标索引张量用于计算图。
+    line: '306'
+    name: build_input_k_idxs
+  - code:
+    - ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch)
+      const;
+    desc: 构建V目标索引张量用于计算图。
+    line: '307'
+    name: build_input_v_idxs
+  - code:
+    - ggml_tensor * build_input_k_rot(ggml_context * ctx) const;
+    desc: 构建旋转位置编码K输入张量。
+    line: '309'
+    name: build_input_k_rot
+  - code:
+    - ggml_tensor * build_input_v_rot(ggml_context * ctx) const;
+    desc: 构建旋转位置编码V输入张量。
+    line: '310'
+    name: build_input_v_rot
+  - code:
+    - void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    desc: 设置K目标索引输入张量。
+    line: '312'
+    name: set_input_k_idxs
+  - code:
+    - void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    desc: 设置V目标索引输入张量。
+    line: '313'
+    name: set_input_v_idxs
+  - code:
+    - void set_input_k_shift   (ggml_tensor * dst) const;
+    desc: 设置KV移位输入张量。
+    line: '315'
+    name: set_input_k_shift
+  - code:
+    - void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool
+      causal_attn) const;
+    desc: 设置注意力掩码输入张量。
+    line: '316'
+    name: set_input_kq_mask
+  - code:
+    - void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    desc: 设置位置桶输入张量。
+    line: '317'
+    name: set_input_pos_bucket
+  - code:
+    - void set_input_k_rot(ggml_tensor * dst) const;
+    desc: 设置旋转K输入张量。
+    line: '319'
+    name: set_input_k_rot
+  - code:
+    - void set_input_v_rot(ggml_tensor * dst) const;
+    desc: 设置旋转V输入张量。
+    line: '320'
+    name: set_input_v_rot
+  name: llama_kv_cache_context
+desc: 该文件定义了llama_kv_cache和llama_kv_cache_context两个核心类，用于管理LLM推理过程中的KV缓存。llama_kv_cache类负责KV数据存储、序列管理（seq_rm/seq_cp等）、状态读写、内存管理（继承llama_memory_i），提供批次插入（prepare/find_slot/apply_ubatch）、图形构建（get_k/cpy_k等）和输入准备API；llama_kv_cache_context类实现llama_memory_context_i接口，为批次/更新/完整状态提供迭代处理上下文，封装对llama_kv_cache的操作并跟踪处理进度。
+file: src/llama-kv-cache.h
+funcs: []

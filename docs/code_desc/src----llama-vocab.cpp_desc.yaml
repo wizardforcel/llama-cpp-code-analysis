@@ -1,0 +1,3004 @@
+classes:
+- desc: 一个基于 std::map 实现的朴素前缀树（Trie）数据结构，用于存储键值对并支持最长前缀匹配和字符遍历。
+  methods:
+  - code:
+    - 'naive_trie() : has_value(false), value(0) {'
+    desc: 构造函数，初始化 has_value 为 false，value 为 0。
+    line: '24'
+    name: naive_trie
+  - code:
+    - void insert(const char * key, size_t len, int32_t value = 0) {
+    - '    if (len == 0) {'
+    - '        this->has_value = true;'
+    - '        this->value = value;'
+    - '        return;'
+    - '    }'
+    - '    char c = key[0];'
+    - '    auto res = children.find(c);'
+    - '    if (res != children.end()) {'
+    - '        res->second.insert(key + 1, len - 1, value);'
+    - '    } else {'
+    - '        auto res = children.insert(std::make_pair(c, naive_trie()));'
+    - '        res.first->second.insert(key + 1, len - 1, value);'
+    - '    }'
+    - '}'
+    desc: 向 Trie 中插入一个键值对，递归地将字符插入到子节点中，并在键结束时设置值。
+    line: 25-37
+    name: insert
+  - code:
+    - std::pair<const char *, size_t> get_longest_prefix(const char * key, size_t
+      len, size_t offset = 0) const {
+    - '    if (len == 0 || offset == len) {'
+    - '        return std::make_pair(key, offset);'
+    - '    }'
+    - '    char c = key[offset];'
+    - '    auto res = children.find(c);'
+    - '    if (res != children.end()) {'
+    - '        return res->second.get_longest_prefix(key, len, offset + 1);'
+    - '    }'
+    - ''
+    - '    return std::make_pair(key, offset);'
+    - '}'
+    desc: 在 Trie 中查找给定键的最长前缀，返回该前缀的长度。
+    line: 38-50
+    name: get_longest_prefix
+  - code:
+    - const struct naive_trie * traverse(const char c) const {
+    - '    auto res = children.find(c);'
+    - '    if (res != children.end()) {'
+    - '        return &res->second;'
+    - '    }'
+    - ''
+    - '    return NULL;'
+    - '}'
+    desc: 根据给定字符遍历到对应的子节点，如果存在则返回子节点指针，否则返回 NULL。
+    line: 51-58
+    name: traverse
+  name: naive_trie
+- desc: 所有分词器的抽象基类，提供一个虚析构函数。
+  methods:
+  - code:
+    - llm_tokenizer() {}
+    desc: 构造函数，空实现。
+    line: '69'
+    name: llm_tokenizer
+  - code:
+    - virtual ~llm_tokenizer() = default;
+    desc: 虚析构函数，默认实现。
+    line: '71'
+    name: ~llm_tokenizer
+  name: llm_tokenizer
+- desc: 表示一个符号（字符串片段）的结构体，包含前驱和后继索引、文本指针及长度。
+  methods: []
+  name: llm_symbol
+- desc: 用于 SPM 分词器的二元组（bigram）结构体，包含左右符号索引、分数和大小。
+  methods:
+  - code:
+    - struct comparator {
+    - '    bool operator()(llm_bigram_spm & l, llm_bigram_spm & r) {'
+    - '        return (l.score < r.score) || (l.score == r.score && l.left > r.left);'
+    - '    }'
+    - '};'
+    desc: 比较器结构体，用于优先级队列中根据分数和左索引排序二元组。
+    line: 94-99
+    name: comparator
+  name: llm_bigram_spm
+- desc: SPM 分词器结构体，继承自 llm_tokenizer，构造函数为空。
+  methods:
+  - code:
+    - llm_tokenizer_spm(const llama_vocab & /*vocab*/) {}
+    desc: 构造函数，接受词汇表引用但未使用。
+    line: '109'
+    name: llm_tokenizer_spm
+  name: llm_tokenizer_spm
+- desc: SPM 分词器的会话类，负责执行具体的分词过程，通过合并高频二元组将文本转换为 token。
+  methods:
+  - code:
+    - 'llm_tokenizer_spm_session(const llama_vocab & vocab) : vocab(vocab) {}'
+    desc: 构造函数，保存词汇表引用。
+    line: '114'
+    name: llm_tokenizer_spm_session
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    // split string into utf8 chars'
+    - '    int index = 0;'
+    - '    size_t offs = 0;'
+    - '    while (offs < text.size()) {'
+    - '        llm_symbol sym;'
+    - '        size_t len = unicode_len_utf8(text[offs]);'
+    - '        sym.text = text.c_str() + offs;'
+    - '        sym.n = std::min(len, text.size() - offs);'
+    - '        offs += sym.n;'
+    - '        sym.prev = index - 1;'
+    - '        sym.next = offs == text.size() ? -1 : index + 1;'
+    - '        index++;'
+    - '        symbols.emplace_back(sym);'
+    - '    }'
+    - ''
+    - '    // seed the work queue with all possible 2-character tokens.'
+    - '    for (int i = 1; i < (int) symbols.size(); ++i) {'
+    - '        try_add_bigram(i - 1, i);'
+    - '    }'
+    - ''
+    - '    // keep substituting the highest frequency pairs for as long as we can.'
+    - '    while (!work_queue.empty()) {'
+    - '        auto bigram = work_queue.top();'
+    - '        work_queue.pop();'
+    - ''
+    - '        auto & left_sym = symbols[bigram.left];'
+    - '        auto & right_sym = symbols[bigram.right];'
+    - ''
+    - '        // if one of the symbols already got merged, skip it.'
+    - '        if (left_sym.n == 0 || right_sym.n == 0 ||'
+    - '            left_sym.n + right_sym.n != bigram.size) {'
+    - '            continue;'
+    - '        }'
+    - ''
+    - '        // merge the right sym into the left one'
+    - '        left_sym.n += right_sym.n;'
+    - '        right_sym.n = 0;'
+    - ''
+    - '        //LLAMA_LOG_INFO("left = ''%*s'' size = %zu\n", (int) left_sym.n, left_sym.text,
+      bigram.size);'
+    - ''
+    - '        // remove the right sym from the chain'
+    - '        left_sym.next = right_sym.next;'
+    - '        if (right_sym.next >= 0) {'
+    - '            symbols[right_sym.next].prev = bigram.left;'
+    - '        }'
+    - ''
+    - '        // find more substitutions'
+    - '        try_add_bigram(left_sym.prev, bigram.left);'
+    - '        try_add_bigram(bigram.left, left_sym.next);'
+    - '    }'
+    - ''
+    - '    for (int i = 0; i != -1; i = symbols[i].next) {'
+    - '        auto & symbol = symbols[i];'
+    - '        resegment(symbol, output);'
+    - '    }'
+    - '}'
+    desc: 分词主函数，将文本分割为符号并合并高频二元组，然后转换为 token 输出。
+    line: 115-158
+    name: tokenize
+  - code:
+    - void resegment(llm_symbol & symbol, std::vector<llama_token> & output) {
+    - '    auto text = std::string(symbol.text, symbol.n);'
+    - '    auto token = vocab.text_to_token(text);'
+    - ''
+    - '    // Do we need to support is_unused?'
+    - '    if (token != LLAMA_TOKEN_NULL) {'
+    - '        output.push_back(token);'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    const auto p = rev_merge.find(text);'
+    - ''
+    - '    if (p == rev_merge.end()) {'
+    - '        // output any symbols that did not form tokens as bytes.'
+    - '        output.reserve(output.size() + symbol.n);'
+    - '        for (int j = 0; j < (int)symbol.n; ++j) {'
+    - '            llama_token id = vocab.byte_to_token(symbol.text[j]);'
+    - '            output.push_back(id);'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    resegment(symbols[p->second.first], output);'
+    - '    resegment(symbols[p->second.second], output);'
+    - '}'
+    desc: 将符号重新分段为 token，如果符号对应 token 则直接输出，否则递归拆分或输出字节。
+    line: 160-186
+    name: resegment
+  - code:
+    - void try_add_bigram(int left, int right) {
+    - '    if (left == -1 || right == -1) {'
+    - '        return;'
+    - '    }'
+    - '    const std::string text = std::string(symbols[left].text, symbols[left].n
+      + symbols[right].n);'
+    - '    auto token = vocab.text_to_token(text);'
+    - ''
+    - '    if (token == LLAMA_TOKEN_NULL) {'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    if (static_cast<uint32_t>(token) >= vocab.n_tokens()) {'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    const auto & tok_data = vocab.get_token_data(token);'
+    - ''
+    - '    llm_bigram_spm bigram;'
+    - '    bigram.left  = left;'
+    - '    bigram.right = right;'
+    - '    bigram.score = tok_data.score;'
+    - '    bigram.size  = text.size();'
+    - ''
+    - '    work_queue.push(bigram);'
+    - ''
+    - '    // Do we need to support is_unused?'
+    - '    rev_merge[text] = std::make_pair(left, right);'
+    - '}'
+    desc: 尝试将左右两个符号合并为一个二元组，如果该二元组对应有效 token 则加入工作队列。
+    line: 188-216
+    name: try_add_bigram
+  name: llm_tokenizer_spm_session
+- desc: 一个继承自 std::priority_queue 的队列模板类，新增 pop_move 方法，允许移动元素并将其弹出。
+  methods:
+  - code:
+    - T pop_move() {
+    - '    T item = std::move(this->c.front());'
+    - '    std::pop_heap(this->c.begin(), this->c.end(), this->comp);'
+    - '    this->c.pop_back();'
+    - '    return item;'
+    - '}'
+    desc: 移动并弹出队列中的第一个元素（堆顶），返回移动后的元素。
+    line: 234-239
+    name: pop_move
+  - code:
+    - void pop() =  delete;
+    desc: 删除 pop 方法，防止误用。
+    line: '241'
+    name: pop
+  name: llama_priority_queue
+- desc: 用于 BPE 分词器的二元组结构体，包含左右符号索引、文本、排名和大小。
+  methods:
+  - code:
+    - struct comparator {
+    - '    bool operator()(const llm_bigram_bpe & l, const llm_bigram_bpe & r) const
+      {'
+    - '        return l.rank > r.rank || (l.rank == r.rank && l.left > r.left);'
+    - '    }'
+    - '};'
+    desc: 比较器结构体，用于优先级队列中根据排名和左索引排序二元组。
+    line: 246-250
+    name: comparator
+  name: llm_bigram_bpe
+- desc: BPE 分词器结构体，继承自 llm_tokenizer，构造函数根据词汇表类型设置正则表达式和字节编码标志。
+  methods:
+  - code:
+    - llm_tokenizer_bpe(const llama_vocab & vocab) {
+    - '    GGML_ASSERT(vocab.get_type() == LLAMA_VOCAB_TYPE_BPE);'
+    - '    switch (vocab.get_pre_type()) {'
+    - '        case LLAMA_VOCAB_PRE_TYPE_LLAMA3:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_JAIS2:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s{512}(?!\\S)|\\s{256}(?!\\S)|\\s{128}(?!\\S)|\\s{64}(?!\\S)|\\s{32}(?!\\S)|\\s{16}(?!\\S)|\\s{8}(?!\\S)|\\s{4}(?!\\S)|\\s{1,2}(?!\\S)|\\s{1}",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_DBRX:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_SMAUG:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM:'
+    - '            regex_exprs = {'
+    - '                "[\r\n]",'
+    - '                "\\s?[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-ώᾀ-ᾴᾶ-ᾼιῂ-ῄῆ-ῌῐ-ΐῖ-Ίῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤΩℨK-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ𐐀-𐑏𐒰-𐓓𐓘-𐓻𐲀-𐲲𐳀-𐳲𑢠-𑣟𞤀-𞥃]+",'
+    - '                "\\s?[!-/:-~！-／：-～‘-‟　-。]+",'
+    - '                "\\s+$",'
+    - '                "[一-龥ࠀ-一가-퟿]+",'
+    - '                "\\p{N}+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM:'
+    - '            regex_exprs = {'
+    - '                "\\p{N}{1,3}",'
+    - '                "[一-龥぀-ゟ゠-ヿ]+",'
+    - '                "[!\"#$%&''()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+|
+      ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_YOUTU:'
+    - '            regex_exprs = {'
+    - '                "[가-힣ㄱ-ㆎ]+|[！…“”‘’—：；，、-〿︰-﹏]+|[ㄅ-ㄯ]+|[一-龥぀-ゟ゠-ヿ]+",'
+    - '                "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|\\p{N}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\n/]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER:'
+    - '            regex_exprs = {'
+    - '                "[\r\n]",'
+    - '                "\\s?\\p{L}+",'
+    - '                "\\s?\\p{P}+",'
+    - '                "[一-龥ࠀ-一가-퟿]+",'
+    - '                "\\p{N}",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_FALCON:'
+    - '            regex_exprs = {'
+    - '                "[\\p{P}\\$\\+<=>\\^~\\|`]+",'
+    - '                "''s|''t|''re|''ve|''m|''ll|''d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",'
+    - '                "[0-9][0-9][0-9]",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_STARCODER:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_REFACT:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_COMMAND_R:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_SMOLLM:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_CODESHELL:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_EXAONE:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_MINERVA:'
+    - '            regex_exprs = {'
+    - '                "\\p{N}",'
+    - '                "''s|''t|''re|''ve|''m|''ll|''d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GPT2:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_MPT:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_OLMO:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_JAIS:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_TRILLION:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GRANITE_DOCLING:'
+    - '            regex_exprs = {'
+    - '                "''s|''t|''re|''ve|''m|''ll|''d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_STABLELM2:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_QWEN2:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_HUNYUAN:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_SOLAR_OPEN:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_QWEN35:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}|
+      ?[^\\s\\p{L}\\p{M}\\p{N}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_PORO:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_BLOOM:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH:'
+    - '            regex_exprs = {'
+    - '                " ?[^(\\s|.,!?…。，、।۔،)]+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_CHATGLM4:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_VIKING:'
+    - '            regex_exprs = {'
+    - '                " ?[^(\\s|.,!?…。，、।۔،)]+",'
+    - '                "\\p{N}",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_TEKKEN:'
+    - '            regex_exprs = {'
+    - '                "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))*((?=[\\p{L}])([^A-Z]))+|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))+((?=[\\p{L}])([^A-Z]))*|\\p{N}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n/]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_CHAMELEON:'
+    - '            regex_exprs = {'
+    - '                "<sentinel:[0-9]+>",'
+    - '                "(IMGIMG)((A|B|C|D|E|F|G|H|I){1,4})Z",'
+    - '                "([\\t\\n]|    |  )",'
+    - '                "\\p{N}",'
+    - '                "[\\p{P}!/:-@\\[-`{-~]",'
+    - '                "''s|''t|''re|''ve|''m|''ll|''d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GPT4O:'
+    - '        case LLAMA_VOCAB_PRE_TYPE_MINIMAX_M2:'
+    - '            regex_exprs = {'
+    - '                "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))*((?=[\\p{L}])([^A-Z]))+(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))+((?=[\\p{L}])([^A-Z]))*(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n/]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_TINY_AYA:'
+    - '            regex_exprs = {'
+    - '                "\\d{1,3}(?=(?:\\d{3})*\\b)",'
+    - '                "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])?|\\p{N}{1,3}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n/]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_KIMI_K2:'
+    - '            regex_exprs = {'
+    - '                "\\p{Han}+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_SUPERBPE:'
+    - '            regex_exprs = {'
+    - '                "\\p{N}+",'
+    - '                "(?=(\\d{3})+(?!\\d))",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_BAILINGMOE:'
+    - '            regex_exprs = {'
+    - '                "''(?:[sSdDmMtT]|[lL][lL]|[vV][eE]|[rR][eE])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n]*|\\s*[\r\\n]|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_SEED_CODER:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1}|
+      ?[^\\s\\p{L}\\p{N}\\r\\n]+|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GROK_2:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}|
+      ?[^\\s\\p{L}\\p{N}]+[\r\\n]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_AFMOE:'
+    - '            regex_exprs = {'
+    - '                "\\p{AFMoE_digits}",'
+    - '                "[一-鿿㐀-䶿豈-﫿぀-ゟ゠-ヿ･-ﾟ⼀-⿟เ-๿຀-໿ក-៿က-႟ꩠ-ꩿꧠ-꧿가-힯ᄀ-ᇿ]+",'
+    - '                "[!\"#$%&''()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+|
+      ?[\\p{P}\\p{S}]+[\r\\n]*|\\s*[\r\\n]+|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_EXAONE_MOE:'
+    - '            regex_exprs = {'
+    - '                "(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}\\p{M}*(?:
+      \\p{L}\\p{M}*)*)+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\r\\n/]?|\\s*[\r\\n]|\\s+(?!\\S)|\\s+",'
+    - '            };'
+    - '            break;'
+    - '        case LLAMA_VOCAB_PRE_TYPE_GEMMA4:'
+    - '            regex_exprs = {'
+    - '                "[^\\n]+|[\\n]+",'
+    - '            };'
+    - '            byte_encode = false;'
+    - '            break;'
+    - '        default:'
+    - '            regex_exprs = {'
+    - '                "[\\p{P}\\$\\+<=>\\^~\\|`]+",'
+    - '                "''s|''t|''re|''ve|''m|''ll|''d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",'
+    - '                "\\p{N}+",'
+    - '                "[0-9][0-9][0-9]",'
+    - '            };'
+    - '            break;'
+    - '    }'
+    - '}'
+    desc: 构造函数，根据词汇表预处理类型设置对应的正则表达式列表和字节编码标志。
+    line: 255-427
+    name: llm_tokenizer_bpe
+  name: llm_tokenizer_bpe
+- desc: BPE 分词器的会话类，负责执行具体的分词过程，包括正则分割、BPE 合并和 token 生成。
+  methods:
+  - code:
+    - 'llm_tokenizer_bpe_session(const llama_vocab & vocab, const llm_tokenizer_bpe
+      & tokenizer) : vocab(vocab), tokenizer(tokenizer) {}'
+    desc: 构造函数，保存词汇表和分词器的引用。
+    line: '430'
+    name: llm_tokenizer_bpe_session
+  - code:
+    - static void append(const llama_token token_id, std::vector<llama_token> & output)  {
+    - '    output.push_back(token_id);'
+    - '}'
+    desc: 静态方法，将 token ID 添加到输出向量中。
+    line: 432-434
+    name: append
+  - code:
+    - bool append_bos(std::vector<llama_token> & output) const {
+    - '    if (vocab.get_add_bos()) {'
+    - '        GGML_ASSERT(vocab.token_bos() != LLAMA_TOKEN_NULL);'
+    - '        output.push_back(vocab.token_bos());'
+    - '        return true;'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 如果需要添加 BOS token，则将其添加到输出并返回 true。
+    line: 436-443
+    name: append_bos
+  - code:
+    - bool append_eos(std::vector<llama_token> & output) const {
+    - '    if (vocab.get_add_eos()) {'
+    - '        GGML_ASSERT(vocab.token_eos() != LLAMA_TOKEN_NULL);'
+    - '        output.push_back(vocab.token_eos());'
+    - '        return true;'
+    - '    }'
+    - '    return false;'
+    - '}'
+    desc: 如果需要添加 EOS token，则将其添加到输出并返回 true。
+    line: 445-452
+    name: append_eos
+  - code:
+    - void check_double_bos_eos(const std::vector<llama_token> & output) const {
+    - '    if (vocab.get_add_bos() && output.size() >= 2 && output[1] == vocab.token_bos())
+      {'
+    - '        LLAMA_LOG_WARN('
+    - '            "%s: Added a BOS token to the prompt as specified by the model
+      but the prompt "'
+    - '            "also starts with a BOS token. So now the final prompt starts with
+      2 BOS tokens. "'
+    - '            "Are you sure this is what you want?\n", __FUNCTION__);'
+    - '    }'
+    - '    if (vocab.get_add_eos() && output.size() >= 2 && *(output.end()-2) == vocab.token_eos())
+      {'
+    - '        LLAMA_LOG_WARN('
+    - '            "%s: Added a EOS token to the prompt as specified by the model
+      but the prompt "'
+    - '            "also ends with a EOS token. So now the final prompt ends with
+      2 EOS tokens. "'
+    - '            "Are you sure this is what you want?\n", __FUNCTION__);'
+    - '    }'
+    - '}'
+    desc: 检查输出中是否出现双 BOS 或双 EOS token，并发出警告。
+    line: 454-465
+    name: check_double_bos_eos
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    int final_prev_index = -1;'
+    - '    const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs,
+      tokenizer.byte_encode);'
+    - ''
+    - '    symbols_final.clear();'
+    - '    auto tok_pre = vocab.get_pre_type();'
+    - ''
+    - '    for (const auto & word : word_collection) {'
+    - '        work_queue = llm_bigram_bpe::queue();'
+    - '        symbols.clear();'
+    - ''
+    - '        int index = 0;'
+    - '        size_t offset = 0;'
+    - ''
+    - '        //if (vocab.tokenizer_ignore_merges && vocab.token_to_id.find(word)
+      != vocab.token_to_id.end()) {'
+    - '        if (vocab.get_ignore_merges() && vocab.text_to_token(word) != LLAMA_TOKEN_NULL)
+      {'
+    - '            symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});'
+    - '            offset = word.size();'
+    - '        } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4 && word.find_first_not_of(''\n'')
+      == std::string::npos) {'
+    - '            // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343'
+    - '            auto tok = vocab.text_to_token(word);'
+    - '            if (tok != LLAMA_TOKEN_NULL) {'
+    - '                symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});'
+    - '                offset = word.size();'
+    - '            }'
+    - '        }'
+    - ''
+    - '        while (offset < word.size()) {'
+    - '            llm_symbol sym;'
+    - '            size_t char_len = std::min(word.size() - offset, (size_t) unicode_len_utf8(word[offset]));'
+    - '            sym.text = word.c_str() + offset;'
+    - '            sym.n = char_len;'
+    - '            offset += sym.n;'
+    - '            sym.prev = index - 1;'
+    - '            sym.next = offset == word.size() ? -1 : index + 1;'
+    - '            index++;'
+    - '            symbols.emplace_back(sym);'
+    - '        }'
+    - '        for (int i = 1; i < (int) symbols.size(); ++i) {'
+    - '            add_new_bigram(i - 1, i);'
+    - '        }'
+    - ''
+    - '        // build token(s)'
+    - '        while (!work_queue.empty()) {'
+    - '            auto bigram = work_queue.pop_move();'
+    - ''
+    - '            auto & left_symbol = symbols[bigram.left];'
+    - '            auto & right_symbol = symbols[bigram.right];'
+    - ''
+    - '            if (left_symbol.n == 0 || right_symbol.n == 0) {'
+    - '                continue;'
+    - '            }'
+    - '            std::string left_token = std::string(left_symbol.text, left_symbol.n);'
+    - '            std::string right_token = std::string(right_symbol.text, right_symbol.n);'
+    - '            if (left_token + right_token != bigram.text) {'
+    - '                continue;  // Skip this bigram if it''s outdated'
+    - '            }'
+    - ''
+    - '            // merge the right sym into the left one'
+    - '            left_symbol.n += right_symbol.n;'
+    - '            right_symbol.n = 0;'
+    - ''
+    - '            // remove the right sym from the chain'
+    - '            left_symbol.next = right_symbol.next;'
+    - '            if (right_symbol.next >= 0) {'
+    - '                symbols[right_symbol.next].prev = bigram.left;'
+    - '            }'
+    - ''
+    - '            add_new_bigram(left_symbol.prev, bigram.left);  // left side of
+      current symbol'
+    - '            add_new_bigram(bigram.left, left_symbol.next);  // right side of
+      current symbol'
+    - '        }'
+    - ''
+    - '        // add the finished tokens to the final list keeping correct order
+      for next and prev'
+    - '        for (auto & sym : symbols) {'
+    - '            if (sym.n > 0) {'
+    - '                sym.prev = final_prev_index;'
+    - '                sym.next = -1;'
+    - '                if (final_prev_index != -1) {'
+    - '                    symbols_final[final_prev_index].next = symbols_final.size();'
+    - '                }'
+    - '                symbols_final.emplace_back(sym);'
+    - '                final_prev_index = symbols_final.size() - 1;'
+    - '            }'
+    - '        }'
+    - '    }'
+    - ''
+    - '    symbols = symbols_final;'
+    - ''
+    - '    if (!symbols.empty()) {'
+    - '        for (int i = 0; i != -1; i = symbols[i].next) {'
+    - '            auto & symbol = symbols[i];'
+    - '            if (symbol.n == 0) {'
+    - '                continue;'
+    - '            }'
+    - ''
+    - '            const std::string str = std::string(symbol.text, symbol.n);'
+    - '            const auto token = vocab.text_to_token(str);'
+    - ''
+    - '            if (token == LLAMA_TOKEN_NULL) {'
+    - '                for (auto j = str.begin(); j != str.end(); ++j) {'
+    - '                    std::string byte_str(1, *j);'
+    - '                    auto token_multibyte = vocab.text_to_token(byte_str);'
+    - '                    if (token_multibyte != LLAMA_TOKEN_NULL) {'
+    - '                        output.push_back(token_multibyte);'
+    - '                    }'
+    - '                }'
+    - '            } else {'
+    - '                output.push_back(token);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 分词主函数，使用正则表达式将文本分割为单词，然后对每个单词进行 BPE 合并，最后生成 token 序列。
+    line: 467-539
+    name: tokenize
+  - code:
+    - void add_new_bigram(int left, int right) {
+    - '    if (left == -1 || right == -1) {'
+    - '        return;'
+    - '    }'
+    - '    std::string left_token  = std::string(symbols[left].text,  symbols[left].n);'
+    - '    std::string right_token = std::string(symbols[right].text, symbols[right].n);'
+    - ''
+    - '    int rank_found = -1;'
+    - ''
+    - '    rank_found = vocab.find_bpe_rank(left_token, right_token);'
+    - ''
+    - '    if (rank_found < 0) {'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    llm_bigram_bpe bigram;'
+    - ''
+    - '    bigram.left  = left;'
+    - '    bigram.right = right;'
+    - '    bigram.text  = left_token + right_token;'
+    - '    bigram.size  = left_token.size() + right_token.size();'
+    - '    bigram.rank  = rank_found;'
+    - ''
+    - '    work_queue.push(bigram);'
+    - '}'
+    desc: 根据左右符号的文本查找 BPE 排名，如果有效则创建新的二元组并加入工作队列。
+    line: 541-566
+    name: add_new_bigram
+  name: llm_tokenizer_bpe_session
+- desc: WPM 分词器结构体，继承自 llm_tokenizer，构造函数为空。
+  methods:
+  - code:
+    - llm_tokenizer_wpm(const llama_vocab & /*vocab*/) {}
+    desc: 构造函数，接受词汇表引用但未使用。
+    line: '578'
+    name: llm_tokenizer_wpm
+  name: llm_tokenizer_wpm
+- desc: WPM 分词器的会话类，负责执行具体分词，通过最长匹配将单词拆分为 token，并进行规范化处理。
+  methods:
+  - code:
+    - 'llm_tokenizer_wpm_session(const llama_vocab & vocab) : vocab(vocab) {}'
+    desc: 构造函数，保存词汇表引用。
+    line: '583'
+    name: llm_tokenizer_wpm_session
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    // normalize and split by whitespace'
+    - '    std::vector<std::string> words = preprocess(text);'
+    - '    // bos token prepended already'
+    - ''
+    - '    // find the longest tokens that form the words'
+    - '    for (const std::string & word : words) {'
+    - '        // skip empty words'
+    - '        if (word.size() == 0) {'
+    - '            continue;'
+    - '        }'
+    - ''
+    - '        // prepend phantom space'
+    - '        const std::string word1 = "\xe2\x96\x81" + word;'
+    - '        const int n = word1.size();'
+    - ''
+    - '        const size_t current_tokens = output.size();'
+    - ''
+    - '        // we''re at the start of a new word'
+    - '        // move through character position in word'
+    - '        for (int i = 0; i < n; ++i) {'
+    - '            // loop through possible match length'
+    - '            bool match = false;'
+    - '            for (int j = std::min(n, i + vocab.max_token_len() + 1); j > i;
+      j--) {'
+    - '                auto id = vocab.text_to_token(word1.substr(i, j - i));'
+    - '                if (id != LLAMA_TOKEN_NULL) {'
+    - '                    output.push_back(id);'
+    - '                    match = true;'
+    - '                    i = j - 1;'
+    - '                    break;'
+    - '                }'
+    - '            }'
+    - ''
+    - '            if (!match) { // discard all'
+    - '                output.resize(current_tokens);'
+    - '                break;  // and discard next tokens'
+    - '            }'
+    - '        }'
+    - ''
+    - '        // we didn''t find any matches for this word'
+    - '        if (current_tokens == output.size()) {'
+    - '            output.push_back(vocab.token_unk());'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 分词主函数，对文本进行规范化预处理，然后对每个单词进行最长匹配拆分，生成 token 序列。
+    line: 584-624
+    name: tokenize
+  - code:
+    - static std::vector<std::string> preprocess(const std::string & text)  {
+    - '    const std::vector<uint32_t> cpts_nfd = unicode_cpts_normalize_nfd(unicode_cpts_from_utf8(text));'
+    - '    std::vector<std::string> words(1, "");'
+    - ''
+    - '    for (const uint32_t cpt : cpts_nfd) {'
+    - '        const auto flags = unicode_cpt_flags_from_cpt(cpt);'
+    - ''
+    - '        if (flags.is_whitespace) {'
+    - '            if (words.back().size()) {  // finish previous word if any'
+    - '                words.emplace_back();'
+    - '            }'
+    - '            continue;'
+    - '        }'
+    - ''
+    - '        assert (!flags.is_separator);'
+    - '        if (cpt == 0 || cpt == 0xFFFD || flags.is_control) {'
+    - '            continue;'
+    - '        }'
+    - ''
+    - '        const std::string s = unicode_cpt_to_utf8(unicode_tolower(cpt));'
+    - '        if (flags.is_punctuation || ( cpt < 0x7F && flags.is_symbol ) || is_chinese_char(cpt))
+      {'
+    - '            if (words.back().size()) {  // finish previous word if any'
+    - '                words.emplace_back();'
+    - '            }'
+    - '            words.back() = s;       // single char word'
+    - '            words.emplace_back();   // start a new word'
+    - '        } else {'
+    - '            words.back() += s;  // append char to word'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (!words.back().size()) {'
+    - '        words.pop_back();'
+    - '    }'
+    - ''
+    - '    return words;'
+    - '}'
+    desc: 静态方法，对文本进行 NFD 规范化、小写转换、按空白和标点分割，并处理中文等字符。
+    line: 626-654
+    name: preprocess
+  - code:
+    - static bool is_chinese_char(uint32_t cpt) {
+    - '    return'
+    - '        (cpt >= 0x04E00 && cpt <= 0x09FFF) ||'
+    - '        (cpt >= 0x03400 && cpt <= 0x04DBF) ||'
+    - '        (cpt >= 0x20000 && cpt <= 0x2A6DF) ||'
+    - '        (cpt >= 0x2A700 && cpt <= 0x2B73F) ||'
+    - '        (cpt >= 0x2B740 && cpt <= 0x2B81F) ||'
+    - '        (cpt >= 0x2B920 && cpt <= 0x2CEAF) || // this should be 0x2B820 but
+      in hf rust code it is 0x2B920'
+    - '        (cpt >= 0x0F900 && cpt <= 0x0FAFF) ||'
+    - '        (cpt >= 0x2F800 && cpt <= 0x2FA1F);'
+    - '}'
+    desc: 静态方法，判断给定 Unicode 码点是否为中文字符。
+    line: 656-665
+    name: is_chinese_char
+  name: llm_tokenizer_wpm_session
+- desc: UGM 分词器结构体，继承自 llm_tokenizer，构造函数接受词汇表和预编译字符映射。
+  methods:
+  - code:
+    - llm_tokenizer_ugm(const llama_vocab & vocab, const std::vector<char> & precompiled_charsmap)
+      {
+    - '        if ('
+    desc: 构造函数，接受词汇表引用和预编译字符映射向量。
+    line: 671-672
+    name: llm_tokenizer_ugm
+  name: llm_tokenizer_ugm
+- desc: The UGM (Unigram) tokenizer class, which handles vocabulary initialization
+    and tokenization for unigram models using an XOR-compressed compact double array
+    (XCDA) for normalization.
+  methods:
+  - code:
+    - llm_tokenizer_ugm(const llama_vocab & vocab, const std::vector<char> & precompiled_charsmap)
+      {
+    - '    if (precompiled_charsmap.size() > 0) {'
+    - '        size_t charsmap_offset = 0;'
+    - '        uint32_t xcda_blob_size = *(const uint32_t *) &precompiled_charsmap[0];'
+    - '        charsmap_offset += sizeof(xcda_blob_size);'
+    - '        if (xcda_blob_size + charsmap_offset >= precompiled_charsmap.size())
+      {'
+    - '            throw std::runtime_error("Index out of array bounds in precompiled
+      charsmap!");'
+    - '        }'
+    - '        xcda_array = (const uint32_t *) &precompiled_charsmap[charsmap_offset];'
+    - '        xcda_array_size = xcda_blob_size / sizeof(uint32_t);'
+    - '        charsmap_offset += xcda_blob_size;'
+    - '        prefix_replacements = &precompiled_charsmap[charsmap_offset];'
+    - '        prefix_replacements_size = precompiled_charsmap.size() - charsmap_offset;'
+    - '    }'
+    - '    for (uint32_t id = 0; id < vocab.n_tokens(); ++id) {'
+    - '        const auto & token_data = vocab.get_token_data(id);'
+    - '        if (vocab.is_normal(id)) {'
+    - '            min_score = std::min<float>(min_score, token_data.score);'
+    - '            max_score = std::max<float>(max_score, token_data.score);'
+    - '        }'
+    - '        if (vocab.is_normal(id) || vocab.is_user_defined(id) || vocab.is_unused(id))
+      {'
+    - '            token_matcher.insert(token_data.text.data(), token_data.text.size(),
+      id);'
+    - '        }'
+    - '        if (vocab.is_user_defined(id)) {'
+    - '            user_defined_token_matcher.insert(token_data.text.data(), token_data.text.size());'
+    - '        }'
+    - '    }'
+    - '    unknown_token_score = min_score - unknown_token_score_penalty;'
+    - '}'
+    desc: Constructor that initializes the tokenizer by loading precompiled charset
+      mappings and building a token trie from the vocabulary.
+    line: 832-862
+    name: llm_tokenizer_ugm
+  name: llm_tokenizer_ugm
+- desc: The session class for UGM tokenization, implementing the Viterbi algorithm
+    for unigram language models with normalization support.
+  methods:
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    size_t output_size = output.size();'
+    - '    std::string normalized;'
+    - '    normalize(text, &normalized);'
+    - '    size_t input_len = normalized.size();'
+    - '    if (input_len == 0) {'
+    - '        return;'
+    - '    }'
+    - '    std::vector<struct best_tokenization> tokenization_results(input_len +
+      1, {vocab.token_unk(), 0, -DBL_MAX});'
+    - '    tokenization_results[0] = { vocab.token_unk(), 0, 0 };'
+    - '    for (size_t input_offset = 0; input_offset < input_len;) {'
+    - '        size_t prefix_offset = input_offset;'
+    - '        size_t n_utf8_code_units = std::min<size_t>(unicode_len_utf8(normalized[input_offset]),
+      input_len - input_offset);'
+    - '        bool single_codepoint_token_found = false;'
+    - '        const struct best_tokenization & current_best = tokenization_results[input_offset];'
+    - '        const struct naive_trie * node = tokenizer.token_matcher.traverse(normalized[prefix_offset++]);'
+    - '        while (prefix_offset <= input_len && node != NULL) {'
+    - '            if (node->has_value) {'
+    - '                if (prefix_offset - input_offset == n_utf8_code_units) {'
+    - '                    single_codepoint_token_found = true;'
+    - '                }'
+    - '                llama_token token_id = node->value;'
+    - '                const auto & token_data = vocab.get_token_data(token_id);'
+    - '                const double token_score = vocab.is_user_defined(token_id)
+      ? 0.0 : token_data.score;'
+    - '                const double challenger_score = current_best.score_sum + token_score;'
+    - '                struct best_tokenization & current_champ = tokenization_results[prefix_offset];'
+    - '                if (challenger_score > current_champ.score_sum) {'
+    - '                    struct best_tokenization challenger = { token_id, input_offset,
+      challenger_score };'
+    - '                    current_champ = challenger;'
+    - '                }'
+    - '            }'
+    - '            node = node->traverse(normalized[prefix_offset++]);'
+    - '        }'
+    - '        if (!single_codepoint_token_found) {'
+    - '            const double challenger_score = current_best.score_sum + tokenizer.unknown_token_score;'
+    - '            prefix_offset = input_offset + n_utf8_code_units;'
+    - '            struct best_tokenization & current_champ = tokenization_results[prefix_offset];'
+    - '            if (challenger_score > current_champ.score_sum) {'
+    - '                struct best_tokenization challenger = { vocab.token_unk(),
+      input_offset, challenger_score };'
+    - '                current_champ = challenger;'
+    - '            }'
+    - '        }'
+    - '        input_offset += n_utf8_code_units;'
+    - '    }'
+    - '    bool is_prev_unknown = false;'
+    - '    for (struct best_tokenization & tokenization = tokenization_results[input_len];
+      ; tokenization = tokenization_results[tokenization.input_offset]) {'
+    - '        bool is_unknown = tokenization.token_id == vocab.token_unk();'
+    - '        if (!(is_prev_unknown && is_unknown)) {'
+    - '            output.push_back(tokenization.token_id);'
+    - '        }'
+    - '        if (tokenization.input_offset == 0) {'
+    - '            break;'
+    - '        }'
+    - '        is_prev_unknown = is_unknown;'
+    - '    }'
+    - '    std::reverse(output.begin() + output_size, output.end());'
+    - '}'
+    desc: Tokenizes the input text using an optimized Viterbi algorithm with token
+      trie traversal and dynamic programming to find the best tokenization path.
+    line: 864-912
+    name: tokenize
+  - code:
+    - void normalize(const std::string& input, std::string * normalized) {
+    - '    normalized->clear();'
+    - '    normalized->reserve(input.size() * 3);'
+    - '    const std::string space = vocab.get_escape_whitespaces() ? tokenizer.escaped_space
+      : " ";'
+    - '    const bool shall_prepend_space = !vocab.get_treat_whitespace_as_suffix()
+      && vocab.get_add_space_prefix();'
+    - '    const bool shall_append_space  =  vocab.get_treat_whitespace_as_suffix()
+      && vocab.get_add_space_prefix();'
+    - '    const bool shall_merge_spaces  =  vocab.get_remove_extra_whitespaces();'
+    - '    bool is_space_prepended = false;'
+    - '    bool processing_non_ws = false;'
+    - '    size_t input_len = input.size();'
+    - '    for (size_t input_offset = 0; input_offset < input_len; ) {'
+    - '        auto norm_res = normalize_prefix(input, input_offset);'
+    - '        for (size_t i = 0; i < norm_res.normalized_len; i++) {'
+    - '            char c = norm_res.normalized[i];'
+    - '            if (c != '' '') {'
+    - '                if (!processing_non_ws) {'
+    - '                    processing_non_ws = true;'
+    - '                    if ((shall_prepend_space && !is_space_prepended) || shall_merge_spaces)
+      {'
+    - '                        normalized->append(space);'
+    - '                        is_space_prepended = true;'
+    - '                    }'
+    - '                }'
+    - '                normalized->push_back(c);'
+    - '            } else {'
+    - '                if (processing_non_ws) {'
+    - '                    processing_non_ws = false;'
+    - '                }'
+    - '                if (!shall_merge_spaces) {'
+    - '                    normalized->append(space);'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        input_offset += norm_res.consumed_input;'
+    - '    }'
+    - '    if (shall_append_space) {'
+    - '        normalized->append(space);'
+    - '    }'
+    - '}'
+    desc: Normalizes the input text according to vocabulary settings, including space
+      handling and prefix/suffix space options.
+    line: 914-955
+    name: normalize
+  - code:
+    - struct normalization_result normalize_prefix(const std::string & input, size_t
+      input_offset) {
+    - '    if (input_offset == input.size()) {'
+    - '        return { &input[input_offset], 0, 0 };'
+    - '    }'
+    - '    auto user_defined_token_match = tokenizer.user_defined_token_matcher.get_longest_prefix(&input[input_offset],
+      input.size() - input_offset);'
+    - '    if (user_defined_token_match.second > 0) {'
+    - '        return { &input[input_offset], user_defined_token_match.second, user_defined_token_match.second
+      };'
+    - '    }'
+    - '    size_t longest_prefix_length = 0;'
+    - '    size_t longest_prefix_offset = 0;'
+    - '    if (tokenizer.xcda_array_size > 0) {'
+    - '        struct xcda_array_view xcda_view(tokenizer.xcda_array, tokenizer.xcda_array_size);'
+    - '        uint32_t node_index = 0;'
+    - '        node_index = xcda_view.get_base(node_index);'
+    - '        for (size_t prefix_offset = input_offset; prefix_offset < input.size();
+      prefix_offset++) {'
+    - '            unsigned char c = input[prefix_offset];'
+    - '            if (c == 0) {'
+    - '                break;'
+    - '            }'
+    - '            node_index ^= c;'
+    - '            if (xcda_view.get_lcheck(node_index) != c) {'
+    - '                break;'
+    - '            }'
+    - '            bool is_leaf = xcda_view.get_leaf(node_index);'
+    - '            node_index ^= xcda_view.get_base(node_index);'
+    - '            if (is_leaf) {'
+    - '                longest_prefix_length = prefix_offset - input_offset + 1;'
+    - '                longest_prefix_offset = xcda_view.get_value(node_index);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    if (longest_prefix_length > 0) {'
+    - '        if (longest_prefix_offset >= tokenizer.prefix_replacements_size) {'
+    - '            throw std::runtime_error("Index out of array bounds in precompiled
+      charsmap!");'
+    - '        }'
+    - '        const char * prefix_replacement = &(tokenizer.prefix_replacements)[longest_prefix_offset];'
+    - '        return { prefix_replacement, strlen(prefix_replacement), longest_prefix_length
+      };'
+    - '    }'
+    - '    try {'
+    - '        size_t prefix_offset = input_offset;'
+    - '        unicode_cpt_from_utf8(input, prefix_offset);'
+    - '        return { &input[input_offset], prefix_offset - input_offset, prefix_offset
+      - input_offset };'
+    - '    } catch (std::invalid_argument & /*ex*/) {'
+    - '        return { "\xEF\xBF\xBD", 3, 1 };'
+    - '    }'
+    - '}'
+    desc: Normalizes a prefix of the input string by checking user-defined tokens,
+      XCDA mappings, and valid UTF-8 sequences.
+    line: 957-1001
+    name: normalize_prefix
+  name: llm_tokenizer_ugm_session
+- desc: A view wrapper for XOR-compressed compact double array (XCDA) entries used
+    in UGM tokenizer normalization.
+  methods:
+  - code:
+    - uint32_t get_base(size_t index) {
+    - '    uint32_t packed_node = get_node(index);'
+    - '    return (packed_node >> 10) << ((packed_node & (1U << 9)) >> 6);'
+    - '}'
+    desc: Extracts the BASE array value from a packed XCDA node entry.
+    line: 963-966
+    name: get_base
+  - code:
+    - uint32_t get_lcheck(size_t index) {
+    - '    uint32_t packed_node = get_node(index);'
+    - '    return packed_node & ((1U << 31) | 0xff);'
+    - '}'
+    desc: Extracts the LCHECK array value from a packed XCDA node entry.
+    line: 967-970
+    name: get_lcheck
+  - code:
+    - bool get_leaf(size_t index) {
+    - '    uint32_t packed_node = get_node(index);'
+    - '    return (packed_node >> 8) & 1;'
+    - '}'
+    desc: Checks if a packed XCDA node entry is a leaf node.
+    line: 971-974
+    name: get_leaf
+  - code:
+    - uint32_t get_value(size_t index) {
+    - '    uint32_t packed_node = get_node(index);'
+    - '    return packed_node & ((1U << 31) - 1);'
+    - '}'
+    desc: Extracts the value (replacement index) from a packed XCDA node entry.
+    line: 975-978
+    name: get_value
+  - code:
+    - uint32_t get_node(size_t index) {
+    - '    if (index >= xcda_array_size) {'
+    - '        throw std::runtime_error("Index out of array bounds in XCDA array!");'
+    - '    }'
+    - '    return xcda_array[index];'
+    - '}'
+    desc: Retrieves a packed node entry from the XCDA array with bounds checking.
+    line: 980-985
+    name: get_node
+  name: xcda_array_view
+- desc: The RWKV tokenizer class that builds a token trie from the vocabulary by unescaping
+    RWKV-specific token representations.
+  methods:
+  - code:
+    - llm_tokenizer_rwkv(const llama_vocab & vocab) {
+    - '    for (uint32_t id = 0; id < vocab.n_tokens(); ++id) {'
+    - '        const auto & data = vocab.get_token_data(id);'
+    - '        const auto text = llama_unescape_rwkv_token(data.text);'
+    - '        token_matcher.insert((const char *) text.data(), text.size(), id);'
+    - '    }'
+    - '}'
+    desc: Constructs the RWKV tokenizer by building a token matcher trie from decoded
+      vocabulary tokens.
+    line: 1045-1051
+    name: llm_tokenizer_rwkv
+  name: llm_tokenizer_rwkv
+- desc: Session class for RWKV tokenization that performs greedy longest-match tokenization
+    using the token trie.
+  methods:
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    uint32_t position = 0;'
+    - '    while (position < text.size()) {'
+    - '        const struct naive_trie * node = tokenizer.token_matcher.traverse(text[position]);'
+    - '        if (node == NULL) {'
+    - '            output.push_back(vocab.token_unk());'
+    - '            position += 1;'
+    - '            continue;'
+    - '        }'
+    - '        uint32_t token_id = 0;'
+    - '        uint32_t token_length = 0;'
+    - '        while (node != NULL) {'
+    - '            if (node->has_value) {'
+    - '                token_id = node->value;'
+    - '                token_length = position + 1;'
+    - '            }'
+    - '            node = node->traverse(text[++position]);'
+    - '        }'
+    - '        output.push_back(token_id);'
+    - '        position = token_length;'
+    - '    }'
+    - '}'
+    desc: Tokenizes the input text using greedy longest-match traversal of the token
+      trie.
+    line: 1059-1083
+    name: tokenize
+  name: llm_tokenizer_rwkv_session
+- desc: The Plamo2 tokenizer class that implements a byte-level BPE tokenizer with
+    dynamic programming for optimal tokenization.
+  methods:
+  - code:
+    - void build(const llama_vocab & vocab) {
+    - '    tokens_.clear();'
+    - '    bytes_.assign(256, 0);'
+    - '    to_suffix_id_.clear();'
+    - '    table_.clear();'
+    - '    std::unordered_map<std::string, float> suffix_to_score;'
+    - '    std::unordered_map<std::string, llama_token> token_to_id;'
+    - '    for (size_t token_id = 0; token_id < vocab.n_tokens(); ++token_id) {'
+    - '        const auto & entry = vocab.get_token_data(token_id);'
+    - '        tokens_.push_back(entry.text);'
+    - '        token_to_id[entry.text] = static_cast<llama_token>(token_id);'
+    - '        if (vocab.is_byte(token_id)) {'
+    - '            if (entry.text.length() == 6 && entry.text.substr(0, 3) == "<0x"
+      && entry.text.back() == ''>'') {'
+    - '                std::string hex_str = entry.text.substr(3, 2);'
+    - '                int byte_val = std::stoi(hex_str, nullptr, 16);'
+    - '                bytes_[byte_val] = static_cast<llama_token>(token_id);'
+    - '            }'
+    - '            continue;'
+    - '        }'
+    - '        suffix_to_score[entry.text] = entry.score;'
+    - '        std::vector<uint32_t> cpts = unicode_cpts_from_utf8(entry.text);'
+    - '        for (size_t i = 1; i < cpts.size(); ++i) {'
+    - '            std::string suffix;'
+    - '            for (size_t j = i; j < cpts.size(); ++j) {'
+    - '                suffix += unicode_cpt_to_utf8(cpts[j]);'
+    - '            }'
+    - '            if (suffix_to_score.find(suffix) == suffix_to_score.end()) {'
+    - '                suffix_to_score[suffix] = std::numeric_limits<float>::quiet_NaN();'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    for (int i = 0; i < 256; ++i) {'
+    - '        if (bytes_[i] == 0) {'
+    - '            throw std::runtime_error("Byte token for <0x" + std::to_string(i)
+      + "> is not set");'
+    - '        }'
+    - '    }'
+    - '    std::vector<std::string> suffixes;'
+    - '    suffixes.reserve(suffix_to_score.size() + 1);'
+    - '    for (const auto & pair : suffix_to_score) {'
+    - '        suffixes.push_back(pair.first);'
+    - '    }'
+    - '    suffixes.push_back("");'
+    - '    std::sort(suffixes.begin(), suffixes.end(), [](const std::string & a, const
+      std::string & b) {'
+    - '        std::string rev_a(a.rbegin(), a.rend());'
+    - '        std::string rev_b(b.rbegin(), b.rend());'
+    - '        return rev_a < rev_b;'
+    - '    });'
+    - '    std::unordered_map<std::string, int32_t> suffix_to_id;'
+    - '    int32_t num_pieces = 0;'
+    - '    for (const auto & suffix : suffixes) {'
+    - '        suffix_to_id[suffix] = num_pieces;'
+    - '        if (!suffix.empty()) {'
+    - '            std::vector<uint32_t> cpts = unicode_cpts_from_utf8(suffix);'
+    - '            std::string remaining;'
+    - '            for (size_t i = 1; i < cpts.size(); ++i) {'
+    - '                remaining += unicode_cpt_to_utf8(cpts[i]);'
+    - '            }'
+    - '            int64_t piece_code = (static_cast<int64_t>(cpts[0]) << 32) | suffix_to_id[remaining];'
+    - '            to_suffix_id_[piece_code] = num_pieces;'
+    - '            int32_t pieces_for_suffix = 1;'
+    - '            for (int32_t piece_length = static_cast<int32_t>(cpts.size());
+      piece_length > 0; --piece_length) {'
+    - '                std::string piece;'
+    - '                for (int32_t i = 0; i < piece_length; ++i) {'
+    - '                    piece += unicode_cpt_to_utf8(cpts[i]);'
+    - '                }'
+    - '                if (suffix_to_score.find(piece) != suffix_to_score.end()) {'
+    - '                    pieces_for_suffix++;'
+    - '                }'
+    - '            }'
+    - '            num_pieces += pieces_for_suffix;'
+    - '        } else {'
+    - '            num_pieces++;'
+    - '        }'
+    - '    }'
+    - '    table_.resize(num_pieces, std::vector<int32_t>(4, 0));'
+    - '    int32_t table_idx = 0;'
+    - '    for (const auto & suffix : suffixes) {'
+    - '        std::vector<uint32_t> cpts = unicode_cpts_from_utf8(suffix);'
+    - '        for (int32_t piece_length = static_cast<int32_t>(cpts.size()); piece_length
+      > 0; --piece_length) {'
+    - '            std::string piece;'
+    - '            for (int32_t i = 0; i < piece_length; ++i) {'
+    - '                piece += unicode_cpt_to_utf8(cpts[i]);'
+    - '            }'
+    - '            auto score_it = suffix_to_score.find(piece);'
+    - '            if (score_it == suffix_to_score.end()) {'
+    - '                continue;'
+    - '            }'
+    - '            table_[table_idx][TABLE_PIECE_LENGTH] = piece_length;'
+    - '            auto token_it = token_to_id.find(piece);'
+    - '            table_[table_idx][TABLE_TOKEN_ID] = (token_it != token_to_id.end())
+      ? token_it->second : -1;'
+    - '            float score = score_it->second;'
+    - '            table_[table_idx][TABLE_SCORE] = std::isfinite(score) ? static_cast<int32_t>(std::round(score
+      * 1e4)) : INVALID_SCORE;'
+    - '            table_[table_idx][TABLE_PIECE_ID] = suffix_to_id[piece];'
+    - '            table_idx++;'
+    - '        }'
+    - '        table_[table_idx][TABLE_PIECE_LENGTH] = 1;'
+    - '        table_[table_idx][TABLE_TOKEN_ID] = -1;'
+    - '        table_[table_idx][TABLE_SCORE] = UNKNOWN_SCORE;'
+    - '        table_idx++;'
+    - '    }'
+    - '}'
+    desc: Builds the tokenizer's internal structures including token lists, byte mappings,
+      suffix dictionaries, and the flattened table.
+    line: 1095-1160
+    name: build
+  - code:
+    - std::vector<llama_token> encode(const std::string & text) const {
+    - '    std::vector<uint32_t> unicode_data = unicode_cpts_from_utf8(text);'
+    - '    if (!unicode_data.empty() && unicode_data[0] == 0xFEFF) {'
+    - '        unicode_data.erase(unicode_data.begin());'
+    - '    }'
+    - '    if (unicode_data.empty()) {'
+    - '        return {};'
+    - '    }'
+    - '    const size_t data_len = unicode_data.size();'
+    - '    std::vector<int64_t> scores(data_len + 1, static_cast<int64_t>(1) << 60);'
+    - '    scores[data_len] = 0;'
+    - '    std::vector<std::vector<int32_t>> path(data_len + 1, std::vector<int32_t>(3,
+      0));'
+    - '    int32_t suffix_id = 0;'
+    - '    for (int i = static_cast<int>(data_len) - 1; i >= 0; --i) {'
+    - '        uint32_t c = unicode_data[i];'
+    - '        for (size_t p = suffix_id; p < table_.size(); ++p) {'
+    - '            int64_t piece_code = (static_cast<int64_t>(c) << 32) | table_[p][TABLE_PIECE_ID];'
+    - '            auto it = to_suffix_id_.find(piece_code);'
+    - '            suffix_id = (it != to_suffix_id_.end()) ? it->second : 0;'
+    - '            if (suffix_id > 0 || table_[p][TABLE_SCORE] == UNKNOWN_SCORE) {'
+    - '                break;'
+    - '            }'
+    - '        }'
+    - '        for (size_t p = suffix_id; p < table_.size(); ++p) {'
+    - '            int32_t score = table_[p][TABLE_SCORE];'
+    - '            if (score > INVALID_SCORE) {'
+    - '                int32_t piece_length = table_[p][TABLE_PIECE_LENGTH];'
+    - '                int64_t s = scores[i + piece_length] - score;'
+    - '                if (s < scores[i]) {'
+    - '                    scores[i] = s;'
+    - '                    path[i][PATH_TOKEN_LENGTH] = piece_length;'
+    - '                    path[i][PATH_TOKEN_ID] = table_[p][TABLE_TOKEN_ID];'
+    - '                    path[i][PATH_NUM_TOKENS] = path[i + piece_length][PATH_NUM_TOKENS]
+      + 1;'
+    - '                    if (score == UNKNOWN_SCORE) {'
+    - '                        path[i][PATH_NUM_TOKENS] += (c >= 0x80) + (c >= 0x800)
+      + (c >= 0x10000);'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '            if (score == UNKNOWN_SCORE) {'
+    - '                break;'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '    std::vector<llama_token> token_ids;'
+    - '    token_ids.reserve(path[0][PATH_NUM_TOKENS]);'
+    - '    int pos = 0;'
+    - '    while (pos < static_cast<int>(data_len)) {'
+    - '        if (path[pos][PATH_TOKEN_ID] >= 0) {'
+    - '            token_ids.push_back(path[pos][PATH_TOKEN_ID]);'
+    - '        } else {'
+    - '            uint32_t c = unicode_data[pos];'
+    - '            int s = 1 + (c >= 0x80) + (c >= 0x800) + (c >= 0x10000);'
+    - '            for (int i = 0; i < s; ++i) {'
+    - '                uint8_t b;'
+    - '                if (s == 1) {'
+    - '                    b = c;'
+    - '                } else {'
+    - '                    if (i == 0) {'
+    - '                        b = (0xF00 >> s) & 0xFF;'
+    - '                    } else {'
+    - '                        b = 0x80;'
+    - '                    }'
+    - '                }'
+    - '                token_ids.push_back(bytes_[b | ((c >> ((s - i - 1) * 6)) &
+      0x3F)]);'
+    - '            }'
+    - '        }'
+    - '        assert(path[pos][PATH_TOKEN_LENGTH] > 0);'
+    - '        pos += path[pos][PATH_TOKEN_LENGTH];'
+    - '    }'
+    - '    return token_ids;'
+    - '}'
+    desc: Encodes the input text using dynamic programming to find the optimal tokenization
+      path based on token scores.
+    line: 1162-1224
+    name: encode
+  name: llm_tokenizer_plamo2
+- desc: Session class for Plamo2 tokenization that wraps the encode method for tokenization
+    interface compatibility.
+  methods:
+  - code:
+    - void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    - '    std::vector<llama_token> tokens = tokenizer.encode(text);'
+    - '    output.insert(output.end(), tokens.begin(), tokens.end());'
+    - '}'
+    desc: Tokenizes the input text by calling the encoder and appending results to
+      the output.
+    line: 1232-1238
+    name: tokenize
+  name: llm_tokenizer_plamo2_session
+- desc: A variant class representing either a token or raw text fragment for tokenizer
+    partitioning.
+  methods:
+  - code:
+    - fragment_buffer_variant(llama_token _token)
+    - ':'
+    - '    type(FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN),'
+    - '    token(_token),'
+    - '    raw_text(_dummy),'
+    - '    offset(0),'
+    - '    length(0) {}'
+    desc: Constructor for creating a token-based fragment variant.
+    line: 1247-1253
+    name: fragment_buffer_variant
+  - code:
+    - fragment_buffer_variant(const std::string & _raw_text, int64_t _offset, int64_t
+      _length)
+    - ':'
+    - '    type(FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT),'
+    - '    token((llama_token) - 1),'
+    - '    raw_text(_raw_text),'
+    - '    offset(_offset),'
+    - '    length(_length){'
+    - '        GGML_ASSERT(_offset >= 0);'
+    - '        GGML_ASSERT(_length >= 1);'
+    - '        GGML_ASSERT(offset + length <= raw_text.length());'
+    - '    }'
+    desc: Constructor for creating a raw text-based fragment variant with offset and
+      length.
+    line: 1255-1265
+    name: fragment_buffer_variant
+  name: fragment_buffer_variant
+- desc: The internal implementation class for the llama vocabulary, containing vocabulary
+    data, tokenizer configurations, and tokenization methods.
+  methods:
+  - code:
+    - 'impl(const llama_vocab & vocab) : vocab(vocab) {'
+    - '}'
+    desc: Constructor that initializes the impl with a reference to the vocabulary.
+    line: 1338-1340
+    name: impl
+  - code:
+    - void load(llama_model_loader & ml, const LLM_KV & kv);
+    desc: Loads vocabulary data from a model loader (declaration only, implementation
+      elsewhere).
+    line: '1342'
+    name: load
+  - code:
+    - enum llama_vocab_type get_type() const;
+    desc: Returns the vocabulary type (declaration only).
+    line: '1344'
+    name: get_type
+  - code:
+    - std::string type_name() const;
+    desc: Returns the vocabulary type name (declaration only).
+    line: '1346'
+    name: type_name
+  - code:
+    - bool is_normal      (llama_token id) const;
+    desc: Checks if a token id is a normal token (declaration only).
+    line: '1348'
+    name: is_normal
+  - code:
+    - bool is_unknown     (llama_token id) const;
+    desc: Checks if a token id is the unknown token (declaration only).
+    line: '1349'
+    name: is_unknown
+  - code:
+    - bool is_control     (llama_token id) const;
+    desc: Checks if a token id is a control token (declaration only).
+    line: '1350'
+    name: is_control
+  - code:
+    - bool is_byte        (llama_token id) const;
+    desc: Checks if a token id is a byte token (declaration only).
+    line: '1351'
+    name: is_byte
+  - code:
+    - bool is_user_defined(llama_token id) const;
+    desc: Checks if a token id is a user-defined token (declaration only).
+    line: '1352'
+    name: is_user_defined
+  - code:
+    - bool is_unused      (llama_token id) const;
+    desc: Checks if a token id is an unused token (declaration only).
+    line: '1353'
+    name: is_unused
+  - code:
+    - bool is_eog         (llama_token id) const;
+    desc: Checks if a token id is an end-of-generation token (declaration only).
+    line: '1354'
+    name: is_eog
+  - code:
+    - uint8_t token_to_byte(llama_token id) const;
+    desc: Converts a token id to its byte value (declaration only).
+    line: '1356'
+    name: token_to_byte
+  - code:
+    - llama_token_attr token_get_attr(llama_token id) const;
+    desc: Gets token attributes for a given token id (declaration only).
+    line: '1358'
+    name: token_get_attr
+  - code:
+    - void init_tokenizer(enum llama_vocab_type type);
+    desc: Initializes the tokenizer based on the vocabulary type (declaration only).
+    line: '1360'
+    name: init_tokenizer
+  - code:
+    - void tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer,
+      bool parse_special) const;
+    desc: Partitions the buffer into fragments, handling special tokens (declaration
+      only).
+    line: '1362'
+    name: tokenizer_st_partition
+  - code:
+    - std::string token_to_piece_for_cache(
+    - '    llama_token   token,'
+    - '    bool   special) const;'
+    desc: Converts a token to its piece representation for caching (declaration only).
+    line: 1364-1367
+    name: token_to_piece_for_cache
+  - code:
+    - std::vector<llama_token> tokenize(
+    - '    const std::string & raw_text,'
+    - '    bool   add_special,'
+    - '    bool   parse_special = false) const;'
+    desc: Tokenizes the input text with options for special tokens (declaration only).
+    line: 1369-1372
+    name: tokenize
+  name: llama_vocab::impl
+- desc: 词汇表管理类，负责存储和操作词汇表数据，包括token到ID的映射、token属性、特殊token ID等，impl是其内部实现结构。
+  methods:
+  - code:
+    - void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+    - '    struct gguf_context * ctx = ml.metadata;'
+    - '    // determine vocab type'
+    - '    {'
+    - '        ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model);'
+    - '        ml.get_key(LLM_KV_TOKENIZER_PRE,   tokenizer_pre, false);'
+    - '        ml.get_key(LLM_KV_TOKENIZER_TOKEN_TYPE_COUNT, n_token_types, false);'
+    - '        ...'
+    - '        init_tokenizer(type);'
+    - '        ...'
+    - '    }'
+    - '    ...'
+    - '}'
+    desc: 加载函数，从llama_model_loader中读取GGUF元数据和词汇表内容，初始化整个词汇表结构，包括类型识别、token读取、特殊token识别和预处理配置等。
+    line: 76-580
+    name: impl::load
+  - code:
+    - std::vector<llama_token> tokenize(
+    - '        const std::string & raw_text,'
+    - '                     bool   add_special,'
+    - '                     bool   parse_special = false) const;'
+    - int32_t tokenize(
+    - '               const char * text,'
+    - '                  int32_t   text_len,'
+    - '              llama_token * tokens,'
+    - '                  int32_t   n_tokens_max,'
+    - '                     bool   add_special,'
+    - '                     bool   parse_special) const;'
+    desc: 分词函数（重载），将原始文本转换为token序列，支持添加特殊token和解析特殊token选项。
+    line: 33-51
+    name: tokenize
+  - code:
+    - int32_t token_to_piece(
+    - '              llama_token   token,'
+    - '                     char * buf,'
+    - '                  int32_t   length,'
+    - '                  int32_t   lstrip,'
+    - '                     bool   special) const;'
+    - const std::string & token_to_piece(llama_token token) const;
+    desc: 将给定的token转换为其对应的字符串表示（piece），支持不同的边界和特殊token处理选项。
+    line: 53-62
+    name: token_to_piece
+  - code:
+    - int32_t detokenize(
+    - '        const llama_token * tokens,'
+    - '                  int32_t   n_tokens,'
+    - '                     char * text,'
+    - '                  int32_t   text_len_max,'
+    - '                     bool   remove_special,'
+    - '                     bool   unparse_special) const;'
+    - std::string detokenize(
+    - '        const std::vector<llama_token> & tokens,'
+    - '                                  bool   special) const;'
+    desc: 反分词函数（重载），将token序列转换回可读文本，支持移除特殊token和反转特殊token解析。
+    line: 64-79
+    name: detokenize
+  - code:
+    - void tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer,
+      bool parse_special) const;
+    desc: 分词器预处理函数，将输入缓冲区按特殊token进行分区处理，以便后续的分词步骤。
+    line: 25-27
+    name: tokenizer_st_partition
+  - code:
+    - std::string token_to_piece_for_cache(
+    - '              llama_token   token,'
+    - '                     bool   special) const;'
+    desc: 用于缓存目的的token到字符串转换函数，提供与token_to_piece类似的功能但针对缓存场景优化。
+    line: 29-31
+    name: token_to_piece_for_cache
+  - code:
+    - void print_info() const;
+    desc: 打印词汇表信息的函数，用于调试和日志输出。
+    line: 81-82
+    name: print_info
+  name: llama_vocab
+- desc: 词汇表实现类，负责管理词汇数据结构、token 属性、特殊 token 缓存，以及执行分词和去分词操作
+  methods:
+  - code:
+    - void llama_vocab::impl::load(llama_model_loader & ml, const llama_model & model)
+      {
+    - '    // 创建 tokenizer 并初始化'
+    - '    ...'
+    - '    // 从 GGUF 文件读取特殊 token ID'
+    - '    ...'
+    - '    // 构建特殊 token 缓存'
+    - '    ...'
+    desc: 从 GGUF 模型文件加载词汇数据，初始化 token 映射、属性、特殊 token ID，并构建缓存
+    line: 2501-2650
+    name: load
+  - code:
+    - enum llama_vocab_type llama_vocab::impl::get_type() const {
+    - '    return type;'
+    - '}'
+    desc: 返回词汇表类型
+    line: 2651-2653
+    name: get_type
+  - code:
+    - std::string llama_vocab::impl::type_name() const {
+    - '    switch (type) {'
+    - '        case LLAMA_VOCAB_TYPE_NONE:   return "no vocab";'
+    - '        case LLAMA_VOCAB_TYPE_SPM:    return "SPM";'
+    - '        case LLAMA_VOCAB_TYPE_BPE:    return "BPE";'
+    - '        case LLAMA_VOCAB_TYPE_WPM:    return "WPM";'
+    - '        case LLAMA_VOCAB_TYPE_UGM:    return "UGM";'
+    - '        case LLAMA_VOCAB_TYPE_RWKV:   return "RWKV";'
+    - '        case LLAMA_VOCAB_TYPE_PLAMO2: return "PLaMo2";'
+    - '        default:                      return "unknown";'
+    - '    }'
+    - '}'
+    desc: 返回词汇表类型的字符串名称
+    line: 2655-2664
+    name: type_name
+  - code:
+    - bool llama_vocab::impl::is_normal(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_NORMAL;'
+    - '}'
+    desc: 检查 token 是否为普通类型
+    line: 2666-2669
+    name: is_normal
+  - code:
+    - bool llama_vocab::impl::is_unknown(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_UNKNOWN;'
+    - '}'
+    desc: 检查 token 是否为未知类型
+    line: 2671-2674
+    name: is_unknown
+  - code:
+    - bool llama_vocab::impl::is_control(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_CONTROL;'
+    - '}'
+    desc: 检查 token 是否为控制类型
+    line: 2676-2679
+    name: is_control
+  - code:
+    - bool llama_vocab::impl::is_byte(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_BYTE;'
+    - '}'
+    desc: 检查 token 是否为字节类型
+    line: 2681-2684
+    name: is_byte
+  - code:
+    - bool llama_vocab::impl::is_user_defined(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_USER_DEFINED;'
+    - '}'
+    desc: 检查 token 是否为用户自定义类型
+    line: 2686-2689
+    name: is_user_defined
+  - code:
+    - bool llama_vocab::impl::is_unused(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token[id].attr & LLAMA_TOKEN_ATTR_UNUSED;'
+    - '}'
+    desc: 检查 token 是否为未使用类型
+    line: 2691-2694
+    name: is_unused
+  - code:
+    - bool llama_vocab::impl::is_eog(llama_token id) const {
+    - '    return id != LLAMA_TOKEN_NULL && special_eog_ids.count(id) > 0;'
+    - '}'
+    desc: 检查 token 是否为结束生成（End of Generation）token
+    line: 2696-2698
+    name: is_eog
+  - code:
+    - uint8_t llama_vocab::impl::token_to_byte(llama_token id) const {
+    - '    GGML_ASSERT(get_type() != LLAMA_VOCAB_TYPE_NONE);'
+    - '    GGML_ASSERT(is_byte(id));'
+    - '    const auto & token_data = id_to_token.at(id);'
+    - '    switch (get_type()) {'
+    - '        case LLAMA_VOCAB_TYPE_SPM:'
+    - '        case LLAMA_VOCAB_TYPE_UGM: {'
+    - '            auto buf = token_data.text.substr(3, 2);'
+    - '            return strtol(buf.c_str(), NULL, 16);'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_BPE: {'
+    - '            // Gemma4 uses BPE with SPM-style byte fallback tokens (<0xXX>)'
+    - '            auto buf = token_data.text.substr(3, 2);'
+    - '            return strtol(buf.c_str(), NULL, 16);'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_WPM: {'
+    - '            GGML_ABORT("fatal error");'
+    - '        }'
+    - '        default:'
+    - '            GGML_ABORT("fatal error");'
+    - '    }'
+    - '}'
+    desc: 将 token 转换为对应的字节值
+    line: 2700-2715
+    name: token_to_byte
+  - code:
+    - llama_token_attr llama_vocab::impl::token_get_attr(llama_token id) const {
+    - '    GGML_ASSERT(type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return id_to_token.at(id).attr;'
+    - '}'
+    desc: 获取 token 的属性
+    line: 2717-2720
+    name: token_get_attr
+  - code:
+    - void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
+    - '    LLAMA_LOG_DEBUG("%s: initializing tokenizer for type %d\n", __func__, type);'
+    - '    switch (type) {'
+    - '        case LLAMA_VOCAB_TYPE_SPM:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_spm>(vocab);'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_BPE:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_bpe>(vocab);'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_WPM:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_wpm>(vocab);'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_UGM:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_ugm>(vocab, precompiled_charsmap);'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_RWKV:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_rwkv>(vocab);'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_PLAMO2:'
+    - '            tokenizer = std::make_unique<llm_tokenizer_plamo2>(vocab);'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("unsupported vocab type");'
+    - '    }'
+    - '}'
+    desc: 根据词汇表类型初始化对应的分词器
+    line: 2722-2741
+    name: init_tokenizer
+  - code:
+    - void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant>
+      & buffer, bool parse_special) const {
+    - '    // 遍历所有特殊 token'
+    - '    for (const llama_token special_id : cache_special_tokens) {'
+    - '        ...'
+    - '        // 在文本中查找并分割特殊 token'
+    - '        ...'
+    - '    }'
+    - '}'
+    desc: 将原始文本分割成片段，并识别其中的特殊 token
+    line: 2743-2830
+    name: tokenizer_st_partition
+  - code:
+    - std::string llama_vocab::impl::token_to_piece_for_cache(llama_token token, bool
+      special) const {
+    - '    std::string piece;'
+    - '    piece.resize(piece.capacity()); // using string internal cache'
+    - '    const int n_chars = vocab.token_to_piece(token, &piece[0], piece.size(),
+      0, special);'
+    - '    if (n_chars < 0) {'
+    - '        piece.resize(-n_chars);'
+    - '        int check = vocab.token_to_piece(token, &piece[0], piece.size(), 0,
+      special);'
+    - '        GGML_ASSERT(check == -n_chars);'
+    - '    }'
+    - '    else {'
+    - '        piece.resize(n_chars);'
+    - '    }'
+    - '    return piece;'
+    - '}'
+    desc: 将 token 转换为文本片段，用于构建缓存
+    line: 2832-2845
+    name: token_to_piece_for_cache
+  - code:
+    - std::vector<llama_token> llama_vocab::impl::tokenize(
+    - '        const std::string & raw_text,'
+    - '        bool add_special,'
+    - '        bool parse_special) const {'
+    - '    GGML_ASSERT(tokenizer && "Tokenizer not initialized. Call llama_vocab::init_tokenizer()
+      first.");'
+    - '    ...'
+    - '    switch (get_type()) {'
+    - '        case LLAMA_VOCAB_TYPE_SPM:'
+    - '            // SPM 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_BPE:'
+    - '            // BPE 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_WPM:'
+    - '            // WPM 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_UGM:'
+    - '            // UGM 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_RWKV:'
+    - '            // RWKV 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_PLAMO2:'
+    - '            // PLaMo2 分词逻辑'
+    - '            ...'
+    - '            break;'
+    - '        case LLAMA_VOCAB_TYPE_NONE:'
+    - '            GGML_ABORT("fatal error");'
+    - '    }'
+    - '    return output;'
+    - '}'
+    desc: 将原始文本分词为 token ID 序列，支持不同的分词算法
+    line: 2847-2970
+    name: tokenize
+  - code:
+    - int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
+      length, int32_t lstrip, bool special) const {
+    - '    ...'
+    - '    // 如果缓存可用则使用缓存'
+    - '    ...'
+    - '    // 根据词汇表类型转换'
+    - '    ...'
+    - '}'
+    desc: 将 token ID 转换为对应的文本片段
+    line: 2972-3010
+    name: token_to_piece
+  name: llama_vocab::impl
+- desc: llama_vocab的内部实现类，封装词汇表的实际数据结构和核心算法逻辑
+  methods:
+  - code:
+    - int32_t token_to_piece(llama_token token, char * buf, int32_t length, bool escape_whitespaces,
+      bool special) const {
+    - '    const auto & token_text = id_to_token[token].text;'
+    - '    const auto & attr = id_to_token[token].attr;'
+    - '    const auto attr_special = LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED;'
+    - '    switch (type) {'
+    - '        case LLAMA_VOCAB_TYPE_SPM:'
+    - '        case LLAMA_VOCAB_TYPE_UGM: {'
+    - '            if (attr & (attr_special | LLAMA_TOKEN_ATTR_USER_DEFINED)) {'
+    - '                return _try_copy(token_text.data(), token_text.size());'
+    - '            }'
+    - '            if (attr & LLAMA_TOKEN_ATTR_NORMAL) {'
+    - '                std::string result = token_text;'
+    - '                llama_unescape_whitespace(result);'
+    - '                return _try_copy(result.data(), result.size());'
+    - '            }'
+    - '            if (attr & LLAMA_TOKEN_ATTR_BYTE) {'
+    - '                char byte = (char) token_to_byte(token);'
+    - '                return _try_copy((char*) &byte, 1);'
+    - '            }'
+    - '            break;'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_BPE: {'
+    - '            if (attr & (attr_special | LLAMA_TOKEN_ATTR_USER_DEFINED)) {'
+    - '                return _try_copy(token_text.data(), token_text.size());'
+    - '            }'
+    - '            if (attr & LLAMA_TOKEN_ATTR_NORMAL) {'
+    - '                if (escape_whitespaces) {'
+    - '                    std::string result = token_text;'
+    - '                    llama_unescape_whitespace(result);'
+    - '                    return _try_copy(result.data(), result.size());'
+    - '                }'
+    - '                std::string result = llama_decode_text(token_text);'
+    - '                return _try_copy(result.data(), result.size());'
+    - '            }'
+    - '            if (attr & LLAMA_TOKEN_ATTR_BYTE) {'
+    - '                char byte = (char) token_to_byte(token);'
+    - '                return _try_copy((char*) &byte, 1);'
+    - '            }'
+    - '            break;'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_RWKV: {'
+    - '            std::vector<uint8_t> result = llama_unescape_rwkv_token(token_text);'
+    - '            if (result.size() > (size_t)length) {'
+    - '                return -(int)result.size();'
+    - '            }'
+    - '            memcpy(buf, result.data(), result.size());'
+    - '            return (int)result.size();'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_PLAMO2: {'
+    - '            if (vocab.is_byte(token)) {'
+    - '                if (token_text.length() == 6 && token_text.substr(0, 3) ==
+      "<0x" && token_text.back() == ''>'') {'
+    - '                    int hex_val = std::stoi(token_text.substr(3, 2), nullptr,
+      16);'
+    - '                    if (length < 1) {'
+    - '                        return -1;'
+    - '                    }'
+    - '                    buf[0] = static_cast<char>(hex_val);'
+    - '                    return 1;'
+    - '                }'
+    - '            }'
+    - '            std::string result = token_text;'
+    - '            return _try_copy(result.data(), result.size());'
+    - '        }'
+    - '        default:'
+    - '            GGML_ABORT("fatal error");'
+    - '    }'
+    - '    return 0;'
+    - '}'
+    desc: 根据词汇表类型将单个token转换为piece文本片段，处理各种属性（控制符、正常、字节）
+    line: 3320-3424
+    name: token_to_piece
+  - code:
+    - const std::string & token_to_piece(llama_token token) const {
+    - '    return cache_token_to_piece.at(token);'
+    - '}'
+    desc: 根据token ID获取对应的piece字符串（缓存版本）
+    line: 3427-3431
+    name: token_to_piece
+  - code:
+    - int32_t detokenize(const llama_token * tokens, int32_t n_tokens, char * text,
+      int32_t text_len_max, bool remove_special, bool unparse_special) const {
+    - '    if (type == LLAMA_VOCAB_TYPE_NONE) {'
+    - '        return 0;'
+    - '    }'
+    - '    GGML_ASSERT(tokenizer && "Tokenizer not initialized. Call llama_vocab::init_tokenizer()
+      first.");'
+    - '    int32_t avail = text_len_max;'
+    - '    int32_t total = 0;'
+    - '    bool remove_space = add_space_prefix;'
+    - '    if (remove_special && add_bos) {'
+    - '        if (n_tokens > 0 && tokens[0] == special_bos_id) {'
+    - '            remove_space = false;'
+    - '            n_tokens--;'
+    - '            tokens++;'
+    - '        }'
+    - '    }'
+    - '    if (remove_special && add_eos) {'
+    - '        if (n_tokens > 0 && tokens[n_tokens - 1] == special_eos_id) {'
+    - '            n_tokens--;'
+    - '        }'
+    - '    }'
+    - '    for (int32_t i = 0; i < n_tokens; ++i) {'
+    - '        GGML_ASSERT(avail >= 0);'
+    - '        int32_t n_chars = token_to_piece(tokens[i], text, avail, remove_space,
+      unparse_special);'
+    - '        remove_space = false;'
+    - '        if (n_chars < 0) {'
+    - '            avail = 0;'
+    - '            total -= n_chars;'
+    - '        } else if (n_chars > 0) {'
+    - '            avail -= n_chars;'
+    - '            text  += n_chars;'
+    - '            total += n_chars;'
+    - '        }'
+    - '    }'
+    - '    if (total > text_len_max) {'
+    - '        return -total;'
+    - '    }'
+    - '    if (clean_spaces) {'
+    - '        text -= total;'
+    - '        const int32_t total1 = total;'
+    - '        total = total ? 1 : 0;'
+    - '        for (int32_t i = 1; i < total1; ++i) {'
+    - '            const char x = text[i];'
+    - '            if (text[i - 1] == '' '') {'
+    - '                if (x == ''?'' || x == ''!'' || x == ''.'' || x == '','') {'
+    - '                    total--;'
+    - '                }'
+    - '            }'
+    - '            text[total++] = x;'
+    - '        }'
+    - '        const int32_t total2 = total;'
+    - '        total = total ? 1 : 0;'
+    - '        for (int32_t i = 1; i < total2; ++i) {'
+    - '            const char x = text[i];'
+    - '            if (x == ''\'''' && i + 1 < total2 && text[i - 1] == '' '' && text[i
+      + 1] == '' '') {'
+    - '                total--;'
+    - '                text[++i] = ''\0'';'
+    - '            }'
+    - '            text[total++] = x;'
+    - '        }'
+    - '        const int32_t total3 = total;'
+    - '        total = total ? 1 : 0;'
+    - '        for (int32_t i = 1; i < total3; ++i) {'
+    - '            const char x = text[i];'
+    - '            if (text[i - 1] == '' '') {'
+    - '                if (x == ''\'''' && i + 1 < total3) {'
+    - '                    const char x1 = text[i + 1];'
+    - '                    if (x1 == ''t'' || x1 == ''d'') {'
+    - '                    } else if (x1 == ''s'' || x1 == ''m'') {'
+    - '                        total--;'
+    - '                    } else if (i + 2 < total3) {'
+    - '                        const char x2 = text[i + 2];'
+    - '                        if ((x1 == ''l'' && x2 == ''l'')) {'
+    - '                        } else if ((x1 == ''r'' && x2 == ''e'') || (x1 == ''v''
+      && x2 == ''e'')) {'
+    - '                            total--;'
+    - '                        }'
+    - '                    }'
+    - '                }'
+    - '            }'
+    - '            text[total++] = x;'
+    - '        }'
+    - '    }'
+    - '    return total <= text_len_max ? total : -total;'
+    - '}'
+    desc: 将token序列转换为文本字符串，支持移除特殊token和清理空格
+    line: 3433-3505
+    name: detokenize
+  - code:
+    - void print_info() const {
+    - '    LLAMA_LOG_INFO("%s: vocab type            = %s\n",     __func__, type_name().c_str());'
+    - '    LLAMA_LOG_INFO("%s: n_vocab               = %u\n",     __func__, vocab.n_tokens());'
+    - '    LLAMA_LOG_INFO("%s: n_merges              = %u\n",     __func__, (uint32_t)
+      bpe_ranks.size());'
+    - '    if (special_bos_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: BOS
+      token             = %d ''%s''\n", __func__, special_bos_id,     id_to_token.at(special_bos_id).text.c_str()
+      );  }'
+    - '    if (special_eos_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: EOS
+      token             = %d ''%s''\n", __func__, special_eos_id,     id_to_token.at(special_eos_id).text.c_str()
+      );  }'
+    - '    if (special_eot_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: EOT
+      token             = %d ''%s''\n", __func__, special_eot_id,     id_to_token.at(special_eot_id).text.c_str()
+      );  }'
+    - '    if (special_eom_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: EOM
+      token             = %d ''%s''\n", __func__, special_eom_id,     id_to_token.at(special_eom_id).text.c_str()
+      );  }'
+    - '    if (special_unk_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: UNK
+      token             = %d ''%s''\n", __func__, special_unk_id,     id_to_token.at(special_unk_id).text.c_str()
+      );  }'
+    - '    if (special_sep_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: SEP
+      token             = %d ''%s''\n", __func__, special_sep_id,     id_to_token.at(special_sep_id).text.c_str()
+      );  }'
+    - '    if (special_pad_id  != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: PAD
+      token             = %d ''%s''\n", __func__, special_pad_id,     id_to_token.at(special_pad_id).text.c_str()
+      );  }'
+    - '    if (special_mask_id != LLAMA_TOKEN_NULL)    { LLAMA_LOG_INFO( "%s: MASK
+      token            = %d ''%s''\n", __func__, special_mask_id,    id_to_token.at(special_mask_id).text.c_str()
+      ); }'
+    - '    if (linefeed_id != LLAMA_TOKEN_NULL)        { LLAMA_LOG_INFO( "%s: LF token              =
+      %d ''%s''\n", __func__, linefeed_id,        id_to_token.at(linefeed_id).text.c_str()
+      ); }'
+    - '    if (special_fim_pre_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      PRE token         = %d ''%s''\n", __func__, special_fim_pre_id, id_to_token.at(special_fim_pre_id).text.c_str()
+      ); }'
+    - '    if (special_fim_suf_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      SUF token         = %d ''%s''\n", __func__, special_fim_suf_id, id_to_token.at(special_fim_suf_id).text.c_str()
+      ); }'
+    - '    if (special_fim_mid_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      MID token         = %d ''%s''\n", __func__, special_fim_mid_id, id_to_token.at(special_fim_mid_id).text.c_str()
+      ); }'
+    - '    if (special_fim_pad_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      PAD token         = %d ''%s''\n", __func__, special_fim_pad_id, id_to_token.at(special_fim_pad_id).text.c_str()
+      ); }'
+    - '    if (special_fim_rep_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      REP token         = %d ''%s''\n", __func__, special_fim_rep_id, id_to_token.at(special_fim_rep_id).text.c_str()
+      ); }'
+    - '    if (special_fim_sep_id != LLAMA_TOKEN_NULL) { LLAMA_LOG_INFO( "%s: FIM
+      SEP token         = %d ''%s''\n", __func__, special_fim_sep_id, id_to_token.at(special_fim_sep_id).text.c_str()
+      ); }'
+    - '    for (const auto & id : special_eog_ids) {'
+    - '        LLAMA_LOG_INFO( "%s: EOG token             = %d ''%s''\n", __func__,
+      id, id_to_token.at(id).text.c_str() );'
+    - '    }'
+    - '    LLAMA_LOG_INFO("%s: max token length      = %d\n", __func__, max_token_len);'
+    - '}'
+    desc: 打印词汇表的详细信息，包括类型、大小和各种特殊token
+    line: 3507-3522
+    name: print_info
+  name: llama_vocab::impl
+- desc: 词汇表的公共接口类，通过pimpl模式封装内部实现，提供完整的词汇表操作功能
+  methods:
+  - code:
+    - 'llama_vocab::llama_vocab() : pimpl(new impl(*this)) {'
+    - '}'
+    desc: 构造函数，初始化pimpl指向内部实现对象
+    line: 3524-3526
+    name: llama_vocab
+  - code:
+    - llama_vocab::~llama_vocab() = default;
+    desc: 析构函数，释放pimpl资源
+    line: '3528'
+    name: ~llama_vocab
+  - code:
+    - void llama_vocab::load(llama_model_loader & ml, const LLM_KV & kv) {
+    - '    pimpl->load(ml, kv);'
+    - '}'
+    desc: 从模型加载器中加载词汇表数据
+    line: 3530-3532
+    name: load
+  - code:
+    - std::string llama_vocab::get_tokenizer_model() const {
+    - '    return pimpl->tokenizer_model;'
+    - '}'
+    desc: 获取tokenizer模型名称
+    line: 3534-3536
+    name: get_tokenizer_model
+  - code:
+    - std::string llama_vocab::get_tokenizer_pre() const {
+    - '    return pimpl->tokenizer_pre;'
+    - '}'
+    desc: 获取tokenizer预处理配置
+    line: 3538-3540
+    name: get_tokenizer_pre
+  - code:
+    - enum llama_vocab_type llama_vocab::get_type() const {
+    - '    return pimpl->type;'
+    - '}'
+    desc: 获取词汇表类型
+    line: 3542-3544
+    name: get_type
+  - code:
+    - enum llama_vocab_pre_type llama_vocab::get_pre_type() const {
+    - '    return pimpl->pre_type;'
+    - '}'
+    desc: 获取词汇表预处理类型
+    line: 3546-3548
+    name: get_pre_type
+  - code:
+    - uint32_t llama_vocab::n_tokens() const {
+    - '    return (uint32_t) pimpl->id_to_token.size();'
+    - '}'
+    desc: 获取token总数
+    line: 3550-3552
+    name: n_tokens
+  - code:
+    - uint32_t llama_vocab::n_token_types() const {
+    - '    return (uint32_t) pimpl->n_token_types;'
+    - '}'
+    desc: 获取token类型总数
+    line: 3554-3556
+    name: n_token_types
+  - code:
+    - std::string llama_vocab::type_name() const{
+    - '    return pimpl->type_name();'
+    - '}'
+    desc: 获取词汇表类型的名称字符串
+    line: 3558-3560
+    name: type_name
+  - code:
+    - bool llama_vocab::is_normal(llama_token id) const {
+    - '    return pimpl->is_normal(id);'
+    - '}'
+    desc: 检查token是否为普通类型
+    line: 3562-3564
+    name: is_normal
+  - code:
+    - bool llama_vocab::is_unknown(llama_token id) const {
+    - '    return pimpl->is_unknown(id);'
+    - '}'
+    desc: 检查token是否为未知类型
+    line: 3566-3568
+    name: is_unknown
+  - code:
+    - bool llama_vocab::is_control(llama_token id) const {
+    - '    return pimpl->is_control(id);'
+    - '}'
+    desc: 检查token是否为控制符
+    line: 3570-3572
+    name: is_control
+  - code:
+    - bool llama_vocab::is_byte(llama_token id) const {
+    - '    return pimpl->is_byte(id);'
+    - '}'
+    desc: 检查token是否为字节类型
+    line: 3574-3576
+    name: is_byte
+  - code:
+    - bool llama_vocab::is_user_defined(llama_token id) const {
+    - '    return pimpl->is_user_defined(id);'
+    - '}'
+    desc: 检查token是否为用户自定义类型
+    line: 3578-3580
+    name: is_user_defined
+  - code:
+    - bool llama_vocab::is_unused(llama_token id) const {
+    - '    return pimpl->is_unused(id);'
+    - '}'
+    desc: 检查token是否为未使用类型
+    line: 3582-3584
+    name: is_unused
+  - code:
+    - bool llama_vocab::is_eog(llama_token id) const {
+    - '    return pimpl->is_eog(id);'
+    - '}'
+    desc: 检查token是否为结束生成类型（End of Generation）
+    line: 3586-3588
+    name: is_eog
+  - code:
+    - uint8_t llama_vocab::token_to_byte(llama_token id) const {
+    - '    return pimpl->token_to_byte(id);'
+    - '}'
+    desc: 将token转换为字节值
+    line: 3590-3592
+    name: token_to_byte
+  - code:
+    - llama_token llama_vocab::byte_to_token(uint8_t ch) const {
+    - '    GGML_ASSERT(get_type() != LLAMA_VOCAB_TYPE_NONE);'
+    - '    static const char * hex = "0123456789ABCDEF";'
+    - '    switch (get_type()) {'
+    - '        case LLAMA_VOCAB_TYPE_SPM:'
+    - '        case LLAMA_VOCAB_TYPE_UGM: {'
+    - '            const char buf[7] = { ''<'', ''0'', ''x'', hex[ch >> 4], hex[ch
+      & 15], ''>'', 0 };'
+    - '            auto token = pimpl->token_to_id.find(buf);'
+    - '            if (token != pimpl->token_to_id.end()) {'
+    - '                return (*token).second;'
+    - '            }'
+    - '            const char buf2[2] = { (char)ch, 0 };'
+    - '            return pimpl->token_to_id.at(buf2);'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_WPM:'
+    - '        case LLAMA_VOCAB_TYPE_BPE: {'
+    - '            return pimpl->token_to_id.at(unicode_byte_to_utf8(ch));'
+    - '        }'
+    - '        case LLAMA_VOCAB_TYPE_PLAMO2: {'
+    - '            char hex_str[8];'
+    - '            snprintf(hex_str, sizeof(hex_str), "<0x%02X>", ch);'
+    - '            return pimpl->token_to_id.at(hex_str);'
+    - '        }'
+    - '        default:'
+    - '            GGML_ABORT("fatal error");'
+    - '    }'
+    - '}'
+    desc: 将字节值转换为token，支持不同词汇表类型的字节映射
+    line: 3594-3613
+    name: byte_to_token
+  - code:
+    - llama_token llama_vocab::text_to_token(const std::string & text) const {
+    - '    GGML_ASSERT(pimpl->type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    auto it = pimpl->token_to_id.find(text);'
+    - '    if (it != pimpl->token_to_id.end()) {'
+    - '        return (*it).second;'
+    - '    }'
+    - '    return LLAMA_TOKEN_NULL;'
+    - '}'
+    desc: 将文本字符串转换为对应的token ID
+    line: 3615-3621
+    name: text_to_token
+  - code:
+    - const llama_vocab::token_data & llama_vocab::get_token_data(llama_token id)
+      const {
+    - '    GGML_ASSERT(pimpl->type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return pimpl->id_to_token.at(id);'
+    - '}'
+    desc: 获取指定token的完整数据信息
+    line: 3623-3626
+    name: get_token_data
+  - code:
+    - const char * llama_vocab::token_get_text(llama_token id) const {
+    - '    GGML_ASSERT(pimpl->type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return pimpl->id_to_token.at(id).text.c_str();'
+    - '}'
+    desc: 获取指定token的文本内容
+    line: 3628-3631
+    name: token_get_text
+  - code:
+    - float llama_vocab::token_get_score(llama_token id) const {
+    - '    GGML_ASSERT(pimpl->type != LLAMA_VOCAB_TYPE_NONE);'
+    - '    return pimpl->id_to_token.at(id).score;'
+    - '}'
+    desc: 获取指定token的分数值
+    line: 3633-3636
+    name: token_get_score
+  - code:
+    - llama_token_attr llama_vocab::token_get_attr(llama_token id) const {
+    - '    return pimpl->token_get_attr(id);'
+    - '}'
+    desc: 获取指定token的属性标志
+    line: 3638-3640
+    name: token_get_attr
+  - code:
+    - llama_token llama_vocab::token_bos() const {
+    - '    return pimpl->special_bos_id;'
+    - '}'
+    desc: 获取开始符（BOS）token ID
+    line: 3642-3644
+    name: token_bos
+  - code:
+    - llama_token llama_vocab::token_eos() const {
+    - '    return pimpl->special_eos_id;'
+    - '}'
+    desc: 获取结束符（EOS）token ID
+    line: 3646-3648
+    name: token_eos
+  - code:
+    - llama_token llama_vocab::token_eot() const {
+    - '    return pimpl->special_eot_id;'
+    - '}'
+    desc: 获取文本结束符（EOT）token ID
+    line: 3650-3652
+    name: token_eot
+  - code:
+    - llama_token llama_vocab::token_eom() const {
+    - '    return pimpl->special_eom_id;'
+    - '}'
+    desc: 获取消息结束符（EOM）token ID
+    line: 3654-3656
+    name: token_eom
+  - code:
+    - llama_token llama_vocab::token_unk() const {
+    - '    return pimpl->special_unk_id;'
+    - '}'
+    desc: 获取未知符（UNK）token ID
+    line: 3658-3660
+    name: token_unk
+  - code:
+    - llama_token llama_vocab::token_sep() const {
+    - '    return pimpl->special_sep_id;'
+    - '}'
+    desc: 获取分隔符（SEP）token ID
+    line: 3662-3664
+    name: token_sep
+  - code:
+    - llama_token llama_vocab::token_nl() const {
+    - '    return pimpl->linefeed_id;'
+    - '}'
+    desc: 获取换行符token ID
+    line: 3666-3668
+    name: token_nl
+  - code:
+    - llama_token llama_vocab::token_pad() const {
+    - '    return pimpl->special_pad_id;'
+    - '}'
+    desc: 获取填充符（PAD）token ID
+    line: 3670-3672
+    name: token_pad
+  - code:
+    - llama_token llama_vocab::token_prefix() const {
+    - '    return pimpl->special_fim_pre_id;'
+    - '}'
+    desc: 获取FIM前缀token ID
+    line: 3674-3676
+    name: token_prefix
+  - code:
+    - llama_token llama_vocab::token_middle() const {
+    - '    return pimpl->special_fim_mid_id;'
+    - '}'
+    desc: 获取FIM中间token ID
+    line: 3678-3680
+    name: token_middle
+  - code:
+    - llama_token llama_vocab::token_suffix() const {
+    - '    return pimpl->special_fim_suf_id;'
+    - '}'
+    desc: 获取FIM后缀token ID
+    line: 3682-3684
+    name: token_suffix
+  - code:
+    - llama_token llama_vocab::token_fim_pre() const {
+    - '    return pimpl->special_fim_pre_id;'
+    - '}'
+    desc: 获取FIM前缀token ID（别名）
+    line: 3686-3688
+    name: token_fim_pre
+  - code:
+    - llama_token llama_vocab::token_fim_suf() const {
+    - '    return pimpl->special_fim_suf_id;'
+    - '}'
+    desc: 获取FIM后缀token ID（别名）
+    line: 3690-3692
+    name: token_fim_suf
+  - code:
+    - llama_token llama_vocab::token_fim_mid() const {
+    - '    return pimpl->special_fim_mid_id;'
+    - '}'
+    desc: 获取FIM中间token ID（别名）
+    line: 3694-3696
+    name: token_fim_mid
+  - code:
+    - llama_token llama_vocab::token_fim_pad() const {
+    - '    return pimpl->special_fim_pad_id;'
+    - '}'
+    desc: 获取FIM填充token ID
+    line: 3698-3700
+    name: token_fim_pad
+  - code:
+    - llama_token llama_vocab::token_fim_rep() const {
+    - '    return pimpl->special_fim_rep_id;'
+    - '}'
+    desc: 获取FIM替换token ID
+    line: 3702-3704
+    name: token_fim_rep
+  - code:
+    - llama_token llama_vocab::token_fim_sep() const {
+    - '    return pimpl->special_fim_sep_id;'
+    - '}'
+    desc: 获取FIM分隔token ID
+    line: 3706-3708
+    name: token_fim_sep
+  - code:
+    - llama_token llama_vocab::token_mask() const {
+    - '    return pimpl->special_mask_id;'
+    - '}'
+    desc: 获取掩码token ID
+    line: 3710-3712
+    name: token_mask
+  - code:
+    - bool llama_vocab::get_add_space_prefix() const {
+    - '    return pimpl->add_space_prefix;'
+    - '}'
+    desc: 检查是否添加空格前缀
+    line: 3714-3716
+    name: get_add_space_prefix
+  - code:
+    - bool llama_vocab::get_add_bos() const {
+    - '    return pimpl->add_bos;'
+    - '}'
+    desc: 检查是否添加BOS token
+    line: 3718-3720
+    name: get_add_bos
+  - code:
+    - bool llama_vocab::get_add_eos() const {
+    - '    return pimpl->add_eos;'
+    - '}'
+    desc: 检查是否添加EOS token
+    line: 3722-3724
+    name: get_add_eos
+  - code:
+    - bool llama_vocab::get_add_sep() const {
+    - '    return pimpl->add_sep;'
+    - '}'
+    desc: 检查是否添加SEP token
+    line: 3726-3728
+    name: get_add_sep
+  - code:
+    - bool llama_vocab::get_ignore_merges() const {
+    - '    return pimpl->ignore_merges;'
+    - '}'
+    desc: 检查是否忽略BPE合并规则
+    line: 3730-3732
+    name: get_ignore_merges
+  - code:
+    - bool llama_vocab::get_clean_spaces() const {
+    - '    return pimpl->clean_spaces;'
+    - '}'
+    desc: 检查是否清理空格
+    line: 3734-3736
+    name: get_clean_spaces
+  - code:
+    - bool llama_vocab::get_remove_extra_whitespaces() const {
+    - '    return pimpl->remove_extra_whitespaces;'
+    - '}'
+    desc: 检查是否移除多余空白字符
+    line: 3738-3740
+    name: get_remove_extra_whitespaces
+  - code:
+    - bool llama_vocab::get_escape_whitespaces() const {
+    - '    return pimpl->escape_whitespaces;'
+    - '}'
+    desc: 检查是否转义空白字符
+    line: 3742-3744
+    name: get_escape_whitespaces
+  - code:
+    - bool llama_vocab::get_treat_whitespace_as_suffix() const {
+    - '    return pimpl->treat_whitespace_as_suffix;'
+    - '}'
+    desc: 检查是否将空白视为后缀
+    line: 3746-3748
+    name: get_treat_whitespace_as_suffix
+  - code:
+    - int llama_vocab::max_token_len() const {
+    - '    return pimpl->max_token_len;'
+    - '}'
+    desc: 获取最大token长度
+    line: 3750-3752
+    name: max_token_len
+  - code:
+    - int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
+      & token_right) const {
+    - '    GGML_ASSERT(token_left.find('' '')   == std::string::npos);'
+    - '    GGML_ASSERT(token_right.find('' '')  == std::string::npos);'
+    - '    auto it = pimpl->bpe_ranks.find(std::make_pair(token_left, token_right));'
+    - '    if (it == pimpl->bpe_ranks.end()) {'
+    - '        return -1;'
+    - '    }'
+    - '    return it->second;'
+    - '}'
+    desc: 查找BPE合并规则中token对的排名
+    line: 3754-3763
+    name: find_bpe_rank
+  - code:
+    - std::vector<std::string> llama_vocab::get_bpe_merges() const {
+    - '    std::vector<std::string> result(pimpl->bpe_ranks.size());'
+    - '    for (const auto & pair : pimpl->bpe_ranks) {'
+    - '        result[pair.second] = pair.first.first + " " + pair.first.second;'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 获取所有BPE合并规则
+    line: 3765-3771
+    name: get_bpe_merges
+  - code:
+    - std::vector<char> llama_vocab::get_precompiled_charsmap() const {
+    - '    return pimpl->precompiled_charsmap;'
+    - '}'
+    desc: 获取预编译的字符映射表
+    line: 3773-3775
+    name: get_precompiled_charsmap
+  - code:
+    - int32_t llama_vocab::tokenize(const char * text, int32_t text_len, llama_token
+      * tokens, int32_t n_tokens_max, bool add_special, bool parse_special) const
+      {
+    - '    auto res = tokenize(std::string(text, text_len), add_special, parse_special);'
+    - '    if (res.size() >= static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+      {'
+    - '        LLAMA_LOG_ERROR("%s: tokenization result size %zu exceeds int32_t limit\n",
+      __func__, res.size());'
+    - '        return std::numeric_limits<int32_t>::min();'
+    - '    }'
+    - '    if (n_tokens_max < (int) res.size()) {'
+    - '        return -((int) res.size());'
+    - '    }'
+    - '    for (size_t i = 0; i < res.size(); i++) {'
+    - '        tokens[i] = res[i];'
+    - '    }'
+    - '    return res.size();'
+    - '}'
+    desc: 将文本字符串转换为token序列（C风格接口版本）
+    line: 3777-3790
+    name: tokenize
+  - code:
+    - std::vector<llama_token> llama_vocab::tokenize(const std::string & raw_text,
+      bool add_special, bool parse_special) const {
+    - '    return pimpl->tokenize(raw_text, add_special, parse_special);'
+    - '}'
+    desc: 将文本字符串转换为token序列的向量版本
+    line: 3792-3795
+    name: tokenize
+  - code:
+    - const std::string & llama_vocab::token_to_piece(llama_token token) const {
+    - '    return pimpl->token_to_piece(token);'
+    - '}'
+    desc: 获取token对应的piece内容（缓存版本）
+    line: 3797-3799
+    name: token_to_piece
+  - code:
+    - int32_t llama_vocab::token_to_piece(llama_token token, char * buf, int32_t length,
+      int32_t lstrip, bool special) const {
+    - '    return pimpl->token_to_piece(token, buf, length, lstrip, special);'
+    - '}'
+    desc: 将token转换为piece文本（C风格接口版本）
+    line: 3801-3803
+    name: token_to_piece
+  - code:
+    - int32_t llama_vocab::detokenize(const llama_token * tokens, int32_t n_tokens,
+      char * text, int32_t text_len_max, bool remove_special, bool unparse_special)
+      const {
+    - '    return pimpl->detokenize(tokens, n_tokens, text, text_len_max, remove_special,
+      unparse_special);'
+    - '}'
+    desc: 将token序列转换为文本（C风格接口版本）
+    line: 3805-3807
+    name: detokenize
+  - code:
+    - std::string llama_vocab::detokenize(const std::vector<llama_token> & tokens,
+      bool special) const {
+    - '    std::string text;'
+    - '    text.resize(std::max(text.capacity(), tokens.size()));'
+    - '    int32_t n_chars = detokenize(tokens.data(), (int32_t)tokens.size(), &text[0],
+      (int32_t)text.size(), false, special);'
+    - '    if (n_chars < 0) {'
+    - '        text.resize(-n_chars);'
+    - '        n_chars = detokenize(tokens.data(), (int32_t)tokens.size(), &text[0],
+      (int32_t)text.size(), false, special);'
+    - '        GGML_ASSERT(n_chars <= (int32_t)text.size());'
+    - '    }'
+    - '    text.resize(n_chars);'
+    - '    return text;'
+    - '}'
+    desc: 将token向量转换为文本字符串
+    line: 3809-3820
+    name: detokenize
+  - code:
+    - void llama_vocab::print_info() const {
+    - '    pimpl->print_info();'
+    - '}'
+    desc: 打印词汇表信息（公共接口）
+    line: 3822-3824
+    name: print_info
+  name: llama_vocab
+desc: 该文件实现了 llama.cpp 中的词汇表（vocabulary）相关的各种分词器（tokenizer），包括 SPM（SentencePiece Model）、BPE（Byte
+  Pair Encoding）、WPM（WordPiece Model）等，以及辅助数据结构（如朴素 Trie 树、优先级队列）和 Unicode 文本处理逻辑，用于将文本转换为模型可识别的
+  token 序列。This file implements various tokenizers for the llama model, including
+  the SentencePiece (SPM), Unigram (UGM), RWKV, and Plamo2 tokenizers, along with
+  the core vocabulary management (llama_vocab::impl). It provides tokenization functionality,
+  vocabulary loading, special token handling, and utilities for parsing and normalizing
+  text.该文件是llama.cpp项目中llama-vocab.cpp源文件的片段，主要实现了llama_vocab::impl类中load方法的核心逻辑，负责从GGUF模型文件中加载和初始化词汇表（vocabulary），包括识别词汇表类型（如SPM、BPE、WPM等）、读取词汇表数据、设置特殊token，并根据词汇表类型配置对应的预分词器设置。该文件是
+  llama.cpp 项目中负责词汇表（vocabulary）定义和分词（tokenization）的核心实现。它主要处理从 GGUF 模型文件加载词汇数据，执行各种分词算法（SPM、BPE、WPM、UGM、RWKV、PLaMo2），管理特殊
+  token（如 BOS、EOS、FIM 等），并提供 token 与文本之间的转换接口。该文件实现了llama_vocab类及其内部实现类impl，负责词汇表的加载、管理、token化与反token化等核心功能，支持SPM、BPE、RWKV、PLAMO2等不同编码类型，提供C++类接口和C风格API供上层调用，涵盖特殊token处理、BPE合并规则、文本清洗等完整逻辑。
+file: src/llama-vocab.cpp
+funcs:
+- code:
+  - static std::vector<uint8_t> llama_unescape_rwkv_token(const std::string & escaped)
+    {
+  - '    std::vector<uint8_t> output;'
+  - '    output.reserve(escaped.size());'
+  - '    bool escaping = false;'
+  - '    uint8_t hex_remaining = 0;'
+  - '    uint8_t hex_acc = 0;'
+  - '    for (const char & c : escaped) {'
+  - '        if (hex_remaining != 0) {'
+  - '            uint8_t value = (c >= ''a'') ? (c - ''a'' + 10) : (c - ''0'');'
+  - '            hex_acc = (hex_acc << 4) + value;'
+  - '            hex_remaining -= 1;'
+  - '            if (hex_remaining == 0) {'
+  - '                output.push_back(hex_acc);'
+  - '                hex_acc = 0;'
+  - '            }'
+  - '            continue;'
+  - '        }'
+  - '        if (escaping) {'
+  - '            if (c == ''t'') {'
+  - '                output.push_back(''\t'');'
+  - '            } else if (c == ''n'') {'
+  - '                output.push_back(''\n'');'
+  - '            } else if (c == ''r'') {'
+  - '                output.push_back(''\r'');'
+  - '            } else if (c == ''x'') {'
+  - '                hex_remaining = 2;'
+  - '            } else {'
+  - '                output.push_back(c);'
+  - '            }'
+  - '            escaping = false;'
+  - '            continue;'
+  - '        }'
+  - '        if (c == ''\\'') {'
+  - '            escaping = true;'
+  - '            continue;'
+  - '        }'
+  - '        output.push_back(c);'
+  - '    }'
+  - '    return output;'
+  - '}'
+  desc: Parses and unescapes RWKV-encoded token strings, decoding escape sequences
+    like \n, \t, and \xHH into raw bytes.
+  line: 1035-1078
+  name: llama_unescape_rwkv_token
+- code:
+  - enum FRAGMENT_BUFFER_VARIANT_TYPE {
+  - '    FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN,'
+  - '    FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT'
+  - '};'
+  - struct llm_tokenizer { ... };
+  - struct naive_trie { ... };
+  - struct llama_vocab { ... };
+  desc: Contains type definitions and structure declarations for the vocabulary and
+    tokenizer infrastructure.
+  line: 1-831
+  name: __main__
+- code:
+  - void llama_vocab::impl::load(llama_model_loader & ml, const llama_model & model)
+    {
+  - '    ...'
+  - '    // 构建特殊 token 缓存'
+  - '    ...'
+  - '    // 构建 token to piece 缓存'
+  - '    ...'
+  - '    // 处理每个 token 的属性'
+  - '    ...'
+  - '}'
+  - static void llama_escape_whitespace(std::string & text) {
+  - '    replace_all(text, " ", "\xe2\x96\x81");'
+  - '}'
+  - static void llama_unescape_whitespace(std::string & word) {
+  - '    replace_all(word, "\xe2\x96\x81", " ");'
+  - '}'
+  - static std::string llama_decode_text(const std::string & text) {
+  - '    ...'
+  - '}'
+  desc: 文件全局代码，包含辅助函数 llama_escape_whitespace、llama_unescape_whitespace 和 llama_decode_text
+    的定义
+  line: 2501-3010
+  name: __main__
+- code:
+  - int32_t llama_vocab_n_tokens(const struct llama_vocab * vocab) {
+  - '    return vocab->n_tokens();'
+  - '}'
+  desc: C接口：获取词汇表token数量
+  line: 3830-3832
+  name: llama_vocab_n_tokens
+- code:
+  - int32_t llama_n_vocab(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_n_tokens(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取词汇表token数量
+  line: 3834-3836
+  name: llama_n_vocab
+- code:
+  - enum llama_vocab_type llama_vocab_type(const struct llama_vocab * vocab) {
+  - '    return vocab->get_type();'
+  - '}'
+  desc: C接口：获取词汇表类型
+  line: 3838-3840
+  name: llama_vocab_type
+- code:
+  - const char * llama_vocab_get_text(const struct llama_vocab * vocab, llama_token
+    token) {
+  - '    return vocab->token_get_text(token);'
+  - '}'
+  desc: C接口：获取token文本
+  line: 3842-3844
+  name: llama_vocab_get_text
+- code:
+  - float llama_vocab_get_score(const struct llama_vocab * vocab, llama_token token)
+    {
+  - '    return vocab->token_get_score(token);'
+  - '}'
+  desc: C接口：获取token分数
+  line: 3846-3848
+  name: llama_vocab_get_score
+- code:
+  - enum llama_token_attr llama_vocab_get_attr(const struct llama_vocab * vocab, llama_token
+    token) {
+  - '    return vocab->token_get_attr(token);'
+  - '}'
+  desc: C接口：获取token属性
+  line: 3850-3852
+  name: llama_vocab_get_attr
+- code:
+  - bool llama_vocab_is_eog(const struct llama_vocab * vocab, llama_token token) {
+  - '    return vocab->is_eog(token);'
+  - '}'
+  desc: C接口：检查是否为结束生成token
+  line: 3854-3856
+  name: llama_vocab_is_eog
+- code:
+  - bool llama_vocab_is_control(const struct llama_vocab * vocab, llama_token token)
+    {
+  - '    return vocab->is_control(token);'
+  - '}'
+  desc: C接口：检查是否为控制token
+  line: 3858-3860
+  name: llama_vocab_is_control
+- code:
+  - llama_token llama_vocab_bos(const struct llama_vocab * vocab) {
+  - '    return vocab->token_bos();'
+  - '}'
+  desc: C接口：获取BOS token
+  line: 3862-3864
+  name: llama_vocab_bos
+- code:
+  - llama_token llama_vocab_eos(const struct llama_vocab * vocab) {
+  - '    return vocab->token_eos();'
+  - '}'
+  desc: C接口：获取EOS token
+  line: 3866-3868
+  name: llama_vocab_eos
+- code:
+  - llama_token llama_vocab_eot(const struct llama_vocab * vocab) {
+  - '    return vocab->token_eot();'
+  - '}'
+  desc: C接口：获取EOT token
+  line: 3870-3872
+  name: llama_vocab_eot
+- code:
+  - llama_token llama_vocab_cls(const struct llama_vocab * vocab) {
+  - '    return vocab->token_bos();'
+  - '}'
+  desc: 已废弃C接口：获取CLS token（实际返回BOS）
+  line: 3874-3876
+  name: llama_vocab_cls
+- code:
+  - llama_token llama_vocab_sep(const struct llama_vocab * vocab) {
+  - '    return vocab->token_sep();'
+  - '}'
+  desc: C接口：获取SEP token
+  line: 3878-3880
+  name: llama_vocab_sep
+- code:
+  - llama_token llama_vocab_nl (const struct llama_vocab * vocab) {
+  - '    return vocab->token_nl();'
+  - '}'
+  desc: C接口：获取换行token
+  line: 3882-3884
+  name: llama_vocab_nl
+- code:
+  - llama_token llama_vocab_pad(const struct llama_vocab * vocab) {
+  - '    return vocab->token_pad();'
+  - '}'
+  desc: C接口：获取PAD token
+  line: 3886-3888
+  name: llama_vocab_pad
+- code:
+  - bool llama_vocab_get_add_bos(const struct llama_vocab * vocab) {
+  - '    return vocab->get_add_bos();'
+  - '}'
+  desc: C接口：检查是否添加BOS
+  line: 3890-3892
+  name: llama_vocab_get_add_bos
+- code:
+  - bool llama_vocab_get_add_eos(const struct llama_vocab * vocab) {
+  - '    return vocab->get_add_eos();'
+  - '}'
+  desc: C接口：检查是否添加EOS
+  line: 3894-3896
+  name: llama_vocab_get_add_eos
+- code:
+  - bool llama_vocab_get_add_sep(const struct llama_vocab * vocab) {
+  - '    return vocab->get_add_sep();'
+  - '}'
+  desc: C接口：检查是否添加SEP
+  line: 3898-3900
+  name: llama_vocab_get_add_sep
+- code:
+  - llama_token llama_vocab_fim_pre(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_pre();'
+  - '}'
+  desc: C接口：获取FIM前缀token
+  line: 3902-3904
+  name: llama_vocab_fim_pre
+- code:
+  - llama_token llama_vocab_fim_suf(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_suf();'
+  - '}'
+  desc: C接口：获取FIM后缀token
+  line: 3906-3908
+  name: llama_vocab_fim_suf
+- code:
+  - llama_token llama_vocab_fim_mid(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_mid();'
+  - '}'
+  desc: C接口：获取FIM中间token
+  line: 3910-3912
+  name: llama_vocab_fim_mid
+- code:
+  - llama_token llama_vocab_fim_pad(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_pad();'
+  - '}'
+  desc: C接口：获取FIM填充token
+  line: 3914-3916
+  name: llama_vocab_fim_pad
+- code:
+  - llama_token llama_vocab_fim_rep(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_rep();'
+  - '}'
+  desc: C接口：获取FIM替换token
+  line: 3918-3920
+  name: llama_vocab_fim_rep
+- code:
+  - llama_token llama_vocab_fim_sep(const struct llama_vocab * vocab) {
+  - '    return vocab->token_fim_sep();'
+  - '}'
+  desc: C接口：获取FIM分隔token
+  line: 3922-3924
+  name: llama_vocab_fim_sep
+- code:
+  - llama_token llama_vocab_mask(const struct llama_vocab* vocab) {
+  - '    return vocab->token_mask();'
+  - '}'
+  desc: C接口：获取掩码token
+  line: 3926-3928
+  name: llama_vocab_mask
+- code:
+  - const char * llama_token_get_text(const struct llama_vocab * vocab, llama_token
+    token) {
+  - '    return llama_vocab_get_text(vocab, token);'
+  - '}'
+  desc: 已废弃C接口：获取token文本
+  line: 3930-3932
+  name: llama_token_get_text
+- code:
+  - float llama_token_get_score(const struct llama_vocab * vocab, llama_token token)
+    {
+  - '    return llama_vocab_get_score(vocab, token);'
+  - '}'
+  desc: 已废弃C接口：获取token分数
+  line: 3934-3936
+  name: llama_token_get_score
+- code:
+  - enum llama_token_attr llama_token_get_attr(const struct llama_vocab * vocab, llama_token
+    token) {
+  - '    return llama_vocab_get_attr(vocab, token);'
+  - '}'
+  desc: 已废弃C接口：获取token属性
+  line: 3938-3940
+  name: llama_token_get_attr
+- code:
+  - bool llama_token_is_eog(const struct llama_vocab * vocab, llama_token token) {
+  - '    return llama_vocab_is_eog(vocab, token);'
+  - '}'
+  desc: 已废弃C接口：检查是否为结束生成token
+  line: 3942-3944
+  name: llama_token_is_eog
+- code:
+  - bool llama_token_is_control(const struct llama_vocab * vocab, llama_token token)
+    {
+  - '    return llama_vocab_is_control(vocab, token);'
+  - '}'
+  desc: 已废弃C接口：检查是否为控制token
+  line: 3946-3948
+  name: llama_token_is_control
+- code:
+  - llama_token llama_token_bos(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_bos(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取BOS token
+  line: 3950-3952
+  name: llama_token_bos
+- code:
+  - llama_token llama_token_eos(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_eos(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取EOS token
+  line: 3954-3956
+  name: llama_token_eos
+- code:
+  - llama_token llama_token_eot(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_eot(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取EOT token
+  line: 3958-3960
+  name: llama_token_eot
+- code:
+  - llama_token llama_token_cls(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_bos(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取CLS token（实际返回BOS）
+  line: 3962-3964
+  name: llama_token_cls
+- code:
+  - llama_token llama_token_sep(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_sep(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取SEP token
+  line: 3966-3968
+  name: llama_token_sep
+- code:
+  - llama_token llama_token_nl (const struct llama_vocab * vocab) {
+  - '    return llama_vocab_nl(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取换行token
+  line: 3970-3972
+  name: llama_token_nl
+- code:
+  - llama_token llama_token_pad(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_pad(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取PAD token
+  line: 3974-3976
+  name: llama_token_pad
+- code:
+  - bool llama_add_bos_token(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_get_add_bos(vocab);'
+  - '}'
+  desc: 已废弃C接口：检查是否添加BOS
+  line: 3978-3980
+  name: llama_add_bos_token
+- code:
+  - bool llama_add_eos_token(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_get_add_eos(vocab);'
+  - '}'
+  desc: 已废弃C接口：检查是否添加EOS
+  line: 3982-3984
+  name: llama_add_eos_token
+- code:
+  - llama_token llama_token_fim_pre(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_pre(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM前缀token
+  line: 3986-3988
+  name: llama_token_fim_pre
+- code:
+  - llama_token llama_token_fim_suf(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_suf(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM后缀token
+  line: 3990-3992
+  name: llama_token_fim_suf
+- code:
+  - llama_token llama_token_fim_mid(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_mid(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM中间token
+  line: 3994-3996
+  name: llama_token_fim_mid
+- code:
+  - llama_token llama_token_fim_pad(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_pad(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM填充token
+  line: 3998-4000
+  name: llama_token_fim_pad
+- code:
+  - llama_token llama_token_fim_rep(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_rep(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM替换token
+  line: 4002-4004
+  name: llama_token_fim_rep
+- code:
+  - llama_token llama_token_fim_sep(const struct llama_vocab * vocab) {
+  - '    return llama_vocab_fim_sep(vocab);'
+  - '}'
+  desc: 已废弃C接口：获取FIM分隔token
+  line: 4006-4008
+  name: llama_token_fim_sep
+- code:
+  - int32_t llama_tokenize(
+  - '    const struct llama_vocab * vocab,'
+  - '                  const char * text,'
+  - '                     int32_t   text_len,'
+  - '                 llama_token * tokens,'
+  - '                     int32_t   n_tokens_max,'
+  - '                        bool   add_special,'
+  - '                        bool   parse_special) {'
+  - '    return vocab->tokenize(text, text_len, tokens, n_tokens_max, add_special,
+    parse_special);'
+  - '}'
+  desc: C接口：将文本字符串token化
+  line: 4014-4024
+  name: llama_tokenize
+- code:
+  - int32_t llama_token_to_piece(
+  - '    const struct llama_vocab * vocab,'
+  - '                 llama_token   token,'
+  - '                        char * buf,'
+  - '                     int32_t   length,'
+  - '                     int32_t   lstrip,'
+  - '                        bool   special) {'
+  - '    return vocab->token_to_piece(token, buf, length, lstrip, special);'
+  - '}'
+  desc: C接口：将token转换为piece文本
+  line: 4026-4036
+  name: llama_token_to_piece
+- code:
+  - int32_t llama_detokenize(
+  - '    const struct llama_vocab * vocab,'
+  - '           const llama_token * tokens,'
+  - '                     int32_t   n_tokens,'
+  - '                        char * text,'
+  - '                     int32_t   text_len_max,'
+  - '                        bool   remove_special,'
+  - '                        bool   unparse_special) {'
+  - '    return vocab->detokenize(tokens, n_tokens, text, text_len_max, remove_special,
+    unparse_special);'
+  - '}'
+  desc: C接口：将token序列反token化为文本
+  line: 4038-4048
+  name: llama_detokenize

@@ -1,0 +1,557 @@
+code_map:
+- src/models/bert.cpp
+- ├── llm_build_bert.llm_build_bert()
+- │   ├── build_inp_pos() / build_inp_embd(model.tok_embd)
+- │   ├── build_inp_out_ids() / build_attn_inp_no_cache()
+- '│   ├── ggml_view_1d(type_row0) + ggml_add            # 类型嵌入（句子对）'
+- '│   ├── ggml_get_rows(pos_embd, inp_pos)              # 绝对位置嵌入'
+- '│   ├── build_norm(tok_norm)                          # 嵌入层 norm'
+- │   ├── wqkv 融合 → ggml_view_3d 切分 Q/K/V
+- │   ├── attn_q_norm / attn_k_norm（可选）
+- │   ├── ggml_rope_ext（Nomic/Jina 启用）
+- │   ├── build_attn(... kq_b=nullptr ...)
+- │   ├── Post-Norm 路径：
+- │   │   ├── re-add inpL → attn_out_norm
+- │   │   └── 可选 attn_norm_2 双轨
+- │   ├── FFN 分支：
+- │   │   ├── MoE：build_moe_ffn（每 N 层一次）
+- │   │   ├── BERT/Nomic MoE/Jina V3：GELU + SEQ
+- │   │   ├── Jina V2：ffn_up 维度异常时降级为 GEGLU
+- │   │   └── 其它：SiLU + PAR
+- │   └── res->t_embd（仅编码器输出）
+- src/models/modern-bert.cpp
+- ├── llm_build_modern_bert.llm_build_modern_bert()
+- │   ├── build_inp_pos() / build_inp_embd(model.tok_embd)
+- │   ├── build_norm(tok_norm)
+- │   ├── build_attn_inp_no_cache() / build_inp_out_ids()
+- │   ├── Per-layer RoPE：freq_base_l / freq_scale_l
+- │   ├── 强制 wqkv 融合 → ggml_view_3d 切分（按 type_size）
+- │   ├── Pre-Norm + 残差：
+- │   │   ├── attn_norm(cur)
+- │   │   ├── cur + inpL → ffn_inp
+- │   │   └── ffn_norm(ffn_inp)
+- │   ├── build_ffn(GEGLU + SEQ)
+- │   ├── 省略 attn_out_norm / layer_out_norm
+- │   └── build_norm(output_norm) → res->t_embd
+- src/models/neo-bert.cpp
+- ├── llm_build_neo_bert.llm_build_neo_bert()
+- │   ├── build_inp_pos() / build_inp_embd(model.tok_embd)
+- │   ├── build_attn_inp_no_cache() / build_inp_out_ids()
+- │   ├── Pre-Norm：
+- │   │   ├── build_norm(attn_norm, RMS)
+- │   │   ├── build_norm(ffn_norm, RMS)
+- │   │   └── 残差：cur + inpL
+- │   ├── wqkv 融合 + ggml_view_3d 切分（sizeof(float)）
+- │   ├── ggml_rope_ext（全局 freq_base/scale）
+- │   ├── build_ffn(SWIGLU + SEQ)
+- │   └── build_norm(output_norm_enc, RMS) → res->t_embd
+- src/models/eurobert.cpp
+- ├── llm_build_eurobert.llm_build_eurobert()
+- │   ├── build_inp_pos() / build_inp_embd(model.tok_embd)
+- │   ├── build_attn_inp_no_cache() / build_inp_out_ids()
+- │   ├── 独立 Q/K/V 权重（wq/wk/wv）
+- │   ├── build_norm(attn_norm, RMS) / build_norm(ffn_norm, RMS)
+- │   ├── ggml_reshape_3d → ggml_rope_ext
+- │   ├── build_attn(... kq_b=nullptr ...)
+- │   ├── build_ffn(SiLU + PAR)
+- │   └── build_norm(output_norm, RMS) → res->t_embd
+- src/models/t5-enc.cpp
+- ├── llm_build_t5_enc.llm_build_t5_enc()
+- │   ├── build_inp_embd(model.tok_embd)
+- '│   ├── build_inp_pos_bucket_enc()                    # 相对位置桶输入'
+- │   ├── build_attn_inp_no_cache() / build_inp_out_ids()
+- │   ├── Pre-Norm + RMSNorm：
+- │   │   ├── attn_norm_enc
+- │   │   └── ffn_norm_enc
+- │   ├── 自注意力：wq_enc / wk_enc / wv_enc
+- │   ├── build_pos_bias(pos_bucket_enc, attn_rel_b)
+- │   │   └── 每层共享首层偏置（attn_rel_b_enc）
+- │   ├── build_attn(kq_b=pos_bias)
+- │   ├── FFN 双模式：
+- │   │   ├── 无 ffn_gate → LLM_FFN_RELU + SEQ（原始 T5）
+- │   │   └── 有 ffn_gate → LLM_FFN_GELU + PAR（Flan-T5）
+- '│   ├── build_cvec(cur, il)                           # 控制向量'
+- │   └── build_norm(output_norm_enc) → res->t_embd
+- src/models/t5-dec.cpp
+- ├── llm_build_t5_dec.llm_build_t5_dec()
+- │   ├── build_inp_embd(model.tok_embd)
+- '│   ├── build_inp_cross_embd()                        # 编码器输出作为交叉输入'
+- '│   ├── build_inp_pos_bucket_dec()                    # 解码器位置桶'
+- │   ├── 双注意力输入：
+- '│   │   ├── build_attn_inp_kv()                       # 自注意力 KV 缓存'
+- '│   │   └── build_attn_inp_cross()                    # 交叉注意力'
+- │   ├── 自注意力：wq/wk/wv + build_pos_bias
+- │   ├── 交叉注意力：wq_cross + wk_cross/wv_cross(embd_enc)
+- │   │   └── K/V 维度：n_outputs_enc 而非 n_tokens
+- │   ├── FFN 双模式（T5 vs Flan-T5）
+- │   ├── build_cvec(cur, il)
+- │   ├── 输出双产物：
+- │   │   ├── build_norm(output_norm) → res->t_embd
+- │   │   └── build_lora_mm(model.output) → res->t_logits
+- src/models/paddleocr.cpp
+- ├── llm_build_paddleocr.llm_build_paddleocr()
+- │   ├── hparams.rope_sections（4 段：T/H/W/？）
+- │   ├── build_inp_embd(model.tok_embd)
+- │   ├── build_inp_pos() / build_attn_inp_kv()
+- │   ├── build_inp_out_ids()
+- │   ├── 偏置可选的 Q/K/V 构建：
+- │   │   ├── Qcur = wq*cur; if(bq) Qcur += bq
+- │   │   ├── Kcur / Vcur 同理
+- │   │   └── wo 也支持 bo
+- │   ├── ggml_rope_multi（4 段 sections）
+- │   ├── SwiGLU FFN（SILU + PAR）+ build_cvec
+- │   └── 双输出：res->t_embd + res->t_logits
+- src/models/pangu-embedded.cpp
+- ├── llm_build_pangu_embedded.llm_build_pangu_embedded()
+- │   ├── build_inp_embd(model.tok_embd)
+- │   ├── build_inp_pos() / build_attn_inp_kv()
+- │   ├── build_inp_out_ids()
+- │   ├── 完整偏置 Q/K/V：
+- │   │   └── Qcur = wq*cur + bq
+- │   ├── ggml_rope_ext（标准 RoPE）
+- │   ├── SwiGLU FFN + 三组偏置：
+- │   │   ├── ffn_up / ffn_up_b
+- │   │   ├── ffn_gate / ffn_gate_b
+- │   │   └── ffn_down / ffn_down_b
+- │   ├── build_cvec(cur, il)
+- │   └── 输出 lm_head：model.output + model.output_b
+- src/models/wavtokenizer-dec.cpp
+- ├── llm_build_wavtokenizer_dec.llm_build_wavtokenizer_dec()
+- '│   ├── ggml_cont(ggml_transpose(inpL))                # 转置适配 conv1d'
+- │   ├── ggml_conv_1d_ph(conv1d) + conv1d_b
+- │   ├── PosNet（6 层）：
+- │   │   ├── case 0/1/3/4：
+- │   │   │   ├── norm1 → sigmoid*cur（GLU）
+- │   │   │   ├── conv1 → norm2 → sigmoid*cur → conv2
+- │   │   │   └── residual add
+- │   │   ├── case 2（中间注意力）：
+- │   │   │   ├── attn_norm → conv Q/K/V
+- │   │   │   ├── transpose → kq = K^T·Q
+- │   │   │   ├── soft_max_ext
+- │   │   │   └── conv attn_o + residual
+- │   │   └── case 5：仅 norm
+- │   ├── transpose → tok_norm → transpose
+- │   ├── ConvNeXt 残差块：
+- │   │   ├── dw conv1d → transpose → norm
+- │   │   ├── build_ffn(GELU + SEQ)
+- │   │   ├── gamma 缩放
+- │   │   └── transpose → residual
+- │   ├── transpose → output_norm
+- │   └── lm_head：model.output + output_b → res->t_embd
+exercises:
+- contents:
+  - 阅读 `src/models/modern-bert.cpp`、`src/models/neo-bert.cpp`、`src/models/eurobert.cpp`，对比三种
+    Pre-Norm 编码器的实现差异：
+  - 1. ModernBERT 的 per-layer RoPE 与 NeoBERT/EuroBERT 的全局 RoPE 实现区别是什么？
+  - 2. 三者中谁的 FFN 调用了 `LLM_FFN_SEQ`，谁调用了 `LLM_FFN_PAR`？为什么？
+  - 3. 哪些模型保留了 `attn_out_norm`/`layer_out_norm` 中间层 norm，哪些省略？
+  - 回答问题：
+  - '- 如果让你设计一个新的编码器，你会优先选择哪种 FFN 模式？为什么？'
+  - '- ModernBERT 通过 `model.get_rope_freq_base/scale(cparams, il)` 实现了什么高级能力？'
+  'no': 1
+  title: 对比 BERT 家族三种 Pre-Norm 模式
+- contents:
+  - 阅读 `src/models/t5-enc.cpp` 和 `src/models/t5-dec.cpp`，追踪相对位置桶偏置的完整数据流：
+  - 1. `build_inp_pos_bucket_enc/dec()` 生成了什么样的张量？其形状含义是什么？
+  - '2. `attn_rel_b_enc` 在每层间是如何共享的？（提示：参考 `model.layers[il].attn_rel_b_enc ? model.layers[il].attn_rel_b_enc
+    : model.layers[0].attn_rel_b_enc`）'
+  - 3. `build_pos_bias` 输出的 `kq_b` 张量如何被 `build_attn` 消费？
+  - 4. T5 解码器的交叉注意力中，K/V 矩阵的 `n_outputs_enc` 来自哪个张量的哪个维度？
+  - 回答问题：
+  - '- 为何 T5 选择相对位置桶而非绝对位置编码？'
+  - '- 交叉注意力是否需要 RoPE 或位置偏置？为什么？'
+  'no': 2
+  title: 追踪 T5 编解码器的位置偏置流
+- contents:
+  - 阅读 `src/models/paddleocr.cpp` 和 `src/models/pangu-embedded.cpp`，对比两个"带偏置"模型的实现差异：
+  - 1. PaddleOCR 中 `bq`/`bk`/`bv` 为可选时，代码如何用 `if` 跳过偏置加法？Pangu-Embedded 为何强制带偏置？
+  - 2. PaddleOCR 用 `ggml_rope_multi` 而 Pangu-Embedded 用 `ggml_rope_ext`，两者的根本区别是什么？（提示：参数
+    `sections`）
+  - 3. 两个模型的 FFN 都用了 `LLM_FFN_SILU + LLM_FFN_PAR`，为何它们的偏置参数列表不同？
+  - 4. 末尾 `res->t_embd` 和 `res->t_logits` 的设置顺序有什么讲究？
+  - 回答问题：
+  - '- 多模态模型为何偏好带偏置的 QKV？'
+  - '- M-RoPE 的 `sections[4]` 一般如何分配？（T/H/W/?）'
+  'no': 3
+  title: 解码 PaddleOCR 与 Pangu-Embedded 的偏置哲学
+- contents:
+  - 阅读 `src/models/wavtokenizer-dec.cpp`，理解 PosNet + ConvNeXt 的混合解码流程：
+  - 1. PosNet 第 2 层（case 2）与其他卷积层（case 0/1/3/4）在数据流上有何本质区别？
+  - 2. 代码中频繁出现的 `ggml_cont(ggml_transpose(...))` 组合是为了什么？（提示：`ggml_conv_1d_ph` 的内存布局要求）
+  - 3. ConvNeXt 中的 `layer.gamma` 张量起什么作用？为何 FFN 输出要乘以它？
+  - 4. PosNet 第 5 层（case 5）只做 norm 而不做任何变换，这是何种设计意图？
+  - 回答问题：
+  - '- 为何 WavTokenizer 要在 PosNet 和 ConvNeXt 之间多次 transpose？这带来哪些计算开销？'
+  - '- 如果让你设计一个音频解码器，你会如何简化这种异构层结构？'
+  'no': 4
+  title: 剖析 WavTokenizer 解码器的异构层结构
+- contents:
+  - 基于本章学到的 Pre-Norm + QKV 融合模式，尝试在 `src/models/` 下添加一个新的 `llm_build_myencoder`：
+  - 1. 继承 `llm_graph_context`，构造中实现 `build_inp_embd(model.tok_embd)` + `build_inp_pos()`
+    + `tok_norm`
+  - 2. 每层：`build_norm(attn_norm)` → `wqkv` 融合 → `view_3d` 切分 → `ggml_rope_ext` → `build_attn`
+    → 残差 → `build_norm(ffn_norm)` → `build_ffn` → 残差
+  - 3. 输出端：`output_norm` → `res->t_embd`
+  - 提示：可参考 `src/models/eurobert.cpp` 或 `src/models/neo-bert.cpp` 的结构
+  - 回答问题：
+  - '- 你的实现与 ModernBERT 相比缺少了什么现代特性？'
+  - '- 如果要让模型支持 causal mask（解码器模式），需要修改 build_attn_inp_* 的哪部分？'
+  'no': 5
+  title: 手写一个极简 BERT-style 编码器图
+learning_targets:
+- 理解 BERT、ModernBERT、NeoBERT、EuroBERT 等编码器家族的图构建差异（Post-Norm vs Pre-Norm、QKV 融合 vs
+  独立、FFN 激活函数）
+- 掌握 T5 编码器-解码器架构中相对位置桶偏置（Relative Position Bias）的实现原理
+- 理解 M-RoPE 在 PaddleOCR 中的四段式应用方式（时间/高度/宽度）
+- 掌握 Pangu-Embedded 标准 Pre-Norm Transformer 的完整偏置流（Q/K/V + FFN + Output）
+- 了解 WavTokenizer 解码器的 ConvNeXt + PosNet 双阶段音频生成流程
+- 理解 llm_graph_context 基础设施方法（build_inp_*, build_attn_inp_*, build_attn, build_ffn,
+  build_norm, build_pos_bias, build_cvec）是如何被所有编码器模型复用
+life_analogy:
+- 想象编码器模型家族是一家**各具特色的"理解型餐厅厨房"**：
+- '- **BERT = 经典老派厨房**：坚持 Post-Norm（先炒菜再调味）、可选拼盘（qkv 融合或独立）、主厨特选酱汁（GELU/SiLU/GEGLU
+  按菜品切换）'
+- '- **ModernBERT = 现代改良厨房**：改用 Pre-Norm（先备料再下锅）、只走 QKV 拼盘流水线、按楼层定制火候（per-layer RoPE）'
+- '- **NeoBERT = 精简版快餐厨房**：RMSNorm 统一调料、SWIGLU 顺序门控、只产出半成品（t_embd 不算账）'
+- '- **EuroBERT = 全定制私房菜**：每道菜独立 Q/K/V 火眼（独立权重）、SiLU 并行双灶台、强调个性化'
+- '- **T5 = 双厅联动餐厅**：前台（编码器）接单并记住位置感（相对位置桶），后厨（解码器）边做菜边查菜谱（交叉注意力），同时支持 ReLU 老菜单和 GELU
+  新菜单（Flan-T5）'
+- '- **PaddleOCR = OCR 专窗**：与 Qwen2VL 共用骨架但偏置可选（看顾客预算），时间/高度/宽度分段旋转（M-RoPE）'
+- '- **Pangu-Embedded = 昇腾嵌入式厨房**：全套带偏置的标准化流程，从切菜到装盘（Q/K/V + FFN + output）一丝不苟'
+- '- **WavTokenizer = 音频解码糕点店**：PosNet 是上裱花机（6 层异构），ConvNeXt 是精修模具（残差 + gamma 缩放），全程要不停翻面（transpose）'
+- 就像不同餐厅各有自己的招牌菜，llama.cpp 的每个编码器模型都通过精心组合 Pre-Norm / Post-Norm、QKV 融合方式、FFN 激活、RoPE
+  策略等"调味料"，形成自己独特的"风味"。
+'no': 30
+summary:
+- concept: '`llm_build_bert::llm_build_bert()`'
+  desc: 经典 BERT：Post-Norm、绝对位置嵌入、可选 type_embd、qkv 融合 + 独立双路径、按架构切换 GELU/GEGLU/SiLU
+- concept: '`llm_build_modern_bert::llm_build_modern_bert()`'
+  desc: 现代 BERT：Pre-Norm、强制 wqkv 融合、per-layer RoPE、GEGLU + SEQ、末端 output_norm
+- concept: '`llm_build_neo_bert::llm_build_neo_bert()`'
+  desc: 精简 BERT：RMSNorm + SWIGLU + 全局 RoPE、无中间层 norm、仅产 embedding
+- concept: '`llm_build_eurobert::llm_build_eurobert()`'
+  desc: 独立 QKV 编码器：Pre-Norm + RMSNorm、SiLU + PAR、RMSNorm 统一、逐层调用基础设施
+- concept: '`llm_build_t5_enc::llm_build_t5_enc()`'
+  desc: T5 编码器：相对位置桶偏置（attn_rel_b_enc）、ReLU vs GELU 双 FFN、控制向量 cvec
+- concept: '`llm_build_t5_dec::llm_build_t5_dec()`'
+  desc: T5 解码器：自注意 + 交叉注意 + 位置桶、双产物（t_embd + t_logits）
+- concept: '`llm_build_paddleocr::llm_build_paddleocr()`'
+  desc: Qwen2VL 变体：M-RoPE 四段、Q/K/V/Out 偏置可选、SwiGLU + 控制向量
+- concept: '`llm_build_pangu_embedded::llm_build_pangu_embedded()`'
+  desc: 昇腾嵌入：Pre-Norm + RMSNorm、全 Q/K/V/FFN/Output 偏置、SwiGLU + PAR
+- concept: '`llm_build_wavtokenizer_dec::llm_build_wavtokenizer_dec()`'
+  desc: 音频解码：PosNet 6 层异构（4 卷积 + 1 注意力 + 1 norm）+ ConvNeXt 残差（gamma 缩放）
+- concept: '`ggml_view_3d` 切分 Q/K/V'
+  desc: wqkv 融合权重按字节偏移取出 Q/K/V，零拷贝视图
+- concept: '`ggml_rope_multi`'
+  desc: 多段 RoPE，支持 M-RoPE 时间/高度/宽度分段频率
+- concept: '`build_attn_inp_no_cache`'
+  desc: 无缓存注意力输入，编码器专用（双向注意力，不需 KV Cache），来自 llm_graph_context 基类
+- concept: '`build_attn_inp_kv`'
+  desc: 带 KV 缓存的自注意力输入，来自 llm_graph_context 基类
+- concept: '`build_attn_inp_cross`'
+  desc: 交叉注意力输入，K/V 来自编码器输出，来自 llm_graph_context 基类
+- concept: '`build_pos_bias`'
+  desc: 构建 T5 相对位置偏置，将位置桶映射到 attention bias，来自 llm_graph_context 基类
+- concept: '`build_cvec`'
+  desc: 在每层 FFN 后注入控制向量（cvec）以调节模型行为，来自 llm_graph_context 基类
+- concept: '`build_inp_pos / build_inp_embd`'
+  desc: 位置与 token 嵌入输入构建基础设施，被几乎所有模型复用，来自 llm_graph_context 基类
+- concept: '`build_norm`'
+  desc: 通用归一化入口，支持 LLM_NORM / LLM_NORM_RMS / LLM_NORM_GROUP 等类型，来自 llm_graph_context
+    基类
+- concept: '`build_ffn`'
+  desc: 通用前馈网络入口，支持 SEQ/PAR 模式与多种激活函数，来自 llm_graph_context 基类
+- concept: '`build_attn`'
+  desc: 通用注意力入口，统一调度 KV 缓存、Flash Attention、QKV bias 等，来自 llm_graph_context 基类
+units:
+- codes:
+  - file: src/models/bert.cpp
+    line: 1-180
+    method_or_func: llm_build_bert.llm_build_bert()
+  name: BERT 主体架构 —— 经典双向编码器的「理解型图谱」
+  'no': 1
+  points:
+  - '**BERT 是什么角色？** 经典的双向 Transformer 编码器，擅长文本理解而非生成'
+  - '- 与 GPT 类自回归模型相反，BERT 通过完整双向注意力同时看到上下文'
+  - '- 本单元聚焦 `llm_build_bert.llm_build_bert()` 的图构建全流程'
+  - '**核心差异：嵌入组合方式**'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 构建 token 嵌入'
+  - '- 通过 `build_inp_pos()` 生成绝对位置嵌入（`pos_embd`）'
+  - '- 同时支持可选的 **类型嵌入**（`type_embd`），用 `ggml_view_1d` 切片后 `ggml_add`'
+  - '- 这与 ModernBERT / NeoBERT 的纯位置编码路线形成鲜明对比'
+  - '**QKV 路径的灵活性**'
+  - '- 优先使用 `wqkv` 融合权重（Q/K/V 拼接），减少矩阵乘次数'
+  - '- 备选方案是 `wq`/`wk`/`wv` 三个独立权重，兼容老模型'
+  - '- 通过 `ggml_view_3d` 在融合张量上做视图切分，按字节偏移取 Q/K/V'
+  - '**可选 Q/K 归一化**'
+  - '- `attn_q_norm` / `attn_k_norm` 存在时对 Q/K 各自做 reshape+norm+reshape'
+  - '- 这是部分 BERT 变体的特有优化'
+  - '**MoE 旁路与架构分支**'
+  - '- 当 `moe_every_n_layers` 命中时，特定层使用 `build_moe_ffn` 构建混合专家'
+  - '- Nomic BERT MoE 与 Jina BERT V3 走标准 `build_ffn`（GELU + SEQ）'
+  - '- Jina BERT V2 特殊处理：当 `ffn_gate` 缺失但 `ffn_up` 维度异常时使用 GEGLU'
+  - '**Norm 双轨制：嵌入层 Norm + Post-Attention Norm**'
+  - '- 嵌入后做一次 `build_norm`（`tok_norm`），稳定输入分布'
+  - '- 注意力输出后做 `attn_out_norm`，部分架构还有 `attn_norm_2`'
+  - '- 这与 Pre-Norm 的 ModernBERT 路线完全不同'
+- codes:
+  - file: src/models/modern-bert.cpp
+    line: 1-110
+    method_or_func: llm_build_modern_bert.llm_build_modern_bert()
+  name: ModernBERT —— 新派编码器的「Pre-Norm 改良派」
+  'no': 2
+  points:
+  - '**为什么需要 ModernBERT？** 在 BERT 基础上引入 Pre-Norm、RoPE、SwiGLU 等现代优化'
+  - '- 与传统 BERT 的 Post-Norm 相比，Pre-Norm 训练更稳定、收敛更快'
+  - '**输入嵌入流程**'
+  - '- 通过 `build_inp_pos()` 获取位置嵌入输入'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 构建 token 嵌入'
+  - '- `build_norm` 对 `tok_norm` 做嵌入层归一化'
+  - '**关键简化：纯 QKV 融合**'
+  - '- 强制使用 `wqkv` 融合权重，不再支持 wq/wk/wv 三独立路径'
+  - '- 通过 `ggml_view_3d` 切分 Q/K/V，字节偏移由 `type_size` 动态决定'
+  - '**Per-layer RoPE 频率**'
+  - '- 调用 `model.get_rope_freq_base/scale` 获取逐层独立的旋转频率'
+  - '- 这是现代长上下文扩展的关键：低层高频细节，高层低频全局'
+  - '**Pre-Norm + 残差设计**'
+  - '- 每个子层（注意力、FFN）前都有独立的 `build_norm`（`attn_norm` / `ffn_norm`）'
+  - '- 残差连接：`cur = cur + inpL`、`cur = cur + ffn_inp`'
+  - '- 这与经典 BERT 的 Post-Norm「先注意再 Norm 再残差」完全相反'
+  - '**FFN 结构：GEGLU 平行门控**'
+  - '- 使用 `LLM_FFN_GEGLU` + `LLM_FFN_SEQ`，即门控线性单元'
+  - '- `ffn_up` 与 `ffn_gate` 并行计算后逐元素相乘'
+  - '**省略中间层 Norm**'
+  - '- 不再有 `attn_out_norm`/`layer_out_norm`，进一步简化图结构'
+  - '- 直接在末端做 `output_norm` 即可'
+- codes:
+  - file: src/models/neo-bert.cpp
+    line: 1-95
+    method_or_func: llm_build_neo_bert.llm_build_neo_bert()
+  name: NeoBERT —— RMSNorm 化的「瘦身版 BERT」
+  'no': 3
+  points:
+  - '**NeoBERT 的定位**：BERT 风格的现代精简版，仅保留必要组件'
+  - '- 与 ModernBERT 类似，但 FFN 使用 SwiGLU 而非 GEGLU'
+  - '- 全部归一化统一用 `LLM_NORM_RMS`'
+  - '**最简的输入嵌入**'
+  - '- `build_inp_pos()` 生成位置输入'
+  - '- `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- 与 ModernBERT 相比无 `tok_norm` 嵌入层 norm（直接进入第一层）'
+  - '**最简的 QKV 融合路径**'
+  - '- 与 ModernBERT 相同，强制使用 `wqkv` 融合张量'
+  - '- 但 RoPE 频率使用全局 `freq_base`/`freq_scale`，而非 per-layer'
+  - '**Pre-Norm + 无中间 Norm**'
+  - '- 子层前 `build_norm`：注意力前 `attn_norm`、FFN 前 `ffn_norm`'
+  - '- 与 ModernBERT 相同，残差连接在 norm 之前的输入'
+  - '**FFN：SwiGLU 顺序门控**'
+  - '- 使用 `LLM_FFN_SWIGLU` + `LLM_FFN_SEQ`，注意是 SWIGLU 而非 GEGLU'
+  - '- 这是 NeoBERT 与 ModernBERT 的关键区分点'
+  - '**编码器专用输出**'
+  - '- 末端使用 `output_norm_enc`（编码器专用输出 norm）'
+  - '- 仅产出 `res->t_embd`，不计算 logits（无语言模型头）'
+- codes:
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.llm_build_eurobert()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_inp_pos()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_inp_embd()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_attn_inp_no_cache()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_inp_out_ids()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_norm()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_lora_mm()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_attn()
+  - file: src/models/eurobert.cpp
+    line: 1-90
+    method_or_func: llm_build_eurobert.build_ffn()
+  name: EuroBERT —— 独立 QKV 权重与「SiluFFN」实践
+  'no': 4
+  points:
+  - '**EuroBERT 的特点**：采用独立 Q/K/V 权重而非融合方案'
+  - '- 通过 `build_lora_mm(model.layers[il].wq/k/v)` 分别计算'
+  - '- 兼容更广泛的预训练 checkpoint'
+  - '**输入嵌入与基础设施**'
+  - '- `build_inp_pos()` 生成位置输入'
+  - '- `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- `build_attn_inp_no_cache()` 获取双向注意力输入'
+  - '- `build_inp_out_ids()` 提供最后层 token 选择能力'
+  - '**RMSNorm 全覆盖**'
+  - '- 与 NeoBERT 相同，统一使用 `LLM_NORM_RMS`'
+  - '- 包括 `attn_norm`、`ffn_norm`、`output_norm`'
+  - '- 通过 `build_norm()` 统一入口实现'
+  - '**Pre-Norm + 残差的标准范式**'
+  - '- 注意力路径：`build_norm` → Q/K/V → RoPE → `build_attn` → residual'
+  - '- FFN 路径：`build_norm` → SwiGLU FFN → residual'
+  - '**FFN：SiLU 并行门控**'
+  - '- 使用 `LLM_FFN_SILU` + `LLM_FFN_PAR`'
+  - '- `ffn_up` 与 `ffn_gate` 并行，激活函数使用 SiLU'
+  - '**与 BERT/ModernBERT 的对比**'
+  - '- BERT：Post-Norm + GELU 顺序'
+  - '- ModernBERT：Pre-Norm + GEGLU 顺序'
+  - '- EuroBERT：Pre-Norm + SiLU 并行 + 独立 QKV'
+  - '- 这三种变体构成 BERT 家族的核心差异化'
+- codes:
+  - file: src/models/t5-enc.cpp
+    line: 1-95
+    method_or_func: llm_build_t5_enc.llm_build_t5_enc()
+  name: T5 编码器 —— 相对位置桶的「位置偏置大师」
+  'no': 5
+  points:
+  - '**T5 编码器的独特性**：使用相对位置桶编码（Relative Position Bias）'
+  - '- 通过 `build_inp_pos_bucket_enc()` 生成位置桶输入'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- 这是 T5 与 BERT 系列最显著的区别'
+  - '**位置偏置构建流程**'
+  - '- 读取 `attn_rel_b_enc` 张量（每层共享第一层的偏置）'
+  - '- 通过 `build_pos_bias(pos_bucket_enc, attn_rel_b)` 构造 KQ bias'
+  - '- 该 bias 作为 `build_attn` 的 `kq_b` 参数传入'
+  - '**标准 Pre-Norm 流程**'
+  - '- 注意力路径：`attn_norm_enc` → Q/K/V → reshape → 加 bias → 输出'
+  - '- FFN 路径：`ffn_norm_enc` → FFN → residual'
+  - '**FFN 双模式：T5 用 ReLU，Flan-T5 用 GELU**'
+  - '- 通过判断 `ffn_gate_enc` 是否存在来选择激活函数'
+  - '- 无 gate → `LLM_FFN_RELU` + `LLM_FFN_SEQ`（原始 T5）'
+  - '- 有 gate → `LLM_FFN_GELU` + `LLM_FFN_PAR`（Flan-T5 GEGLU 风格）'
+  - '**编码器专用命名**'
+  - '- 所有张量带 `_enc` 后缀（`wq_enc`、`attn_norm_enc` 等）'
+  - '- 与解码器区分，编码器不计算 logits，只输出 `t_embd`'
+  - '**控制向量（cvec）支持**'
+  - '- 在每层 FFN 后调用 `build_cvec(cur, il)`，注入控制向量'
+- codes:
+  - file: src/models/t5-dec.cpp
+    line: 1-140
+    method_or_func: llm_build_t5_dec.llm_build_t5_dec()
+  name: T5 解码器 —— 自注意力与交叉注意力的「双重舞台」
+  'no': 6
+  points:
+  - '**T5 解码器的核心任务**：在编码器输出的基础上做条件生成'
+  - '- 与纯解码器 LLM 不同，T5 解码器需要交叉注意力来读取编码器信息'
+  - '**输入嵌入与多模态输入**'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- `build_inp_cross_embd()` 读取编码器最终输出'
+  - '- `build_inp_pos_bucket_dec()` 生成解码器位置桶'
+  - '**双注意力输入管理**'
+  - '- `build_attn_inp_kv()` 为自注意力提供标准 KV 缓存'
+  - '- `build_attn_inp_cross()` 为交叉注意力提供编码器 KV'
+  - '- 这是 encoder-decoder 架构的关键'
+  - '**交叉注意力构建**'
+  - '- Q 来自解码器当前隐藏状态'
+  - '- K/V 来自 `build_inp_cross_embd()`（编码器最终输出）'
+  - '- 通过 `wq_cross`/`wk_cross`/`wv_cross` 三个独立权重矩阵'
+  - '- 不使用 RoPE（编码器已含位置信息）'
+  - '**相对位置桶在解码器中**'
+  - '- 同样使用 `build_inp_pos_bucket_dec()`'
+  - '- 自注意力和交叉注意力共享同一套位置偏置逻辑'
+  - '**标准 T5 vs Flan-T5 双模式**'
+  - '- 与编码器相同的 FFN 选择策略'
+  - '- ReLU + SEQ（原始 T5）或 GELU + PAR（Flan-T5）'
+  - '**输出双产物：logits 与 embeddings**'
+  - '- 与编码器不同，解码器额外调用 `build_lora_mm(model.output, cur)`'
+  - '- 同时设置 `res->t_embd` 与 `res->t_logits`'
+- codes:
+  - file: src/models/paddleocr.cpp
+    line: 1-110
+    method_or_func: llm_build_paddleocr.llm_build_paddleocr()
+  name: PaddleOCR —— 视觉文本识别的「轻量 OCR 解码器」
+  'no': 7
+  points:
+  - '**PaddleOCR 的定位**：基于 Qwen2VL 的轻量解码器，但支持可选偏置'
+  - '- 与 qwen2vl.cpp 共享相同的 M-RoPE 多段频率架构'
+  - '- 关键差异：所有 Q/K/V/Out 的 bias 都为可选'
+  - '**输入嵌入流程**'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- `build_inp_pos()` 与 `build_attn_inp_kv()` 提供标准位置/缓存输入'
+  - '- `build_inp_out_ids()` 处理最后层输出选择'
+  - '**M-RoPE 四段式位置编码**'
+  - '- 通过 `hparams.rope_sections` 读取四段频率分配'
+  - '- 使用 `ggml_rope_multi` 而非 `ggml_rope_ext` 应用旋转'
+  - '- 这是多模态模型的典型特征：时间、高度、宽度各占一段'
+  - '**偏置可选的 QKV 构建**'
+  - '- 每个 Q/K/V 计算后检查 `bq`/`bk`/`bv` 是否存在'
+  - '- 存在则 `ggml_add` 偏置，不存在则跳过'
+  - '- 输出 `wo` 也支持可选 `bo` 偏置'
+  - '**SwiGLU FFN + cvec**'
+  - '- 使用 `LLM_FFN_SILU` + `LLM_FFN_PAR`（标准 SwiGLU）'
+  - '- 每层 FFN 后注入控制向量 `build_cvec`'
+  - '**与 Qwen2VL 的核心差异**'
+  - '- Qwen2VL 强制带偏置（用于视觉文本对齐）'
+  - '- PaddleOCR 的偏置可选使模型架构更灵活'
+  - '- 两者的图结构高度相似，可视为轻量化变体'
+  - '**完整输出：logits 与 embedding**'
+  - '- 末端计算 `output_norm` → `lm_head` → 同时输出 `t_logits` 与 `t_embd`'
+- codes:
+  - file: src/models/pangu-embedded.cpp
+    line: 1-115
+    method_or_func: llm_build_pangu_embedded.llm_build_pangu_embedded()
+  name: Pangu-Embedded —— 昇腾嵌入模型的「标准 Transformer」
+  'no': 8
+  points:
+  - '**Pangu-Embedded 的特点**：标准 Pre-Norm Transformer，带完整偏置'
+  - '- 类似于 BERT 与 ModernBERT 的中间形态'
+  - '- 所有 Q/K/V/FFN/Output 都带有偏置项'
+  - '**输入嵌入与基础设施**'
+  - '- 通过 `build_inp_embd(model.tok_embd)` 生成 token 嵌入'
+  - '- `build_inp_pos()` 与 `build_attn_inp_kv()` 提供位置与缓存输入'
+  - '- `build_inp_out_ids()` 处理最后层 token 选择'
+  - '**逐层 Pre-Norm**'
+  - '- 每个注意力层前有 `attn_norm`（RMSNorm）'
+  - '- 每个 FFN 层前有 `ffn_norm`（RMSNorm）'
+  - '- 标准的残差连接模式'
+  - '**RoPE 位置编码**'
+  - '- 使用标准 `ggml_rope_ext`（非 multi）'
+  - '- 通过 `n_rot` 控制旋转维度，K 与 Q 同时旋转'
+  - '- `n_embd_head == n_rot` 强制约束'
+  - '**带偏置的 QKV**'
+  - '- `Qcur = wq*cur + bq`：计算后立即加上偏置'
+  - '- K/V 同理，保证数值精度'
+  - '- 输出投影 `wo` 也带 `bo`'
+  - '**SwiGLU FFN + 双偏置**'
+  - '- `ffn_up`/`ffn_gate`/`ffn_down` 三组权重各自带偏置'
+  - '- `LLM_FFN_SILU` + `LLM_FFN_PAR`：标准并行 SwiGLU'
+  - '- 控制向量 `build_cvec` 在 FFN 后注入'
+  - '**末端输出：logits 偏置支持**'
+  - '- `build_lora_mm(model.output, cur)` 计算语言模型头'
+  - '- 末尾额外判断 `model.output_b` 是否存在并添加'
+  - '- 同时输出 `t_embd` 与 `t_logits`'
+- codes:
+  - file: src/models/wavtokenizer-dec.cpp
+    line: 1-140
+    method_or_func: llm_build_wavtokenizer_dec.llm_build_wavtokenizer_dec()
+  name: WavTokenizer-Dec —— 音频解码的「ConvNeXt + PosNet」
+  'no': 9
+  points:
+  - '**WavTokenizer 的双重使命**：将离散音频 token 转回连续波形'
+  - '- PosNet 负责上采样生成频谱帧'
+  - '- ConvNeXt 负责精修频谱细节'
+  - '**PosNet 六层异构设计**'
+  - '- 前两层/三四层（0,1,3,4）：纯卷积残差块（norm → sigmoid → conv → norm → sigmoid → conv）'
+  - '- 第二层（2）：中间自注意力层（conv Q/K/V → transpose → 注意力 → conv 输出）'
+  - '- 第五层（5）：仅 norm，无后续变换（聚合层）'
+  - '**GLU 风格的激活函数**'
+  - '- `cur = ggml_mul(sigmoid(cur), cur)`：GLU 激活'
+  - '- 这与标准 LLM 的 GELU/SiLU 完全不同'
+  - '**ConvNeXt 残差块**'
+  - '- 逐通道卷积（dw） → transpose → norm → GELU FFN → gamma 缩放 → 残差'
+  - '- `LLM_FFN_GELU` + `LLM_FFN_SEQ`：标准 FFN 调用'
+  - '- `layer.gamma` 作为可学习缩放因子'
+  - '**transpose 的必要性**'
+  - '- 多个地方需要 `ggml_cont(ctx0, ggml_transpose(...))`'
+  - '- 因为 `ggml_conv_1d_ph` 要求特定内存布局'
+  - '- 这种显式 transpose 是音频模型的典型工程负担'
+  - '**解码器的输出头**'
+  - '- 最终 norm → lm_head（`model.output`） → 加 `output_b`'
+  - '- 输出 `t_embd` 即可重建波形信号'

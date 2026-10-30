@@ -1,0 +1,918 @@
+classes: []
+desc: 该文件是 ggml 库中 SYCL 后端的 Flash Attention Tiled 内核实现，针对 Intel GPU 等设备提供高效的注意力计算。文件定义了多个静态配置函数，用于根据
+  DKQ（键/查询维度）、DV（值维度）和 ncols（列数）选择合适的线程数、占用率、批次大小等计算参数，并提供了共享内存加载和张量乘累加等底层内核函数。该文件是
+  ggml SYCL 后端的 Flash Attention 分块（tile）计算内核实现，通过模板元编程在不同数据类型、头维度和批大小下，利用共享内存和向量化指令高效地完成注意力计算。它定义了将
+  K/V 数据加载到 SRAM 并进行 VKQ 向量乘加累加的迭代函数 flash_attn_tile_iter，以及执行整个分块注意力的主设备函数 flash_attn_tile。此外，还包含多个根据
+  GQA（Grouped Query Attention）比例和维度选择合适分块大小的启动分发函数，并声明了针对不同 (DKQ, DV) 组合的模板显式实例化。
+file: ggml/src/ggml-sycl/fattn-tile.hpp
+funcs:
+- code:
+  - '#include <sycl/sycl.hpp>'
+  - '#include <sycl/ext/oneapi/work_group_static.hpp>'
+  - '#include "dpct/helper.hpp"'
+  - '#include "common.hpp"'
+  - '#include "fattn-common.hpp"'
+  - ''
+  - '#include <cmath>'
+  - '#include <float.h>'
+  - ''
+  - namespace syclex = sycl::ext::oneapi::experimental;
+  - ''
+  - '#define GGML_SYCL_FATTN_TILE_CONFIG_CASE(DKQ_, DV_, ncols_, nthreads, occupancy,
+    nbatch_fa, nbatch_K) \'
+  - '    if (DKQ == (DKQ_) && DV == (DV_) && ncols == (ncols_)) {                                          \'
+  - '        static_assert((nthreads)          <= 512, "bad nthreads");                                    \'
+  - '        static_assert((occupancy)         <=   8, "bad occupancy");                                   \'
+  - '        static_assert((nbatch_fa)         <= 256, "bad nbatch_fa");                                   \'
+  - '        static_assert((nbatch_K)          <= 256, "bad nbatch_K");                                    \'
+  - '        return ((nthreads) << 0) | ((occupancy) << 10) | ((nbatch_fa) << 14)
+    | ((nbatch_K) << 23);    \'
+  - '    }                                                                                                 \'
+  desc: 文件顶层代码，包含 SYCL 头文件、命名空间声明和宏定义，为后续函数提供基础环境。
+  line: 1-19
+  name: __main__
+- code:
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config_fp16(const int DKQ,
+    const int DV, const int ncols) {
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  2,  64, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  4, 128, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  8, 256, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 16, 256, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 32, 256, 2,  64,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  2,  64, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 16, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 32, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  2,  64, 2,  64,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  4, 128, 2,  64,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  8, 256, 2,  64,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 16, 256, 2,  64,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 32, 256, 2,  64,  72)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  2,  64, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  4, 128, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  8, 256, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 16, 256, 2,  64,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 32, 256, 2,  64,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  2,  64, 2,  64,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  4, 128, 2,  64,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  8, 256, 2,  64,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 16, 256, 2,  64,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 32, 256, 2,  64,  48)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  2,  64, 2,  64,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  4, 128, 2,  64,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  8, 256, 2,  64,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 16, 256, 2,  64,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 32, 256, 2,  64,  56)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  2,  64, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 16, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  2,  64, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 16, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 32, 256, 2,  64,  64)'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 针对 FP16 数据类型，根据 DKQ、DV 和 ncols 返回打包的配置值（包含线程数、占用率、批次大小），支持各种维度组合。
+  line: 21-83
+  name: ggml_sycl_fattn_tile_get_config_fp16
+- code:
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config_fp32(const int DKQ,
+    const int DV, const int ncols) {
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 32, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  2, 128, 3,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  4, 128, 3,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  8, 128, 3,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 16, 128, 3,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 32, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  2,  64, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  4, 128, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  8, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 16, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 32, 256, 2,  32,  72)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 32, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  2,  64, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  4, 128, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  8, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 16, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 32, 256, 2,  32,  48)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  2,  64, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  4, 128, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  8, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 16, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 32, 256, 2,  32,  56)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  2, 128, 3,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  4, 128, 3,  32, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  8, 128, 3,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 16, 128, 3,  32, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  2, 128, 3,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  4, 128, 3,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  8, 256, 2,  32, 256)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2,  32, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2,  32,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  4, 128, 2,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  8, 256, 2,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 16, 256, 2,  32,  64)'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 针对 FP32 数据类型，根据 DKQ、DV 和 ncols 返回打包的配置值（包含线程数、占用率、批次大小），支持各种维度组合。
+  line: 85-146
+  name: ggml_sycl_fattn_tile_get_config_fp32
+- code:
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config_amd(const int DKQ, const
+    int DV, const int ncols) {
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 32, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 64, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  2,  64, 3,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  4, 128, 3,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  8, 128, 2,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 16, 256, 2, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 32, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 64, 256, 2,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  2,  64, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  4, 128, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  8, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 16, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 32, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 64, 256, 2,  32,  72)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 32, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 64, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  2,  64, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  4, 128, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  8, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 16, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 32, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 64, 256, 2,  32,  48)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  2,  64, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  4, 128, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  8, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 16, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 32, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 64, 256, 2,  32,  56)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  2, 256, 2, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  4, 128, 2,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  8, 256, 2,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 16, 256, 2,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 64, 256, 2,  64,  32)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  2, 256, 2, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  4, 256, 2,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  8, 256, 2,  64, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2,  32, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2,  32, 128)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 16, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 32, 512, 1, 128,  64)'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 针对 AMD GPU 设备，根据 DKQ、DV 和 ncols 返回打包的配置值（包含线程数、占用率、批次大小），支持各种维度组合，包括更大的批次处理能力。
+  line: 148-222
+  name: ggml_sycl_fattn_tile_get_config_amd
+- code:
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config_amd_rdna(const int DKQ,
+    const int DV, const int ncols) {
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 32, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 40,  40, 64, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  2,  64, 8,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  4,  64, 8,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64,  8, 128, 5, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 16, 128, 5, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 32, 128, 4,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 64,  64, 64, 128, 5,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  2,  64, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  4, 128, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72,  8, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 16, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 32, 256, 2,  32,  72)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 72,  72, 64, 256, 2,  32,  72)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  2,  64, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  4, 128, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80,  8, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 16, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 32, 256, 2,  32,  40)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 80,  80, 64, 256, 2,  32,  40)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  2,  64, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  4, 128, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96,  8, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 16, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 32, 256, 2,  32,  48)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE( 96,  96, 64, 256, 2,  32,  48)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  2,  64, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  4, 128, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112,  8, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 16, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 32, 256, 2,  32,  56)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(112, 112, 64, 256, 2,  32,  56)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  2,  64, 8,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  4, 128, 8,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128,  8, 128, 8,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 16, 256, 3, 128, 128)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 3, 128,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(128, 128, 64, 256, 3,  64,  64)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  2,  64, 8,  32,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  4, 128, 6,  32, 256)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256,  8, 128, 6,  32, 256)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 5,  32, 256)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 3,  64, 128)'
+  - ''
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  4, 128, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512,  8, 256, 2,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 16, 256, 4,  64,  64)'
+  - '    GGML_SYCL_FATTN_TILE_CONFIG_CASE(576, 512, 32, 256, 2, 128,  64)'
+  - ''
+  - '    return 0;'
+  - '}'
+  desc: 针对 AMD RDNA 架构 GPU 设备，根据 DKQ、DV 和 ncols 返回打包的配置值（包含线程数、占用率、批次大小），提供针对该架构优化的性能参数。
+  line: 224-297
+  name: ggml_sycl_fattn_tile_get_config_amd_rdna
+- code:
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config(const int DKQ, const
+    int DV, const int ncols, const int cc) {
+  - '    if(fast_fp16_available(cc))'
+  - '        return ggml_sycl_fattn_tile_get_config_fp16(DKQ, DV, ncols);'
+  - '    else'
+  - '        return ggml_sycl_fattn_tile_get_config_fp32(DKQ, DV, ncols);'
+  - '}'
+  - ''
+  - static constexpr uint32_t ggml_sycl_fattn_tile_get_config(const int DKQ, const
+    int DV, const int ncols) {
+  - '#ifdef SYCL_FAST_FP16'
+  - '    return ggml_sycl_fattn_tile_get_config_fp16(DKQ, DV, ncols);'
+  - '#else'
+  - '    return ggml_sycl_fattn_tile_get_config_fp32(DKQ, DV, ncols);'
+  - '#endif // SYCL_FAST_FP16'
+  - '}'
+  desc: 根据计算能力和 FP16 可用性，选择 FP16 或 FP32 配置函数以返回适当的配置值。
+  line: 299-311
+  name: ggml_sycl_fattn_tile_get_config
+- code:
+  - static int ggml_sycl_fattn_tile_get_nthreads(const int DKQ, const int DV, const
+    int ncols, const int cc) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols, cc) >> 0) & ((1 <<
+    10) - 1);'
+  - '}'
+  - ''
+  - static constexpr int ggml_sycl_fattn_tile_get_nthreads(const int DKQ, const int
+    DV, const int ncols) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols) >> 0) & ((1 << 10)
+    - 1);'
+  - '}'
+  desc: 从打包的配置值中提取并返回线程数（nthreads）参数，支持运行时和编译时两种版本。
+  line: 313-319
+  name: ggml_sycl_fattn_tile_get_nthreads
+- code:
+  - static int ggml_sycl_fattn_tile_get_occupancy(const int DKQ, const int DV, const
+    int ncols, const int cc) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols, cc) >> 10) & ((1
+    << 4) - 1);'
+  - '}'
+  - ''
+  - static constexpr int ggml_sycl_fattn_tile_get_occupancy(const int DKQ, const int
+    DV, const int ncols) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols) >> 10) & ((1 << 4)
+    - 1);'
+  - '}'
+  desc: 从打包的配置值中提取并返回占用率（occupancy）参数，支持运行时和编译时两种版本。
+  line: 321-327
+  name: ggml_sycl_fattn_tile_get_occupancy
+- code:
+  - static int ggml_sycl_fattn_tile_get_nbatch_fa(const int DKQ, const int DV, const
+    int ncols, const int cc) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols, cc) >> 14) & ((1
+    << 9) - 1);'
+  - '}'
+  - ''
+  - static constexpr int ggml_sycl_fattn_tile_get_nbatch_fa(const int DKQ, const int
+    DV, const int ncols) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols) >> 14) & ((1 << 9)
+    - 1);'
+  - '}'
+  desc: 从打包的配置值中提取并返回注意力批次大小（nbatch_fa）参数，支持运行时和编译时两种版本。
+  line: 329-335
+  name: ggml_sycl_fattn_tile_get_nbatch_fa
+- code:
+  - static int ggml_sycl_fattn_tile_get_nbatch_K(const int DKQ, const int DV, const
+    int ncols, const int cc) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols, cc) >> 23) & ((1
+    << 9) - 1);'
+  - '}'
+  - ''
+  - static constexpr int ggml_sycl_fattn_tile_get_nbatch_K(const int DKQ, const int
+    DV, const int ncols) {
+  - '    return (ggml_sycl_fattn_tile_get_config(DKQ, DV, ncols) >> 23) & ((1 << 9)
+    - 1);'
+  - '}'
+  desc: 从打包的配置值中提取并返回 Key 批次大小（nbatch_K）参数，支持运行时和编译时两种版本。
+  line: 337-343
+  name: ggml_sycl_fattn_tile_get_nbatch_K
+- code:
+  - template <int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
+  - static __dpct_inline__ void flash_attn_tile_load_tile(const sycl::half2 * const
+    __restrict__ KV,
+  - '                                                      sycl::half2 * const __restrict__
+    tile_KV,'
+  - '                                                      const int stride_KV,'
+  - '                                                      const int i_sup) {'
+  - '    auto      item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    constexpr int cpy_nb = ggml_sycl_get_max_cpy_bytes();'
+  - '    constexpr int cpy_ne = cpy_nb / 4;'
+  - ''
+  - '    auto load = [&] (const int n) {'
+  - '        const int stride_j = warp_size >> n;'
+  - ''
+  - '        if (stride_j == 0) {'
+  - '            return;'
+  - '        }'
+  - ''
+  - '        const int j0_start = stride_j == warp_size ? 0 : ((J/2)/cpy_ne) - ((J/2)/cpy_ne)
+    % (2*stride_j);'
+  - '        const int j0_stop  =                             ((J/2)/cpy_ne) - ((J/2)/cpy_ne)
+    % (1*stride_j);'
+  - '        const int stride_i = warp_size / stride_j;'
+  - ''
+  - '        if (j0_start == j0_stop) {'
+  - '            return;'
+  - '        }'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i0 = 0; i0 < I; i0 += nwarps*stride_i) {'
+  - '            const int i = i0 + item_ct1.get_local_id(1) * stride_i +'
+  - '                          (stride_j == warp_size ? 0 : item_ct1.get_local_id(2)
+    / stride_j);'
+  - ''
+  - '            if (i0 + nwarps*stride_i <= I || i < I) {'
+  - '#pragma unroll'
+  - '                for (int j0 = j0_start; j0 < j0_stop; j0 += stride_j) {'
+  - '                    const int j = j0 * cpy_ne + (stride_j == warp_size ? item_ct1.get_local_id(2)
+    :'
+  - '                                                                         item_ct1.get_local_id(2)
+    % stride_j) *'
+  - '                                                    cpy_ne;'
+  - ''
+  - '                    const __dpct_align__(16) sycl::half2 zero[cpy_ne] = {'
+  - '                        { 0.0f, 0.0f }'
+  - '                    };'
+  - '                    ggml_sycl_memcpy_1<cpy_nb>('
+  - '                        tile_KV + i*(J/2 + J_padding) + j,'
+  - '                        !oob_check || i < i_sup ? KV + i*stride_KV + j : zero);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    };'
+  - '    // 1: max 64*16=512 bytes, 512 half'
+  - '    // 2: max 32*16=512 bytes, 256 half'
+  - '    // 3: max 16*16=256 bytes, 128 half'
+  - '    // 4: max  8*16=128 bytes,  64 half'
+  - '    // 5: max  4*16= 64 bytes,  32 half'
+  - '    // 6: max  2*16= 32 bytes,  16 half'
+  - '    // 7: max  1*16= 16 bytes,   8 half'
+  - '    static_assert(J % 8 == 0, "bad J");'
+  - '    static_assert((J/2) % cpy_ne == 0, "bad J");'
+  - '    ggml_sycl_unroll<7>{}(load);'
+  - '}'
+  - ''
+  - template <int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
+  - static __dpct_inline__ void flash_attn_tile_load_tile(const sycl::half2 * const
+    __restrict__ KV,
+  - '                                                      float * const __restrict__
+    tile_KV,'
+  - '                                                      const int stride_KV,'
+  - '                                                      const int i_sup) {'
+  - '    constexpr int cpy_nb = ggml_sycl_get_max_cpy_bytes();'
+  - '    constexpr int cpy_ne = cpy_nb / 4;'
+  - ''
+  - '    auto load = [&] (const int n) {'
+  - '        auto      item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '        const int stride_j = warp_size >> n;'
+  - ''
+  - '        if (stride_j == 0) {'
+  - '            return;'
+  - '        }'
+  - ''
+  - '        const int j0_start = stride_j == warp_size ? 0 : (J/cpy_ne) - (J/cpy_ne)
+    % (2*stride_j);'
+  - '        const int j0_stop  =                             (J/cpy_ne) - (J/cpy_ne)
+    % (1*stride_j);'
+  - '        const int stride_i = warp_size / stride_j;'
+  - ''
+  - '        if (j0_start == j0_stop) {'
+  - '            return;'
+  - '        }'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i0 = 0; i0 < I; i0 += nwarps*stride_i) {'
+  - '            const int i = i0 + item_ct1.get_local_id(1) * stride_i +'
+  - '                          (stride_j == warp_size ? 0 : item_ct1.get_local_id(2)
+    / stride_j);'
+  - ''
+  - '            if (i0 + nwarps*stride_i <= I || i < I) {'
+  - '#pragma unroll'
+  - '                for (int j0 = j0_start; j0 < j0_stop; j0 += stride_j) {'
+  - '                    const int j = j0 * (cpy_ne / 2) + (stride_j == warp_size
+    ? item_ct1.get_local_id(2) :'
+  - '                                                                               item_ct1.get_local_id(2)
+    % stride_j) *'
+  - '                                                          (cpy_ne / 2);'
+  - ''
+  - '                    const sycl::half2 zero[cpy_ne / 2] = {'
+  - '                        { 0.0f, 0.0f }'
+  - '                    };'
+  - '                    __dpct_align__(16) sycl::half2 tmp_h2[cpy_ne / 2];'
+  - '                    ggml_sycl_memcpy_1<sizeof(tmp_h2)>('
+  - '                        tmp_h2, !oob_check || i < i_sup ? KV + i*stride_KV +
+    j : zero);'
+  - ''
+  - '                    __dpct_align__(16) sycl::float2 tmp_f2[cpy_ne / 2];'
+  - '#pragma unroll'
+  - '                    for (int l = 0; l < cpy_ne/2; ++l) {'
+  - '                        tmp_f2[l] = tmp_h2[l].template convert<float, sycl::rounding_mode::automatic>();'
+  - '                    }'
+  - '                    ggml_sycl_memcpy_1<sizeof(tmp_f2)>(tile_KV + i*(J + J_padding)
+    + 2*j, tmp_f2);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    };'
+  - '    // 1: max 32*16=512 bytes, 128 float'
+  - '    // 2: max 16*16=256 bytes,  64 float'
+  - '    // 3: max  8*16=128 bytes,  32 float'
+  - '    // 4: max  4*16= 64 bytes,  16 float'
+  - '    // 5: max  2*16= 32 bytes,   8 float'
+  - '    static_assert(J % 8 == 0, "bad J");'
+  - '    static_assert(J % cpy_ne == 0, "bad J");'
+  - '    ggml_sycl_unroll<5>{}(load);'
+  - '}'
+  desc: 将 KV 数据从全局内存加载到共享内存（tile），支持 FP16 和 FP32 两种数据类型，并处理边界检查和数据转换。
+  line: 345-454
+  name: flash_attn_tile_load_tile
+- code:
+  - template <int  warp_size,
+  - '          int  nwarps,'
+  - '          int  ncols1,'
+  - '          int  ncols2,'
+  - '          int  DKQ,'
+  - '          int  nbatch_fa,'
+  - '          int  nbatch_K,'
+  - '          bool use_logit_softcap,'
+  - '          bool oob_check,'
+  - '          typename T_vec_dot>'
+  - static __dpct_inline__ void flash_attn_tile_iter_KQ(T_vec_dot * const Q_tmp,
+  - '                                                    const sycl::half2 * const
+    __restrict__ K_h2,'
+  - '                                                    T_vec_dot * const KV_tmp,'
+  - '                                                    const int         stride_K2,'
+  - '                                                    const int         k_VKQ_0,'
+  - '                                                    const int         k_VKQ_sup,'
+  - '                                                    const int         k_KQ_0,'
+  - '                                                    float *           KQ_acc)
+    {'
+  - '    auto          item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    constexpr int cpy_nb   = ggml_sycl_get_max_cpy_bytes();'
+  - '    constexpr int cpy_ne = cpy_nb / 4;'
+  - ''
+  - '    constexpr int ncols = ncols1*ncols2;'
+  - '    constexpr int cpw   = ncols > nwarps ? ncols/nwarps : 1; // Q columns per
+    warp'
+  - '    constexpr int np    = nwarps > ncols ? nwarps/ncols : 1; // number of parallel
+    warps per Q column'
+  - ''
+  - '    flash_attn_tile_load_tile<warp_size, nwarps, nbatch_fa, nbatch_K, cpy_ne,
+    oob_check>'
+  - '        (K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup);'
+  - '    item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - ''
+  - '#ifdef SYCL_FAST_FP16'
+  - '    static_assert((nbatch_K/2) % cpy_ne == 0, "bad nbatch_K");'
+  - '#pragma unroll'
+  - '    for (int k_KQ_1 = 0; k_KQ_1 < nbatch_K/2; k_KQ_1 += cpy_ne) {'
+  - '        __dpct_align__(16) sycl::half2 K_k[nbatch_fa / (np * warp_size)][cpy_ne];'
+  - '        __dpct_align__(16) sycl::half2 Q_k[cpw][cpy_ne];'
+  - '#else'
+  - '    static_assert(nbatch_K % cpy_ne == 0, "bad nbatch_K");'
+  - '#pragma unroll'
+  - '    for (int k_KQ_1 = 0; k_KQ_1 < nbatch_K; k_KQ_1 += cpy_ne) {'
+  - '        __dpct_align__(16) float K_k[nbatch_fa/(np*warp_size)][cpy_ne];'
+  - '        __dpct_align__(16) float Q_k[cpw][cpy_ne];'
+  - '#endif // SYCL_FAST_FP16'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i_KQ_0 = 0; i_KQ_0 < nbatch_fa; i_KQ_0 += np*warp_size) {'
+  - '            const int i_KQ = i_KQ_0 + (item_ct1.get_local_id(1) % np) * warp_size
+    + item_ct1.get_local_id(2);'
+  - ''
+  - '#ifdef SYCL_FAST_FP16'
+  - '            ggml_sycl_memcpy_1<cpy_nb>(&K_k[i_KQ_0/(np*warp_size)], &KV_tmp[i_KQ*(nbatch_K/2
+    + cpy_ne) + k_KQ_1]);'
+  - '#else'
+  - '            ggml_sycl_memcpy_1<cpy_nb>(&K_k[i_KQ_0/(np*warp_size)], &KV_tmp[i_KQ*(nbatch_K   +
+    cpy_ne) + k_KQ_1]);'
+  - '#endif // SYCL_FAST_FP16'
+  - '        }'
+  - '#pragma unroll'
+  - '        for (int jc0 = 0; jc0 < cpw; ++jc0) {'
+  - '            const int jc = jc0 + (item_ct1.get_local_id(1) / np) * cpw;'
+  - ''
+  - '#ifdef SYCL_FAST_FP16'
+  - '            ggml_sycl_memcpy_1<cpy_nb>(&Q_k[jc0], &Q_tmp[jc*(DKQ/2) + k_KQ_0/2
+    + k_KQ_1]);'
+  - '#else'
+  - '            ggml_sycl_memcpy_1<cpy_nb>(&Q_k[jc0], &Q_tmp[jc* DKQ    + k_KQ_0   +
+    k_KQ_1]);'
+  - '#endif // SYCL_FAST_FP16'
+  - '        }'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i_KQ_0 = 0; i_KQ_0 < nbatch_fa; i_KQ_0 += np*warp_size) {'
+  - '#pragma unroll'
+  - '            for (int jc0 = 0; jc0 < cpw; ++jc0) {'
+  - '#pragma unroll'
+  - '                for (int k = 0; k < cpy_ne; ++k) {'
+  - '                    ggml_sycl_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k],
+    Q_k[jc0][k]);'
+  - '                }'
+  - '            }'
+  - '        }'
+  - '    }'
+  - ''
+  - '    if (k_KQ_0 + nbatch_K < DKQ) {'
+  - '        item_ct1.barrier(sycl::access::fence_space::local_space);  // Sync not
+    needed on last iteration.'
+  - '    }'
+  - '}'
+  desc: 执行 KQ 矩阵乘法的一次迭代，将 Key 和 Query 数据加载到本地缓存并计算点积，支持 FP16 和 FP32 优化路径。
+  line: 456-539
+  name: flash_attn_tile_iter_KQ
+- code:
+  - template <int  warp_size,
+  - '          int  nwarps,'
+  - '          int  ncols1,'
+  - '          int  ncols2,'
+  - '          int  DKQ,'
+  - '          int  DV,'
+  - '          int  nbatch_fa,'
+  - '          int  nbatch_K,'
+  - '          bool use_logit_softcap,'
+  - '          bool oob_check,'
+  - '          typename T_vec_dot,'
+  - '          typename T_KQ,'
+  - '          typename T_acc>'
+  - static __dpct_inline__ void flash_attn_tile_iter(T_vec_dot * const Q_tmp,
+  - '                                                 const sycl::half2 * const __restrict__
+    K_h2,'
+  - '                                                 const sycl::half2 * const __restrict__
+    V_h2,'
+  - '                                                 const sycl::half * const __restrict__
+    mask,'
+  - '                                                 const sycl::uint3 ne01,'
+  - '                                                 const float       logit_softcap,'
+  - '                                                 const float       slope,'
+  - '                                                 T_KQ * const      KQ,'
+  - '                                                 T_vec_dot * const KV_tmp,'
+  - '                                                 const int         stride_K2,'
+  - '                                                 const int         stride_V2,'
+  - '                                                 const int         stride_mask,'
+  - '                                                 float * const     KQ_max,'
+  - '                                                 float * const     KQ_sum,'
+  - '                                                 T_acc * const     VKQ,'
+  - '                                                 const int         k_VKQ_0,'
+  - '                                                 const int         k_VKQ_max,'
+  - '                                                 const int         col_Q_0,'
+  - '                                                 float *           KQ_max_new_shared)
+    {'
+  - '    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();'
+  - '    constexpr int cpy_nb   = ggml_sycl_get_max_cpy_bytes();'
+  - '    constexpr int cpy_ne = cpy_nb / 4;'
+  - ''
+  - '    constexpr int ncols = ncols1*ncols2;'
+  - '    constexpr int cpw   = ncols > nwarps ? ncols/nwarps : 1; // Q columns per
+    warp'
+  - '    constexpr int np    = nwarps > ncols ? nwarps/ncols : 1; // number of parallel
+    warps per Q column'
+  - ''
+  - '    constexpr int DVp = (DV + 2*warp_size - 1) & ~(2*warp_size - 1); // DV padded
+    to multiple of 2*warp_size.'
+  - ''
+  - '#ifdef SYCL_FAST_FP16'
+  - '    constexpr int KQ_cs = cpw < 2*cpy_ne ? cpw : 2*cpy_ne;'
+  - '#else'
+  - '    constexpr int KQ_cs = cpw < 1*cpy_ne ? cpw : 1*cpy_ne;'
+  - '#endif // SYCL_FAST_FP16'
+  - '    static_assert(cpw % KQ_cs == 0, "bad KQ_cs");'
+  - '    const int k_VKQ_sup = k_VKQ_max - k_VKQ_0; // k supremum, only smaller k
+    values have valid KV data'
+  - ''
+  - '    float KQ_max_new[cpw];'
+  - '#pragma unroll'
+  - '    for (int jc0 = 0; jc0 < cpw; ++jc0) {'
+  - '        KQ_max_new[jc0] = KQ_max[jc0];'
+  - '    }'
+  - ''
+  - '    float KQ_acc[nbatch_fa/(np*warp_size) * cpw] = {0.0f}; // Accumulators for
+    KQ matrix multiplication.'
+  - ''
+  - '    // KQ = K @ Q matrix multiplication:'
+  - '    constexpr int nbatch_K_last = DKQ % nbatch_K;'
+  - '#pragma unroll'
+  - '    for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {'
+  - '        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa,
+    nbatch_K, use_logit_softcap, oob_check>('
+  - '            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc);'
+  - '    }'
+  - '    if (nbatch_K_last > 0) {'
+  - '        constexpr int k_KQ_0 = DKQ - nbatch_K_last;'
+  - '        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa,
+    nbatch_K_last, use_logit_softcap, oob_check>('
+  - '            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc);'
+  - '    }'
+  - ''
+  - '    // Apply logit softcap + mask, update KQ_max:'
+  - '#pragma unroll'
+  - '    for (int jc0 = 0; jc0 < cpw; ++jc0) {'
+  - '        const int j = fastmodulo(col_Q_0 + (jc0 + (item_ct1.get_local_id(1) /
+    np) * cpw) / ncols2, ne01);'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i_KQ_0 = 0; i_KQ_0 < nbatch_fa; i_KQ_0 += np*warp_size) {'
+  - '            const int i_KQ = i_KQ_0 + (item_ct1.get_local_id(1) % np) * warp_size
+    + item_ct1.get_local_id(2);'
+  - ''
+  - '#if defined(SYCL_FAST_FP16) && !defined(GGML_SYCL_F16)'
+  - '            // Without the v_dot2_f32_f16 instruction there is a higher risk
+    of numerical overflow in the KQ calculation.'
+  - '            // Therefore, scale down Q values and apply the inverse scale the
+    FP32 KQ values afterwards again.'
+  - '            KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0] *= 4.0f;'
+  - '#endif // defined(SYCL_FAST_FP16) && !defined(GGML_SYCL_F16)'
+  - ''
+  - '            if (use_logit_softcap) {'
+  - '                KQ_acc[(i_KQ_0 / (np * warp_size)) * cpw + jc0] ='
+  - '                    logit_softcap * sycl::tanh((float) KQ_acc[(i_KQ_0 / (np *
+    warp_size)) * cpw + jc0]);'
+  - '            }'
+  - ''
+  - '            if (!oob_check || i_KQ < k_VKQ_sup) {'
+  - '                KQ_acc[(i_KQ_0 / (np * warp_size)) * cpw + jc0] +='
+  - '                    (ncols2 > 1 || mask) ? slope * sycl::vec<sycl::half, 1>(mask[j
+    * stride_mask + k_VKQ_0 + i_KQ])'
+  - '                                                       .convert<float, sycl::rounding_mode::automatic>()[0]
+    :'
+  - '                                           0.0f;'
+  - ''
+  - '                KQ_max_new[jc0] ='
+  - '                    sycl::fmax((float) KQ_max_new[jc0],'
+  - '                               (float) (KQ_acc[(i_KQ_0 / (np * warp_size)) *
+    cpw + jc0] + FATTN_KQ_MAX_OFFSET));'
+  - '            }'
+  - '        }'
+  - ''
+  - '        KQ_max_new[jc0] = warp_reduce_max<warp_size>(KQ_max_new[jc0]);'
+  - '    }'
+  - ''
+  - '    if constexpr (np == 1) {'
+  - '        item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '    } else {'
+  - '        static_assert(cpw == 1, "bad cpw");'
+  - ''
+  - '        if (item_ct1.get_local_id(2) == 0) {'
+  - '            KQ_max_new_shared[item_ct1.get_local_id(1)] = KQ_max_new[0];'
+  - '        }'
+  - '        item_ct1.barrier(sycl::access::fence_space::local_space);'
+  - '        KQ_max_new[0] = KQ_max_new_shared[(item_ct1.get_local_id(1) & ~(np -
+    1)) + item_ct1.get_local_id(2) % np];'
+  - '        KQ_max_new[0] = warp_reduce_max<np>(KQ_max_new[0]);'
+  - '    }'
+  - ''
+  - '    // Calculate KQ softmax, write to shared KQ buffer, re-scale VKQ accumulators:'
+  - '#pragma unroll'
+  - '    for (int jc0 = 0; jc0 < cpw; jc0 += KQ_cs) {'
+  - '#ifdef SYCL_FAST_FP16'
+  - '        __dpct_align__(16) sycl::half tmp[nbatch_fa / (np * warp_size)][KQ_cs];'
+  - '#else'
+  - '        __dpct_align__(16) float tmp[nbatch_fa/(np*warp_size)][KQ_cs];'
+  - '#endif // SYCL_FAST_FP16'
+  - ''
+  - '#pragma unroll'
+  - '        for (int jc1 = 0; jc1 < KQ_cs; ++jc1) {'
+  - '            const int jc = jc0 + jc1;'
+  - ''
+  - '            const float KQ_max_scale = sycl::native::exp((float) (KQ_max[jc]
+    - KQ_max_new[jc]));'
+  - '            KQ_max[jc] = KQ_max_new[jc];'
+  - ''
+  - '            float KQ_sum_add = 0.0f;'
+  - '#pragma unroll'
+  - '            for (int i0 = 0; i0 < nbatch_fa; i0 += np*warp_size) {'
+  - '                const float val ='
+  - '                    !oob_check || i0 + (item_ct1.get_local_id(1) % np) * warp_size
+    + item_ct1.get_local_id(2) <'
+  - '                                      static_cast<uint32_t>(k_VKQ_sup) ?'
+  - '                        sycl::native::exp((float) (KQ_acc[(i0 / (np * warp_size))
+    * cpw + jc] - KQ_max[jc])) :'
+  - '                        0.0f;'
+  - '                KQ_sum_add += val;'
+  - '                tmp[i0/(np*warp_size)][jc1] = val;'
+  - '            }'
+  - '            KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;'
+  - ''
+  - '#ifdef SYCL_FAST_FP16'
+  - '            const sycl::half2 KQ_max_scale_h2 = sycl::half2(KQ_max_scale, KQ_max_scale);'
+  - '#pragma unroll'
+  - '            for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {'
+  - '                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].x() *= KQ_max_scale_h2.x();'
+  - '                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].y() *= KQ_max_scale_h2.y();'
+  - '            }'
+  - '#else'
+  - '#pragma unroll'
+  - '            for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {'
+  - '                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].x() *= KQ_max_scale;'
+  - '                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].y() *= KQ_max_scale;'
+  - '            }'
+  - '#endif // SYCL_FAST_FP16'
+  - '        }'
+  - ''
+  - '#pragma unroll'
+  - '        for (int i0 = 0; i0 < nbatch_fa; i0 += np*warp_size) {'
+  - '            const int i = i0 + (item_ct1.get_local_id(1) % np) * warp_size +
+    item_ct1.get_local_id(2);'
+  - ''
+  - '            ggml_sycl_memcpy_1<sizeof(tmp[0])>('
+  - '                KQ + (jc0 / KQ_cs + (item_ct1.get_local_id(1) / np) * (cpw /
+    KQ_cs)) * (nbatch_fa * KQ_cs) + i * KQ_cs,'
+  - '                tmp[i0 / (np * warp_size)]);'
+  - '        }'
+  - '    }'
+  - ''
+  - '    // VKQ = V @ KQ matrix multiplication:'
+  - '    static_assert(DV <= DKQ, "bad DV");'
+  - '    static_assert(DV % nbatch_K == 0 || (nbatch_K % 3 == 0 && DV % (nbatch_K*2/3)
+    == 0), "bad nbatch_K");'
+  - '    constexpr int nbatch_V = (DV % nbatch_K == 0 ? nbatch_K : nbatch_K*2/3) *
+    nbatch_fa / DV; // Number of V columns that fit in SRAM for K.'
+  - '    static_assert(nbatch_fa % nbatch_V == 0, "bad nbatch_V");'
+  - '    static_assert(nbatch_V % np == 0, "bad nbatch_V");'
+  - '#pragma unroll'
+  - '    for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {'
+  - '        flash_attn_tile_load_tile<warp_size, nwarps, nbatch_V, DV, 0, oob_check>'
+  - '            (V_h2 + int64_t(k_VKQ_0 + k0)*stride_'
+  desc: 执行 Flash Attention 主循环的一次迭代，包括 KQ 乘法、掩码应用、softmax 计算和 VKQ 乘法，处理多批次计算和数值缩放。
+  line: 541-706
+  name: flash_attn_tile_iter
+- code:
+  - template <int warp_size, int nwarps, int ncols1, int ncols2, int DKQ, int DV,
+    int nbatch_fa, int nbatch_K, bool use_logit_softcap, bool oob_check>
+  - static void flash_attn_tile_iter(const sycl::half2 * Q_tmp,
+  - '                                 const sycl::half2 * K_h2,'
+  - '                                 const sycl::half2 * V_h2,'
+  - '                                 const sycl::half * mask,'
+  - '                                 const sycl::uint3 ne01,'
+  - '                                 float logit_softcap,'
+  - '                                 float slope,'
+  - '                                 sycl::half * KQ,'
+  - '                                 sycl::half2 * KV_tmp,'
+  - '                                 const int stride_K2,'
+  - '                                 const int stride_V2,'
+  - '                                 const int stride_mask,'
+  - '                                 float * KQ_max,'
+  - '                                 float * KQ_sum,'
+  - '                                 sycl::float2 * VKQ,'
+  - '                                 int k_VKQ_0,'
+  - '                                 const int k_VKQ_max,'
+  - '                                 const int col_Q_0,'
+  - '                                 float * KQ_max_new_shared) {'
+  - '    ... (函数体，包含 K/V 数据加载、KQ 计算、掩码应用及 VKQ 乘累加逻辑)'
+  - '}'
+  desc: 该函数是 Flash Attention 分块迭代核，在 SYCL 工作组内，将 K/V 数据片段加载到共享内存，并与 Q 的注意力分数（KQ）进行向量化乘累加，以计算
+    VKQ 部分结果。它处理了 OOB（越界）检查、掩码和 logit 缩放等逻辑。
+  line: 700-895
+  name: flash_attn_tile_iter
+- code:
+  - template <int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, int
+    warp_size>
+  - static void flash_attn_tile(const char *  Q,
+  - '                            const char *  K,'
+  - '                            const char *  V,'
+  - '                            const char *  mask,'
+  - '                            const char *  sinks,'
+  - '                            const int *  KV_max,'
+  - '                            float *  dst,'
+  - '                            sycl::float2 *  dst_meta,'
+  - '                            const float          scale,'
+  - '                            ... (大量维度、步长、设备信息参数)) {'
+  - '    ... (函数体，包含 Q 加载、KV 迭代主循环、归一化与结果写回)'
+  - '}'
+  desc: 该函数是 Flash Attention 分块计算的主设备内核函数，负责从全局内存加载 Q 数据到共享内存，然后循环调用 flash_attn_tile_iter
+    遍历 KV 缓存，最终对 VKQ 结果进行归一化并写回输出。它也处理注意力汇（sink）逻辑和 GQA 的多 warp 结果合并。
+  line: 897-1215
+  name: flash_attn_tile
+- code:
+  - template <int DKQ, int DV, int ncols2, bool use_logit_softcap>
+  - static void launch_fattn_tile_switch_ncols1(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ... (根据 Q->ne[1] 分情况选择 ncols1 并调用 launch_fattn)'
+  - '}'
+  desc: 该函数根据 Q 的列数（ne[1]）在编译期选择合适的分块宽度（ncols1），并在运行时配置线程数和批次大小，然后调用 launch_fattn
+    启动分块内核。
+  line: 1217-1298
+  name: launch_fattn_tile_switch_ncols1
+- code:
+  - template <int DKQ, int DV, bool use_logit_softcap>
+  - static void launch_fattn_tile_switch_ncols2(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ... (根据 gqa_ratio 分情况选择 ncols2 并调用 launch_fattn_tile_switch_ncols1)'
+  - '}'
+  desc: 该函数根据 GQA 比率（Q->ne[2] / K->ne[2]）和掩码条件，在编译期选择不同的 ncols2 值，并调用 launch_fattn_tile_switch_ncols1
+    来启动内核。
+  line: 1300-1350
+  name: launch_fattn_tile_switch_ncols2
+- code:
+  - template <int DKQ, int DV>
+  - void ggml_sycl_flash_attn_ext_tile_case(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ... (解析 logit_softcap 并调用 launch_fattn_tile_switch_ncols2)'
+  - '}'
+  desc: 该函数是模板分派函数，它从张量参数中解析 logit_softcap 值，并据此在编译期选择使用 logit softcap 的变体，随后调用 launch_fattn_tile_switch_ncols2
+    进行内核启动。
+  line: 1352-1366
+  name: ggml_sycl_flash_attn_ext_tile_case
+- code:
+  - void ggml_sycl_flash_attn_ext_tile(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst);
+  - '#define DECL_FATTN_TILE_CASE(DKQ, DV)                             \'
+  - '    template void ggml_sycl_flash_attn_ext_tile_case              \'
+  - '    <DKQ, DV>(ggml_backend_sycl_context & ctx, ggml_tensor * dst) \'
+  - extern DECL_FATTN_TILE_CASE( 40,  40);
+  - extern DECL_FATTN_TILE_CASE( 64,  64);
+  - extern DECL_FATTN_TILE_CASE( 72,  72);
+  - extern DECL_FATTN_TILE_CASE( 80,  80);
+  - extern DECL_FATTN_TILE_CASE( 96,  96);
+  - extern DECL_FATTN_TILE_CASE(112, 112);
+  - extern DECL_FATTN_TILE_CASE(128, 128);
+  - extern DECL_FATTN_TILE_CASE(256, 256);
+  - extern DECL_FATTN_TILE_CASE(576, 512);
+  desc: 文件的全局代码部分，包含对 ggml_sycl_flash_attn_ext_tile 函数的前向声明，以及通过宏 DECL_FATTN_TILE_CASE
+    定义和外部声明多种 (DKQ, DV) 组合的模板实例化。
+  line: 1368-1380
+  name: __main__

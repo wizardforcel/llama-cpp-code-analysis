@@ -1,0 +1,344 @@
+classes: []
+desc: 该文件是 ggml 项目中 Hexagon DSP 后端 HVX 向量扩展的归约（reduce）操作头文件，针对 int32、fp32 和 fp16 数据类型实现了求和、最大值以及平方和等向量归约函数。它利用
+  HVX 内置指令（如旋转、逐元素加法/最大值）在向量寄存器内进行并行归约，并提供了对齐和未对齐内存访问的变体以及顶层分发函数。
+file: ggml/src/ggml-hexagon/htp/hvx-reduce.h
+funcs:
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_n_i32(HVX_Vector in, unsigned int
+    n) {
+  - '    unsigned int total = n * 4;  // total vec nbytes'
+  - '    unsigned int width = 4;      // int32'
+  - ''
+  - '    HVX_Vector sum = in, sum_t;'
+  - '    while (width < total) {'
+  - '        sum_t = Q6_V_vror_VR(sum, width);     // rotate right'
+  - '        sum   = Q6_Vw_vadd_VwVw(sum_t, sum);  // elementwise sum'
+  - '        width = width << 1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: 计算 HVX 向量中前 n 个 int32 元素的和，通过循环旋转和逐元素相加实现树形归约。
+  line: 8-19
+  name: hvx_vec_reduce_sum_n_i32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_i32(HVX_Vector in) {
+  - '    return hvx_vec_reduce_sum_n_i32(in, 32);'
+  - '}'
+  desc: 计算完整 HVX 向量（32 个 int32 元素）的和，调用 hvx_vec_reduce_sum_n_i32。
+  line: 21-23
+  name: hvx_vec_reduce_sum_i32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_n_qf32(HVX_Vector in, unsigned int
+    n) {
+  - '    unsigned int total = n * 4;  // total vec nbytes'
+  - '    unsigned int width = 4;      // fp32 nbytes'
+  - ''
+  - '    HVX_Vector sum = in, sum_t;'
+  - '    while (width < total) {'
+  - '        sum_t = Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum), width);  // rotate right'
+  - '        sum   = Q6_Vqf32_vadd_Vqf32Vsf(sum, sum_t);             // elementwise
+    sum'
+  - '        width = width << 1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: 计算 HVX 向量中前 n 个 fp32 元素的和，使用准浮点（qf32）类型进行累加以保证精度。
+  line: 25-36
+  name: hvx_vec_reduce_sum_n_qf32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_qf32(HVX_Vector in) {
+  - '    return hvx_vec_reduce_sum_n_qf32(in, 32);'
+  - '}'
+  desc: 计算完整 HVX 向量（32 个 fp32 元素）的准浮点和，调用 hvx_vec_reduce_sum_n_qf32。
+  line: 38-40
+  name: hvx_vec_reduce_sum_qf32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_f32x4(HVX_Vector_x4 in) {
+  - '    HVX_VectorPair sum_p01 = Q6_W_vshuff_VVR(in.v[1], in.v[0], 4);'
+  - '    HVX_VectorPair sum_p23 = Q6_W_vshuff_VVR(in.v[3], in.v[2], 4);'
+  - '    HVX_Vector  sum_sf01  = Q6_Vsf_vadd_VsfVsf(Q6_V_lo_W(sum_p01), Q6_V_hi_W(sum_p01));'
+  - '    HVX_Vector  sum_sf23  = Q6_Vsf_vadd_VsfVsf(Q6_V_lo_W(sum_p23), Q6_V_hi_W(sum_p23));'
+  - ''
+  - '    HVX_VectorPair sum_p0123 = Q6_W_vshuff_VVR(sum_sf23, sum_sf01, 8);'
+  - '    HVX_Vector  sum_sf       = Q6_Vsf_vadd_VsfVsf(Q6_V_lo_W(sum_p0123), Q6_V_hi_W(sum_p0123));'
+  - ''
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 2));'
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 4));'
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 8));'
+  - '    return sum_sf;'
+  - '}'
+  desc: 对 4 个 HVX 向量进行 fp32 求和归约，利用交织和旋转操作（HVX 架构 > 75 版本）。
+  line: 56-68
+  name: hvx_vec_reduce_sum_f32x4
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_f32x2(HVX_Vector in0, HVX_Vector in1)
+    {
+  - '    HVX_VectorPair sump = Q6_W_vshuff_VVR(in1, in0, 4);'
+  - '    HVX_Vector  sum_sf  = Q6_Vsf_vadd_VsfVsf(Q6_V_lo_W(sump), Q6_V_hi_W(sump));'
+  - ''
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 2));'
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 4));'
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 8));'
+  - '    sum_sf = Q6_Vsf_vadd_VsfVsf(sum_sf, Q6_V_vror_VR(sum_sf, VLEN / 16));'
+  - '    return sum_sf;'
+  - '}'
+  desc: 对 2 个 HVX 向量进行 fp32 求和归约（HVX 架构 > 75 版本）。
+  line: 70-80
+  name: hvx_vec_reduce_sum_f32x2
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_n_f32(HVX_Vector in, unsigned int
+    n) {
+  - '    unsigned int total = n * 4;  // total vec nbytes'
+  - '    unsigned int width = 4;      // fp32 nbytes'
+  - ''
+  - '    HVX_Vector sum = in, sum_t;'
+  - '    while (width < total) {'
+  - '        sum_t = Q6_V_vror_VR(sum, width);       // rotate right'
+  - '        sum   = Q6_Vsf_vadd_VsfVsf(sum, sum_t); // elementwise sum'
+  - '        width = width << 1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: 计算 HVX 向量中前 n 个 fp32 元素的和（HVX 架构 > 75 版本，使用单精度累加）。
+  line: 82-93
+  name: hvx_vec_reduce_sum_n_f32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_f32x4(HVX_Vector_x4 in) {
+  - '    HVX_VectorPair sum_p01  = Q6_W_vshuff_VVR(in.v[1], in.v[0], 4);'
+  - '    HVX_VectorPair sum_p23  = Q6_W_vshuff_VVR(in.v[3], in.v[2], 4);'
+  - '    HVX_Vector     sum_qf01 = Q6_Vqf32_vadd_VsfVsf(Q6_V_lo_W(sum_p01), Q6_V_hi_W(sum_p01));'
+  - '    HVX_Vector     sum_qf23 = Q6_Vqf32_vadd_VsfVsf(Q6_V_lo_W(sum_p23), Q6_V_hi_W(sum_p23));'
+  - ''
+  - '    HVX_VectorPair sum_p0123 = Q6_W_vshuff_VVR(Q6_Vsf_equals_Vqf32(sum_qf23),
+    Q6_Vsf_equals_Vqf32(sum_qf01), 8);'
+  - '    HVX_Vector     sum_qf    = Q6_Vqf32_vadd_VsfVsf(Q6_V_lo_W(sum_p0123), Q6_V_hi_W(sum_p0123));'
+  - ''
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 2));'
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 4));'
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 8));'
+  - '    return Q6_Vsf_equals_Vqf32(sum_qf);'
+  - '}'
+  desc: 对 4 个 HVX 向量进行 fp32 求和归约，使用准浮点累加（HVX 架构 <= 75 版本）。
+  line: 97-109
+  name: hvx_vec_reduce_sum_f32x4
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_f32x2(HVX_Vector in0, HVX_Vector in1)
+    {
+  - '    HVX_VectorPair sump = Q6_W_vshuff_VVR(in1, in0, 4);'
+  - '    HVX_Vector  sum_qf  = Q6_Vqf32_vadd_VsfVsf(Q6_V_lo_W(sump), Q6_V_hi_W(sump));'
+  - ''
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 2));'
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 4));'
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 8));'
+  - '    sum_qf = Q6_Vqf32_vadd_Vqf32Vsf(sum_qf, Q6_V_vror_VR(Q6_Vsf_equals_Vqf32(sum_qf),
+    VLEN / 16));'
+  - '    return Q6_Vsf_equals_Vqf32(sum_qf);'
+  - '}'
+  desc: 对 2 个 HVX 向量进行 fp32 求和归约，使用准浮点累加（HVX 架构 <= 75 版本）。
+  line: 111-120
+  name: hvx_vec_reduce_sum_f32x2
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_n_f32(HVX_Vector in, unsigned int
+    n) {
+  - '    unsigned int total = n * 4;  // total vec nbytes'
+  - '    unsigned int width = 4;      // fp32 nbytes'
+  - ''
+  - '    HVX_Vector sum = in, sum_t;'
+  - '    while (width < total) {'
+  - '        sum_t = Q6_V_vror_VR(sum, width);                               // rotate
+    right'
+  - '        sum   = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(sum, sum_t));  // elementwise
+    sum'
+  - '        width = width << 1;'
+  - '    }'
+  - '    return sum;'
+  - '}'
+  desc: 计算 HVX 向量中前 n 个 fp32 元素的和（HVX 架构 <= 75 版本，使用准浮点累加）。
+  line: 122-133
+  name: hvx_vec_reduce_sum_n_f32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_sum_f32(HVX_Vector in) {
+  - '    return hvx_vec_reduce_sum_n_f32(in, 32);'
+  - '}'
+  desc: 计算完整 HVX 向量（32 个 fp32 元素）的和，调用 hvx_vec_reduce_sum_n_f32。
+  line: 135-137
+  name: hvx_vec_reduce_sum_f32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_max_f16(HVX_Vector in) {
+  - '    unsigned total = 128;  // total vec nbytes'
+  - '    unsigned width = 2;    // fp16 nbytes'
+  - ''
+  - '    HVX_Vector _max = in, _max_t;'
+  - '    while (width < total) {'
+  - '        _max_t = Q6_V_vror_VR(_max, width);         // rotate right'
+  - '        _max   = Q6_Vhf_vmax_VhfVhf(_max_t, _max);  // elementwise max'
+  - '        width  = width << 1;'
+  - '    }'
+  - ''
+  - '    return _max;'
+  - '}'
+  desc: 计算 HVX 向量中 fp16 元素的最大值，通过旋转和逐元素最大值操作实现。
+  line: 139-150
+  name: hvx_vec_reduce_max_f16
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_max2_f16(HVX_Vector in, HVX_Vector _max)
+    {
+  - '    unsigned total = 128;  // total vec nbytes'
+  - '    unsigned width = 2;    // fp32 nbytes'
+  - ''
+  - '    HVX_Vector _max_t;'
+  - ''
+  - '    _max = Q6_Vhf_vmax_VhfVhf(in, _max);'
+  - '    while (width < total) {'
+  - '        _max_t = Q6_V_vror_VR(_max, width);         // rotate right'
+  - '        _max   = Q6_Vhf_vmax_VhfVhf(_max_t, _max);  // elementwise max'
+  - '        width  = width << 1;'
+  - '    }'
+  - ''
+  - '    return _max;'
+  - '}'
+  desc: 计算 HVX 向量与初始最大值向量合并后的 fp16 最大值，先逐元素比较再树形归约。
+  line: 152-164
+  name: hvx_vec_reduce_max2_f16
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_max_f32(HVX_Vector in) {
+  - '    unsigned total = 128;  // total vec nbytes'
+  - '    unsigned width = 4;    // fp32 nbytes'
+  - ''
+  - '    HVX_Vector _max = in, _max_t;'
+  - '    while (width < total) {'
+  - '        _max_t = Q6_V_vror_VR(_max, width);         // rotate right'
+  - '        _max   = Q6_Vsf_vmax_VsfVsf(_max_t, _max);  // elementwise max'
+  - '        width  = width << 1;'
+  - '    }'
+  - ''
+  - '    return _max;'
+  - '}'
+  desc: 计算 HVX 向量中 fp32 元素的最大值，通过旋转和逐元素最大值操作实现。
+  line: 166-177
+  name: hvx_vec_reduce_max_f32
+- code:
+  - static inline HVX_Vector hvx_vec_reduce_max2_f32(HVX_Vector in, HVX_Vector _max)
+    {
+  - '    unsigned total = 128;  // total vec nbytes'
+  - '    unsigned width = 4;    // fp32 nbytes'
+  - ''
+  - '    HVX_Vector _max_t;'
+  - ''
+  - '    _max = Q6_Vsf_vmax_VsfVsf(in, _max);'
+  - '    while (width < total) {'
+  - '        _max_t = Q6_V_vror_VR(_max, width);         // rotate right'
+  - '        _max   = Q6_Vsf_vmax_VsfVsf(_max_t, _max);  // elementwise max'
+  - '        width  = width << 1;'
+  - '    }'
+  - ''
+  - '    return _max;'
+  - '}'
+  desc: 计算 HVX 向量与初始最大值向量合并后的 fp32 最大值，先逐元素比较再树形归约。
+  line: 179-191
+  name: hvx_vec_reduce_max2_f32
+- code:
+  - static inline float hvx_reduce_max_f32_a(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    HVX_Vector init_vec = hvx_vec_splat_f32(((const float *) src)[0]);'
+  - '    assert((unsigned long) src % 128 == 0);'
+  - '    hvx_reduce_loop_body(HVX_Vector, init_vec, init_vec, HVX_REDUCE_MAX_OP, hvx_vec_reduce_max_f32,
+    HVX_REDUCE_MAX_SCALAR);'
+  - '}'
+  desc: 对齐版本（128 字节）的浮点最大值归约，循环处理向量并返回标量最大值。
+  line: 215-218
+  name: hvx_reduce_max_f32_a
+- code:
+  - static inline float hvx_reduce_max_f32_u(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    HVX_Vector init_vec = hvx_vec_splat_f32(((const float *) src)[0]);'
+  - '    hvx_reduce_loop_body(HVX_UVector, init_vec, init_vec, HVX_REDUCE_MAX_OP,
+    hvx_vec_reduce_max_f32, HVX_REDUCE_MAX_SCALAR);'
+  - '}'
+  desc: 未对齐版本的浮点最大值归约，循环处理向量并返回标量最大值。
+  line: 220-223
+  name: hvx_reduce_max_f32_u
+- code:
+  - static inline float hvx_reduce_max_f32(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    if (hex_is_aligned((void *) src, 128)) {'
+  - '        return hvx_reduce_max_f32_a(src, num_elems);'
+  - '    } else {'
+  - '        return hvx_reduce_max_f32_u(src, num_elems);'
+  - '    }'
+  - '}'
+  desc: 浮点最大值归约的顶层分发函数，根据内存对齐情况选择对齐或未对齐版本。
+  line: 225-231
+  name: hvx_reduce_max_f32
+- code:
+  - static inline float hvx_reduce_sum_f32_a(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    HVX_Vector init_vec = Q6_V_vsplat_R(0);'
+  - '    assert((unsigned long) src % 128 == 0);'
+  - '    hvx_reduce_loop_body(HVX_Vector, init_vec, init_vec, HVX_REDUCE_SUM_OP, hvx_vec_reduce_sum_qf32,
+    HVX_REDUCE_SUM_SCALAR);'
+  - '}'
+  desc: 对齐版本（128 字节）的浮点求和归约，使用零初始化向量并返回标量和。
+  line: 237-240
+  name: hvx_reduce_sum_f32_a
+- code:
+  - static inline float hvx_reduce_sum_f32_u(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    HVX_Vector init_vec = Q6_V_vsplat_R(0);'
+  - '    hvx_reduce_loop_body(HVX_UVector, init_vec, init_vec, HVX_REDUCE_SUM_OP,
+    hvx_vec_reduce_sum_qf32, HVX_REDUCE_SUM_SCALAR);'
+  - '}'
+  desc: 未对齐版本的浮点求和归约，使用零初始化向量并返回标量和。
+  line: 242-245
+  name: hvx_reduce_sum_f32_u
+- code:
+  - static inline float hvx_reduce_sum_f32(const uint8_t * restrict src, const int
+    num_elems) {
+  - '    if (hex_is_aligned((void *) src, 128)) {'
+  - '        return hvx_reduce_sum_f32_a(src, num_elems);'
+  - '    } else {'
+  - '        return hvx_reduce_sum_f32_u(src, num_elems);'
+  - '    }'
+  - '}'
+  desc: 浮点求和归约的顶层分发函数，根据内存对齐情况选择对齐或未对齐版本。
+  line: 247-253
+  name: hvx_reduce_sum_f32
+- code:
+  - static inline float hvx_sum_of_squares_f32_a(const uint8_t * restrict src, const
+    int num_elems) {
+  - '    HVX_Vector init_vec = Q6_V_vsplat_R(0);'
+  - '    assert((uintptr_t) src % 128 == 0);'
+  - '    hvx_reduce_loop_body(HVX_Vector, init_vec, init_vec, HVX_SUM_SQ_OP, hvx_vec_reduce_sum_qf32,
+    HVX_REDUCE_SUM_SCALAR);'
+  - '}'
+  desc: 对齐版本（128 字节）的浮点平方和归约，使用零初始化向量并返回标量平方和。
+  line: 259-262
+  name: hvx_sum_of_squares_f32_a
+- code:
+  - static inline float hvx_sum_of_squares_f32_u(const uint8_t * restrict src, const
+    int num_elems) {
+  - '    HVX_Vector init_vec = Q6_V_vsplat_R(0);'
+  - '    hvx_reduce_loop_body(HVX_UVector, init_vec, init_vec, HVX_SUM_SQ_OP, hvx_vec_reduce_sum_qf32,
+    HVX_REDUCE_SUM_SCALAR);'
+  - '}'
+  desc: 未对齐版本的浮点平方和归约，使用零初始化向量并返回标量平方和。
+  line: 264-267
+  name: hvx_sum_of_squares_f32_u
+- code:
+  - static inline float hvx_sum_of_squares_f32(const uint8_t * restrict src, const
+    int num_elems) {
+  - '    if (hex_is_aligned((void *) src, 128)) {'
+  - '        return hvx_sum_of_squares_f32_a(src, num_elems);'
+  - '    } else {'
+  - '        return hvx_sum_of_squares_f32_u(src, num_elems);'
+  - '    }'
+  - '}'
+  desc: 浮点平方和归约的顶层分发函数，根据内存对齐情况选择对齐或未对齐版本。
+  line: 269-275
+  name: hvx_sum_of_squares_f32

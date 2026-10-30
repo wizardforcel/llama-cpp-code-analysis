@@ -1,0 +1,2160 @@
+classes:
+- desc: 基于槽位的参数分配器，用于在计算批次中为每个编码的内核分配唯一的uniform buffer切片，并在批次提交后重置游标。
+  methods:
+  - code:
+    - void init(wgpu::Device device, size_t slot_size, uint32_t slot_count, size_t
+      alignment) {
+    - '    this->slot_stride = ROUNDUP_POW2(slot_size, alignment);'
+    - '    this->slot_size   = slot_size;'
+    - '    this->slot_count  = slot_count;'
+    - '    this->next_slot   = 0;'
+    - '    ggml_webgpu_create_buffer(device, buffer, this->slot_stride * slot_count,'
+    - '                              wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform,
+      "ggml_webgpu_param_arena");'
+    - '}'
+    desc: 初始化参数arena，创建指定大小的buffer并设置槽位参数。
+    line: 170-176
+    name: init
+  - code:
+    - size_t alloc_slot(size_t size) {
+    - '    GGML_ASSERT(size <= slot_size);'
+    - '    if (next_slot >= slot_count) {'
+    - '        GGML_ABORT("ggml_webgpu: parameter arena exhausted while encoding a
+      batch");'
+    - '    }'
+    - '    return slot_stride * next_slot++;'
+    - '}'
+    desc: 分配一个槽位并返回其偏移量，若槽位耗尽则中止。
+    line: 178-184
+    name: alloc_slot
+  - code:
+    - void reset() { next_slot = 0; }
+    desc: 重置槽位游标。
+    line: '186'
+    name: reset
+  - code:
+    - void cleanup() {
+    - '    if (buffer) {'
+    - '        buffer.Destroy();'
+    - '        buffer = nullptr;'
+    - '    }'
+    - '}'
+    desc: 销毁buffer并置空。
+    line: 188-194
+    name: cleanup
+  - code:
+    - ~webgpu_param_arena() { this->cleanup(); }
+    desc: 析构函数，调用cleanup方法清理资源。
+    line: '196'
+    name: ~webgpu_param_arena
+  name: webgpu_param_arena
+- desc: 为WebGPU操作提供参数缓冲区池的管理类，支持分配和释放缓冲区及查询集。
+  methods:
+  - code:
+    - void init(wgpu::Device      device,
+    - '          int               num_bufs,'
+    - '          size_t            buf_size,'
+    - '          wgpu::BufferUsage dev_buf_usage,'
+    - '          wgpu::BufferUsage host_buf_usage) {'
+    - '    for (int i = 0; i < num_bufs; i++) {'
+    - '        wgpu::Buffer host_buf;'
+    - '        wgpu::Buffer dev_buf;'
+    - '        ggml_webgpu_create_buffer(device, host_buf, buf_size, host_buf_usage,
+      "ggml_webgpu_host_profile_buf");'
+    - '        ggml_webgpu_create_buffer(device, dev_buf, buf_size, dev_buf_usage,
+      "ggml_webgpu_dev_profile_buf");'
+    - '        wgpu::QuerySetDescriptor ts_query_set_desc = {};'
+    - '        ts_query_set_desc.type      = wgpu::QueryType::Timestamp;'
+    - '        ts_query_set_desc.count     = 2;'
+    - '        wgpu::QuerySet ts_query_set = device.CreateQuerySet(&ts_query_set_desc);'
+    - '        free.push_back({ host_buf, dev_buf, ts_query_set });'
+    - '    }'
+    - '}'
+    desc: 初始化缓冲区池，创建指定数量的host和device缓冲区及查询集。
+    line: 235-254
+    name: init
+  - code:
+    - webgpu_gpu_profile_bufs alloc_bufs() {
+    - '    std::unique_lock<std::mutex> lock(mutex);'
+    - '    cv.wait(lock, [this] { return !free.empty(); });'
+    - '    webgpu_gpu_profile_bufs bufs = free.back();'
+    - '    free.pop_back();'
+    - '    return bufs;'
+    - '}'
+    desc: 从池中分配一组缓冲区，若无空闲则等待。
+    line: 256-262
+    name: alloc_bufs
+  - code:
+    - void free_bufs(std::vector<webgpu_gpu_profile_bufs> bufs) {
+    - '    std::lock_guard<std::mutex> lock(mutex);'
+    - '    free.insert(free.end(), bufs.begin(), bufs.end());'
+    - '    cv.notify_all();'
+    - '}'
+    desc: 将缓冲区归还到池中并通知等待者。
+    line: 264-269
+    name: free_bufs
+  - code:
+    - void cleanup() {
+    - '    std::lock_guard<std::mutex> lock(mutex);'
+    - '    for (auto & bufs : free) {'
+    - '        bufs.host_buf.Destroy();'
+    - '        bufs.dev_buf.Destroy();'
+    - '        bufs.query_set.Destroy();'
+    - '    }'
+    - '    free.clear();'
+    - '}'
+    desc: 销毁池中所有缓冲区。
+    line: 271-279
+    name: cleanup
+  - code:
+    - ~webgpu_gpu_profile_buf_pool() { this->cleanup(); }
+    desc: 析构函数，调用cleanup方法清理资源。
+    line: '281'
+    name: ~webgpu_gpu_profile_buf_pool
+  name: webgpu_gpu_profile_buf_pool
+- desc: 存储全局WebGPU成员的结构体，包括实例、适配器、设备、队列及能力信息，并提供析构清理功能。
+  methods:
+  - code:
+    - ~webgpu_global_context_struct() {
+    - '    if (this->get_tensor_staging_buf) {'
+    - '        this->get_tensor_staging_buf.Destroy();'
+    - '        this->get_tensor_staging_buf = nullptr;'
+    - '    }'
+    - '    if (this->memset_params_buf) {'
+    - '        this->memset_params_buf.Destroy();'
+    - '        this->memset_params_buf = nullptr;'
+    - '    }'
+    - '#ifdef GGML_WEBGPU_DEBUG'
+    - '    if (this->debug_host_buf) {'
+    - '        this->debug_host_buf.Destroy();'
+    - '        this->debug_host_buf = nullptr;'
+    - '    }'
+    - '    if (this->debug_dev_buf) {'
+    - '        this->debug_dev_buf.Destroy();'
+    - '        this->debug_dev_buf = nullptr;'
+    - '    }'
+    - '#endif'
+    - '}'
+    desc: 析构函数，销毁staging buffer、memset参数缓冲区和调试缓冲区。
+    line: 336-356
+    name: ~webgpu_global_context_struct
+  name: webgpu_global_context_struct
+- desc: 与缓冲区相关的线程数据，包含WebGPU缓冲区、标签和全局上下文。
+  methods:
+  - code:
+    - 'ggml_backend_webgpu_buffer_context(wgpu::Buffer buf, std::string lbl, webgpu_global_context
+      global_ctx_) :'
+    - '    buffer(std::move(buf)),'
+    - '    label(std::move(lbl)),'
+    - '    global_ctx(std::move(global_ctx_)) {}'
+    desc: 构造函数，初始化成员变量。
+    line: 463-466
+    name: ggml_backend_webgpu_buffer_context
+  name: ggml_backend_webgpu_buffer_context
+- desc: Context class holding WebGPU device capabilities, shader library, parameter
+    arena, and global context for compute operations
+  methods: []
+  name: webgpu_context
+- desc: Encapsulated operation return type containing encoded shader commands for
+    WebGPU execution
+  methods: []
+  name: webgpu_encoded_op
+- desc: Decision structure containing tile sizes for flash attention shader execution
+  methods: []
+  name: ggml_webgpu_flash_attn_shader_decisions
+- desc: Context for flash attention shader library containing pipeline key and hardware
+    capability parameters
+  methods: []
+  name: ggml_webgpu_flash_attn_shader_lib_context
+- desc: General shader library context holding source/destination tensors and compute
+    workgroup limits
+  methods: []
+  name: ggml_webgpu_shader_lib_context
+- desc: Generic shader decision container specifying workgroup size for operations
+  methods: []
+  name: ggml_webgpu_generic_shader_decisions
+- desc: Context for block mask shader in flash attention, containing tile dimensions
+    and max workgroup size
+  methods: []
+  name: ggml_webgpu_flash_attn_blk_shader_lib_context
+- desc: Context for vector reduction shader in flash attention, containing head dimension
+    and workgroup size
+  methods: []
+  name: ggml_webgpu_flash_attn_vec_reduce_shader_lib_context
+- desc: WebGPU compute pipeline object with associated shader context decisions
+  methods: []
+  name: webgpu_pipeline
+- desc: Flags structure indicating binary operation overlap, inplace status, and source
+    overlap conditions
+  methods: []
+  name: binary_overlap_flags
+desc: 该文件是ggml库的WebGPU后端实现，负责在WebGPU设备上执行张量计算。它包含了WebGPU上下文管理、缓冲区操作、计算管线创建与调度、以及各种张量操作（如复制、设置等）的GPU加速实现，同时提供了性能剖析支持。该文件是ggml-webgpu后端实现的一部分，负责为各种张量操作（如pad、solve_tri、ssm_conv等）构建WebGPU计算管线。它通过定义多个静态函数来封装不同操作的shader管线选择和参数准备逻辑，最终调用通用构建函数提交GPU任务。This
+  file implements WebGPU backend operations for the ggml tensor library, handling
+  flash attention with advanced shader pipelines, unary/binary operations, concatenation,
+  repetition, and row normalization. It manages tensor memory alignment, workgroup
+  scheduling, and dispatches compute shaders through a shader library system, supporting
+  multiple execution paths including vectorized operations with block-based masking
+  for attention mechanisms.该代码是ggml库的WebGPU后端实现的一部分，主要实现各种张量操作在WebGPU上的编码和执行，包括张量拷贝、矩阵乘法、归一化、RoPE旋转位置编码、GLU激活函数、缩放、softmax、排序等操作。代码通过获取对应的GPU着色器管线，构建参数和绑定组，最后将操作编码为WebGPU命令。该文件包含
+  WebGPU 后端接口的实现，负责对 ggml 计算图的图计算、带张量加载等操作进行编码并提交到 GPU 队列处理。这个文件是 ggml 库中 WebGPU 后端的核心实现，负责将深度学习运算（如矩阵乘法、归一化、激活函数等）映射到
+  WebGPU API 上。它通过定义后端设备接口、缓冲区管理以及操作支持检查，实现了对 GPU 加速的支持，并提供了后端注册和初始化功能，使上层计算图能够在 WebGPU
+  设备上高效运行。
+file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+funcs:
+- code:
+  - static inline void compute_2d_workgroups(uint32_t total_wg, uint32_t max_per_dim,
+    uint32_t & wg_x, uint32_t & wg_y) {
+  - '    wg_y = std::max(1u, CEIL_DIV(total_wg, max_per_dim));'
+  - '    wg_x = CEIL_DIV(total_wg, wg_y);'
+  - '}'
+  desc: 计算二维工作组的矩形网格，最小化分配过多的工作组。
+  line: 77-80
+  name: compute_2d_workgroups
+- code:
+  - static uint64_t webgpu_tensor_offset(const ggml_tensor * tensor) {
+  - '    if (tensor->view_src) {'
+  - '        return (uint8_t *) tensor->view_src->data - (uint8_t *) webgpu_ptr_base;'
+  - '    }'
+  - '    return (uint8_t *) tensor->data - (uint8_t *) webgpu_ptr_base;'
+  - '}'
+  desc: 返回张量的基础偏移量，考虑视图情况。
+  line: 104-108
+  name: webgpu_tensor_offset
+- code:
+  - static void ggml_webgpu_create_buffer(wgpu::Device &    device,
+  - '                                      wgpu::Buffer &    buffer,'
+  - '                                      size_t            size,'
+  - '                                      wgpu::BufferUsage usage,'
+  - '                                      const char *      label) {'
+  - '    wgpu::BufferDescriptor buffer_desc;'
+  - '    buffer_desc.size             = size;'
+  - '    buffer_desc.usage            = usage;'
+  - '    buffer_desc.label            = label;'
+  - '    buffer_desc.mappedAtCreation = false;'
+  - '    buffer = device.CreateBuffer(&buffer_desc);'
+  - '}'
+  desc: 创建指定大小和用途的WebGPU缓冲区，并为其设置标签。
+  line: 506-515
+  name: ggml_webgpu_create_buffer
+- code:
+  - static webgpu_pipeline ggml_webgpu_create_pipeline(wgpu::Device &                           device,
+  - '                                                   const char *                             shader_code,'
+  - '                                                   const char *                             label,'
+  - '                                                   const std::vector<wgpu::ConstantEntry>
+    & constants = {}) {'
+  - '    wgpu::ShaderSourceWGSL shader_source;'
+  - '    shader_source.code = shader_code;'
+  - '    wgpu::ShaderModuleDescriptor shader_desc;'
+  - '    shader_desc.nextInChain = &shader_source;'
+  - '    wgpu::ShaderModule shader_module = device.CreateShaderModule(&shader_desc);'
+  - '    wgpu::ComputePipelineDescriptor pipeline_desc;'
+  - '    pipeline_desc.label              = label;'
+  - '    pipeline_desc.compute.module     = shader_module;'
+  - '    pipeline_desc.compute.entryPoint = "main";'
+  - '    pipeline_desc.layout             = nullptr;'
+  - '    if (constants.size() > 0) {'
+  - '        pipeline_desc.compute.constants     = constants.data();'
+  - '        pipeline_desc.compute.constantCount = constants.size();'
+  - '    }'
+  - '    return { device.CreateComputePipeline(&pipeline_desc), label };'
+  - '}'
+  desc: 创建WebGPU计算管线，从WGSL着色器代码构建，支持可选的常量覆盖。
+  line: 493-519
+  name: ggml_webgpu_create_pipeline
+- code:
+  - static void ggml_backend_webgpu_wait_profile_futures(webgpu_global_context &             ctx,
+  - '                                                     std::vector<wgpu::FutureWaitInfo>
+    & futures) {'
+  - '    if (futures.empty()) {'
+  - '        return;'
+  - '    }'
+  - '    constexpr size_t max_futures_per_wait = 64;'
+  - '    while (!futures.empty()) {'
+  - '        ctx->instance.WaitAny(std::min(max_futures_per_wait, futures.size()),
+    futures.data(), UINT64_MAX);'
+  - '        futures.erase(std::remove_if(futures.begin(), futures.end(),'
+  - '                                     [](const wgpu::FutureWaitInfo & info) {
+    return info.completed; }),'
+  - '                      futures.end());'
+  - '    }'
+  - '}'
+  desc: 等待一组WebGPU Future完成，并移除已完成的部分，用于GPU剖析。
+  line: 554-566
+  name: ggml_backend_webgpu_wait_profile_futures
+- code:
+  - static void ggml_backend_webgpu_wait_queue(webgpu_global_context & ctx) {
+  - '    ctx->instance.WaitAny('
+  - '        ctx->queue.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,'
+  - '                                       [](wgpu::QueueWorkDoneStatus status, wgpu::StringView
+    message) {'
+  - '                                           if (status != wgpu::QueueWorkDoneStatus::Success)
+    {'
+  - '                                               GGML_LOG_ERROR("ggml_webgpu: Failed
+    to submit commands: %s\n",'
+  - '                                                              std::string(message).c_str());'
+  - '                                           }'
+  - '                                       }),'
+  - '        UINT64_MAX);'
+  - '}'
+  desc: 等待WebGPU队列提交完成，并在失败时记录错误日志。
+  line: 568-580
+  name: ggml_backend_webgpu_wait_queue
+- code:
+  - static void ggml_backend_webgpu_map_buffer(webgpu_global_context & ctx,
+  - '                                           wgpu::Buffer &          buffer,'
+  - '                                           wgpu::MapMode           mode,'
+  - '                                           size_t                  offset,'
+  - '                                           size_t                  size) {'
+  - '    ctx->instance.WaitAny(buffer.MapAsync(mode, offset, size, wgpu::CallbackMode::AllowSpontaneous,'
+  - '                                          [](wgpu::MapAsyncStatus status, wgpu::StringView
+    message) {'
+  - '                                              if (status != wgpu::MapAsyncStatus::Success)
+    {'
+  - '                                                  GGML_LOG_ERROR("ggml_webgpu:
+    Failed to map buffer: %s\n",'
+  - '                                                                 message.data);'
+  - '                                              }'
+  - '                                          }),'
+  - '                          UINT64_MAX);'
+  - '}'
+  desc: 将WebGPU缓冲区映射到主机内存，等待操作完成，并在失败时记录错误。
+  line: 582-596
+  name: ggml_backend_webgpu_map_buffer
+- code:
+  - static void ggml_backend_webgpu_debug(webgpu_global_context & ctx) {
+  - '    wgpu::CommandEncoder encoder = ctx->device.CreateCommandEncoder();'
+  - '    encoder.CopyBufferToBuffer(ctx->debug_dev_buf, 0, ctx->debug_host_buf, 0,
+    ctx->debug_host_buf.GetSize());'
+  - '    wgpu::CommandBuffer commands = encoder.Finish();'
+  - '    ctx->queue.Submit(1, &commands);'
+  - '    ggml_backend_webgpu_map_buffer(ctx, ctx->debug_host_buf, wgpu::MapMode::Read,
+    0, ctx->debug_host_buf.GetSize());'
+  - '    const float * debug_data = (const float *) ctx->debug_host_buf.GetConstMappedRange();'
+  - '    std::cout << "debug[0]: " << debug_data[0] << "\n";'
+  - '    ctx->debug_host_buf.Unmap();'
+  - '}'
+  desc: 将调试缓冲区从设备复制到主机并输出调试数据，用于WebGPU调试。
+  line: 598-608
+  name: ggml_backend_webgpu_debug
+- code:
+  - static void ggml_backend_webgpu_collect_profile_futures(webgpu_global_context
+    &             ctx,
+  - '                                                        const std::vector<webgpu_command>
+    & commands,'
+  - '                                                        std::vector<wgpu::FutureWaitInfo>
+    & futures) {'
+  - '    for (const auto & command : commands) {'
+  - '        auto label   = command.pipeline_name;'
+  - '        auto ts_bufs = command.timestamp_query_bufs;'
+  - '        wgpu::Future f = ts_bufs.host_buf.MapAsync('
+  - '            wgpu::MapMode::Read, 0, ts_bufs.host_buf.GetSize(), wgpu::CallbackMode::AllowSpontaneous,'
+  - '            [ctx, ts_bufs, label](wgpu::MapAsyncStatus status, wgpu::StringView
+    message) {'
+  - '                if (status != wgpu::MapAsyncStatus::Success) {'
+  - '                    GGML_LOG_ERROR("ggml_webgpu: Failed to map timestamp buffer:
+    %s\n", std::string(message).c_str());'
+  - '                } else {'
+  - '                    const uint64_t * ts_data    = (const uint64_t *) ts_bufs.host_buf.GetConstMappedRange();'
+  - '                    double           elapsed_ms = double(ts_data[1] - ts_data[0])
+    * 1e-6;'
+  - '                    ctx->shader_gpu_time_ms[label] += elapsed_ms;'
+  - '                }'
+  - '                ctx->timestamp_query_buf_pool.free_bufs({ ts_bufs });'
+  - '            });'
+  - '        futures.push_back({ f });'
+  - '    }'
+  - '}'
+  desc: 收集GPU剖析Future，读取时间戳缓冲区并更新每着色器的GPU时间统计。
+  line: 610-626
+  name: ggml_backend_webgpu_collect_profile_futures
+- code:
+  - static webgpu_encoded_op ggml_backend_webgpu_build_multi(
+  - '    webgpu_global_context &                                ctx,'
+  - '    webgpu_param_arena &                                   param_arena,'
+  - '    wgpu::CommandEncoder &                                 encoder,'
+  - '    const std::vector<webgpu_pipeline> &                   pipelines,'
+  - '    const std::vector<std::vector<uint32_t>> &             params_list,'
+  - '    const std::vector<std::vector<wgpu::BindGroupEntry>> & bind_group_entries_list,'
+  - '    const std::vector<std::pair<uint32_t, uint32_t>> &     workgroups_list) {'
+  - '    GGML_ASSERT(pipelines.size() == params_list.size());'
+  - '    GGML_ASSERT(pipelines.size() == bind_group_entries_list.size());'
+  - '    GGML_ASSERT(pipelines.size() == workgroups_list.size());'
+  - '    webgpu_encoded_op            result = {};'
+  - '    std::vector<wgpu::BindGroup> bind_groups;'
+  - '    std::vector<size_t>          param_offsets;'
+  - '    result.num_kernels = pipelines.size();'
+  - '    for (size_t i = 0; i < pipelines.size(); i++) {'
+  - '        const size_t param_size   = params_list[i].size() * sizeof(uint32_t);'
+  - '        const size_t param_offset = param_arena.alloc_slot(param_size);'
+  - '        std::vector<wgpu::BindGroupEntry> entries            = bind_group_entries_list[i];'
+  - '        uint32_t                          params_binding_num = entries.size();'
+  - '        entries.push_back({ .binding = params_binding_num,'
+  - '                            .buffer  = param_arena.buffer,'
+  - '                            .offset  = param_offset,'
+  - '                            .size    = param_arena.slot_size });'
+  - '        wgpu::BindGroupDescriptor bind_group_desc;'
+  - '        bind_group_desc.layout     = pipelines[i].pipeline.GetBindGroupLayout(0);'
+  - '        bind_group_desc.entryCount = entries.size();'
+  - '        bind_group_desc.entries    = entries.data();'
+  - '        bind_group_desc.label      = pipelines[i].name.c_str();'
+  - '        bind_groups.push_back(ctx->device.CreateBindGroup(&bind_group_desc));'
+  - '        param_offsets.push_back(param_offset);'
+  - '    }'
+  - '    for (size_t i = 0; i < param_offsets.size(); i++) {'
+  - '        ctx->queue.WriteBuffer(param_arena.buffer, param_offsets[i], params_list[i].data(),'
+  - '                               params_list[i].size() * sizeof(uint32_t));'
+  - '    }'
+  - '#ifdef GGML_WEBGPU_GPU_PROFILE'
+  - '    webgpu_gpu_profile_bufs ts_bufs = ctx->timestamp_query_buf_pool.alloc_bufs();'
+  - '    if (ts_bufs.host_buf.GetMapState() == wgpu::BufferMapState::Mapped) {'
+  - '        ts_bufs.host_buf.Unmap();'
+  - '    }'
+  - '    wgpu::PassTimestampWrites   ts_writes = { .querySet                  = ts_bufs.query_set,'
+  - '                                              .beginningOfPassWriteIndex = 0,'
+  - '                                              .endOfPassWriteIndex       = 1
+    };'
+  - '    wgpu::ComputePassDescriptor pass_desc = { .timestampWrites = &ts_writes };'
+  - '    wgpu::ComputePassEncoder    pass      = encoder.BeginComputePass(&pass_desc);'
+  - '#else'
+  - '    wgpu::ComputePassEncoder pass = encoder.BeginComputePass();'
+  - '#endif'
+  - '    for (size_t i = 0; i < pipelines.size(); i++) {'
+  - '        pass.SetPipeline(pipelines[i].pipeline);'
+  - '        pass.SetBindGroup(0, bind_groups[i]);'
+  - '        pass.DispatchWorkgroups(workgroups_list[i].first, workgroups_list[i].second,
+    1);'
+  - '    }'
+  - '    pass.End();'
+  - '#ifdef GGML_WEBGPU_GPU_PROFILE'
+  - '    encoder.ResolveQuerySet(ts_bufs.query_set, 0, 2, ts_bufs.dev_buf, 0);'
+  - '    encoder.CopyBufferToBuffer(ts_bufs.dev_buf, 0, ts_bufs.host_buf, 0, ts_bufs.host_buf.GetSize());'
+  - '    result.timestamp_query_bufs = ts_bufs;'
+  - '    result.pipeline_name        = pipelines.front().name;'
+  - '#endif'
+  - '    return result;'
+  - '}'
+  desc: 构建并提交多个WebGPU计算管线的执行，包括分配参数、创建绑定组和调度任务。
+  line: 628-701
+  name: ggml_backend_webgpu_build_multi
+- code:
+  - static webgpu_encoded_op ggml_backend_webgpu_build(webgpu_global_context &           ctx,
+  - '                                                   webgpu_param_arena &              param_arena,'
+  - '                                                   wgpu::CommandEncoder &            encoder,'
+  - '                                                   webgpu_pipeline &                 pipeline,'
+  - '                                                   std::vector<uint32_t>             params,'
+  - '                                                   std::vector<wgpu::BindGroupEntry>
+    bind_group_entries,'
+  - '                                                   uint32_t                          wg_x,'
+  - '                                                   uint32_t                          wg_y
+    = 1) {'
+  - '    return ggml_backend_webgpu_build_multi(ctx, param_arena, encoder,'
+  - '                                           {'
+  - '                                               pipeline'
+  - '    },'
+  - '                                           { std::move(params) }, { std::move(bind_group_entries)
+    },'
+  - '                                           { { wg_x, wg_y } });'
+  - '}'
+  desc: 构建并提交单个WebGPU计算管线的执行，封装了build_multi函数。
+  line: 703-716
+  name: ggml_backend_webgpu_build
+- code:
+  - static void ggml_backend_webgpu_buffer_memset(webgpu_global_context & ctx,
+  - '                                              wgpu::Buffer &          buf,'
+  - '                                              uint32_t                value,'
+  - '                                              size_t                  offset,'
+  - '                                              size_t                  size) {'
+  - '    std::vector<uint32_t>             params  = { (uint32_t) offset, (uint32_t)
+    size, value };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = buf, .offset = 0, .size = buf.GetSize() }'
+  - '    };'
+  - '    size_t   bytes_per_wg = WEBGPU_MAX_WG_SIZE * ctx->capabilities.memset_bytes_per_thread;'
+  - '    uint32_t wg_x         = CEIL_DIV(size + 3, bytes_per_wg);'
+  - '    ctx->queue.WriteBuffer(ctx->memset_params_buf, 0, params.data(), params.size()
+    * sizeof(uint32_t));'
+  - '    entries.push_back('
+  - '        { .binding = 1, .buffer = ctx->memset_params_buf, .offset = 0, .size
+    = WEBGPU_PARAMS_BUF_SIZE_BYTES });'
+  - '    wgpu::BindGroupDescriptor bind_group_desc;'
+  - '    bind_group_desc.layout     = ctx->memset_pipeline.pipeline.GetBindGroupLayout(0);'
+  - '    bind_group_desc.entryCount = entries.size();'
+  - '    bind_group_desc.entries    = entries.data();'
+  - '    bind_group_desc.label      = ctx->memset_pipeline.name.c_str();'
+  - '    wgpu::BindGroup bind_group = ctx->device.CreateBindGroup(&bind_group_desc);'
+  - '    wgpu::CommandEncoder     encoder = ctx->device.CreateCommandEncoder();'
+  - '    wgpu::ComputePassEncoder pass    = encoder.BeginComputePass();'
+  - '    pass.SetPipeline(ctx->memset_pipeline.pipeline);'
+  - '    pass.SetBindGroup(0, bind_group);'
+  - '    pass.DispatchWorkgroups(wg_x, 1, 1);'
+  - '    pass.End();'
+  - '    wgpu::CommandBuffer              command  = encoder.Finish();'
+  - '    std::vector<wgpu::CommandBuffer> commands = { command };'
+  - '    ctx->queue.Submit(commands.size(), commands.data());'
+  - '}'
+  desc: 在WebGPU缓冲区上执行内存填充操作，通过计算着色器设置指定值。
+  line: 718-746
+  name: ggml_backend_webgpu_buffer_memset
+- code:
+  - static const char * ggml_backend_webgpu_name(ggml_backend_t backend) {
+  - '    ggml_backend_webgpu_context * ctx = (ggml_backend_webgpu_context *) backend->context;'
+  - '    return ctx->name.c_str();'
+  - '}'
+  desc: 返回后端实例的名称。
+  line: 758-761
+  name: ggml_backend_webgpu_name
+- code:
+  - static void ggml_backend_webgpu_free(ggml_backend_t backend) {
+  - '    ggml_backend_webgpu_context * ctx = (ggml_backend_webgpu_context *) backend->context;'
+  - '    WEBGPU_LOG_DEBUG("ggml_backend_webgpu_free(" << ctx->name << ")");'
+  - '#ifdef GGML_WEBGPU_CPU_PROFILE'
+  - '    std::cout << "\n[ggml_webgpu cpu profiling summary]\n";'
+  - '    double total_cpu = 0.0;'
+  - '    for (const auto & kv : ctx->webgpu_ctx->global_ctx->cpu_time_ms) {'
+  - '        total_cpu += kv.second;'
+  - '    }'
+  - '    std::cout << "ggml_webgpu: total cpu time: " << total_cpu << " ms\n";'
+  - '    std::cout << "ggml_webgpu: cpu breakdown:\n";'
+  - '    for (const auto & kv : ctx->webgpu_ctx->global_ctx->cpu_time_ms) {'
+  - '        double pct = (total_cpu > 0.0) ? (kv.second / total_cpu * 100.0) : 0.0;'
+  - '        std::cout << "ggml_webgpu:  " << kv.first << ": " << kv.second << " ms
+    (" << pct << "%)\n";'
+  - '    }'
+  - '    if (ctx->webgpu_ctx->global_ctx->cpu_detail_ms.size() > 0) {'
+  - '        std::cout << "ggml_webgpu: cpu detailed breakdown:\n";'
+  - '    }'
+  - '    for (const auto & kv : ctx->webgpu_ctx->global_ctx->cpu_detail_ms) {'
+  - '        double pct = (total_cpu > 0.0) ? (kv.second / total_cpu * 100.0) : 0.0;'
+  - '        std::cout << "ggml_webgpu:  " << kv.first << ": " << kv.second << " ms
+    (" << pct << "%)\n";'
+  - '    }'
+  - '#endif'
+  - '#ifdef GGML_WEBGPU_GPU_PROFILE'
+  - '    std::cout << "\n[ggml_webgpu gpu profiling summary]\n";'
+  - '    double total_gpu = 0.0;'
+  - '    for (const auto & kv : ctx->webgpu_ctx->global_ctx->shader_gpu_time_ms) {'
+  - '        total_gpu += kv.second;'
+  - '    }'
+  - '    std::cout << "ggml_webgpu: total gpu time (all shaders): " << total_gpu <<
+    " ms\n";'
+  - '    std::cout << "\nggml_webgpu: gpu breakdown:\n";'
+  - '    for (const auto & kv : ctx->webgpu_ctx->global_ctx->shader_gpu_time_ms) {'
+  - '        double pct = (total_gpu > 0.0) ? (kv.second / total_gpu * 100.0) : 0.0;'
+  - '        std::cout << "ggml_webgpu:  " << kv.first << ": " << kv.second << " ms
+    (" << std::fixed << std::setprecision(2)'
+  - '                  << pct << "%)\n";'
+  - '    }'
+  - '#endif'
+  - '#if defined(GGML_WEBGPU_CPU_PROFILE) && defined(GGML_WEBGPU_GPU_PROFILE)'
+  - '    std::cout << "ggml_webgpu: gpu/cpu ratio: " << (total_cpu > 0.0 ? total_gpu
+    / total_cpu : 0.0) << "\n";'
+  - '#endif'
+  - '    delete ctx;'
+  - '    delete backend;'
+  - '}'
+  desc: 释放后端实例，并在启用剖析时输出CPU和GPU性能总结。
+  line: 765-800
+  name: ggml_backend_webgpu_free
+- code:
+  - static size_t ggml_webgpu_tensor_offset(const ggml_tensor * tensor) {
+  - '    return webgpu_tensor_offset(tensor) + tensor->view_offs;'
+  - '}'
+  desc: 返回张量的基础偏移量加视图偏移。
+  line: 802-804
+  name: ggml_webgpu_tensor_offset
+- code:
+  - static wgpu::Buffer ggml_webgpu_tensor_buf(const ggml_tensor * tensor) {
+  - '    ggml_backend_webgpu_buffer_context * ctx = (ggml_backend_webgpu_buffer_context
+    *) tensor->buffer->context;'
+  - '    return ctx->buffer;'
+  - '}'
+  desc: 返回张量所在缓冲区的WebGPU句柄。
+  line: 806-809
+  name: ggml_webgpu_tensor_buf
+- code:
+  - static size_t ggml_webgpu_tensor_misalignment(webgpu_context & ctx, const ggml_tensor
+    * t) {
+  - '    size_t offset = ggml_webgpu_tensor_offset(t);'
+  - '    return offset & (ctx->global_ctx->capabilities.limits.minStorageBufferOffsetAlignment
+    - 1);'
+  - '}'
+  desc: 计算张量偏移量相对于最小存储缓冲区偏移对齐的错位量。
+  line: 811-814
+  name: ggml_webgpu_tensor_misalignment
+- code:
+  - static size_t ggml_webgpu_tensor_align_offset(webgpu_context & ctx, const ggml_tensor
+    * t) {
+  - '    size_t offset = ggml_webgpu_tensor_offset(t);'
+  - '    return offset & ~(ctx->global_ctx->capabilities.limits.minStorageBufferOffsetAlignment
+    - 1);'
+  - '}'
+  desc: 计算张量偏移量的对齐值。
+  line: 816-819
+  name: ggml_webgpu_tensor_align_offset
+- code:
+  - static size_t ggml_webgpu_tensor_binding_size(webgpu_context & ctx, ggml_tensor
+    * t) {
+  - '    return ROUNDUP_POW2(ggml_nbytes(t) + ggml_webgpu_tensor_misalignment(ctx,
+    t), WEBGPU_STORAGE_BUF_BINDING_MULT);'
+  - '}'
+  desc: 计算张量绑定时所需的缓冲区大小，确保满足对齐要求。
+  line: 821-823
+  name: ggml_webgpu_tensor_binding_size
+- code:
+  - static bool ggml_webgpu_tensor_equal(ggml_tensor * a, ggml_tensor * b) {
+  - '    return (ggml_webgpu_tensor_buf(a).Get() == ggml_webgpu_tensor_buf(b).Get())
+    &&'
+  - '           (ggml_webgpu_tensor_offset(a) == ggml_webgpu_tensor_offset(b));'
+  - '}'
+  desc: 判断两个张量是否相同（缓冲区和偏移量均相等）。
+  line: 826-829
+  name: ggml_webgpu_tensor_equal
+- code:
+  - static bool ggml_webgpu_tensor_overlap(ggml_tensor * a, ggml_tensor * b) {
+  - '    return (ggml_webgpu_tensor_buf(a).Get() == ggml_webgpu_tensor_buf(b).Get())
+    &&'
+  - '           ggml_webgpu_tensor_offset(a) < (ggml_webgpu_tensor_offset(b) + ggml_nbytes(b))
+    &&'
+  - '           ggml_webgpu_tensor_offset(b) < (ggml_webgpu_tensor_offset(a) + ggml_nbytes(a));'
+  - '}'
+  desc: 判断两个张量是否共享同一缓冲区且字节范围重叠。
+  line: 832-836
+  name: ggml_webgpu_tensor_overlap
+- code:
+  - static binary_overlap_flags ggml_webgpu_detect_binary_overlap(ggml_tensor * src0,
+  - '                                                              ggml_tensor * src1,'
+  - '                                                              ggml_tensor * dst)
+    {'
+  - '    binary_overlap_flags flags = {};'
+  - '    flags.inplace              = ggml_webgpu_tensor_equal(src0, dst);'
+  - '    flags.overlap              = ggml_webgpu_tensor_overlap(src1, dst);'
+  - '    flags.src_overlap          = ggml_webgpu_tensor_overlap(src0, src1);'
+  - '    return flags;'
+  - '}'
+  desc: 检测两个源张量和目标张量之间的重叠和原地操作标志。
+  line: 840-847
+  name: ggml_webgpu_detect_binary_overlap
+- code:
+  - static webgpu_encoded_op ggml_webgpu_cpy(webgpu_context &       ctx,
+  - '                                         wgpu::CommandEncoder & encoder,'
+  - '                                         ggml_tensor *          src,'
+  - '                                         ggml_tensor *          dst) {'
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0        = src,'
+  - '        .dst         = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_cpy_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '    uint32_t ne = (uint32_t) ggml_nelements(dst);'
+  - '    std::vector<uint32_t> params = {'
+  - '        ne, (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src->nb[0] / ggml_type_size(src->type)), (uint32_t) (src->nb[1]
+    / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[2] / ggml_type_size(src->type)), (uint32_t) (src->nb[3]
+    / ggml_type_size(src->type)),'
+  - '        (uint32_t) (dst->nb[0] / ggml_type_size(dst->type)), (uint32_t) (dst->nb[1]
+    / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[2] / ggml_type_size(dst->type)), (uint32_t) (dst->nb[3]
+    / ggml_type_size(dst->type)),'
+  - '        (uint32_t) src->ne[0], (uint32_t) src->ne[1], (uint32_t) src->ne[2],
+    (uint32_t) dst->ne[0],'
+  - '        (uint32_t) dst->ne[1], (uint32_t) dst->ne[2]'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0,'
+  - '         .buffer  = ggml_webgpu_tensor_buf(src),'
+  - '         .offset  = ggml_webgpu_tensor_align_offset(ctx, src),'
+  - '         .size    = ggml_webgpu_tensor_binding_size(ctx, src) },'
+  - '        { .binding = 1,'
+  - '         .buffer  = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset  = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size    = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    uint32_t wg_x = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: 在WebGPU设备上执行张量复制操作，通过计算着色器实现数据迁移。
+  line: 849-877
+  name: ggml_webgpu_cpy
+- code:
+  - static webgpu_encoded_op ggml_webgpu_set(webgpu_context &       ctx,
+  - '                                         wgpu::CommandEncoder & encoder,'
+  - '                                         ggml_tensor *          src0,'
+  - '                                         ggml_tensor *          src1,'
+  - '                                         ggml_tensor *          dst) {'
+  - '    const bool inplace = ggml_webgpu_tensor_equal(src0, dst);'
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0        = src0,'
+  - '        .src1        = src1,'
+  - '        .dst         = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,'
+  - '        .inplace     = inplace,'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_set_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '    const uint32_t ne            = inplace ? (uint32_t) ggml_nelements(src1)
+    : (uint32_t) ggml_nelements(dst);'
+  - '    const uint32_t dst_type_size = (uint32_t) ggml_type_size(dst->type);'
+  - '    std::vector<uint32_t> params = {'
+  - '        ne,'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (((const int32_t *) dst->op_params)[3] / dst_type_size),'
+  - '        (uint32_t) (src1->nb[0] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[2] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[3] / ggml_type_size(src1->type)),'
+  - '        1u,'
+  - '        (uint32_t) (((const int32_t *) dst->op_params)[0] / dst_type_size),'
+  - '        (uint32_t) (((const int32_t *) dst->op_params)[1] / dst_type_size),'
+  - '        (uint32_t) (((const int32_t *) dst->op_params)[2] / dst_type_size),'
+  - '        (uint32_t) src1->ne[0],'
+  - '        (uint32_t) src1->ne[1],'
+  - '        (uint32_t) src1->ne[2],'
+  - '        (uint32_t) src1->ne[3],'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries;'
+  - '    uint32_t                          binding_index = 0;'
+  - '    if (!inplace) {'
+  - '        entries.push_back({ .binding = 0,'
+  - '                            .buffer  = ggml_webgpu_tensor_buf(src0),'
+  - '                            .offset  = ggml_webgpu_tensor_align_offset(ctx, src0),'
+  - '                            .size    = ggml_webgpu_tensor_binding_size(ctx, src0)
+    });'
+  - '        binding_index = 1;'
+  - '    }'
+  - '    entries.push_back({ .binding = binding_index,'
+  - '                        .buffer  = ggml_webgpu_tensor_buf(src1),'
+  - '                        .offset  = ggml_webgpu_tensor_align_offset(ctx, src1),'
+  - '                        .size    = ggml_webgpu_tensor_binding_size(ctx, src1)
+    });'
+  - '    binding_index++;'
+  - '    if (!inplace) {'
+  - '        entries.push_back({ .binding = binding_index,'
+  - '                            .buffer  = ggml_webgpu_tensor_buf(dst),'
+  - '                            .offset  = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '                            .size    = ggml_webgpu_tensor_binding_size(ctx, dst)
+    });'
+  - '        binding_index++;'
+  - '    }'
+  - '    uint32_t wg_x = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: 在WebGPU设备上执行张量设置操作，支持原地或非原地模式。
+  line: 879-927
+  name: ggml_webgpu_set
+- code: []
+  desc: 文件中所有静态全局函数，用于构建WebGPU计算管线
+  line: 816-2100
+  name: __main__
+- code:
+  - static webgpu_encoded_op ggml_webgpu_pad(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src, ggml_tensor * dst) {
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src, .dst = dst, .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_pad_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '    const uint32_t ne = (uint32_t) ggml_nelements(dst);'
+  - '    std::vector<uint32_t> params = {'
+  - '        ne,'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src->nb[0] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[1] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[2] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[3] / ggml_type_size(src->type)),'
+  - '        (uint32_t) src->ne[0], (uint32_t) src->ne[1], (uint32_t) src->ne[2],
+    (uint32_t) src->ne[3],'
+  - '        (uint32_t) dst->ne[0], (uint32_t) dst->ne[1], (uint32_t) dst->ne[2],
+    (uint32_t) dst->ne[3],'
+  - '        (uint32_t) ggml_get_op_params_i32(dst, 0), (uint32_t) ggml_get_op_params_i32(dst,
+    1),'
+  - '        (uint32_t) ggml_get_op_params_i32(dst, 2), (uint32_t) ggml_get_op_params_i32(dst,
+    3),'
+  - '        (uint32_t) ggml_get_op_params_i32(dst, 4), (uint32_t) ggml_get_op_params_i32(dst,
+    5),'
+  - '        (uint32_t) ggml_get_op_params_i32(dst, 6), (uint32_t) ggml_get_op_params_i32(dst,
+    7)'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    uint32_t wg_x = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: 为pad操作构建WebGPU计算管线，准备参数和绑定组条目
+  line: 850-889
+  name: ggml_webgpu_pad
+- code:
+  - static webgpu_encoded_op ggml_webgpu_solve_tri(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src0, .src1 = src1, .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,'
+  - '        .wg_mem_limit_bytes = ctx->global_ctx->capabilities.limits.maxComputeWorkgroupStorageSize'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_solve_tri_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '    std::vector<uint32_t> params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src0->nb[0] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[2] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[3] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[0] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[2] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src1->nb[3] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (dst->nb[0] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[1] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[2] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[3] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) src1->ne[0], (uint32_t) dst->ne[2], (uint32_t) dst->ne[3]'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src0),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src0),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src0) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(src1),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src1),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src1) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    const uint32_t wg_x = CEIL_DIV((uint32_t) src1->ne[0], decisions->wg_size);'
+  - '    const uint32_t wg_y = (uint32_t) (dst->ne[2] * dst->ne[3]);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x, wg_y);'
+  - '}'
+  desc: 为三角矩阵求解操作构建WebGPU计算管线，处理多个输入张量
+  line: 891-930
+  name: ggml_webgpu_solve_tri
+- code:
+  - static webgpu_encoded_op ggml_webgpu_ssm_conv(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src0, .src1 = src1, .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_ssm_conv_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_ssm_conv_shader_decisions *>(pipeline.context.get());'
+  - '    const uint32_t token_tiles = CEIL_DIV((uint32_t) dst->ne[1], decisions->tokens_per_wg);'
+  - '    std::vector<uint32_t> params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[2] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (dst->nb[0] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[1] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[2] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) src1->ne[0], (uint32_t) src0->ne[1], (uint32_t) dst->ne[1],
+    (uint32_t) dst->ne[2], token_tiles'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src0),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src0),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src0) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(src1),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src1),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src1) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    const uint32_t wg_x = CEIL_DIV((uint32_t) src0->ne[1], decisions->block_size);'
+  - '    const uint32_t wg_y = token_tiles * (uint32_t) dst->ne[2];'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x, wg_y);'
+  - '}'
+  desc: 为SSM卷积操作构建WebGPU计算管线，处理卷积核和输入张量
+  line: 932-965
+  name: ggml_webgpu_ssm_conv
+- code:
+  - static webgpu_encoded_op ggml_webgpu_gated_delta_net(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * src2, ggml_tensor
+    * src3, ggml_tensor * src4, ggml_tensor * src5, ggml_tensor * dst) {
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src0, .src1 = src1, .src2 = src2, .src3 = src3, .src4 = src4,
+    .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_gated_delta_net_pipeline(shader_lib_ctx);'
+  - '    const uint32_t s_v = (uint32_t) src2->ne[0];'
+  - '    const uint32_t h = (uint32_t) src2->ne[1];'
+  - '    const uint32_t n_tokens = (uint32_t) src2->ne[2];'
+  - '    const uint32_t n_seqs = (uint32_t) src2->ne[3];'
+  - '    const float scale = 1.0f / sqrtf((float) s_v);'
+  - '    uint32_t scale_u32;'
+  - '    memcpy(&scale_u32, &scale, sizeof(scale_u32));'
+  - '    std::vector<uint32_t> params = {'
+  - '        h, n_tokens, n_seqs, s_v * h * n_tokens * n_seqs,'
+  - '        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[2] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src0->nb[3] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src2->nb[1] / ggml_type_size(src2->type)),'
+  - '        (uint32_t) (src2->nb[2] / ggml_type_size(src2->type)),'
+  - '        (uint32_t) (src2->nb[3] / ggml_type_size(src2->type)),'
+  - '        (uint32_t) (src4->nb[1] / ggml_type_size(src4->type)),'
+  - '        (uint32_t) (src4->nb[2] / ggml_type_size(src4->type)),'
+  - '        (uint32_t) (src4->nb[3] / ggml_type_size(src4->type)),'
+  - '        (uint32_t) src0->ne[1], (uint32_t) (src2->ne[3] / src0->ne[3]), scale_u32'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src0),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src0),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src0) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(src1),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src1),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src1) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(src2),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src2),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src2) },'
+  - '        { .binding = 3, .buffer = ggml_webgpu_tensor_buf(src3),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src3),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src3) },'
+  - '        { .binding = 4, .buffer = ggml_webgpu_tensor_buf(src4),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src4),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src4) },'
+  - '        { .binding = 5, .buffer = ggml_webgpu_tensor_buf(src5),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src5),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src5) },'
+  - '        { .binding = 6, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, h, n_seqs);'
+  - '}'
+  desc: 为gated delta net操作构建WebGPU计算管线，处理六个输入张量和一个输出张量
+  line: 967-1015
+  name: ggml_webgpu_gated_delta_net
+- code:
+  - static std::optional<webgpu_encoded_op> ggml_webgpu_set_rows(webgpu_context &
+    ctx, wgpu::CommandEncoder & encoder, ggml_tensor * src, ggml_tensor * idx, ggml_tensor
+    * dst) {
+  - '    if (ggml_is_empty(src) || ggml_is_empty(idx)) {'
+  - '        return std::nullopt;'
+  - '    }'
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src, .src1 = idx, .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_set_rows_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_set_rows_shader_decisions *>(pipeline.context.get());'
+  - '    std::vector<uint32_t> params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, idx) / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src->nb[1] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[2] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[3] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (idx->nb[0] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (idx->nb[1] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (idx->nb[2] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (dst->nb[1] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[2] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[3] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) src->ne[0], (uint32_t) src->ne[1], (uint32_t) src->ne[2],
+    (uint32_t) src->ne[3],'
+  - '        (uint32_t) (idx->ne[1]), (uint32_t) (idx->ne[2])'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(idx),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, idx),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, idx) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    if (decisions->i64_idx) {'
+  - '        entries.push_back({ .binding = 3, .buffer = ctx->set_rows_dev_error_buf,
+    .offset = 0, .size = ctx->set_rows_dev_error_buf.GetSize() });'
+  - '    }'
+  - '    uint32_t threads;'
+  - '    if (decisions->vec4) {'
+  - '        threads = (src->ne[1] * src->ne[2] * src->ne[3]) * (src->ne[0] / 4);'
+  - '    } else {'
+  - '        threads = src->ne[0] * src->ne[1] * src->ne[2] * src->ne[3];'
+  - '    }'
+  - '    uint32_t wg_x = CEIL_DIV(threads, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x, 1);'
+  - '}'
+  desc: 为set rows操作构建WebGPU计算管线，处理行设置功能并检查空张量
+  line: 1017-1061
+  name: ggml_webgpu_set_rows
+- code:
+  - static std::vector<wgpu::ConstantEntry> ggml_webgpu_wg_size_entry(uint32_t wg_size)
+    {
+  - '    std::vector<wgpu::ConstantEntry> constants(1);'
+  - '    constants[0].key   = "wg_size";'
+  - '    constants[0].value = wg_size;'
+  - '    return constants;'
+  - '}'
+  desc: 创建包含工作组大小参数的常量项向量
+  line: 1063-1068
+  name: ggml_webgpu_wg_size_entry
+- code:
+  - static webgpu_encoded_op ggml_webgpu_get_rows(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src, ggml_tensor * idx, ggml_tensor * dst) {
+  - '    const bool float_parallel = src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16
+    || src->type == GGML_TYPE_I32;'
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src, .src1 = nullptr, .dst = dst, .max_wg_size = WEBGPU_MAX_WG_SIZE'
+  - '    };'
+  - '    webgpu_pipeline pipeline = ctx->shader_lib->get_get_rows_pipeline(shader_lib_ctx);'
+  - '    auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '    std::vector<uint32_t> params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, idx) / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (src->nb[1] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[2] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (src->nb[3] / ggml_type_size(src->type)),'
+  - '        (uint32_t) (idx->nb[0] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (idx->nb[1] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (idx->nb[2] / ggml_type_size(idx->type)),'
+  - '        (uint32_t) (dst->nb[1] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[2] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) (dst->nb[3] / ggml_type_size(dst->type)),'
+  - '        (uint32_t) dst->ne[0], (uint32_t) dst->ne[1], (uint32_t) dst->ne[2],
+    (uint32_t) dst->ne[3],'
+  - '        (uint32_t) (idx->ne[1]), (uint32_t) (idx->ne[2])'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(idx),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, idx),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, idx) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    uint32_t blocks_per_row = (uint32_t) (dst->ne[0] / (src->type == GGML_TYPE_F32
+    && dst->ne[0] % 4 == 0 ? 4 : 1));'
+  - '    uint32_t total_rows     = (uint32_t) (dst->ne[1] * dst->ne[2] * dst->ne[3]);'
+  - '    uint32_t total_threads  = float_parallel ? blocks_per_row * total_rows :
+    total_rows;'
+  - '    uint32_t wg_x           = CEIL_DIV(total_threads, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: 为get rows操作构建WebGPU计算管线，处理行提取功能
+  line: 1070-1112
+  name: ggml_webgpu_get_rows
+- code:
+  - static webgpu_encoded_op ggml_webgpu_mul_mat(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
+  - '    bool is_vec = (dst->ne[1] == 1);'
+  - '    bool use_fast = false;'
+  - '    switch (src1->type) {'
+  - '        case GGML_TYPE_F16:'
+  - '            use_fast = (src0->type == GGML_TYPE_F16);'
+  - '            break;'
+  - '        case GGML_TYPE_F32:'
+  - '            switch (src0->type) {'
+  - '                case GGML_TYPE_F32: case GGML_TYPE_F16: case GGML_TYPE_Q4_0:
+    case GGML_TYPE_Q4_1:'
+  - '                case GGML_TYPE_Q5_0: case GGML_TYPE_Q5_1: case GGML_TYPE_Q8_0:
+    case GGML_TYPE_Q8_1: case GGML_TYPE_Q6_K:'
+  - '                    use_fast = true; break;'
+  - '                case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K: case GGML_TYPE_Q4_K:
+    case GGML_TYPE_Q5_K:'
+  - '                    use_fast = !is_vec; break;'
+  - '                default: break;'
+  - '            }'
+  - '            break;'
+  - '        default: break;'
+  - '    }'
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src0, .src1 = src1, .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,'
+  - '        .supports_subgroup_matrix = ctx->global_ctx->capabilities.supports_subgroup_matrix,'
+  - '        .sg_mat_m = ctx->global_ctx->capabilities.sg_mat_m,'
+  - '        .sg_mat_n = ctx->global_ctx->capabilities.sg_mat_n,'
+  - '        .sg_mat_k = ctx->global_ctx->capabilities.sg_mat_k,'
+  - '        .max_subgroup_size = ctx->global_ctx->capabilities.max_subgroup_size'
+  - '    };'
+  - '    webgpu_pipeline pipeline;'
+  - '    if (use_fast && is_vec) {'
+  - '        pipeline = ctx->shader_lib->get_mul_mat_vec_pipeline(shader_lib_ctx);'
+  - '    } else if (use_fast) {'
+  - '        pipeline = ctx->shader_lib->get_mul_mat_fast_pipeline(shader_lib_ctx);'
+  - '    } else {'
+  - '        pipeline = ctx->shader_lib->get_mul_mat_legacy_pipeline(shader_lib_ctx);'
+  - '    }'
+  - '    std::vector<uint32_t> params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) dst->ne[0], (uint32_t) dst->ne[1], (uint32_t) src0->ne[0],'
+  - '        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src0->nb[2] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[2] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src0->nb[3] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[3] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) src0->ne[2], (uint32_t) src0->ne[3],'
+  - '        (uint32_t) (src1->ne[2] / src0->ne[2]), (uint32_t) (src1->ne[3] / src0->ne[3])'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src0),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src0),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src0) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(src1),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, src1),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, src1) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst),'
+  - '         .offset = ggml_webgpu_tensor_align_offset(ctx, dst),'
+  - '         .size = ggml_webgpu_tensor_binding_size(ctx, dst) }'
+  - '    };'
+  - '    uint32_t wg_x = 1;'
+  - '    uint32_t wg_y = 1;'
+  - '    const uint32_t max_wg_per_dim = ctx->global_ctx->capabilities.limits.maxComputeWorkgroupsPerDimension;'
+  - '    if (use_fast && is_vec) {'
+  - '        auto * decisions = static_cast<ggml_webgpu_mul_mat_vec_shader_decisions
+    *>(pipeline.context.get());'
+  - '        uint32_t batches = dst->ne[2] * dst->ne[3];'
+  - '        uint32_t output_groups = CEIL_DIV(dst->ne[0], decisions->outputs_per_wg);'
+  - '        uint32_t total_wg = output_groups * batches;'
+  - '        compute_2d_workgroups(total_wg, max_wg_per_dim, wg_x, wg_y);'
+  - '    } else if (use_fast) {'
+  - '        auto * decisions = static_cast<ggml_webgpu_mul_mat_shader_decisions *>(pipeline.context.get());'
+  - '        uint32_t wg_m; uint32_t wg_n;'
+  - '        if (decisions->use_subgroup_matrix) {'
+  - '            uint32_t wg_m_sg_tile = decisions->subgroup_m * decisions->subgroup_matrix_m
+    * ctx->global_ctx->capabilities.sg_mat_m;'
+  - '            wg_m = CEIL_DIV(dst->ne[0], wg_m_sg_tile);'
+  - '            uint32_t wg_n_sg_tile = decisions->subgroup_n * decisions->subgroup_matrix_n
+    * ctx->global_ctx->capabilities.sg_mat_n;'
+  - '            wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);'
+  - '        } else {'
+  - '            uint32_t tile_m_s = decisions->tile_m * decisions->wg_size_m;'
+  - '            uint32_t tile_n_s = decisions->tile_n * decisions->wg_size_n;'
+  - '            wg_m = CEIL_DIV(dst->ne[0], tile_m_s); wg_n = CEIL_DIV(dst->ne[1],
+    tile_n_s);'
+  - '        }'
+  - '        uint32_t total_wg = wg_m * wg_n * dst->ne[2] * dst->ne[3];'
+  - '        compute_2d_workgroups(total_wg, max_wg_per_dim, wg_x, wg_y);'
+  - '    } else {'
+  - '        auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());'
+  - '        uint32_t wg_size = decisions->wg_size;'
+  - '        uint32_t total_wg = CEIL_DIV(dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3],
+    wg_size);'
+  - '        compute_2d_workgroups(total_wg, max_wg_per_dim, wg_x, wg_y);'
+  - '    }'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x, wg_y);'
+  - '}'
+  desc: 为矩阵乘法操作构建WebGPU计算管线，根据张量类型和形状选择快速路径或传统路径
+  line: 1114-1203
+  name: ggml_webgpu_mul_mat
+- code:
+  - static webgpu_encoded_op ggml_webgpu_mul_mat_id(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * src2, ggml_tensor
+    * dst) {
+  - '    ggml_webgpu_shader_lib_context shader_lib_ctx = {'
+  - '        .src0 = src0, .src1 = src1, .src2 = src2, .dst = dst,'
+  - '        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup'
+  - '    };'
+  - '    webgpu_pipeline gather_pipeline, main_pipeline;'
+  - '    std::vector<webgpu_pipeline> pipelines;'
+  - '    std::vector<std::vector<uint32_t>> params_list;'
+  - '    std::vector<std::vector<wgpu::BindGroupEntry>> entries_list;'
+  - '    std::vector<std::pair<uint32_t, uint32_t>> workgroups_list;'
+  - '    gather_pipeline = ctx->shader_lib->get_mul_mat_id_gather_pipeline(shader_lib_ctx);'
+  - '    main_pipeline = ctx->shader_lib->get_mul_mat_id_pipeline(shader_lib_ctx);'
+  - '    const uint32_t param_n_expert = (uint32_t) src0->ne[2];'
+  - '    const uint32_t param_n_expert_used = (uint32_t) dst->ne[1];'
+  - '    const uint32_t param_n_tokens = (uint32_t) dst->ne[2];'
+  - '    std::vector<uint32_t> gather_params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src2) / ggml_type_size(src2->type)),'
+  - '        param_n_expert, param_n_expert_used, param_n_tokens,'
+  - '        (uint32_t) (src2->nb[1] / ggml_type_size(src2->type)),'
+  - '    };'
+  - '    const size_t dst_offset = ggml_webgpu_tensor_offset(dst);'
+  - '    const size_t gathered_buf_nbytes = src0->ne[2] * src1->ne[2] * sizeof(uint32_t);'
+  - '    const size_t gathered_expert_used_align_offset = ROUNDUP_POW2(dst_offset
+    + ggml_nbytes(dst), ctx->global_ctx->capabilities.limits.minStorageBufferOffsetAlignment);'
+  - '    const size_t gathered_tokens_align_offset = ROUNDUP_POW2(gathered_expert_used_align_offset
+    + gathered_buf_nbytes, ctx->global_ctx->capabilities.limits.minStorageBufferOffsetAlignment);'
+  - '    const size_t gathered_count_ids_align_offset = ROUNDUP_POW2(gathered_tokens_align_offset
+    + gathered_buf_nbytes, ctx->global_ctx->capabilities.limits.minStorageBufferOffsetAlignment);'
+  - '    const size_t gathered_binding_size = ROUNDUP_POW2(gathered_buf_nbytes, WEBGPU_STORAGE_BUF_BINDING_MULT);'
+  - '    const size_t gathered_count_ids_binding_size = ROUNDUP_POW2(src0->ne[2] *
+    sizeof(uint32_t), WEBGPU_STORAGE_BUF_BINDING_MULT);'
+  - '    std::vector<wgpu::BindGroupEntry> gather_entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src2), .offset = ggml_webgpu_tensor_align_offset(ctx,
+    src2), .size = ggml_webgpu_tensor_binding_size(ctx, src2) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_expert_used_align_offset,
+    .size = gathered_binding_size },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_tokens_align_offset,
+    .size = gathered_binding_size },'
+  - '        { .binding = 3, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_count_ids_align_offset,
+    .size = gathered_count_ids_binding_size }'
+  - '    };'
+  - '    const uint32_t max_wg_per_dim = ctx->global_ctx->capabilities.limits.maxComputeWorkgroupsPerDimension;'
+  - '    const uint32_t gather_total_wg = param_n_expert;'
+  - '    const uint32_t gather_wg_x = std::min(gather_total_wg, max_wg_per_dim);'
+  - '    const uint32_t gather_wg_y = CEIL_DIV(gather_total_wg, gather_wg_x);'
+  - '    pipelines.push_back(gather_pipeline);'
+  - '    params_list.push_back(std::move(gather_params));'
+  - '    entries_list.push_back(std::move(gather_entries));'
+  - '    workgroups_list.push_back({ gather_wg_x, gather_wg_y });'
+  - '    std::vector<uint32_t> main_params = {'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),'
+  - '        (uint32_t) src0->ne[0], (uint32_t) src0->ne[1], param_n_expert, param_n_expert_used,
+    param_n_tokens,'
+  - '        (uint32_t) src1->ne[1],'
+  - '        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),'
+  - '        (uint32_t) (src0->nb[2] / ggml_type_size(src0->type)),'
+  - '        (uint32_t) (src1->nb[2] / ggml_type_size(src1->type)),'
+  - '    };'
+  - '    std::vector<wgpu::BindGroupEntry> main_entries = {'
+  - '        { .binding = 0, .buffer = ggml_webgpu_tensor_buf(src0), .offset = ggml_webgpu_tensor_align_offset(ctx,
+    src0), .size = ggml_webgpu_tensor_binding_size(ctx, src0) },'
+  - '        { .binding = 1, .buffer = ggml_webgpu_tensor_buf(src1), .offset = ggml_webgpu_tensor_align_offset(ctx,
+    src1), .size = ggml_webgpu_tensor_binding_size(ctx, src1) },'
+  - '        { .binding = 2, .buffer = ggml_webgpu_tensor_buf(dst), .offset = ggml_webgpu_tensor_align_offset(ctx,
+    dst), .size = ggml_webgpu_tensor_binding_size(ctx, dst) },'
+  - '        { .binding = 3, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_expert_used_align_offset,
+    .size = gathered_binding_size },'
+  - '        { .binding = 4, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_tokens_align_offset,
+    .size = gathered_binding_size },'
+  - '        { .binding = 5, .buffer = ggml_webgpu_tensor_buf(dst), .offset = gathered_count_ids_align_offset,
+    .size = gathered_count_ids_binding_size }'
+  - '    };'
+  - '    uint32_t wg_x = 1; uint32_t wg_y = 1;'
+  - '    auto * main_decisions = static_cast<ggml_webgpu_mul_mat_shader_decisions
+    *>(main_pipeline.context.get());'
+  - '    uint32_t wg_m;'
+  - '    uint32_t tile_m_s = main_decisions->tile_m * main_decisions->wg_size_m;'
+  - '    uint32_t tile_n_s = main_decisions->tile_n * main_decisions->wg_size_n;'
+  - '    wg_m = CEIL_DIV(dst->ne[0], tile_m_s);'
+  - '    uint32_t total_gathered = dst->ne[1] * dst->ne[2];'
+  - '    uint32_t max_active_experts = std::min((uint32_t) src0->ne[2], total_gathered);'
+  - '    uint32_t max_wg_n = CEIL_DIV(total_gathered, tile_n_s) + max_active_experts;'
+  - '    uint32_t total_wg = wg_m * max_wg_n;'
+  - '    compute_2d_workgroups(total_wg, max_wg_per_dim, wg_x, wg_y);'
+  - '    pipelines.push_back(main_pipeline);'
+  - '    params_list.push_back(std::move(main_params));'
+  - '    entries_list.push_back(std::move(main_entries));'
+  - '    workgroups_list.push_back({ wg_x, wg_y });'
+  - '    return ggml_backend_webgpu_build_multi(ctx->global_ctx, ctx->param_arena,
+    encoder, pipelines, params_list, entries_list, workgroups_list);'
+  - '}'
+  desc: 为带ID的矩阵乘法操作构建WebGPU计算管线，采用两阶段处理（先收集再计算）
+  line: 1205-1315
+  name: ggml_webgpu_mul_mat_id
+- code:
+  - static webgpu_encoded_op ggml_webgpu_flash_attn(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * Q, ggml_tensor * K, ggml_tensor * V, ggml_tensor * mask,
+    ggml_tensor * sinks, ggml_tensor * dst) {
+  - '    float scale = *(float *) dst->op_params;'
+  - '    float max_bias;'
+  - '    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));'
+  - '    float logit_softcap;'
+  - '    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));'
+  - '    if (logit_softcap != 0.0f) { scale /= logit_softcap; }'
+  - '    ...'
+  - '    return ggml_backend_webgpu_build_multi(ctx->global_ctx, ctx->param_arena,
+    encoder, pipelines, params_list, entries_list, workgroups_list);'
+  - '}'
+  desc: Executes flash attention compute on WebGPU, handling multi-head attention
+    with mask/sinks support, vectorized paths, and block-based masking with reduction
+    for batch processing
+  line: 1552-1775
+  name: ggml_webgpu_flash_attn
+- code:
+  - static webgpu_encoded_op ggml_webgpu_unary_op(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src, ggml_tensor * dst) {
+  - '    bool is_unary = dst->op == GGML_OP_UNARY;'
+  - '    bool inplace  = ggml_webgpu_tensor_equal(src, dst) || (dst->op == GGML_OP_FILL);'
+  - '    ...'
+  - '    uint32_t wg_x = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: Builds and dispatches unary operations (e.g., XIELU with parameters, FILL,
+    CLAMP) on WebGPU, handling inplace operations and parameter passing
+  line: 1780-1850
+  name: ggml_webgpu_unary_op
+- code:
+  - static webgpu_encoded_op ggml_webgpu_binary_op(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
+  - '    binary_overlap_flags flags = ggml_webgpu_detect_binary_overlap(src0, src1,
+    dst);'
+  - '    ...'
+  - '    uint32_t wg_x = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: Executes binary operations on WebGPU, detecting source/destination overlap
+    for memory optimization and dispatching appropriate shader with parameterized
+    strides
+  line: 1852-1940
+  name: ggml_webgpu_binary_op
+- code:
+  - static webgpu_encoded_op ggml_webgpu_concat(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
+  - '    uint32_t ne  = (uint32_t) ggml_nelements(dst);'
+  - '    uint32_t dim = (uint32_t) dst->op_params[0];'
+  - '    ...'
+  - '    uint32_t        wg_x      = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: Concatenates two tensors along a specified dimension on WebGPU, setting up
+    parameter buffer with tensor strides and dimension information
+  line: 1942-1990
+  name: ggml_webgpu_concat
+- code:
+  - static webgpu_encoded_op ggml_webgpu_repeat(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src0, ggml_tensor * dst) {
+  - '    uint32_t ne = (uint32_t) ggml_nelements(dst);'
+  - '    ...'
+  - '    uint32_t        wg_x      = CEIL_DIV(ne, decisions->wg_size);'
+  - '    return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_arena, encoder,
+    pipeline, params, entries, wg_x);'
+  - '}'
+  desc: Repeats a source tensor to match destination tensor dimensions on WebGPU,
+    generating parameter buffer with source/destination sizes
+  line: 1992-2030
+  name: ggml_webgpu_repeat
+- code:
+  - static webgpu_encoded_op ggml_webgpu_row_norm(webgpu_context & ctx, wgpu::CommandEncoder
+    & encoder, ggml_tensor * src, ggml_tensor * dst) {
+  - '    bool inplace = ggml_webgpu_tensor_equal(src, dst);'
+  - '    ...'
+  - '    // [code truncated]'
+  - '}'
+  desc: Performs row-wise normalization (layernorm-style) on tensors, handling epsilon
+    parameter and optional inplace execution with stride parameters
+  line: 2032-2080
+  name: ggml_webgpu_row_norm
+- code:
+  - static webgpu_encoded_op ggml_webgpu_rope(webgpu_context &       ctx,
+  - '                                          wgpu::CommandEncoder & encoder,'
+  - '                                          ggml_tensor *          src0,'
+  - '                                          ggml_tensor *          src1,'
+  - '                                          ggml_tensor *          src2,'
+  - '                                          ggml_tensor *          dst) {'
+  - '    // ... 构建参数和绑定组，获取相应的pipeline并编码操作'
+  - '}'
+  desc: 编码RoPE旋转位置编码操作到WebGPU命令，处理频率参数、特殊维度和绑定组配置
+  line: 2214-2310
+  name: ggml_webgpu_rope
+- code:
+  - static webgpu_encoded_op ggml_webgpu_glu(webgpu_context &       ctx,
+  - '                                          wgpu::CommandEncoder & encoder,'
+  - '                                          ggml_tensor *          src0,'
+  - '                                          ggml_tensor *          src1,'
+  - '                                          ggml_tensor *          dst) {'
+  - '    // ... 处理GLU操作的参数和绑定组配置'
+  - '}'
+  desc: 编码GLU门控线性单元激活操作，支持split模式，构建相应参数和绑定组
+  line: 2312-2372
+  name: ggml_webgpu_glu
+- code:
+  - static webgpu_encoded_op ggml_webgpu_scale(webgpu_context &       ctx,
+  - '                                           wgpu::CommandEncoder & encoder,'
+  - '                                           ggml_tensor *          src,'
+  - '                                           ggml_tensor *          dst) {'
+  - '    // ... 构建缩放参数和绑定组'
+  - '}'
+  desc: 编码缩放操作，支持inplace模式，传递scale和bias参数
+  line: 2374-2416
+  name: ggml_webgpu_scale
+- code:
+  - static webgpu_encoded_op ggml_webgpu_soft_max(webgpu_context &       ctx,
+  - '                                              wgpu::CommandEncoder & encoder,'
+  - '                                              ggml_tensor *          src0,'
+  - '                                              ggml_tensor *          src1,'
+  - '                                              ggml_tensor *          src2,'
+  - '                                              ggml_tensor *          dst) {'
+  - '    // ... 处理softmax及其可选参数'
+  - '}'
+  desc: 编码softmax操作，支持mask和sink参数，计算幂次缩放因子
+  line: 2418-2512
+  name: ggml_webgpu_soft_max
+- code:
+  - static webgpu_encoded_op ggml_webgpu_argmax(webgpu_context &       ctx,
+  - '                                            wgpu::CommandEncoder & encoder,'
+  - '                                            ggml_tensor *          src,'
+  - '                                            ggml_tensor *          dst) {'
+  - '    // ... 编码argmax操作'
+  - '}'
+  desc: 编码argmax操作，获取最大值索引并输出结果张量
+  line: 2513-2534
+  name: ggml_webgpu_argmax
+- code:
+  - static webgpu_encoded_op ggml_webgpu_argsort(webgpu_context &       ctx,
+  - '                                             wgpu::CommandEncoder & encoder,'
+  - '                                             ggml_tensor *          src,'
+  - '                                             ggml_tensor *          dst) {'
+  - '    // ... 实现argsort和top_k的多阶段排序'
+  - '}'
+  desc: 编码argsort/top_k排序操作，支持多阶段归并排序算法，处理复杂的临时缓冲区管理
+  line: 2536-2687
+  name: ggml_webgpu_argsort
+- code:
+  - static webgpu_encoded_op ggml_webgpu_cumsum(webgpu_context &       ctx,
+  - '                                            wgpu::CommandEncoder & encoder,'
+  - '                                            ggml_tensor *          src,'
+  - '                                            ggml_tensor *          dst) {'
+  - '    // ... 编码cumsum操作'
+  - '}'
+  desc: 编码累积求和操作，沿指定维度计算累计和
+  line: 2689-2711
+  name: ggml_webgpu_cumsum
+- code:
+  - static webgpu_encoded_op ggml_webgpu_sum_rows(webgpu_context &       ctx,
+  - '                                              wgpu::CommandEncoder & encoder,'
+  - '                                              ggml_tensor *          src,'
+  - '                                              ggml_tensor *          dst) {'
+  - '    // ... 编码行求和操作'
+  - '}'
+  desc: 编码行求和操作，支持全矩阵求和或按行求和两种模式
+  line: 2713-2742
+  name: ggml_webgpu_sum_rows
+- code:
+  - static std::optional<webgpu_encoded_op> ggml_webgpu_encode_node(webgpu_context         ctx,
+  - '                                                                wgpu::CommandEncoder
+    & encoder,'
+  - '                                                                ggml_tensor *          node)
+    {'
+  - '    // ... 根据node->op分发到不同的编码函数'
+  - '}'
+  desc: 节点编码分发函数，根据节点操作类型调用相应的编码函数，处理各种张量操作
+  line: 2744-2831
+  name: ggml_webgpu_encode_node
+- code:
+  - static ggml_status ggml_backend_webgpu_graph_compute(ggml_backend_t backend, struct
+    ggml_cgraph * cgraph) {
+  - '    // ... 遍历所有节点，调用encode_node编码，批量提交'
+  - '}'
+  desc: 图计算主入口函数，遍历计算图中的所有节点，编码并批量提交WebGPU命令
+  line: 2833-2865
+  name: ggml_backend_webgpu_graph_compute
+- code:
+  - '... (graph_compute 完整逻辑涉及节点遍历、内核编码、命令提交批处理、SET_ROWS 错误检查等) ...'
+  desc: 文件全局代码，管理图计算内核调度和提交批处理。
+  line: 2928-3016
+  name: __main__
+- code:
+  - static ggml_backend_i ggml_backend_webgpu_i = {
+  - '    /* .get_name                = */ ggml_backend_webgpu_name,'
+  - '    /* .free                    = */ ggml_backend_webgpu_free,'
+  - '    ...'
+  - '    /* .graph_compute            = */ ggml_backend_webgpu_graph_compute,'
+  - '    ...'
+  - '};'
+  desc: ggml 后端接口的静态实例，包含图计算等回调函数指针。
+  line: 3018-3034
+  name: ggml_backend_webgpu_i
+- code:
+  - static void ggml_backend_webgpu_buffer_free_buffer(ggml_backend_buffer_t buffer)
+    {
+  - '    ggml_backend_webgpu_buffer_context * ctx = static_cast<ggml_backend_webgpu_buffer_context
+    *>(buffer->context);'
+  - '    if (ctx != nullptr && ctx->buffer != nullptr) {'
+  - '        ctx->buffer.Destroy();'
+  - '        delete ctx;'
+  - '    }'
+  - '}'
+  desc: 释放 WebGPU 缓冲对象及其上下文。
+  line: 3038-3045
+  name: ggml_backend_webgpu_buffer_free_buffer
+- code:
+  - static void * ggml_backend_webgpu_buffer_get_base(ggml_backend_buffer_t buffer)
+    {
+  - '    GGML_UNUSED(buffer);'
+  - '    return webgpu_ptr_base;'
+  - '}'
+  desc: 返回一个模拟的基础指针。
+  line: 3048-3052
+  name: ggml_backend_webgpu_buffer_get_base
+- code:
+  - static void ggml_backend_webgpu_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+  - '    ...'
+  - '    size_t total_offset = webgpu_tensor_offset(tensor) + tensor->view_offs +
+    offset;'
+  - '    uint32_t val32 = (uint32_t) value * 0x01010101;'
+  - '    ggml_backend_webgpu_buffer_memset(buf_ctx->global_ctx, buf_ctx->buffer, val32,
+    total_offset, size);'
+  - '    ...'
+  - '}'
+  desc: 对张量对应的缓冲区域进行字节填充（将单字节值扩展为 u32 后写入）。
+  line: 3055-3076
+  name: ggml_backend_webgpu_buffer_memset_tensor
+- code:
+  - static void ggml_backend_webgpu_buffer_set_tensor(ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+  - '    ...'
+  - '    buf_ctx->global_ctx->queue.WriteBuffer(buf_ctx->buffer, total_offset, data,
+    (size / 4) * 4);'
+  - '    ...'
+  - '}'
+  desc: 将主机数据写入 WebGPU 缓冲区的张量区域，处理非 4 字节对齐的尾部。
+  line: 3079-3108
+  name: ggml_backend_webgpu_buffer_set_tensor
+- code:
+  - static void ggml_backend_webgpu_buffer_get_tensor(ggml_backend_buffer_t buffer,
+    const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+  - '    ...'
+  - '    // Copy the data from the buffer to the staging buffer'
+  - '    ...'
+  - '}'
+  desc: 从 GPU 缓冲读取张量数据到主机内存，使用暂存缓冲映射。
+  line: 3111-3166
+  name: ggml_backend_webgpu_buffer_get_tensor
+- code:
+  - static void ggml_backend_webgpu_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
+    value) {
+  - '    ...'
+  - '    ggml_backend_webgpu_buffer_memset(buf_ctx->global_ctx, buf_ctx->buffer, value,
+    0, buffer->size);'
+  - '    ...'
+  - '}'
+  desc: 清除整个缓冲区，将指定值填充至全部字节。
+  line: 3168-3176
+  name: ggml_backend_webgpu_buffer_clear
+- code:
+  - static ggml_backend_buffer_i ggml_backend_webgpu_buffer_interface = {
+  - '    /* .free_buffer     = */ ggml_backend_webgpu_buffer_free_buffer,'
+  - '    ...'
+  - '};'
+  desc: ggml 缓冲接口的静态实例，配置 buffer 操作的回调函数。
+  line: 3178-3190
+  name: ggml_backend_webgpu_buffer_interface
+- code:
+  - static const char * ggml_backend_webgpu_buffer_type_get_name(ggml_backend_buffer_type_t
+    buft) {
+  - '    ggml_backend_webgpu_device_context * ctx = static_cast<ggml_backend_webgpu_device_context
+    *>(buft->device->context);'
+  - '    return ctx->device_name.c_str();'
+  - '}'
+  desc: 返回设备上下文中的设备名称。
+  line: 3195-3198
+  name: ggml_backend_webgpu_buffer_type_get_name
+- code:
+  - static ggml_backend_buffer_t ggml_backend_webgpu_buffer_type_alloc_buffer(ggml_backend_buffer_type_t
+    buft, size_t size) {
+  - '    ...'
+  - '    ggml_webgpu_create_buffer(ctx->webgpu_global_ctx->device, buf, ROUNDUP_POW2(size,
+    WEBGPU_STORAGE_BUF_BINDING_MULT), ...'
+  - '    ...'
+  - '}'
+  desc: 分配 WebGPU 存储缓冲，创建缓冲上下文并初始化。
+  line: 3200-3213
+  name: ggml_backend_webgpu_buffer_type_alloc_buffer
+- code:
+  - static size_t ggml_backend_webgpu_buffer_type_get_alignment(ggml_backend_buffer_type_t
+    buft) {
+  - '    ...'
+  - '    return dev_ctx->webgpu_global_ctx->capabilities.limits.minStorageBufferOffsetAlignment;'
+  - '}'
+  desc: 返回最小存储缓冲偏移对齐值。
+  line: 3215-3219
+  name: ggml_backend_webgpu_buffer_type_get_alignment
+- code:
+  - static size_t ggml_backend_webgpu_buffer_type_get_max_size(ggml_backend_buffer_type_t
+    buft) {
+  - '    ...'
+  - '    return dev_ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize;'
+  - '}'
+  desc: 返回最大存储缓冲绑定大小。
+  line: 3221-3225
+  name: ggml_backend_webgpu_buffer_type_get_max_size
+- code:
+  - static size_t ggml_backend_webgpu_buffer_type_get_alloc_size(ggml_backend_buffer_type_t
+    buft, const ggml_tensor * tensor) {
+  - '    ...'
+  - '    switch (tensor->op) {'
+  - '        case GGML_OP_ARGSORT:'
+  - '            ...'
+  - '        case GGML_OP_TOP_K:'
+  - '            ...'
+  - '        case GGML_OP_FLASH_ATTN_EXT:'
+  - '            ...'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '            ...'
+  - '    }'
+  - '    return res;'
+  - '}'
+  desc: 根据张量操作类型计算所需的缓冲分配大小，处理 ARGSORT、TOP_K、FLASH_ATTN_EXT、MUL_MAT_ID 等特殊对齐需求。
+  line: 3227-3295
+  name: ggml_backend_webgpu_buffer_type_get_alloc_size
+- code:
+  - static const char * ggml_backend_webgpu_device_get_name(ggml_backend_dev_t dev)
+    {
+  - '    ...'
+  - '    return ctx->device_name.c_str();'
+  - '}'
+  desc: 返回设备名称。
+  line: 3300-3303
+  name: ggml_backend_webgpu_device_get_name
+- code:
+  - static const char * ggml_backend_webgpu_device_get_description(ggml_backend_dev_t
+    dev) {
+  - '    ...'
+  - '    return ctx->device_desc.c_str();'
+  - '}'
+  desc: 返回设备描述。
+  line: 3305-3308
+  name: ggml_backend_webgpu_device_get_description
+- code:
+  - static void ggml_backend_webgpu_device_get_memory(ggml_backend_dev_t dev, size_t
+    * free, size_t * total) {
+  - '    ...'
+  - '    uint64_t max_buffer_size = ctx->webgpu_global_ctx->capabilities.limits.maxBufferSize;'
+  - '    ...'
+  - '}'
+  desc: 查询设备内存信息，返回最大缓冲大小作为可用与总内存。
+  line: 3310-3321
+  name: ggml_backend_webgpu_device_get_memory
+- code:
+  - static enum ggml_backend_dev_type ggml_backend_webgpu_device_get_type(ggml_backend_dev_t
+    dev) {
+  - '    GGML_UNUSED(dev);'
+  - '    return GGML_BACKEND_DEVICE_TYPE_GPU;'
+  - '}'
+  desc: 返回设备类型为 GPU。
+  line: 3323-3327
+  name: ggml_backend_webgpu_device_get_type
+- code:
+  - static void ggml_backend_webgpu_device_get_props(ggml_backend_dev_t dev, struct
+    ggml_backend_dev_props * props) {
+  - '    ...'
+  - '    props->caps = {'
+  - '        /* .async                 = */ false,'
+  - '        ...'
+  - '    };'
+  - '}'
+  desc: 填充设备属性结构，包括名称、描述、类型、内存和功能。
+  line: 3329-3344
+  name: ggml_backend_webgpu_device_get_props
+- code:
+  - static ggml_guid_t ggml_backend_webgpu_guid(void) {
+  - '    static const char * guid_str = "__ggml_webgpu :)";'
+  - '    return reinterpret_cast<ggml_guid_t>((void *) guid_str);'
+  - '}'
+  desc: 返回固定的后端 GUID 字符串。
+  line: 3346-3350
+  name: ggml_backend_webgpu_guid
+- code:
+  - static void ggml_webgpu_init_memset_pipeline(webgpu_global_context & ctx) {
+  - '    ...'
+  - '    ctx->capabilities.memset_bytes_per_thread = CEIL_DIV(ctx->capabilities.limits.maxStorageBufferBindingSize,
+    max_threads);'
+  - '    ...'
+  - '}'
+  desc: 初始化 memset 计算管线，设置 workgroup 大小和每线程字节数。
+  line: 3352-3362
+  name: ggml_webgpu_init_memset_pipeline
+- code:
+  - static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
+  - '    wgpu::RequestAdapterOptions options = {};'
+  - '    ...'
+  - '    GGML_ASSERT(ctx->webgpu_global_ctx->device != nullptr);'
+  - '    ...'
+  - '    return true;'
+  - '}'
+  desc: 创建 WebGPU 适配器和设备，配置请求特性、错误回调、性能 toggles，并初始化相关缓冲与管线。
+  line: 3364-3455
+  name: create_webgpu_device
+- code:
+  - static webgpu_context initialize_webgpu_context(ggml_backend_dev_t dev) {
+  - '    ...'
+  - '    webgpu_ctx->param_arena.init(...'
+  - '    ...'
+  - '    return webgpu_ctx;'
+  - '}'
+  desc: 初始化 WebGPU 上下文，包括着色器库、参数 arena 及错误检测缓冲。
+  line: 3457-3480
+  name: initialize_webgpu_context
+- code:
+  - static ggml_backend_t ggml_backend_webgpu_backend_init(ggml_backend_dev_t dev,
+    const char * params) {
+  - '    ...'
+  - '    *backend = {'
+  - '        /* .guid      = */ ggml_backend_webgpu_guid(),'
+  - '        ...'
+  - '    };'
+  - '    return backend;'
+  - '}'
+  desc: 初始化 ggml WebGPU 后端，创建后端上下文并填充接口。
+  line: 3482-3498
+  name: ggml_backend_webgpu_backend_init
+- code:
+  - static ggml_backend_buffer_type_t ggml_backend_webgpu_device_get_buffer_type(ggml_backend_dev_t
+    dev) {
+  - '    static struct ggml_backend_buffer_type ggml_backend_webgpu_buffer_type =
+    {'
+  - '        ...'
+  - '    };'
+  - '    return &ggml_backend_webgpu_buffer_type;'
+  - '}'
+  desc: 返回 WebGPU 缓冲类型实例。
+  line: 3500-3519
+  name: ggml_backend_webgpu_device_get_buffer_type
+- code:
+  - static bool ggml_backend_webgpu_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_UNUSED(dev);'
+  - '    return buft->iface.get_name == ggml_backend_webgpu_buffer_type_get_name;'
+  - '}'
+  desc: 判断缓冲类型是否为 WebGPU 类型。
+  line: 3521-3524
+  name: ggml_backend_webgpu_device_supports_buft
+- code:
+  - static bool ggml_backend_webgpu_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t
+    buft) {
+  - '    GGML_UNUSED(dev);'
+  - '    return buft->iface.get_name == ggml_backend_webgpu_buffer_type_get_name;'
+  - '}'
+  desc: 检查给定缓冲区类型是否为 WebGPU 后端支持的缓冲区类型（通过比较接口的获取名称函数指针判断）。
+  line: 3603-3606
+  name: ggml_backend_webgpu_device_supports_buft
+- code:
+  - static bool ggml_webgpu_supported_qtype(ggml_type type) {
+  - '    switch (type) {'
+  - '        case GGML_TYPE_Q4_0:'
+  - '        case GGML_TYPE_Q4_1:'
+  - '        case GGML_TYPE_Q5_0:'
+  - '        case GGML_TYPE_Q5_1:'
+  - '        case GGML_TYPE_Q8_0:'
+  - '        case GGML_TYPE_Q2_K:'
+  - '        case GGML_TYPE_Q3_K:'
+  - '        case GGML_TYPE_Q4_K:'
+  - '        case GGML_TYPE_Q5_K:'
+  - '        case GGML_TYPE_Q6_K:'
+  - '        case GGML_TYPE_IQ2_XXS:'
+  - '        case GGML_TYPE_IQ2_XS:'
+  - '        case GGML_TYPE_IQ2_S:'
+  - '        case GGML_TYPE_IQ3_XXS:'
+  - '        case GGML_TYPE_IQ3_S:'
+  - '        case GGML_TYPE_IQ1_S:'
+  - '        case GGML_TYPE_IQ1_M:'
+  - '        case GGML_TYPE_IQ4_NL:'
+  - '        case GGML_TYPE_IQ4_XS:'
+  - '            return true;'
+  - '        default:'
+  - '            return false;'
+  - '    }'
+  - '}'
+  desc: 判断给定的量化张量类型是否为 WebGPU 后端支持的类型（覆盖多种量化格式如 Q4_0、Q5_K 等）。
+  line: 3608-3631
+  name: ggml_webgpu_supported_qtype
+- code:
+  - static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
+    ggml_tensor * op) {
+  - '    ggml_backend_webgpu_device_context * ctx = static_cast<ggml_backend_webgpu_device_context
+    *>(dev->context);'
+  - '    ggml_tensor * src0 = op->src[0];'
+  - '    ggml_tensor * src1 = op->src[1];'
+  - '    ggml_tensor * src2 = op->src[2];'
+  - '    if (ggml_nbytes(op) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize
+    ||'
+  - '        (src0 != nullptr && ggml_nbytes(src0) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize)
+    ||'
+  - '        (src1 != nullptr && ggml_nbytes(src1) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize))
+    {'
+  - '        return false;'
+  - '    }'
+  - '    bool supports_op = false;'
+  - '    switch (op->op) {'
+  - '        case GGML_OP_NONE:'
+  - '        case GGML_OP_VIEW:'
+  - '        case GGML_OP_PERMUTE:'
+  - '        case GGML_OP_TRANSPOSE:'
+  - '        case GGML_OP_RESHAPE:'
+  - '            supports_op = true;'
+  - '            break;'
+  - '        case GGML_OP_ADD:'
+  - '        case GGML_OP_SUB:'
+  - '        case GGML_OP_MUL:'
+  - '        case GGML_OP_DIV:'
+  - '            supports_op = (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16)
+    && (src0->type == op->type) && (src1->type == op->type);'
+  - '            break;'
+  - '        case GGML_OP_CONCAT:'
+  - '            supports_op = (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_I32);'
+  - '            break;'
+  - '        case GGML_OP_REPEAT:'
+  - '            supports_op = (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_I32
+    || src0->type == GGML_TYPE_I16);'
+  - '            break;'
+  - '        case GGML_OP_CPY:'
+  - '        case GGML_OP_CONT:'
+  - '            supports_op = ((op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16)
+    && (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) || (op->type
+    == GGML_TYPE_I32 && src0->type == GGML_TYPE_F32);'
+  - '            break;'
+  - '        case GGML_OP_SET:'
+  - '            supports_op = src0->type == src1->type && src0->type == op->type
+    && (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_I32);'
+  - '            break;'
+  - '        case GGML_OP_SET_ROWS:'
+  - '            supports_op = ((op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32)
+    && src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_I64 || src1->type ==
+    GGML_TYPE_I32));'
+  - '            break;'
+  - '        case GGML_OP_GET_ROWS:'
+  - '            if (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 ||
+    ggml_webgpu_supported_qtype(src0->type)) {'
+  - '                supports_op = (op->type == GGML_TYPE_F32);'
+  - '            } else if (src0->type == GGML_TYPE_I32) {'
+  - '                supports_op = op->type == GGML_TYPE_I32;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_MUL_MAT:'
+  - '            {'
+  - '                switch (src1->type) {'
+  - '                    case GGML_TYPE_F16:'
+  - '                        supports_op |= (src0->type == GGML_TYPE_F16);'
+  - '                        break;'
+  - '                    case GGML_TYPE_F32:'
+  - '                        switch (src0->type) {'
+  - '                            case GGML_TYPE_F32:'
+  - '                            case GGML_TYPE_F16:'
+  - '                            case GGML_TYPE_Q4_0:'
+  - '                            case GGML_TYPE_Q4_1:'
+  - '                            case GGML_TYPE_Q5_0:'
+  - '                            case GGML_TYPE_Q5_1:'
+  - '                            case GGML_TYPE_Q8_0:'
+  - '                            case GGML_TYPE_Q2_K:'
+  - '                            case GGML_TYPE_Q3_K:'
+  - '                            case GGML_TYPE_Q4_K:'
+  - '                            case GGML_TYPE_Q5_K:'
+  - '                            case GGML_TYPE_Q6_K:'
+  - '                            case GGML_TYPE_IQ2_XXS:'
+  - '                            case GGML_TYPE_IQ2_XS:'
+  - '                            case GGML_TYPE_IQ2_S:'
+  - '                            case GGML_TYPE_IQ3_XXS:'
+  - '                            case GGML_TYPE_IQ3_S:'
+  - '                            case GGML_TYPE_IQ1_S:'
+  - '                            case GGML_TYPE_IQ1_M:'
+  - '                            case GGML_TYPE_IQ4_NL:'
+  - '                            case GGML_TYPE_IQ4_XS:'
+  - '                                supports_op = true;'
+  - '                                break;'
+  - '                            default:'
+  - '                                break;'
+  - '                        }'
+  - '                    default:'
+  - '                        break;'
+  - '                }'
+  - '                break;'
+  - '            }'
+  - '        case GGML_OP_MUL_MAT_ID:'
+  - '            switch (src1->type) {'
+  - '                case GGML_TYPE_F16:'
+  - '                    supports_op |= (src0->type == GGML_TYPE_F16);'
+  - '                    break;'
+  - '                case GGML_TYPE_F32:'
+  - '                    switch (src0->type) {'
+  - '                        case GGML_TYPE_F32:'
+  - '                        case GGML_TYPE_F16:'
+  - '                        case GGML_TYPE_Q4_0:'
+  - '                        case GGML_TYPE_Q4_1:'
+  - '                        case GGML_TYPE_Q5_0:'
+  - '                        case GGML_TYPE_Q5_1:'
+  - '                        case GGML_TYPE_Q8_0:'
+  - '                        case GGML_TYPE_Q2_K:'
+  - '                        case GGML_TYPE_Q3_K:'
+  - '                        case GGML_TYPE_Q4_K:'
+  - '                        case GGML_TYPE_Q5_K:'
+  - '                        case GGML_TYPE_Q6_K:'
+  - '                            supports_op = true;'
+  - '                            break;'
+  - '                        default:'
+  - '                            break;'
+  - '                    }'
+  - '                    break;'
+  - '                default:'
+  - '                    break;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_FLASH_ATTN_EXT:'
+  - '            {'
+  - '#ifndef __EMSCRIPTEN__'
+  - '                if (!ctx->webgpu_global_ctx->capabilities.supports_subgroup_matrix)
+    {'
+  - '                    break;'
+  - '                }'
+  - '                size_t     limit_bytes = ctx->webgpu_global_ctx->capabilities.limits.maxComputeWorkgroupStorageSize;'
+  - '                const bool has_mask    = op->src[3] != nullptr;'
+  - '                const bool kv_direct   = src1->type == GGML_TYPE_F16 && (src0->ne[0]
+    % ctx->webgpu_global_ctx->capabilities.sg_mat_k) == 0 && (src1->ne[1] % GGML_WEBGPU_KV_SEQ_PAD)
+    == 0;'
+  - '                const size_t min_bytes = ggml_webgpu_flash_attn_wg_mem_bytes(ctx->webgpu_global_ctx->capabilities.sg_mat_m,
+    ctx->webgpu_global_ctx->capabilities.sg_mat_n, (uint32_t) src0->ne[0], (uint32_t)
+    src2->ne[0], has_mask, kv_direct);'
+  - '                if (min_bytes > limit_bytes) {'
+  - '                    break;'
+  - '                }'
+  - '                supports_op = src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_F32
+    || src1->type == GGML_TYPE_F16 || src1->type == GGML_TYPE_Q4_0 || src1->type ==
+    GGML_TYPE_Q8_0) && src2->type == src1->type && op->type == GGML_TYPE_F32;'
+  - '#endif'
+  - '                break;'
+  - '            }'
+  - '        case GGML_OP_RMS_NORM:'
+  - '        case GGML_OP_L2_NORM:'
+  - '            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_ROPE:'
+  - '            supports_op = op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16;'
+  - '            break;'
+  - '        case GGML_OP_GLU:'
+  - '            switch (ggml_get_glu_op(op)) {'
+  - '                case GGML_GLU_OP_REGLU:'
+  - '                case GGML_GLU_OP_GEGLU:'
+  - '                case GGML_GLU_OP_SWIGLU:'
+  - '                case GGML_GLU_OP_GEGLU_ERF:'
+  - '                case GGML_GLU_OP_GEGLU_QUICK:'
+  - '                    supports_op = op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16;'
+  - '                    break;'
+  - '                case GGML_GLU_OP_SWIGLU_OAI:'
+  - '                    supports_op = op->type == GGML_TYPE_F32;'
+  - '                    break;'
+  - '                default:'
+  - '                    break;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_SCALE:'
+  - '            supports_op = op->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_SOFT_MAX:'
+  - '            supports_op = op->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_UNARY:'
+  - '            {'
+  - '                const ggml_unary_op UNARY_OP = ggml_get_unary_op(op);'
+  - '                switch (UNARY_OP) {'
+  - '                    case GGML_UNARY_OP_ABS:'
+  - '                    case GGML_UNARY_OP_SGN:'
+  - '                    case GGML_UNARY_OP_NEG:'
+  - '                    case GGML_UNARY_OP_STEP:'
+  - '                    case GGML_UNARY_OP_TANH:'
+  - '                    case GGML_UNARY_OP_ELU:'
+  - '                    case GGML_UNARY_OP_RELU:'
+  - '                    case GGML_UNARY_OP_SIGMOID:'
+  - '                    case GGML_UNARY_OP_GELU:'
+  - '                    case GGML_UNARY_OP_GELU_QUICK:'
+  - '                    case GGML_UNARY_OP_SILU:'
+  - '                    case GGML_UNARY_OP_HARDSWISH:'
+  - '                    case GGML_UNARY_OP_HARDSIGMOID:'
+  - '                    case GGML_UNARY_OP_EXP:'
+  - '                    case GGML_UNARY_OP_GELU_ERF:'
+  - '                    case GGML_UNARY_OP_SOFTPLUS:'
+  - '                    case GGML_UNARY_OP_EXPM1:'
+  - '                    case GGML_UNARY_OP_FLOOR:'
+  - '                    case GGML_UNARY_OP_CEIL:'
+  - '                    case GGML_UNARY_OP_ROUND:'
+  - '                    case GGML_UNARY_OP_TRUNC:'
+  - '                    case GGML_UNARY_OP_XIELU:'
+  - '                        supports_op = (op->type == GGML_TYPE_F32 || op->type
+    == GGML_TYPE_F16) && (src0->type == op->type);'
+  - '                        break;'
+  - '                    default:'
+  - '                        break;'
+  - '                }'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_TRI:'
+  - '        case GGML_OP_DIAG:'
+  - '            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_SOLVE_TRI:'
+  - '            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32
+    && src1->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_SSM_CONV:'
+  - '            supports_op = op->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_GATED_DELTA_NET:'
+  - '            {'
+  - '                const uint32_t s_v = (uint32_t) src2->ne[0];'
+  - '                supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32
+    && src1->type == GGML_TYPE_F32 && src2->type == GGML_TYPE_F32 && op->src[3]->type
+    == GGML_TYPE_F32 && op->src[4]->type == GGML_TYPE_F32 && op->src[5]->type == GGML_TYPE_F32
+    && s_v <= ctx->webgpu_global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup;'
+  - '            }'
+  - '            break;'
+  - '        case GGML_OP_CLAMP:'
+  - '        case GGML_OP_LOG:'
+  - '        case GGML_OP_SQR:'
+  - '        case GGML_OP_SQRT:'
+  - '        case GGML_OP_SIN:'
+  - '        case GGML_OP_COS:'
+  - '            supports_op = (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16)
+    && (src0->type == op->type);'
+  - '            break;'
+  - '        case GGML_OP_FILL:'
+  - '        case GGML_OP_PAD:'
+  - '        case GGML_OP_CUMSUM:'
+  - '            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_ARGMAX:'
+  - '            supports_op = op->type == GGML_TYPE_I32 && src0->type == GGML_TYPE_F32;'
+  - '            break;'
+  - '        case GGML_OP_ARGSORT:'
+  - '        case GGML_OP_TOP_K:'
+  - '        case GGML_OP_SUM:'
+  - '        case GGML_OP_SUM_ROWS:'
+  - '            supports_op = op->type == GGML_TYPE_I32 && src0->type == GGML_TYPE_F32
+    && ggml_is_contiguous_rows(src0);'
+  - '            break;'
+  - '        default:'
+  - '            break;'
+  - '    }'
+  - '    if (ggml_nbytes(op) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize
+    ||'
+  - '        (src0 != nullptr && ggml_nbytes(src0) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize)
+    ||'
+  - '        (src1 != nullptr && ggml_nbytes(src1) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize)
+    ||'
+  - '        (src2 != nullptr && ggml_nbytes(src2) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize))
+    {'
+  - '        supports_op = false;'
+  - '        WEBGPU_LOG_DEBUG("ggml_webgpu op not supported due to size: ");'
+  - '    }'
+  - '    if (!supports_op) {'
+  - '        WEBGPU_LOG_DEBUG("ggml_webgpu op not supported: " << ggml_op_name(op->op)
+    << " with types dst: " << ggml_type_name(op->type) << ", src0: " << (op->src[0]
+    ? ggml_type_name(op->src[0]->type) : "null") << ", src1: " << (op->src[1] ? ggml_type_name(op->src[1]->type)
+    : "null"));'
+  - '    } else {'
+  - '        WEBGPU_LOG_DEBUG("ggml_webgpu op supported: " << ggml_op_name(op->op)
+    << " with types dst: " << ggml_type_name(op->type) << ", src0: " << (op->src[0]
+    ? ggml_type_name(op->src[0]->type) : "null") << ", src1: " << (op->src[1] ? ggml_type_name(op->src[1]->type)
+    : "null"));'
+  - '    }'
+  - '    return supports_op;'
+  - '}'
+  desc: Check设备支持操作，根据张量的类型、大小和操作类型来决定该操作是否能在 WebGPU 设备上执行。这是后端的核心调度逻辑，涉及众多张量操作的类型兼容性和缓冲区大小限制检查。
+  line: 3633-3783
+  name: ggml_backend_webgpu_device_supports_op
+- code:
+  - static const char * ggml_backend_webgpu_reg_get_name(ggml_backend_reg_t reg) {
+  - '    ggml_backend_webgpu_reg_context * ctx = static_cast<ggml_backend_webgpu_reg_context
+    *>(reg->context);'
+  - '    return ctx->name;'
+  - '}'
+  desc: 返回 WebGPU 后端注册上下文中的后端名称字符串。
+  line: 3798-3801
+  name: ggml_backend_webgpu_reg_get_name
+- code:
+  - static size_t ggml_backend_webgpu_reg_get_device_count(ggml_backend_reg_t reg)
+    {
+  - '    ggml_backend_webgpu_reg_context * ctx = static_cast<ggml_backend_webgpu_reg_context
+    *>(reg->context);'
+  - '    return ctx->device_count;'
+  - '}'
+  desc: 返回 WebGPU 后端注册上下文中的设备数量（当前固定为 1）。
+  line: 3803-3806
+  name: ggml_backend_webgpu_reg_get_device_count
+- code:
+  - static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t
+    reg, size_t index) {
+  - '    GGML_ASSERT(index == 0);'
+  - '    WEBGPU_LOG_DEBUG("ggml_backend_reg_get_device()");'
+  - '    WEBGPU_CPU_PROFILE_TOTAL_START(reg_get_device);'
+  - '    ggml_backend_webgpu_reg_context * reg_ctx = static_cast<ggml_backend_webgpu_reg_context
+    *>(reg->context);'
+  - '    create_webgpu_device(reg_ctx);'
+  - '    static ggml_backend_webgpu_device_context device_ctx;'
+  - '    device_ctx.device_name            = GGML_WEBGPU_NAME;'
+  - '    device_ctx.device_desc            = GGML_WEBGPU_NAME;'
+  - '    device_ctx.webgpu_global_ctx      = reg_ctx->webgpu_global_ctx;'
+  - '    static ggml_backend_device device = {'
+  - '        /* .iface   = */ ggml_backend_webgpu_device_i,'
+  - '        /* .reg     = */ reg,'
+  - '        /* .context = */ &device_ctx,'
+  - '    };'
+  - '    WEBGPU_CPU_PROFILE_TOTAL_END(reg_get_device, reg_ctx->webgpu_global_ctx);'
+  - '    return &device;'
+  - '}'
+  desc: 获取指定索引的 WebGPU 后端设备，创建并返回一个静态的 ggml_backend_device 实例。
+  line: 3809-3826
+  name: ggml_backend_webgpu_reg_get_device
+- code:
+  - ggml_backend_reg_t ggml_backend_webgpu_reg() {
+  - '    WEBGPU_LOG_DEBUG("ggml_backend_webgpu_reg()");'
+  - '    static ggml_backend_webgpu_reg_context ctx;'
+  - '    ctx.name         = GGML_WEBGPU_NAME;'
+  - '    ctx.device_count = 1;'
+  - '    wgpu::InstanceDescriptor               instance_descriptor{};'
+  - '    std::vector<wgpu::InstanceFeatureName> instance_features = { wgpu::InstanceFeatureName::TimedWaitAny
+    };'
+  - '    instance_descriptor.requiredFeatures                     = instance_features.data();'
+  - '    instance_descriptor.requiredFeatureCount                 = instance_features.size();'
+  - '#ifndef __EMSCRIPTEN__'
+  - '    const char * const          instanceEnabledToggles[] = { "allow_unsafe_apis"
+    };'
+  - '    wgpu::DawnTogglesDescriptor instanceTogglesDesc;'
+  - '    instanceTogglesDesc.enabledToggles     = instanceEnabledToggles;'
+  - '    instanceTogglesDesc.enabledToggleCount = 1;'
+  - '    instance_descriptor.nextInChain        = &instanceTogglesDesc;'
+  - '#endif'
+  - '    wgpu::Instance inst             = wgpu::CreateInstance(&instance_descriptor);'
+  - '    ctx.webgpu_global_ctx           = webgpu_global_context(new webgpu_global_context_struct());'
+  - '    ctx.webgpu_global_ctx->instance = std::move(inst);'
+  - '#ifdef __EMSCRIPTEN__'
+  - '    if (ctx.webgpu_global_ctx->instance == nullptr) {'
+  - '        GGML_LOG_ERROR("ggml_webgpu: Failed to create WebGPU instance. Make sure
+    either -sASYNCIFY or -sJSPI is set\n");'
+  - '        return nullptr;'
+  - '    }'
+  - '#endif'
+  - '    GGML_ASSERT(ctx.webgpu_global_ctx->instance != nullptr);'
+  - '    static ggml_backend_reg reg = {'
+  - '        /* .api_version = */ GGML_BACKEND_API_VERSION,'
+  - '        /* .iface       = */ ggml_backend_webgpu_reg_i,'
+  - '        /* .context     = */ &ctx,'
+  - '    };'
+  - '    return &reg;'
+  - '}'
+  desc: 注册 WebGPU 后端，创建 WebGPU 实例和全局上下文，并返回一个静态的后端注册结构。
+  line: 3839-3870
+  name: ggml_backend_webgpu_reg
+- code:
+  - ggml_backend_t ggml_backend_webgpu_init(void) {
+  - '    ggml_backend_dev_t dev = ggml_backend_reg_dev_get(ggml_backend_webgpu_reg(),
+    0);'
+  - '    return ggml_backend_webgpu_backend_init(dev, nullptr);'
+  - '}'
+  desc: 初始化 WebGPU 后端，获取第一个设备并调用对应的后端初始化函数返回后端实例。
+  line: 3873-3876
+  name: ggml_backend_webgpu_init
+- code:
+  - GGML_BACKEND_DL_IMPL(ggml_backend_webgpu_reg)
+  desc: 文件末尾通过宏 GGML_BACKEND_DL_IMPL 将后端注册函数导出为动态链接库的入口，使得外部代码可以通过该函数获取 WebGPU 后端注册实例。
+  line: 3878-3878
+  name: __main__

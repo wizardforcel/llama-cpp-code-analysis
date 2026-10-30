@@ -1,0 +1,935 @@
+code_map:
+- tools/mtmd/clip.cpp
+- ├── clip_ctx 运行时上下文 (120-169行)
+- '│   ├── clip_ctx()              # 构造函数：初始化后端、调度器与缓冲区'
+- '│   ├── ~clip_ctx()             # 析构函数：释放GGML后端资源'
+- '│   └── proj_type()             # 获取投影器类型'
+- ├── clip_model_loader 模型加载器 (854-2470行)
+- '│   ├── clip_model_loader()     # 构造函数：GGUF元数据解析与模型信息打印'
+- '│   ├── load_hparams()          # 加载超参数：30+键值解析与模态路由 (930-946, 2145-2210)'
+- '│   ├── get_bool()              # 布尔值类型安全读取 (2210-2220)'
+- '│   ├── get_i32()               # 32位整数读取 (2220-2230)'
+- '│   ├── get_u32()               # 无符号32位整数读取 (2230-2240)'
+- '│   ├── get_f32()               # 浮点数读取 (2240-2250)'
+- '│   ├── get_string()            # 字符串读取 (2250-2260)'
+- '│   ├── get_arr_int()           # 整数数组读取 (2260-2275)'
+- '│   ├── set_llava_uhd_res_candidates()   # LLaVA-UHD分辨率候选生成 (2275-2290)'
+- '│   ├── set_internvl_dhr_res_candidates() # InternVL-DHR分辨率候选 (2290-2310)'
+- '│   ├── load_tensors()          # 张量权重加载：按层匹配与FFN交换检测 (2310-2450)'
+- '│   └── warmup()                # 预热机制：虚拟输入驱动计算图内存分配 (2450-2470)'
+- ├── clip_graph 计算图构建器 (216-809行)
+- '│   ├── clip_graph()            # 构造函数：初始化GGML上下文与图结构'
+- '│   ├── build()                 # 纯虚函数：子类必须实现的构图入口'
+- '│   ├── build_mm()              # 矩阵乘法包装器，支持扩展处理'
+- '│   ├── cb()                    # 张量命名回调，生成调试友好的节点标签 (251-257)'
+- '│   ├── resize_position_embeddings() # 位置嵌入插值：支持任意分辨率输入 (262-281)'
+- '│   ├── build_vit()             # ViT主干构建流水线 (285-464)'
+- '│   ├── build_inp()             # 输入补丁构建：卷积补丁化 (470-480)'
+- '│   ├── build_inp_raw()         # 原始输入张量构建 (483-489)'
+- '│   ├── build_norm()            # 归一化层构建：LayerNorm/RMSNorm统一接口 (498-519)'
+- '│   ├── build_ffn()             # FFN构建器：SiLU/GeLU门控与上下投影 (523-617)'
+- '│   ├── build_attn()            # 注意力机制：Flash Attention与标准实现切换 (628-702)'
+- '│   ├── build_rope_2d()         # 2D旋转位置编码：分半频率处理与视图复用 (709-747)'
+- '│   ├── build_stack()           # 音频帧堆叠函数 (762-781)'
+- '│   └── build_patch_merge_permute()  # 像素重排：动态分辨率Patch Merging (788-809)'
+- ├── 全局编码与工具函数
+- '│   ├── clip_init()                 # 全局初始化：视觉/音频双模态上下文创建 (2310-2350)'
+- '│   ├── clip_image_build_graph()    # 图路由器：20+种架构的构建器分发 (824-852)'
+- '│   ├── clip_image_encode()         # 单图像编码入口 (2650-2660)'
+- '│   ├── clip_image_batch_encode()   # 批量编码核心：输入装配与图执行控制 (2660-2800)'
+- '│   ├── __main__                    # 全局图像编码逻辑：位置嵌入与结果提取 (2977-3150)'
+- '│   ├── clip_n_mmproj_embd()        # 获取投影器输出维度 (3151-3190)'
+- '│   ├── clip_is_minicpmv()          # MiniCPM-V版本检测 (3191-3197)'
+- '│   ├── clip_is_glm()               # GLM模型检测 (3198-3202)'
+- '│   ├── clip_is_llava()             # LLaVA模型检测 (3203-3205)'
+- '│   ├── clip_has_vision_encoder()   # 视觉编码器检测 (3206-3208)'
+- '│   ├── clip_has_audio_encoder()    # 音频编码器检测 (3209-3211)'
+- '│   ├── clip_has_whisper_encoder()  # Whisper编码器检测 (3212-3222)'
+- '│   ├── clip_encode_float_image()   # 浮点图像编码入口 (3223-3235)'
+- '│   ├── clip_get_projector_type()   # 获取投影器类型枚举 (3236-3238)'
+- '│   ├── clip_image_f32_batch_add_mel() # 添加梅尔频谱到批次 (3239-3248)'
+- '│   ├── clip_get_hparams()          # 获取超参数指针 (3249-3251)'
+- '│   ├── clip_set_debug_output_embeddings() # 设置调试输出开关 (3252-3255)'
+- '│   ├── clip_get_hidden_size()      # 获取隐藏层维度 (2459-2463)'
+- '│   ├── clip_get_image_size()       # 获取图像尺寸 (2451-2455)'
+- '│   ├── clip_get_patch_size()       # 获取Patch尺寸 (2455-2459)'
+- '│   ├── clip_patch_merge_type()     # 获取Patch合并类型字符串 (2463-2467)'
+- '│   ├── clip_n_output_tokens()      # 计算输出Token总数 (2500-2650)'
+- '│   ├── clip_n_output_tokens_x()    # 计算X方向Token数 (2467-2485)'
+- '│   ├── clip_n_output_tokens_y()    # 计算Y方向Token数 (2485-2500)'
+- '│   ├── clip_embd_nbytes()          # 计算嵌入字节数 (2436-2444)'
+- '│   ├── clip_embd_nbytes_by_img()   # 按图像尺寸计算嵌入字节数 (2444-2451)'
+- '│   ├── clip_get_newline_tensor()   # 获取换行符张量 (2425-2429)'
+- '│   ├── clip_free()                 # 释放CLIP上下文 (2429-2436)'
+- '│   ├── clip_build_img_from_pixels() # 从像素构建图像 (2418-2425)'
+- '│   ├── clip_image_size_init()      # 初始化图像尺寸结构 (2350-2357)'
+- '│   ├── clip_image_size_free()      # 释放图像尺寸结构 (2373-2380)'
+- '│   ├── clip_image_u8_init()        # 初始化8位图像 (2357-2360)'
+- '│   ├── clip_image_u8_free()        # 释放8位图像 (2380-2381)'
+- '│   ├── clip_image_u8_get_data()    # 获取8位图像数据 (2366-2373)'
+- '│   ├── clip_image_u8_batch_free()  # 释放8位图像批次 (2382-2383)'
+- '│   ├── clip_image_f32_init()       # 初始化浮点图像 (2360-2363)'
+- '│   ├── clip_image_f32_free()       # 释放浮点图像 (2381-2382)'
+- '│   ├── clip_image_f32_batch_init() # 初始化浮点图像批次 (2363-2366)'
+- '│   ├── clip_image_f32_batch_free() # 释放浮点图像批次 (2383-2384)'
+- '│   ├── clip_image_f32_batch_n_images() # 获取批次图像数量 (2384-2388)'
+- '│   ├── clip_image_f32_batch_nx()   # 获取批次中图像宽度 (2388-2398)'
+- '│   ├── clip_image_f32_batch_ny()   # 获取批次中图像高度 (2398-2408)'
+- '│   └── clip_image_f32_get_img()    # 获取批次中图像指针 (2408-2418)'
+- tools/mtmd/clip.h
+- '├── clip_init()                 # 初始化CLIP上下文'
+- '├── clip_free()                 # 释放资源'
+- '├── clip_embd_nbytes()          # 嵌入字节数计算'
+- '├── clip_embd_nbytes_by_img()   # 按图像尺寸计算'
+- '├── clip_get_image_size()       # 获取图像尺寸'
+- '├── clip_get_patch_size()       # 获取Patch尺寸'
+- '├── clip_get_hidden_size()      # 获取隐藏层维度'
+- '├── clip_patch_merge_type()     # 获取合并类型'
+- '├── clip_n_output_tokens()      # 计算输出Token数'
+- '├── clip_n_output_tokens_x()    # X方向Token数'
+- '├── clip_n_output_tokens_y()    # Y方向Token数'
+- '├── clip_n_mmproj_embd()        # 投影器维度'
+- '├── clip_image_size_init()      # 图像尺寸初始化'
+- '├── clip_image_u8_init()        # 8位图像初始化'
+- '├── clip_image_f32_init()       # 浮点图像初始化'
+- '├── clip_image_f32_batch_init() # 批次初始化'
+- '├── clip_image_u8_get_data()    # 获取图像数据'
+- '├── clip_image_size_free()      # 释放尺寸结构'
+- '├── clip_image_u8_free()        # 释放8位图像'
+- '├── clip_image_f32_free()       # 释放浮点图像'
+- '├── clip_image_u8_batch_free()  # 释放8位批次'
+- '├── clip_image_f32_batch_free() # 释放浮点批次'
+- '├── clip_image_f32_batch_n_images() # 批次图像数量'
+- '├── clip_image_f32_batch_nx()   # 批次图像宽度'
+- '├── clip_image_f32_batch_ny()   # 批次图像高度'
+- '├── clip_image_f32_get_img()    # 获取批次图像'
+- '├── clip_build_img_from_pixels() # 从像素构建图像'
+- '├── clip_get_newline_tensor()   # 获取换行张量'
+- '├── clip_image_encode()         # 单图像编码'
+- '├── clip_image_batch_encode()   # 批量图像编码'
+- '├── clip_is_minicpmv()          # MiniCPM-V检测'
+- '├── clip_is_glm()               # GLM检测'
+- '├── clip_is_llava()             # LLaVA检测'
+- '├── clip_encode_float_image()   # 浮点图像编码'
+- '├── clip_image_f32_batch_add_mel() # 添加梅尔频谱'
+- '├── clip_has_vision_encoder()   # 视觉编码器检测'
+- '├── clip_has_audio_encoder()    # 音频编码器检测'
+- '└── clip_has_whisper_encoder()  # Whisper检测'
+- tools/mtmd/clip-model.h
+- ├── clip_hparams 超参数结构体 (118-153行)
+- '│   ├── set_limit_image_tokens()    # token数转像素约束计算'
+- '│   ├── set_warmup_n_tokens()       # 预热尺寸推算'
+- '│   ├── global_attn_indices()       # SAM全局注意力层索引'
+- '│   └── is_global_attn()            # 检查是否为全局注意力层'
+- ├── clip_layer 单层结构 (180-267行)
+- '│   ├── QKV/O权重指针            # 注意力矩阵存储'
+- '│   ├── ln_1/ln_2                # 前后归一化层'
+- '│   ├── deepstack_*              # DeepStack扩展槽（Qwen3VL）'
+- '│   └── has_deepstack()          # 检测是否包含DeepStack权重'
+- ├── clip_model 模型容器 (300-770行)
+- '│   ├── patch_embeddings         # 卷积补丁嵌入权重'
+- '│   ├── layers                   # Transformer层数组'
+- '│   ├── mm_projector/resampler   # 多模态投影器与重采样器'
+- '│   ├── audio_has_avgpool()      # 音频平均池化检测 (757-761)'
+- '│   └── audio_has_stack_frames() # 音频帧堆叠检测 (764-768)'
+- '└── clip_get_hparams()           # 全局获取超参数函数声明 (772)'
+- tools/mtmd/clip-graph.h
+- ├── clip_graph 基类完整定义 (20-130行)
+- '│   ├── clip_graph()             # 构造函数'
+- '│   ├── build()                  # 纯虚构图函数'
+- '│   ├── build_mm()               # 矩阵乘法包装'
+- '│   ├── cb()                     # 调试回调'
+- '│   ├── resize_position_embeddings() # 位置嵌入插值'
+- '│   ├── build_vit()              # ViT主干构建'
+- '│   ├── build_inp()              # 输入补丁构建'
+- '│   ├── build_inp_raw()          # 原始输入构建'
+- '│   ├── build_norm()             # 归一化构建'
+- '│   ├── build_ffn()              # FFN构建'
+- '│   ├── build_attn()             # 注意力构建'
+- '│   ├── build_rope_2d()          # 2D RoPE构建'
+- '│   ├── build_patch_merge_permute() # 补丁合并重排'
+- '│   └── build_stack()            # 音频堆叠构建'
+- tools/mtmd/clip-impl.h
+- ├── 图像数据结构 (210-320行)
+- '│   ├── clip_image_u8           # 8位RGB图像 (含构造函数)'
+- '│   ├── clip_image_f32          # 浮点图像/频谱 (含构造函数)'
+- '│   ├── clip_image_u8_batch     # 8位批次 (含构造函数)'
+- '│   └── clip_image_f32_batch    # 浮点批次（支持clone）'
+- ├── 智能指针删除器 (282-297行)
+- │   ├── clip_image_size_deleter
+- │   ├── clip_image_u8_deleter
+- │   └── clip_image_f32_deleter
+- ├── 日志系统 (236-276行)
+- '│   ├── clip_logger_state       # 日志状态 (含构造函数)'
+- '│   ├── clip_log_callback_default() # 默认日志回调'
+- '│   ├── clip_log_internal_v()   # 可变参数日志内部实现'
+- '│   └── clip_log_internal()     # 日志内部入口'
+- ├── 字符串工具 (326-375行)
+- '│   ├── string_format()         # 格式化字符串'
+- '│   ├── string_replace_all()    # 全量替换'
+- '│   ├── string_split_str()      # 字符串分割'
+- '│   ├── string_starts_with()    # 前缀检查'
+- '│   └── string_ends_with()      # 后缀检查'
+- ├── GGUF辅助 (378-424行)
+- '│   ├── gguf_data_to_str()      # GGUF数据转字符串'
+- '│   └── gguf_kv_to_str()        # GGUF键值转字符串'
+- └── 张量调试 (428-472行)
+- '    ├── print_tensor_shape()    # 打印张量形状'
+- '    └── print_tensor_data()     # 打印张量数据'
+- tools/mtmd/clip-impl.h
+- '└── clip_projector_type_from_string() # 投影器类型字符串转换 (171-177)'
+exercises:
+- contents:
+  - 阅读 `tools/mtmd/clip.cpp` 第120-169行的 `clip_ctx` 构造函数：
+  - 1. 后端选择的「三级火箭」策略具体指哪三级？各自的条件是什么？
+  - 2. `MTMD_BACKEND_DEVICE` 环境变量如何影响后端初始化？如果初始化失败会发生什么？
+  - 3. `buf_compute_meta` 在 `clip_graph` 构造时的作用是什么？为什么要传入 `ggml_init_params`？
+  'no': 1
+  title: CLIP上下文初始化与后端选择
+- contents:
+  - 阅读 `tools/mtmd/clip.cpp` 第262-281行的 `resize_position_embeddings` 函数与第788-809行的
+    `build_patch_merge_permute` 函数：
+  - 1. 当输入图像尺寸与预训练位置嵌入不匹配时，系统采用什么插值算法调整位置嵌入？支持哪些插值模式？
+  - 2. `build_patch_merge_permute` 中的三次 `permute` 和 `reshape` 操作分别实现了什么张量维度变换？最终输出的形状如何计算？
+  - 3. 结合 `clip_hparams::set_limit_image_tokens`（clip-model.h:118-126），说明系统如何根据token数量约束反推允许的最大像素数？
+  'no': 2
+  title: 动态分辨率支持机制分析
+- contents:
+  - 阅读 `tools/mtmd/clip.cpp` 第628-702行的 `build_attn` 函数和第709-747行的 `build_rope_2d`
+    函数：
+  - 1. 描述Flash Attention启用时的张量布局变化（permute → cast → reshape）以及为何强制使用FP32精度？
+  - 2. `build_rope_2d` 如何通过 `ggml_view_3d` 实现零拷贝的频率分半处理？`interleave_freq` 参数控制什么？
+  - 3. 标准注意力实现中，`kq_scale` 参数的作用是什么？它通常如何根据模型维度计算得出？
+  'no': 3
+  title: 注意力机制与2D RoPE实现
+- contents:
+  - 阅读 `tools/mtmd/clip.cpp` 第2310-2450行的 `load_tensors` 函数：
+  - 1. 张量命名模板系统如何工作？以 `TN_ATTN_QKV` 和 `TN_FFN_UP` 为例说明如何生成具体张量名称？
+  - 2. 什么是「FFN权重交换检测」？为什么需要对LLaVA、Qwen2VL等模型进行特殊处理？
+  - 3. `required=false` 参数在 `get_tensor` lambda中的作用是什么？它如何帮助处理可选权重（如`qkv_b`、`ls_1_w`）？
+  'no': 4
+  title: 模型加载与权重兼容性处理
+- contents:
+  - 阅读 `tools/mtmd/clip.h` 和 `tools/mtmd/clip.cpp` 中的公共接口函数：
+  - 1. `clip_n_output_tokens` 函数如何根据投影器类型（如Qwen2-VL、Pixtral）差异化计算输出Token数量？
+  - 2. `clip_image_f32_batch` 的 `clone()` 方法（clip-impl.h:306-319）如何实现深拷贝？为什么需要显式克隆而非默认拷贝构造？
+  - 3. `clip_get_n_mmproj_embd` 函数（clip.cpp:3151-3190）如何根据不同投影器类型返回正确的嵌入维度？
+  'no': 5
+  title: 公共API与工具函数分析
+- contents:
+  - 阅读 `tools/mtmd/clip.cpp` 第762-781行的 `build_stack` 函数：
+  - 1. 当 `stack_factor <= 1` 时函数直接返回，这背后是什么设计考量？
+  - 2. 解释 `GGML_PAD` 宏的作用，以及为什么需要对 `total_elements` 进行填充对齐？
+  - 3. `ggml_view_2d` 将一维音频特征重塑为二维张量时，维度是如何根据 `stride` 和 `padded_len` 计算的？
+  'no': 6
+  title: 音频帧堆叠与特征重塑
+learning_targets:
+- 掌握CLIP视觉编码器的运行时上下文初始化机制，理解三级后端选择策略与预热机制
+- 深入理解CLIP超参数体系与模型结构定义，掌握动态分辨率支持的核心算法
+- 精通clip_graph计算图构建基类，掌握ViT主干、注意力机制、2D RoPE与Patch Merging的实现原理
+- 熟悉GGUF模型加载流程与张量命名规范，理解FFN权重交换等兼容性处理机制
+- 掌握CLIP公共C API的设计模式，包括图像数据结构、批次管理与模态检测接口
+life_analogy:
+- CLIP视觉编码器就像一家**现代化的照片冲印工厂**：
+- '- **clip_ctx** = 工厂的中控室（管理GPU/CPU设备、内存池与生产调度）'
+- '- **clip_hparams** = 工厂的生产规格书（贴片尺寸、层数、分辨率限制等工艺参数）'
+- '- **clip_layer** = 标准化生产车间（每个车间包含QKV加工机、FFN流水线、归一化质检站）'
+- '- **clip_graph** = 生产工艺图纸（定义从原材料到成品的完整加工流程）'
+- '- **build_inp/build_vit** = 具体的贴片切割与组装流水线（将像素转换为Embedding）'
+- '- **warmup机制** = 开机预热（先试跑空转确保设备就绪，避免正式生产时卡顿）'
+- '- **clip_image_f32_batch** = 标准化物料箱（统一规格的图像容器，支持快速克隆）'
+- '- **clip_get_*工具函数** = 质检仪表（随时读取尺寸、维度等关键参数）'
+- 就像工厂需要根据不同订单（LLaVA/Qwen-VL）调整流水线配置，CLIP通过多态构建器支持20+种视觉架构的动态组装。
+'no': 75
+summary:
+- concept: clip_ctx
+  desc: CLIP运行时上下文，封装后端设备、内存调度与模型权重，支持GPU/CPU自动选择
+- concept: clip_model_loader
+  desc: GGUF模型加载器，负责元数据解析、张量权重流式读取与预热图分配
+- concept: clip_hparams
+  desc: 超参数容器，定义ViT维度、Patch尺寸、动态分辨率约束与模态类型
+- concept: clip_layer
+  desc: 单层Transformer结构，包含QKV投影、FFN、归一化及DeepStack扩展槽位
+- concept: clip_graph
+  desc: 计算图构建基类，采用多态设计，提供ViT/Attention/FFN/2D-RoPE等标准积木
+- concept: build_vit
+  desc: ViT主干构建流水线，实现Patch Embedding→Attention→FFN→残差连接的完整循环
+- concept: build_attn
+  desc: 注意力机制构建器，智能切换Flash Attention与标准Softmax实现
+- concept: build_rope_2d
+  desc: 2D旋转位置编码，通过视图分割与分半频率处理实现空间位置感知
+- concept: build_patch_merge_permute
+  desc: 像素重排操作，实现空间合并下采样（Patch Merging）
+- concept: build_stack
+  desc: 音频帧堆叠函数，将音频特征重塑为更高维度格式
+- concept: warmup
+  desc: 预热机制，使用虚拟输入预分配计算图内存，避免运行时动态分配开销
+- concept: FFN交换检测
+  desc: 兼容性处理，自动检测并交换LLaVA等模型中转置的FFN权重矩阵
+- concept: clip_image_batch_encode
+  desc: 图像编码主入口，处理输入张量装配、计算图执行与Embedding提取
+- concept: clip_image_f32_batch
+  desc: 图像批次容器，支持深拷贝与网格尺寸记录，用于批量图像处理
+- concept: clip_n_output_tokens
+  desc: 输出Token计算器，根据投影器类型和输入尺寸动态计算序列长度
+- concept: clip_get_n_mmproj_embd
+  desc: 获取多模态投影器输出维度，确保与文本模型嵌入维度匹配
+units:
+- codes:
+  - file: tools/mtmd/clip.cpp
+    line: 120-163
+    method_or_func: clip_ctx.clip_ctx()
+  - file: tools/mtmd/clip.cpp
+    line: 165-169
+    method_or_func: clip_ctx.~clip_ctx()
+  - file: tools/mtmd/clip.cpp
+    line: 174-176
+    method_or_func: clip_ctx.proj_type()
+  - file: tools/mtmd/clip.cpp
+    line: 2450-2470
+    method_or_func: clip_model_loader.warmup()
+  name: CLIP 运行时上下文与后端初始化 —— 视觉引擎的「点火启动器」
+  'no': 1
+  points:
+  - '**为什么说 clip_ctx 是 CLIP 的「驾驶舱」？**'
+  - '- 封装后端设备引用（CPU/GPU）、内存上下文与调度器，集中管理推理所需的全部运行时资源'
+  - '- 通过后端列表与缓冲区类型配对，实现张量到硬件设备的自动映射与内存分配'
+  - '- 预设计算图元数据缓冲区（buf_compute_meta），支持快速重复构图而无需频繁分配内存'
+  - '- 通过 proj_type() 接口对外暴露模型投影器类型，作为模态路由的关键标识'
+  - '**后端选择的「三级火箭」策略**'
+  - '- 一级：通过环境变量 MTMD_BACKEND_DEVICE 指定专用后端，实现精准硬件控制'
+  - '- 二级：自动探测 GPU 后端类型，失败时优雅降级并输出警告日志'
+  - '- 三级：兜底启用 CPU 后端，确保任何环境下均可运行，并记录后端选择结果'
+  - '**预热机制：批量推理前的「预演彩排」**'
+  - '- 创建虚拟图像批次（448x448 或自定义 warmup 尺寸），驱动计算图完成一次完整前向传播'
+  - '- 通过 ggml_backend_sched_alloc_graph 锁定张量内存布局，避免运行时动态分配开销'
+  - '- 支持音频模式下的频谱图预热（nx=音频长度，ny=梅尔频带数），统一视觉与音频的初始化流程'
+- codes:
+  - file: tools/mtmd/clip-model.h
+    line: 118-126
+    method_or_func: clip_hparams.set_limit_image_tokens()
+  - file: tools/mtmd/clip-model.h
+    line: 128-135
+    method_or_func: clip_hparams.set_warmup_n_tokens()
+  - file: tools/mtmd/clip-model.h
+    line: 138-140
+    method_or_func: clip_hparams.global_attn_indices()
+  - file: tools/mtmd/clip-model.h
+    line: 142-153
+    method_or_func: clip_hparams.is_global_attn()
+  - file: tools/mtmd/clip-model.h
+    line: '772'
+    method_or_func: clip_get_hparams()
+  - file: tools/mtmd/clip.cpp
+    line: 930-946, 2145-2210
+    method_or_func: clip_model_loader.load_hparams()
+  name: 模型超参数体系 —— 视觉架构的「基因测序报告」
+  'no': 2
+  points:
+  - '**clip_hparams：从像素到向量的「翻译官」**'
+  - '- 定义 Vision Transformer 核心五元组（嵌入维度/层数/头数/FFN 维度/投影维度），描述模型的容量规模'
+  - '- 封装图像预处理参数（patch_size/image_size/归一化均值方差），决定输入数据的形状变换规则'
+  - '- 通过 n_merge 与 spatial_merge_size 支持空间合并策略，实现高分辨率图像的分块压缩'
+  - '**动态分辨率支持三剑客**'
+  - '- set_limit_image_tokens：将 token 数量约束转换为像素约束，确保输入图像在模型处理能力范围内'
+  - '- set_warmup_n_tokens：根据平方数反推预热图像边长，优化计算图内存预分配效率'
+  - '- global_attn_indices：标识 SAM 类模型中采用全局注意力的特殊层，指导稀疏注意力掩码构建'
+  - '**模态检测双通道**'
+  - '- 通过 has_vision/has_audio 标志位实现视觉与音频编码器的自动识别与路由'
+  - '- load_hparams 中通过 KEY_PROJ_TYPE 判断投影器类型，自动降级 QWEN25O 为 QWEN25VL/QWEN2A 以适配不同模态'
+  - '**全局访问接口**'
+  - '- clip_get_hparams 提供对超参数结构体的只读访问，实现跨模块的参数共享'
+- codes:
+  - file: tools/mtmd/clip-model.h
+    line: 180-265
+    method_or_func: clip_layer
+  - file: tools/mtmd/clip-model.h
+    line: 265-267
+    method_or_func: clip_layer.has_deepstack()
+  - file: tools/mtmd/clip-model.h
+    line: 300-770
+    method_or_func: clip_model
+  - file: tools/mtmd/clip-model.h
+    line: 757-761
+    method_or_func: clip_model.audio_has_avgpool()
+  - file: tools/mtmd/clip-model.h
+    line: 764-768
+    method_or_func: clip_model.audio_has_stack_frames()
+  name: 模型层结构与张量组织 —— 权重矩阵的「集装箱码头」
+  'no': 3
+  points:
+  - '**clip_layer：标准 Transformer 层的「俄罗斯套娃」**'
+  - '- 基础组件：QKV 投影矩阵（q_w/k_w/v_w）+ 输出投影（o_w），支持合并（qkv_w）与分离两种存储格式'
+  - '- 归一化双轨制：ln_1/ln_2（标准 LayerNorm）与 attn_post_norm/ffn_post_norm（后归一化变体）并存，适配不同模型架构'
+  - '- 条件权重设计：层缩放参数（ls_1_w/ls_2_w/ls_out_w）与 QK 归一化（q_norm/k_norm）按需加载，支持零开销的条件初始化'
+  - '- DeepStack 扩展槽：deepstack_fc1/fc2 权重为 Qwen3VL 等多层特征融合模型预留接口，实现跨层特征交互'
+  - '**clip_model：模型级张量的「中央仓库」**'
+  - '- 顶层输入嵌入三件套：patch_embeddings_0（卷积权重）+ position_embeddings（学习位置编码）+ class_embedding（分类
+    token）'
+  - '- 投影器权重矩阵：mm_projector（基础 MLP 投影）与 vision_resampler（重采样器）分离，支持 LLaVA、MiniCPM
+    等多种投影模式'
+  - '- 音频特性检测：audio_has_avgpool 与 audio_has_stack_frames 接口判断是否需要应用平均池化或帧堆叠预处理'
+- codes:
+  - file: tools/mtmd/clip-graph.h
+    line: 20-50
+    method_or_func: clip_graph
+  - file: tools/mtmd/clip-graph.h
+    line: 33-33
+    method_or_func: clip_graph.clip_graph()
+  - file: tools/mtmd/clip-graph.h
+    line: 37-37
+    method_or_func: clip_graph.build()
+  - file: tools/mtmd/clip-graph.h
+    line: 42-42
+    method_or_func: clip_graph.build_mm()
+  - file: tools/mtmd/clip-graph.h
+    line: 48-48
+    method_or_func: clip_graph.cb()
+  - file: tools/mtmd/clip-graph.h
+    line: 73-78
+    method_or_func: clip_graph.build_norm()
+  - file: tools/mtmd/clip-graph.h
+    line: 85-93
+    method_or_func: clip_graph.build_ffn()
+  - file: tools/mtmd/clip.cpp
+    line: 216-241
+    method_or_func: clip_graph.clip_graph()
+  - file: tools/mtmd/clip.cpp
+    line: 245-247
+    method_or_func: clip_graph.build_mm()
+  - file: tools/mtmd/clip.cpp
+    line: 251-257
+    method_or_func: clip_graph.cb()
+  - file: tools/mtmd/clip.cpp
+    line: 498-519
+    method_or_func: clip_graph.build_norm()
+  - file: tools/mtmd/clip.cpp
+    line: 523-617
+    method_or_func: clip_graph.build_ffn()
+  - file: tools/mtmd/clip-graph.h
+    line: 127-127
+    method_or_func: clip_graph.build_stack()
+  - file: tools/mtmd/clip.cpp
+    line: 762-781
+    method_or_func: clip_graph.build_stack()
+  name: 计算图构建基类 clip_graph —— 视觉推理的「图纸设计师」
+  'no': 4
+  points:
+  - '**多态构建器模式：一套接口，百种实现**'
+  - '- 纯虚函数 build() 强制子类实现特定架构的完整构图逻辑，保证接口统一性'
+  - '- 构造时自动注入模型指针、超参数、图像尺寸，并初始化独立的 GGML 上下文（ctx0）与计算图（gf），避免全局状态污染'
+  - '- 预计算派生参数：n_patches（补丁总数）、d_head（头维度）、kq_scale（注意力缩放因子），减少运行时重复计算'
+  - '**张量回调与调试支持**'
+  - '- cb() 方法自动为张量命名并附加层索引，生成可读性极强的计算图节点标签（如 "blk.0.attn_q"），便于调试与可视化分析'
+  - '**模块化构建工具箱**'
+  - '- build_norm：统一处理 LayerNorm/RMSNorm，支持可选的权重（w）与偏置（b），通过 il 参数标记所属层'
+  - '- build_ffn：灵活的 FFN 构建器，支持门控机制（SiLU/GeLU 变体）、条件上下投影（up/gate/down 权重可空）'
+  - '- build_attn：核心注意力封装，智能选择 Flash Attention 或标准数学实现，自动处理 QKV 维度重排与输出投影'
+  - '- build_stack：通用音频帧堆叠函数，通过堆叠因子重塑输入特征，支持 ultravox 等音频模型'
+  - '- build_mm：矩阵乘法包装器，默认调用 ggml_mul_mat，子类可覆盖以支持 LoRA 适配等扩展'
+- codes:
+  - file: tools/mtmd/clip-graph.h
+    line: 65-65
+    method_or_func: clip_graph.build_inp()
+  - file: tools/mtmd/clip-graph.h
+    line: 67-67
+    method_or_func: clip_graph.build_inp_raw()
+  - file: tools/mtmd/clip-graph.h
+    line: 51-51
+    method_or_func: clip_graph.resize_position_embeddings()
+  - file: tools/mtmd/clip-graph.h
+    line: 57-61
+    method_or_func: clip_graph.build_vit()
+  - file: tools/mtmd/clip.cpp
+    line: 483-489
+    method_or_func: clip_graph.build_inp_raw()
+  - file: tools/mtmd/clip.cpp
+    line: 470-480
+    method_or_func: clip_graph.build_inp()
+  - file: tools/mtmd/clip.cpp
+    line: 262-281
+    method_or_func: clip_graph.resize_position_embeddings()
+  - file: tools/mtmd/clip.cpp
+    line: 285-464
+    method_or_func: clip_graph.build_vit()
+  name: ViT 主干与补丁嵌入构建 —— 图像分块的「流水线工厂」
+  'no': 5
+  points:
+  - '**输入管道 build_inp：像素到嵌入的「变形记」**'
+  - '- 创建原始输入张量（inp_raw）：3D 张量（宽 x 高 x 通道数），标记为计算图输入节点（GGML_TENSOR_FLAG_INPUT）'
+  - '- 2D 卷积补丁化：使用 patch_size 步长将图像切成不重叠的补丁，输出展平为 (n_patches, n_embd) 的矩阵'
+  - '- 偏置注入：可选的 patch_bias 支持补丁嵌入后的仿射变换，增强位置感知能力'
+  - '**位置嵌入动态调整 resize_position_embeddings**'
+  - '- 尺寸匹配检测：当输入尺寸与预训练位置嵌入（通常为固定正方形）不匹配时自动触发插值'
+  - '- 双线性插值流程：reshape 为 2D 网格 → permute 调整维度 → interpolate 插值 → 恢复展平，支持任意分辨率输入'
+  - '- 反锯齿开关：interpolation_mode 参数支持双线性/双三次/区域等多种插值算法，平衡精度与速度'
+  - '**完整 ViT 构建 build_vit 的「装配流水线」**'
+  - '- 预归一化（pre_ln）选项：在补丁嵌入后立即应用 LayerNorm，稳定训练早期梯度'
+  - '- 逐层循环：每层依次执行 LayerNorm → Attention → 残差连接 → LayerNorm → FFN → 残差连接，形成标准的 Post-LN
+    架构'
+  - '- QKV 双投影模式：支持合并矩阵（qkv_w）一次性计算 QKV，或分别使用 q_w/k_w/v_w 独立计算，兼容不同模型权重格式'
+  - '- 位置添加策略：通过 add_pos lambda 灵活注入位置编码（支持 RoPE、Sine、Learned Absolute 等多种方案）'
+  - '- 音频特化处理 pool_1d：当模型为音频投影器时，在时间维度执行平均池化，压缩序列长度'
+- codes:
+  - file: tools/mtmd/clip-graph.h
+    line: 99-106
+    method_or_func: clip_graph.build_attn()
+  - file: tools/mtmd/clip-graph.h
+    line: 112-116
+    method_or_func: clip_graph.build_rope_2d()
+  - file: tools/mtmd/clip-graph.h
+    line: 124-124
+    method_or_func: clip_graph.build_patch_merge_permute()
+  - file: tools/mtmd/clip.cpp
+    line: 628-702
+    method_or_func: clip_graph.build_attn()
+  - file: tools/mtmd/clip.cpp
+    line: 709-747
+    method_or_func: clip_graph.build_rope_2d()
+  - file: tools/mtmd/clip.cpp
+    line: 788-809
+    method_or_func: clip_graph.build_patch_merge_permute()
+  name: 注意力机制与 2D RoPE —— 空间关系的「编织工」
+  'no': 6
+  points:
+  - '**Flash Attention 智能切换**'
+  - '- 条件启用：当后端支持且未禁用 flash_attn 时，调用 ggml_flash_attn_ext 进行快速注意力计算，显著降低内存占用并提升速度'
+  - '- 精度保护：设置 GGML_PREC_F32 强制 Softmax 计算在 FP32 精度下进行，避免半精度累积误差导致的数值溢出'
+  - '- 自动降级：不支持时回退到标准实现（permute → matmul → softmax → matmul），确保功能可用性'
+  - '**2D RoPE 的分两半处理策略**'
+  - '- 频率分解：将隐藏维度分为两半，前半部分使用基础频率（freq_base），后半部分使用频率缩放因子（freq_scale_odd）'
+  - '- 视图解构：利用 ggml_view_3d 创建张量切片视图，不复制数据直接对子区域应用旋转位置编码，节省内存带宽'
+  - '- 交错模式：interleave_freq 参数控制维度交错（维度 0 与 1 配对）或分块（前一半维度与后一半维度配对），适配不同模型的 RoPE 实现'
+  - '**像素重排 build_patch_merge_permute**'
+  - '- 动态分辨率支持：当输入尺寸不能被 scale_factor 整除时，自动进行边界填充（pad_width/pad_height）'
+  - '- 三次 reshape + permute 操作：将 (H, W, C) 张量重排为 (H/s, W/s, C*s^2)，实现空间合并（Patch Merging），下采样特征图同时增加通道数'
+- codes:
+  - file: tools/mtmd/clip.cpp
+    line: 854-912
+    method_or_func: clip_model_loader.clip_model_loader()
+  - file: tools/mtmd/clip.cpp
+    line: 2210-2220
+    method_or_func: clip_model_loader.get_bool()
+  - file: tools/mtmd/clip.cpp
+    line: 2220-2230
+    method_or_func: clip_model_loader.get_i32()
+  - file: tools/mtmd/clip.cpp
+    line: 2230-2240
+    method_or_func: clip_model_loader.get_u32()
+  - file: tools/mtmd/clip.cpp
+    line: 2240-2250
+    method_or_func: clip_model_loader.get_f32()
+  - file: tools/mtmd/clip.cpp
+    line: 2250-2260
+    method_or_func: clip_model_loader.get_string()
+  - file: tools/mtmd/clip.cpp
+    line: 2260-2275
+    method_or_func: clip_model_loader.get_arr_int()
+  - file: tools/mtmd/clip.cpp
+    line: 2275-2290
+    method_or_func: clip_model_loader.set_llava_uhd_res_candidates()
+  - file: tools/mtmd/clip.cpp
+    line: 2290-2310
+    method_or_func: clip_model_loader.set_internvl_dhr_res_candidates()
+  - file: tools/mtmd/clip.cpp
+    line: 2310-2450
+    method_or_func: clip_model_loader.load_tensors()
+  name: GGUF 模型加载器 —— 权重文件的「拆箱流水线」
+  'no': 7
+  points:
+  - '**clip_model_loader 的「三步拆箱法」**'
+  - '- 元数据预读：通过 gguf_init_from_file 以 no_alloc 模式快速读取键值对与张量元信息，构建元数据上下文（ctx_meta），不加载实际权重数据'
+  - '- 超参数加载 load_hparams：根据视觉/音频模态读取投影器类型、模型维度等 30+ 键值，自动处理 MiniCPM-V 版本差异（query_num
+    随版本变化）'
+  - '- 张量加载 load_tensors：创建数据上下文（ctx_data），按层号前缀（v./a.）匹配张量名称，使用 ifstream 从 GGUF 文件流式读取二进制权重到预分配内存'
+  - '**类型安全访问家族**'
+  - '- get_bool/get_i32/get_u32/get_f32/get_string：提供五种基础类型的键值读取，支持 required 标志控制强制检查'
+  - '- get_arr_int：专门读取整数数组（如 image_res_candidates、vision_feature_layer），自动处理类型转换与长度获取'
+  - '**动态分辨率候选生成**'
+  - '- set_llava_uhd_res_candidates：为 LLaVA-UHD 生成所有可能的宽高组合，跳过基础 1x1 分辨率，支持任意比例图像输入'
+  - '- set_internvl_dhr_res_candidates：为 InternVL 生成满足 min/max tiles 约束的候选分辨率，实现动态高分切片'
+  - '**张量名称模板系统**'
+  - '- 命名空间设计：使用 string_format 生成 "v.blk.%d.attn_q.weight" 等标准键名，实现跨架构的统一权重访问接口'
+  - '- 可选权重探测：通过 required=false 参数优雅处理缺失的可选权重（如 qkv_b、q_norm），自动检测模型能力边界'
+  - '**FFN 权重交换检测**'
+  - '- 兼容性补丁：检测特定模型（LLaVA、Qwen2VL 等）中 up/down 权重是否转置，若检测到维度不匹配（ff_down_w->ne[0] ==
+    n_embd），自动交换以适应期望布局'
+- codes:
+  - file: tools/mtmd/clip.cpp
+    line: 824-852
+    method_or_func: clip_image_build_graph()
+  - file: tools/mtmd/clip.cpp
+    line: 2650-2660
+    method_or_func: clip_image_encode()
+  - file: tools/mtmd/clip.cpp
+    line: 2660-2800
+    method_or_func: clip_image_batch_encode()
+  - file: tools/mtmd/clip.cpp
+    line: 2977-3150
+    method_or_func: __main__
+  - file: tools/mtmd/clip.cpp
+    line: 3223-3235
+    method_or_func: clip_encode_float_image()
+  name: 图像编码主循环 —— 从像素到向量的「翻译终端」
+  'no': 8
+  points:
+  - '**双模态编码入口设计**'
+  - '- clip_image_encode：单张图像便捷接口，内部自动包装为批次并调用批量接口，简化用户调用'
+  - '- clip_image_batch_encode：核心处理函数，支持批量但当前限制 batch_size=1，预留未来扩展能力'
+  - '- 动态图构建 clip_image_build_graph：通过投影器类型路由到 20+ 种具体构图器（SigLIP、Qwen-VL、LLaVA 等），实现「一个入口，多种架构」'
+  - '**输入张量智能装配**'
+  - '- 像素数据重排：将 RGB 像素数据从交错格式（RGBRGB）转换为平面格式（RRRGGGBBB），适配 Conv2D 输入要求'
+  - '- 位置索引生成：根据投影器类型生成特定位置张量（如 MiniCPM-V 的 bucket_coords 高频分桶坐标，或 Qwen2-VL 的二维网格坐标）'
+  - '- 音频模式分支：当 is_audio 为真时，直接传入梅尔频谱图而非原始波形，复用视觉编码流程处理音频特征'
+  - '**结果提取与校验**'
+  - '- 输出张量定位：通过 ggml_graph_node(gf, -1) 获取计算图最后一个节点（最终嵌入），确保提取正确的输出结果'
+  - '- 内存布局检查：验证张量维度与预期嵌入大小（projection_dim）匹配，防止架构不一致导致的静默错误'
+  - '- 全局辅助函数：clip_encode_float_image 提供直接编码浮点图像的便捷接口，自动处理内存布局转换'
+- codes:
+  - file: tools/mtmd/clip.h
+    line: '41'
+    method_or_func: clip_init()
+  - file: tools/mtmd/clip.h
+    line: '43'
+    method_or_func: clip_free()
+  - file: tools/mtmd/clip.h
+    line: '45'
+    method_or_func: clip_embd_nbytes()
+  - file: tools/mtmd/clip.h
+    line: '46'
+    method_or_func: clip_embd_nbytes_by_img()
+  - file: tools/mtmd/clip.h
+    line: '48'
+    method_or_func: clip_get_image_size()
+  - file: tools/mtmd/clip.h
+    line: '49'
+    method_or_func: clip_get_patch_size()
+  - file: tools/mtmd/clip.h
+    line: '50'
+    method_or_func: clip_get_hidden_size()
+  - file: tools/mtmd/clip.h
+    line: '54'
+    method_or_func: clip_patch_merge_type()
+  - file: tools/mtmd/clip.h
+    line: '56'
+    method_or_func: clip_n_output_tokens()
+  - file: tools/mtmd/clip.h
+    line: '60'
+    method_or_func: clip_n_output_tokens_x()
+  - file: tools/mtmd/clip.h
+    line: '61'
+    method_or_func: clip_n_output_tokens_y()
+  - file: tools/mtmd/clip.h
+    line: '64'
+    method_or_func: clip_n_mmproj_embd()
+  - file: tools/mtmd/clip.h
+    line: '66'
+    method_or_func: clip_image_size_init()
+  - file: tools/mtmd/clip.h
+    line: '67'
+    method_or_func: clip_image_u8_init()
+  - file: tools/mtmd/clip.h
+    line: '68'
+    method_or_func: clip_image_f32_init()
+  - file: tools/mtmd/clip.h
+    line: '69'
+    method_or_func: clip_image_f32_batch_init()
+  - file: tools/mtmd/clip.h
+    line: '72'
+    method_or_func: clip_image_u8_get_data()
+  - file: tools/mtmd/clip.h
+    line: '74'
+    method_or_func: clip_image_size_free()
+  - file: tools/mtmd/clip.h
+    line: '75'
+    method_or_func: clip_image_u8_free()
+  - file: tools/mtmd/clip.h
+    line: '76'
+    method_or_func: clip_image_f32_free()
+  - file: tools/mtmd/clip.h
+    line: '77'
+    method_or_func: clip_image_u8_batch_free()
+  - file: tools/mtmd/clip.h
+    line: '78'
+    method_or_func: clip_image_f32_batch_free()
+  - file: tools/mtmd/clip.h
+    line: '81'
+    method_or_func: clip_image_f32_batch_n_images()
+  - file: tools/mtmd/clip.h
+    line: '82'
+    method_or_func: clip_image_f32_batch_nx()
+  - file: tools/mtmd/clip.h
+    line: '83'
+    method_or_func: clip_image_f32_batch_ny()
+  - file: tools/mtmd/clip.h
+    line: '84'
+    method_or_func: clip_image_f32_get_img()
+  - file: tools/mtmd/clip.h
+    line: '90'
+    method_or_func: clip_build_img_from_pixels()
+  - file: tools/mtmd/clip.h
+    line: '92'
+    method_or_func: clip_get_newline_tensor()
+  - file: tools/mtmd/clip.h
+    line: '94'
+    method_or_func: clip_image_encode()
+  - file: tools/mtmd/clip.h
+    line: '95'
+    method_or_func: clip_image_batch_encode()
+  - file: tools/mtmd/clip.h
+    line: '97'
+    method_or_func: clip_is_minicpmv()
+  - file: tools/mtmd/clip.h
+    line: '98'
+    method_or_func: clip_is_glm()
+  - file: tools/mtmd/clip.h
+    line: '99'
+    method_or_func: clip_is_llava()
+  - file: tools/mtmd/clip.h
+    line: '104'
+    method_or_func: clip_encode_float_image()
+  - file: tools/mtmd/clip.h
+    line: '107'
+    method_or_func: clip_image_f32_batch_add_mel()
+  - file: tools/mtmd/clip.h
+    line: '109'
+    method_or_func: clip_has_vision_encoder()
+  - file: tools/mtmd/clip.h
+    line: '110'
+    method_or_func: clip_has_audio_encoder()
+  - file: tools/mtmd/clip.h
+    line: '111'
+    method_or_func: clip_has_whisper_encoder()
+  - file: tools/mtmd/clip.cpp
+    line: 2310-2350
+    method_or_func: clip_init()
+  - file: tools/mtmd/clip.cpp
+    line: 2350-2357
+    method_or_func: clip_image_size_init()
+  - file: tools/mtmd/clip.cpp
+    line: 2357-2360
+    method_or_func: clip_image_u8_init()
+  - file: tools/mtmd/clip.cpp
+    line: 2360-2363
+    method_or_func: clip_image_f32_init()
+  - file: tools/mtmd/clip.cpp
+    line: 2363-2366
+    method_or_func: clip_image_f32_batch_init()
+  - file: tools/mtmd/clip.cpp
+    line: 2366-2373
+    method_or_func: clip_image_u8_get_data()
+  - file: tools/mtmd/clip.cpp
+    line: 2373-2380
+    method_or_func: clip_image_size_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2380-2381
+    method_or_func: clip_image_u8_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2381-2382
+    method_or_func: clip_image_f32_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2382-2383
+    method_or_func: clip_image_u8_batch_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2383-2384
+    method_or_func: clip_image_f32_batch_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2384-2388
+    method_or_func: clip_image_f32_batch_n_images()
+  - file: tools/mtmd/clip.cpp
+    line: 2388-2398
+    method_or_func: clip_image_f32_batch_nx()
+  - file: tools/mtmd/clip.cpp
+    line: 2398-2408
+    method_or_func: clip_image_f32_batch_ny()
+  - file: tools/mtmd/clip.cpp
+    line: 2408-2418
+    method_or_func: clip_image_f32_get_img()
+  - file: tools/mtmd/clip.cpp
+    line: 2418-2425
+    method_or_func: clip_build_img_from_pixels()
+  - file: tools/mtmd/clip.cpp
+    line: 2425-2429
+    method_or_func: clip_get_newline_tensor()
+  - file: tools/mtmd/clip.cpp
+    line: 2429-2436
+    method_or_func: clip_free()
+  - file: tools/mtmd/clip.cpp
+    line: 2436-2444
+    method_or_func: clip_embd_nbytes()
+  - file: tools/mtmd/clip.cpp
+    line: 2444-2451
+    method_or_func: clip_embd_nbytes_by_img()
+  - file: tools/mtmd/clip.cpp
+    line: 2451-2455
+    method_or_func: clip_get_image_size()
+  - file: tools/mtmd/clip.cpp
+    line: 2455-2459
+    method_or_func: clip_get_patch_size()
+  - file: tools/mtmd/clip.cpp
+    line: 2459-2463
+    method_or_func: clip_get_hidden_size()
+  - file: tools/mtmd/clip.cpp
+    line: 2463-2467
+    method_or_func: clip_patch_merge_type()
+  - file: tools/mtmd/clip.cpp
+    line: 2467-2485
+    method_or_func: clip_n_output_tokens_x()
+  - file: tools/mtmd/clip.cpp
+    line: 2485-2500
+    method_or_func: clip_n_output_tokens_y()
+  - file: tools/mtmd/clip.cpp
+    line: 2500-2650
+    method_or_func: clip_n_output_tokens()
+  - file: tools/mtmd/clip.cpp
+    line: 3151-3190
+    method_or_func: clip_n_mmproj_embd()
+  - file: tools/mtmd/clip.cpp
+    line: 3191-3197
+    method_or_func: clip_is_minicpmv()
+  - file: tools/mtmd/clip.cpp
+    line: 3198-3202
+    method_or_func: clip_is_glm()
+  - file: tools/mtmd/clip.cpp
+    line: 3203-3205
+    method_or_func: clip_is_llava()
+  - file: tools/mtmd/clip.cpp
+    line: 3206-3208
+    method_or_func: clip_has_vision_encoder()
+  - file: tools/mtmd/clip.cpp
+    line: 3209-3211
+    method_or_func: clip_has_audio_encoder()
+  - file: tools/mtmd/clip.cpp
+    line: 3212-3222
+    method_or_func: clip_has_whisper_encoder()
+  - file: tools/mtmd/clip.cpp
+    line: 3236-3238
+    method_or_func: clip_get_projector_type()
+  - file: tools/mtmd/clip.cpp
+    line: 3239-3248
+    method_or_func: clip_image_f32_batch_add_mel()
+  - file: tools/mtmd/clip.cpp
+    line: 3249-3251
+    method_or_func: clip_get_hparams()
+  - file: tools/mtmd/clip.cpp
+    line: 3252-3255
+    method_or_func: clip_set_debug_output_embeddings()
+  name: 公共 C API 与工具函数 —— 多模态能力的「门面接口」
+  'no': 9
+  points:
+  - '**图像内存管理家族**'
+  - '- 生命周期管理四件套：clip_image_u8_init/free、clip_image_f32_init/free 提供基础的图像结构体创建与销毁'
+  - '- 尺寸管理：clip_image_size_init/free 管理图像尺寸对象，默认初始化为 448x448'
+  - '- 数据访问：clip_image_u8_get_data 提供对原始像素数据的只读访问，支持可选的宽高输出参数'
+  - '**批次操作与克隆**'
+  - '- clip_image_f32_batch 作为核心批次容器，支持通过 clone() 方法实现深拷贝，确保多线程环境下的数据安全'
+  - '- 批次遍历接口：clip_image_f32_batch_n_images/nx/ny/get_img 提供对批次中图像的随机访问能力'
+  - '- 音频支持：clip_image_f32_batch_add_mel 将梅尔频谱图封装为伪图像批次，统一音视频处理接口'
+  - '**张量维度计算工具**'
+  - '- clip_n_output_tokens：核心计算器，根据投影器类型（如 MLP、LDP、Qwen2VL）和输入尺寸动态计算输出序列长度'
+  - '- clip_n_output_tokens_x/y：针对 M-RoPE 模型提供二维 Token 计数，支持空间感知的序列长度获取'
+  - '- clip_embd_nbytes/clip_embd_nbytes_by_img：内存预计算器，根据图像尺寸或默认尺寸估算输出嵌入所需字节数'
+  - '**模型信息查询接口**'
+  - '- 基础属性获取：clip_get_image_size/patch_size/hidden_size 提供模型关键维度的快速访问'
+  - '- 类型检测家族：clip_is_minicpmv/glm/llava 与 clip_has_vision/audio/whisper_encoder 提供模型架构与能力的运行时判断'
+  - '- 高级标识：clip_get_projector_type 返回投影器类型枚举，clip_patch_merge_type 返回字符串形式的合并策略'
+  - '- 特殊张量访问：clip_get_newline_tensor 获取图像换行符嵌入，用于多模态对话中的格式控制'
+- codes:
+  - file: tools/mtmd/clip-impl.h
+    line: 210-217
+    method_or_func: clip_image_u8
+  - file: tools/mtmd/clip-impl.h
+    line: 210-217
+    method_or_func: clip_image_u8.clip_image_u8()
+  - file: tools/mtmd/clip-impl.h
+    line: 223-231
+    method_or_func: clip_image_f32
+  - file: tools/mtmd/clip-impl.h
+    line: 223-231
+    method_or_func: clip_image_f32.clip_image_f32()
+  - file: tools/mtmd/clip-impl.h
+    line: 299-302
+    method_or_func: clip_image_u8_batch
+  - file: tools/mtmd/clip-impl.h
+    line: 299-302
+    method_or_func: clip_image_u8_batch.clip_image_u8_batch()
+  - file: tools/mtmd/clip-impl.h
+    line: 306-319
+    method_or_func: clip_image_f32_batch
+  - file: tools/mtmd/clip-impl.h
+    line: 306-319
+    method_or_func: clip_image_f32_batch.clone()
+  - file: tools/mtmd/clip-impl.h
+    line: 282-285
+    method_or_func: clip_image_size_deleter.operator()
+  - file: tools/mtmd/clip-impl.h
+    line: 288-291
+    method_or_func: clip_image_u8_deleter.operator()
+  - file: tools/mtmd/clip-impl.h
+    line: 294-297
+    method_or_func: clip_image_f32_deleter.operator()
+  - file: tools/mtmd/clip-impl.h
+    line: 249-254
+    method_or_func: clip_logger_state
+  - file: tools/mtmd/clip-impl.h
+    line: 249-254
+    method_or_func: clip_logger_state.clip_logger_state()
+  - file: tools/mtmd/clip-impl.h
+    line: 236-241
+    method_or_func: clip_log_callback_default()
+  - file: tools/mtmd/clip-impl.h
+    line: 256-270
+    method_or_func: clip_log_internal_v()
+  - file: tools/mtmd/clip-impl.h
+    line: 272-276
+    method_or_func: clip_log_internal()
+  - file: tools/mtmd/clip-impl.h
+    line: 326-337
+    method_or_func: string_format()
+  - file: tools/mtmd/clip-impl.h
+    line: 339-351
+    method_or_func: string_replace_all()
+  - file: tools/mtmd/clip-impl.h
+    line: 353-365
+    method_or_func: string_split_str()
+  - file: tools/mtmd/clip-impl.h
+    line: 367-370
+    method_or_func: string_starts_with()
+  - file: tools/mtmd/clip-impl.h
+    line: 372-375
+    method_or_func: string_ends_with()
+  - file: tools/mtmd/clip-impl.h
+    line: 378-391
+    method_or_func: gguf_data_to_str()
+  - file: tools/mtmd/clip-impl.h
+    line: 393-424
+    method_or_func: gguf_kv_to_str()
+  - file: tools/mtmd/clip-impl.h
+    line: 428-436
+    method_or_func: print_tensor_shape()
+  - file: tools/mtmd/clip-impl.h
+    line: 438-472
+    method_or_func: print_tensor_data()
+  - file: tools/mtmd/clip-impl.h
+    line: 171-177
+    method_or_func: clip_projector_type_from_string()
+  name: 内部实现基础设施 —— 调试与日志的「工具箱」
+  'no': 10
+  points:
+  - '**智能指针与资源管理**'
+  - '- clip_image_u8/f32：基础图像数据结构，分别存储 8 位 RGB 和 32 位浮点数据，支持任意尺寸，通过构造函数初始化缓冲区'
+  - '- clip_image_u8_batch/f32_batch：批次容器，使用 unique_ptr 管理图像所有权，f32 版本支持网格尺寸记录和 clone()
+    深拷贝'
+  - '- 自定义删除器：clip_image_size_deleter/u8_deleter/f32_deleter 为智能指针提供正确的内存释放逻辑，防止资源泄漏'
+  - '**日志系统三级架构**'
+  - '- clip_logger_state：全局日志状态，存储回调函数与用户数据指针，通过构造函数初始化'
+  - '- clip_log_callback_default：默认回调实现，直接输出到 stderr 并刷新缓冲区'
+  - '- clip_log_internal_v/internal：可变参数日志包装，支持格式化字符串，自动处理缓冲区分配与释放'
+  - '**字符串处理工具集**'
+  - '- string_format：类型安全的字符串格式化，动态计算所需缓冲区大小，避免溢出'
+  - '- string_replace_all/split_str：字符串查找替换与分割，支持多字节字符安全处理'
+  - '- string_starts_with/ends_with：轻量级前缀/后缀检查，用于投影器类型路由等场景'
+  - '**GGUF 与调试工具**'
+  - '- gguf_data_to_str/kv_to_str：将 GGUF 枚举类型与键值对转换为可读字符串，支持数组与嵌套类型'
+  - '- print_tensor_shape/data：张量调试双雄，分别打印形状信息与数据内容，支持多种数据类型（F16/F32/I32/I16/I8）'
+  - '- clip_projector_type_from_string：将字符串名称映射为枚举值，用于 GGUF 元数据解析'

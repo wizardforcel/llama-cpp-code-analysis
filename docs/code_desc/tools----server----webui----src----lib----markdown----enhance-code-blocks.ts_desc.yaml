@@ -1,0 +1,194 @@
+classes: []
+desc: 该文件实现了一个 Rehype 插件（rehypeEnhanceCodeBlocks），用于在 Markdown 渲染过程中增强代码块的展示效果。它直接操作
+  HAST（HTML AST）树，为每个 <pre><code> 代码块包裹一个容器，添加语言标签、复制按钮以及对 HTML 代码块的预览按钮，从而避免 HTML
+  字符串化和重新解析带来的性能开销。
+file: tools/server/webui/src/lib/markdown/enhance-code-blocks.ts
+funcs:
+- code:
+  - import type { Plugin } from 'unified';
+  - import type { Root, Element, ElementContent } from 'hast';
+  - import { visit } from 'unist-util-visit';
+  - import {
+  - "\tCODE_BLOCK_SCROLL_CONTAINER_CLASS,"
+  - "\tCODE_BLOCK_WRAPPER_CLASS,"
+  - "\tCODE_BLOCK_HEADER_CLASS,"
+  - "\tCODE_BLOCK_ACTIONS_CLASS,"
+  - "\tCODE_LANGUAGE_CLASS,"
+  - "\tCOPY_CODE_BTN_CLASS,"
+  - "\tPREVIEW_CODE_BTN_CLASS,"
+  - "\tRELATIVE_CLASS"
+  - '} from ''$lib/constants'';'
+  - ''
+  - declare global {
+  - "\tinterface Window {"
+  - "\t\tidxCodeBlock?: number;"
+  - "\t}"
+  - '}'
+  - ''
+  - const COPY_ICON_SVG = `<svg ...copy svg...</svg>`;
+  - const PREVIEW_ICON_SVG = `<svg ...eye svg...</svg>`;
+  desc: 全局作用域代码，包括类型导入、常量类名导入、全局 Window 接口声明（idxCodeBlock 计数器），以及 COPY_ICON_SVG 与
+    PREVIEW_ICON_SVG 两个 SVG 图标字符串常量的定义。
+  line: 13-34
+  name: __main__
+- code:
+  - 'function createRawHtmlElement(html: string): Element {'
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'span',"
+  - "\t\tproperties: {},"
+  - "\t\tchildren: [{ type: 'raw', value: html } as unknown as ElementContent]"
+  - "\t};"
+  - '}'
+  desc: 将原始 HTML（SVG）字符串包装为一个 HAST Element 节点（span），通过 raw 属性插入，避免直接解析 HTML。
+  line: 40-47
+  name: createRawHtmlElement
+- code:
+  - 'function createCopyButton(codeId: string): Element {'
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'button',"
+  - "\t\tproperties: {"
+  - "\t\t\tclassName: [COPY_CODE_BTN_CLASS],"
+  - "\t\t\t'data-code-id': codeId,"
+  - "\t\t\ttitle: 'Copy code',"
+  - "\t\t\ttype: 'button'"
+  - "\t\t},"
+  - "\t\tchildren: [createRawHtmlElement(COPY_ICON_SVG)]"
+  - "\t};"
+  - '}'
+  desc: 创建复制代码按钮的 HAST Element 节点，包含按钮类名、data-code-id 属性及复制图标。
+  line: 49-61
+  name: createCopyButton
+- code:
+  - 'function createPreviewButton(codeId: string): Element {'
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'button',"
+  - "\t\tproperties: {"
+  - "\t\t\tclassName: [PREVIEW_CODE_BTN_CLASS],"
+  - "\t\t\t'data-code-id': codeId,"
+  - "\t\t\ttitle: 'Preview code',"
+  - "\t\t\ttype: 'button'"
+  - "\t\t},"
+  - "\t\tchildren: [createRawHtmlElement(PREVIEW_ICON_SVG)]"
+  - "\t};"
+  - '}'
+  desc: 创建预览代码按钮的 HAST Element 节点，包含按钮类名、data-code-id 属性及预览（眼睛）图标。
+  line: 63-75
+  name: createPreviewButton
+- code:
+  - 'function createHeader(language: string, codeId: string): Element {'
+  - "\tconst actions: Element[] = [createCopyButton(codeId)];"
+  - ''
+  - "\tif (language.toLowerCase() === 'html') {"
+  - "\t\tactions.push(createPreviewButton(codeId));"
+  - "\t}"
+  - ''
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'div',"
+  - "\t\tproperties: { className: [CODE_BLOCK_HEADER_CLASS] },"
+  - "\t\tchildren: ["
+  - "\t\t\t{"
+  - "\t\t\t\ttype: 'element',"
+  - "\t\t\t\ttagName: 'span',"
+  - "\t\t\t\tproperties: { className: [CODE_LANGUAGE_CLASS] },"
+  - "\t\t\t\tchildren: [{ type: 'text', value: language }]"
+  - "\t\t\t},"
+  - "\t\t\t{"
+  - "\t\t\t\ttype: 'element',"
+  - "\t\t\t\ttagName: 'div',"
+  - "\t\t\t\tproperties: { className: [CODE_BLOCK_ACTIONS_CLASS] },"
+  - "\t\t\t\tchildren: actions"
+  - "\t\t\t}"
+  - "\t\t]"
+  - "\t};"
+  - '}'
+  desc: 创建代码块头部栏的 HAST Element 节点，包含语言标签和操作按钮（复制按钮，以及针对 HTML 代码块的预览按钮）。
+  line: 77-101
+  name: createHeader
+- code:
+  - 'function createScrollContainer(preElement: Element): Element {'
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'div',"
+  - "\t\tproperties: { className: [CODE_BLOCK_SCROLL_CONTAINER_CLASS] },"
+  - "\t\tchildren: [preElement]"
+  - "\t};"
+  - '}'
+  desc: 创建代码块滚动容器的 HAST Element 节点，用于包裹原始的 pre 元素以支持横向滚动。
+  line: 103-110
+  name: createScrollContainer
+- code:
+  - 'function createWrapper(header: Element, preElement: Element): Element {'
+  - "\treturn {"
+  - "\t\ttype: 'element',"
+  - "\t\ttagName: 'div',"
+  - "\t\tproperties: { className: [CODE_BLOCK_WRAPPER_CLASS, RELATIVE_CLASS] },"
+  - "\t\tchildren: [header, createScrollContainer(preElement)]"
+  - "\t};"
+  - '}'
+  desc: 创建代码块外层包裹容器的 HAST Element 节点，将头部栏与滚动容器（内含 pre 元素）组合在一起。
+  line: 112-119
+  name: createWrapper
+- code:
+  - 'function extractLanguage(codeElement: Element): string {'
+  - "\tconst className = codeElement.properties?.className;"
+  - "\tif (!Array.isArray(className)) return 'text';"
+  - ''
+  - "\tfor (const cls of className) {"
+  - "\t\tif (typeof cls === 'string' && cls.startsWith('language-')) {"
+  - "\t\t\treturn cls.replace('language-', '');"
+  - "\t\t}"
+  - "\t}"
+  - ''
+  - "\treturn 'text';"
+  - '}'
+  desc: 从 code 元素的 class 属性中提取编程语言名称（解析 language-xxx 形式的类名），若未找到则返回 'text'。
+  line: 121-132
+  name: extractLanguage
+- code:
+  - 'function generateCodeId(): string {'
+  - "\tif (typeof window !== 'undefined') {"
+  - "\t\treturn `code-${(window.idxCodeBlock = (window.idxCodeBlock ?? 0) + 1)}`;"
+  - "\t}"
+  - "\t// Fallback for SSR - use timestamp + random"
+  - "\treturn `code-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;"
+  - '}'
+  desc: 生成全局唯一的代码块 ID：浏览器端使用 window.idxCodeBlock 全局计数器，SSR 端使用时间戳加随机数作为回退方案。
+  line: 137-144
+  name: generateCodeId
+- code:
+  - 'export const rehypeEnhanceCodeBlocks: Plugin<[], Root> = () => {'
+  - "\treturn (tree: Root) => {"
+  - "\t\tvisit(tree, 'element', (node: Element, index, parent) => {"
+  - "\t\t\tif (node.tagName !== 'pre' || !parent || index === undefined) return;"
+  - ''
+  - "\t\t\tconst codeElement = node.children.find("
+  - "\t\t\t\t(child): child is Element => child.type === 'element' && child.tagName\
+    \ === 'code'"
+  - "\t\t\t);"
+  - ''
+  - "\t\t\tif (!codeElement) return;"
+  - ''
+  - "\t\t\tconst language = extractLanguage(codeElement);"
+  - "\t\t\tconst codeId = generateCodeId();"
+  - ''
+  - "\t\t\tcodeElement.properties = {"
+  - "\t\t\t\t...codeElement.properties,"
+  - "\t\t\t\t'data-code-id': codeId"
+  - "\t\t\t};"
+  - ''
+  - "\t\t\tconst header = createHeader(language, codeId);"
+  - "\t\t\tconst wrapper = createWrapper(header, node);"
+  - ''
+  - "\t\t\t// Replace pre with wrapper in parent"
+  - "\t\t\t(parent.children as ElementContent[])[index] = wrapper;"
+  - "\t\t});"
+  - "\t};"
+  - '};'
+  desc: 导出的 Rehype 插件主函数，返回一个转换器：通过 unist-util-visit 遍历 HAST 树，查找 <pre><code> 结构，提取语言、生成代码
+    ID，并将其替换为带头部栏和操作按钮的包裹容器。
+  line: 146-176
+  name: rehypeEnhanceCodeBlocks

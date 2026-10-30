@@ -1,0 +1,924 @@
+code_map:
+- tools/mtmd/
+- ├── mtmd.h
+- '│   ├── mtmd_bitmap / mtmd_input_chunk / mtmd_input_chunks  # 原始数据与输入块核心结构（C API）'
+- '│   ├── mtmd_context_params / mtmd_default_marker()         # 上下文参数与默认标记'
+- '│   ├── mtmd::bitmap / mtmd::bitmaps / mtmd::input_chunks   # C++ RAII 包装（unique_ptr
+  + deleter）'
+- '│   │   ├── bitmap.*  # 构造函数（默认/指针/移动/数据）、析构、访问器（nx/ny/data/n_bytes/id/set_id）'
+- '│   │   ├── bitmaps.c_ptr()  # 转换为C API所需的原始指针数组'
+- '│   │   └── input_chunks.*  # 构造（默认/指针）、析构、size、operator[]'
+- '│   ├── deleter classes  # mtmd_context_deleter / mtmd_bitmap_deleter / mtmd_input_chunks_deleter
+  / mtmd_input_chunk_deleter'
+- '│   ├── mtmd_init_from_file() / mtmd_free()                 # 上下文生命周期管理'
+- '│   ├── mtmd_tokenize() / mtmd_encode_chunk() / mtmd_encode() # 输入切分与编码入口'
+- '│   ├── mtmd_decode_use_mrope() / mtmd_decode_use_non_causal() # 位置编码与注意力模式查询'
+- '│   └── mtmd_bitmap_* / mtmd_input_chunk_* / mtmd_image_tokens_get_* # 数据访问与拷贝接口'
+- ├── mtmd.cpp
+- '│   ├── mtmd_context::mtmd_context() / init_vision() / init_audio() # 视觉/音频预处理器分派与初始化'
+- '│   ├── mtmd_context::get_clip_ctx() / lookup_token() / token_to_piece() / proj_type_*()
+  # 上下文工具与类型查询'
+- '│   ├── mtmd_tokenizer::mtmd_tokenizer() / tokenize() / add_text() / add_media()
+  / add_image_media() / add_audio_media() / split_batch_to_chunk() # 多模态 Tokenization
+  主逻辑'
+- '│   ├── mtmd_encode() / mtmd_get_output_embd() / mtmd_decode_use_*() / mtmd_tokenize()
+  # 编码与解码模式查询'
+- '│   ├── mtmd_bitmap_init() / mtmd_input_chunk_copy() / mtmd_input_chunk_get_*()
+  # 数据操作核心实现'
+- '│   ├── mtmd_debug_encode_*() / mtmd_debug_preprocess_*() / mtmd_test_create_input_chunks()
+  # 日志与调试验证接口'
+- '│   └── mtmd_image_tokens::clone() / mtmd_audio_tokens::clone() # 内部Token结构深拷贝'
+- ├── mtmd-helper.h / mtmd-helper.cpp
+- '│   ├── mtmd_helper_log_set() / mtmd_helper_get_n_tokens() / mtmd_helper_get_n_pos()
+  # 日志与统计入口'
+- '│   ├── mtmd_helper_bitmap_init_from_buf() / mtmd_helper_bitmap_init_from_file()
+  # 资源加载与类型检测（图像stb/音频miniaudio）'
+- '│   ├── mtmd_helper_logger::log() / log_v() # 内部日志封装'
+- '│   ├── decode_embd_batch::decode_embd_batch() / set_position_normal() / set_position_mrope_*()
+  / get_view() # M-RoPE 位置编码核心'
+- '│   └── mtmd_helper_eval_chunk_single() / mtmd_helper_eval_chunks() / mtmd_helper_decode_image_chunk()
+  # 批量解码与评估流水线'
+- ├── mtmd-image.h / mtmd-image.cpp
+- '│   ├── mtmd_image_preprocessor::mtmd_image_preprocessor() / ~mtmd_image_preprocessor()
+  / preprocess() / img_u8_to_f32() # 基类接口'
+- '│   ├── img_tool::resize() / crop() / composite() / fill() / clip() / lerp() #
+  基础图像操作'
+- '│   ├── img_tool::resize_bilinear / resize_bicubic / resize_bicubic_pillow / calc_size_preserved_ratio(overload
+  1/2) # 插值算法与尺寸计算'
+- '│   ├── mtmd_image_preprocessor_llava_uhd::mtmd_image_preprocessor_llava_uhd()
+  / preprocess() / get_slice_instructions() / get_best_grid() / slice_image() / get_best_resize()
+  / resize_maintain_aspect_ratio() / select_best_resolution() / ensure_divide() /
+  get_refine_size() # LLaVA-UHD 切片策略'
+- '│   ├── mtmd_image_preprocessor_lfm2::* (含构造) / internvl::internvl() / preprocess()
+  / idefics3::idefics3() / preprocess() # 模型定制预处理'
+- '│   └── mtmd_image_preprocessor_fixed_size / dyn_size / longest_edge / deepseekocr
+  / youtuvl # 各模型专用预处理（含构造与析构）'
+- └── mtmd-audio.h / mtmd-audio.cpp
+- '    ├── mtmd_audio_cache::fill_sin_cos_table() / fill_hann_window() / fill_mel_filterbank_matrix()
+  # 音频缓存构建'
+- '    ├── mtmd_audio_preprocessor::initialize() / preprocess()  # 抽象基类接口'
+- '    ├── mtmd_audio_preprocessor_whisper::initialize() / preprocess() # Whisper
+  梅尔频谱提取'
+- '    ├── mtmd_audio_preprocessor_conformer::initialize() / preprocess() # Conformer
+  梅尔频谱提取'
+- '    └── mtmd_audio_streaming_istft::mtmd_audio_streaming_istft() / reset() / process_frame()
+  / flush() # 流式 ISTFT 波形重建'
+exercises:
+- contents:
+  - 阅读 `tools/mtmd/mtmd.cpp` 中 `mtmd_tokenizer` 的构造与核心方法（第508-978行），以及 `mtmd.h` 中的
+    RAII 包装类（第254-288行），回答以下问题：
+  - 1. 当输入文本包含 `<__media__>` 标记时，`tokenize()` 如何交替生成文本 chunk 与媒体 chunk？`add_image_media()`
+    与 `add_audio_media()` 分别承担什么角色？
+  - 2. `mtmd::bitmap` 的四个构造函数分别适用于什么场景？移动构造函数如何确保资源所有权的正确转移？
+  - 3. `mtmd_input_chunk_get_n_pos()` 在处理 M-RoPE 图像时与普通文本有何不同？为什么要区分 n_tokens 和 n_pos？
+  - 4. 如果模型同时启用了视觉与音频支持，`mtmd_context` 如何确保两种模态的嵌入维度兼容性？
+  'no': 1
+  title: 追踪多模态输入的完整生命周期
+- contents:
+  - 阅读 `tools/mtmd/mtmd-helper.cpp` 中 `decode_embd_batch` 的位置设置方法与资源加载函数，完成以下分析：
+  - 1. 对比 `set_position_normal()` 与 `set_position_mrope_2d()`：对于一张 2x2 的图像 patch（共4个token），普通模式和
+    M-RoPE 模式下的 `pos[]` 数组内容分别是什么？
+  - 2. 解释为什么 `mtmd_helper_bitmap_init_from_buf()` 需要先检测音频 magic bytes？如果误判会导致什么后果？
+  - 3. `get_view()` 方法在处理 M-RoPE 时为什么要重新组织 `pos_view`？如果不重新组织会发生什么错误？
+  'no': 2
+  title: 分析 M-RoPE 位置编码与资源加载机制
+- contents:
+  - 假设你要为一个新模型 "MyVLM" 实现图像预处理，要求：输入图像必须调整为 448x448，且宽高比保持为原图（不足部分填充黑色），并支持可选的网格切片（2x2）。
+  - 参考 `tools/mtmd/mtmd-image.h` 和 `mtmd-image.cpp` 中的 `mtmd_image_preprocessor_fixed_size`、`mtmd_image_preprocessor_dyn_size`
+    与 `mtmd_image_preprocessor_llava_uhd`：
+  - 1. 你会选择继承哪个基类？为什么？需要重写哪些方法？
+  - 2. 描述预处理流程：该如何组合 `img_tool::resize()`（带 padding）、`slice_image()` 与 `img_u8_to_f32()`？
+  - 3. 在 `mtmd_context::init_vision()` 中，如何根据 `projector_type` 注册你的新预处理器？
+  - 4. 如果该模型需要 M-RoPE 位置编码，`batch_f32` 中的 `grid_x` 和 `grid_y` 应该如何设置以配合 `decode_embd_batch`？
+  'no': 3
+  title: 设计一个新的图像预处理策略
+- contents:
+  - 阅读 `tools/mtmd/mtmd.h` 第232-288行的 deleter 与 RAII 包装类，以及 `mtmd.cpp` 中的 `mtmd_input_chunk_copy`
+    与 `clone()` 方法：
+  - 1. `mtmd::bitmap` 和 `mtmd::input_chunks` 使用了哪种智能指针模式？自定义 deleter 与默认 deleter 有何不同？
+  - 2. `mtmd_input_chunk_copy()` 中对 `tokens_image` 和 `tokens_audio` 的深拷贝是如何实现的？为什么需要调用
+    `clone()` 而不是简单的指针复制？
+  - 3. 在什么情况下调用 `mtmd_bitmap_free()` 会导致双重释放错误？RAII 如何避免这类问题？如果上层应用混用 C API 与 C++
+    包装类会发生什么？
+  'no': 4
+  title: 调试资源内存管理与深拷贝
+learning_targets:
+- 掌握 mtmd（multimodal）模块的公共 C API 与 C++ RAII 封装设计
+- 理解 mtmd_context 如何统一管理视觉（CLIP）与音频编码器的初始化与生命周期
+- 深入多模态输入的 Tokenization 机制：文本切割、媒体标记识别与 Chunk 生成
+- 掌握 mtmd-helper 层如何实现 M-RoPE 多维位置编码与跨模态批处理解码
+- 理解图像预处理（缩放、切片、归一化）与音频预处理（梅尔频谱、分块）的流水线
+- 学会使用 mtmd_bitmap 等抽象处理图像与音频原始数据，并理解其内存管理策略
+- 掌握智能指针包装类（deleter模式）与C API资源管理的最佳实践
+life_analogy:
+- 想象 mtmd 是一个**国际货运中心**（多模态处理中心）：
+- '- **mtmd_context** = 货运中心的**总指挥调度室**，同时管理「图像集装箱码头」（视觉编码器）和「音频货运站」（音频编码器），确保不同模态的货物（数据）能统一换算成标准集装箱（嵌入向量）'
+- '- **mtmd::bitmap / RAII** = **智能集装箱管理系统**，通过自动门禁（deleter）确保集装箱离开园区时自动归还，避免遗失（内存泄漏）'
+- '- **mtmd_tokenizer** = **智能分拣流水线**，识别文本中的 `<__media__>` 标记（集装箱编号），将文本包裹与图像/音频集装箱交替排列，生成最终装船清单'
+- '- **图像预处理家族** = **多种规格整形车间**，从固定尺寸（fixed_size）到动态规划（dyn_size），再到高精度切片（LLaVA-UHD/LFM2），满足不同货船的装载要求'
+- '- **M-RoPE 位置编码** = **集装箱的立体坐标系统**（x轴、y轴、时间轴），确保二维图像空间或一维音频时间信息在运输过程中不丢失'
+- '- **mtmd-helper** = **起重机操作员**，将编码后的集装箱（嵌入向量）按批次精准吊装到指定位置（KV Cache），并处理特殊集装箱（非因果注意力模式）'
+- '- **图像/音频解码器（helper层）** = **海关检验与分类中心**，自动检测货物类型（通过magic bytes识别jpeg/png/wav/mp3），并调用对应的拆箱工具（stb_image/miniaudio）'
+'no': 74
+summary:
+- concept: mtmd_context
+  desc: 多模态处理核心上下文，统一管理视觉编码器（CLIP-V）与音频编码器（CLIP-A），校验嵌入维度兼容性，并按 projector_type 初始化模态专用预处理器
+- concept: mtmd::bitmap / mtmd_bitmap
+  desc: 原始多模态数据容器（图像RGB字节流/音频PCM浮点），C++层通过 unique_ptr + 自定义 deleter 实现 RAII 自动管理，支持ID标记追踪与零拷贝访问
+- concept: mtmd::input_chunks
+  desc: 输入块集合的C++包装，提供size()和operator[]访问，通过deleter自动释放资源，避免手动管理C API指针
+- concept: mtmd_tokenizer
+  desc: 多模态输入分词器，按 media_marker 切割文本，交替生成文本 chunk 与媒体 chunk，支持图像（image_media）与音频（audio_media）的独立处理路径，处理
+    BOS/EOS 特殊标记插入
+- concept: 图像预处理策略家族
+  desc: 包含固定尺寸、动态尺寸、最长边、LLaVA-UHD切片、LFM2、Idefics3、InternVL、DeepSeekOCR、YouTuVL等多种策略，通过继承基类实现多态处理
+- concept: 音频预处理流水线
+  desc: PCM采样 → FFT（Cooley-Tukey）→ Mel滤波器组 → 对数压缩 → 分块（Whisper）或中心填充+预强调（Conformer），支持流式ISTFT重建
+- concept: M-RoPE 位置编码
+  desc: 多维旋转位置编码：图像使用 (t=0, y, x, 0) 四维表示空间位置；音频使用 (t, t, t, 0) 表示时间序列，通过 decode_embd_batch
+    的 set_position_mrope_2d/1d 管理
+- concept: mtmd_helper_eval_chunks
+  desc: 高层评估接口：文本 chunk 直接 decode，媒体 chunk 先 encode 为嵌入再 decode，自动处理 micro-batch 分割与
+    logits 标记，支持多模态混合输入
+- concept: mtmd_helper_bitmap_init_from_buf/file
+  desc: 智能资源加载入口：自动检测音频magic bytes，图像走stb_image解码，音频走miniaudio转PCM，统一输出mtmd_bitmap，实现格式无关的多模态输入
+units:
+- codes:
+  - file: tools/mtmd/mtmd.h
+    line: '254'
+    method_or_func: bitmap.bitmap (constructor)
+  - file: tools/mtmd/mtmd.h
+    line: '255'
+    method_or_func: bitmap.bitmap (constructor from raw pointer)
+  - file: tools/mtmd/mtmd.h
+    line: '256'
+    method_or_func: bitmap.bitmap (move constructor)
+  - file: tools/mtmd/mtmd.h
+    line: 257-259
+    method_or_func: bitmap.bitmap (constructor from data)
+  - file: tools/mtmd/mtmd.h
+    line: '260'
+    method_or_func: bitmap.~bitmap (destructor)
+  - file: tools/mtmd/mtmd.h
+    line: '261'
+    method_or_func: bitmap.nx
+  - file: tools/mtmd/mtmd.h
+    line: '262'
+    method_or_func: bitmap.ny
+  - file: tools/mtmd/mtmd.h
+    line: '263'
+    method_or_func: bitmap.data
+  - file: tools/mtmd/mtmd.h
+    line: '264'
+    method_or_func: bitmap.n_bytes
+  - file: tools/mtmd/mtmd.h
+    line: '265'
+    method_or_func: bitmap.id
+  - file: tools/mtmd/mtmd.h
+    line: '266'
+    method_or_func: bitmap.set_id
+  - file: tools/mtmd/mtmd.h
+    line: '271'
+    method_or_func: bitmaps.~bitmaps (destructor)
+  - file: tools/mtmd/mtmd.h
+    line: 272-277
+    method_or_func: bitmaps.c_ptr
+  - file: tools/mtmd/mtmd.h
+    line: '282'
+    method_or_func: input_chunks.input_chunks (constructor)
+  - file: tools/mtmd/mtmd.h
+    line: '283'
+    method_or_func: input_chunks.input_chunks (constructor from raw pointer)
+  - file: tools/mtmd/mtmd.h
+    line: '284'
+    method_or_func: input_chunks.~input_chunks (destructor)
+  - file: tools/mtmd/mtmd.h
+    line: '285'
+    method_or_func: input_chunks.size
+  - file: tools/mtmd/mtmd.h
+    line: 286-288
+    method_or_func: input_chunks.operator[]
+  - file: tools/mtmd/mtmd.h
+    line: 232-234
+    method_or_func: mtmd_context_deleter.operator
+  - file: tools/mtmd/mtmd.h
+    line: 237-239
+    method_or_func: mtmd_bitmap_deleter.operator
+  - file: tools/mtmd/mtmd.h
+    line: 242-244
+    method_or_func: mtmd_input_chunks_deleter.operator
+  - file: tools/mtmd/mtmd.h
+    line: 247-249
+    method_or_func: mtmd_input_chunk_deleter.operator
+  - file: tools/mtmd/mtmd.h
+    line: 1-229
+    method_or_func: __main__
+  - file: tools/mtmd/mtmd.cpp
+    line: 463-472
+    method_or_func: mtmd_init_from_file
+  - file: tools/mtmd/mtmd.cpp
+    line: 474-476
+    method_or_func: mtmd_free
+  - file: tools/mtmd/mtmd.cpp
+    line: 113-127
+    method_or_func: mtmd_context_params_default
+  - file: tools/mtmd/mtmd.cpp
+    line: 100-103
+    method_or_func: mtmd_default_marker
+  - file: tools/mtmd/mtmd.cpp
+    line: 979-984
+    method_or_func: mtmd_tokenize
+  - file: tools/mtmd/mtmd.cpp
+    line: 1075-1085
+    method_or_func: mtmd_bitmap_init
+  - file: tools/mtmd/mtmd.cpp
+    line: 1086-1097
+    method_or_func: mtmd_bitmap_init_from_audio
+  - file: tools/mtmd/mtmd.cpp
+    line: 1098-1100
+    method_or_func: mtmd_bitmap_get_nx
+  - file: tools/mtmd/mtmd.cpp
+    line: 1101-1103
+    method_or_func: mtmd_bitmap_get_ny
+  - file: tools/mtmd/mtmd.cpp
+    line: 1104-1106
+    method_or_func: mtmd_bitmap_get_data
+  - file: tools/mtmd/mtmd.cpp
+    line: 1107-1109
+    method_or_func: mtmd_bitmap_get_n_bytes
+  - file: tools/mtmd/mtmd.cpp
+    line: 1110-1112
+    method_or_func: mtmd_bitmap_is_audio
+  - file: tools/mtmd/mtmd.cpp
+    line: 1113-1115
+    method_or_func: mtmd_bitmap_get_id
+  - file: tools/mtmd/mtmd.cpp
+    line: 1116-1120
+    method_or_func: mtmd_bitmap_set_id
+  - file: tools/mtmd/mtmd.cpp
+    line: 1121-1125
+    method_or_func: mtmd_bitmap_free
+  - file: tools/mtmd/mtmd.cpp
+    line: 1126-1128
+    method_or_func: mtmd_input_chunks_init
+  - file: tools/mtmd/mtmd.cpp
+    line: 1129-1131
+    method_or_func: mtmd_input_chunks_size
+  - file: tools/mtmd/mtmd.cpp
+    line: 1132-1137
+    method_or_func: mtmd_input_chunks_get
+  - file: tools/mtmd/mtmd.cpp
+    line: 1138-1142
+    method_or_func: mtmd_input_chunks_free
+  - file: tools/mtmd/mtmd.cpp
+    line: 1143-1145
+    method_or_func: mtmd_input_chunk_get_type
+  - file: tools/mtmd/mtmd.cpp
+    line: 1146-1152
+    method_or_func: mtmd_input_chunk_get_tokens_text
+  - file: tools/mtmd/mtmd.cpp
+    line: 1153-1158
+    method_or_func: mtmd_input_chunk_get_tokens_image
+  - file: tools/mtmd/mtmd.cpp
+    line: 1159-1169
+    method_or_func: mtmd_input_chunk_get_n_tokens
+  - file: tools/mtmd/mtmd.cpp
+    line: 1170-1180
+    method_or_func: mtmd_input_chunk_get_n_pos
+  - file: tools/mtmd/mtmd.cpp
+    line: 1181-1188
+    method_or_func: mtmd_input_chunk_get_id
+  - file: tools/mtmd/mtmd.cpp
+    line: 1189-1206
+    method_or_func: mtmd_input_chunk_copy
+  - file: tools/mtmd/mtmd.cpp
+    line: 1207-1211
+    method_or_func: mtmd_input_chunk_free
+  - file: tools/mtmd/mtmd.cpp
+    line: 1212-1214
+    method_or_func: mtmd_image_tokens_get_n_tokens
+  - file: tools/mtmd/mtmd.cpp
+    line: 1215-1217
+    method_or_func: mtmd_image_tokens_get_nx
+  - file: tools/mtmd/mtmd.cpp
+    line: 1218-1220
+    method_or_func: mtmd_image_tokens_get_ny
+  - file: tools/mtmd/mtmd.cpp
+    line: 1221-1223
+    method_or_func: mtmd_image_tokens_get_id
+  - file: tools/mtmd/mtmd.cpp
+    line: 1224-1231
+    method_or_func: mtmd_image_tokens_get_n_pos
+  - file: tools/mtmd/mtmd.cpp
+    line: 1063-1065
+    method_or_func: mtmd_support_vision
+  - file: tools/mtmd/mtmd.cpp
+    line: 1066-1068
+    method_or_func: mtmd_support_audio
+  - file: tools/mtmd/mtmd.cpp
+    line: 1069-1074
+    method_or_func: mtmd_get_audio_sample_rate
+  - file: tools/mtmd/mtmd.cpp
+    line: 1263-1266
+    method_or_func: mtmd_log_set
+  - file: tools/mtmd/mtmd.cpp
+    line: 1-462
+    method_or_func: __main__
+  name: mtmd 公共 C API 与 RAII 封装 —— 多模态世界的'智能集装箱系统'
+  'no': 1
+  points:
+  - '**核心数据结构三剑客**'
+  - '- `mtmd_bitmap`：原始图像/音频数据的''集装箱''，存储宽高、RGB字节流和可选ID'
+  - '- `mtmd_input_chunk`：单个输入块，是文本token序列、图像tokens或音频tokens的''三通阀门'''
+  - '- `mtmd_input_chunks`：整个输入的''货运清单''，管理多个chunk的有序集合'
+  - '**C++ RAII 智能指针：内存安全的''自动门'''
+  - '- `mtmd::bitmap` 类封装 `mtmd_bitmap*`，提供多种构造函数（默认/指针/移动/数据构造）与完整访问器（nx/ny/data/n_bytes/id/set_id）'
+  - '- `mtmd::bitmaps` 通过 `c_ptr()` 将 vector<bitmap> 转为 C API 需要的 `const mtmd_bitmap
+    **` 数组'
+  - '- `mtmd::input_chunks` 提供 `size()` 和 `operator[]` 便捷访问，内部使用 `std::unique_ptr`
+    + 自定义 `deleter`（mtmd_input_chunks_deleter）实现自动释放'
+  - '- 四大 deleter 类（mtmd_context_deleter等）确保C API资源在C++作用域结束时自动释放，防止内存泄漏'
+  - '**核心 C API 与全局函数**'
+  - '- `mtmd_init_from_file()` / `mtmd_free()`：从 mmproj 文件创建/销毁多模态上下文'
+  - '- `mtmd_tokenize()`：公共入口，创建 mtmd_tokenizer 执行多模态输入切分'
+  - '- `mtmd_encode_chunk()` / `mtmd_encode()`：将图像/音频 chunk 编码为嵌入向量'
+  - '**数据访问与操作接口**'
+  - '- `mtmd_bitmap_*`：位图的创建（图像/音频）、宽高获取、数据访问、ID 设置与释放'
+  - '- `mtmd_input_chunk_*`：chunk 的类型查询、token 获取（含 n_pos）、拷贝与释放'
+  - '- `mtmd_image_tokens_get_*`：图像 tokens 的 token 数、网格尺寸与位置数查询'
+  - '- `mtmd_context_params_default()` / `mtmd_default_marker()`：默认参数与标记获取'
+- codes:
+  - file: tools/mtmd/mtmd.cpp
+    line: 147-222
+    method_or_func: mtmd_context.mtmd_context()
+  - file: tools/mtmd/mtmd.cpp
+    line: 224-354
+    method_or_func: mtmd_context.init_vision()
+  - file: tools/mtmd/mtmd.cpp
+    line: 356-400
+    method_or_func: mtmd_context.init_audio()
+  - file: tools/mtmd/mtmd.cpp
+    line: 402-408
+    method_or_func: mtmd_context.get_clip_ctx()
+  - file: tools/mtmd/mtmd.cpp
+    line: 410-412
+    method_or_func: mtmd_context.proj_type_v()
+  - file: tools/mtmd/mtmd.cpp
+    line: 414-416
+    method_or_func: mtmd_context.proj_type_a()
+  - file: tools/mtmd/mtmd.cpp
+    line: 418-422
+    method_or_func: mtmd_context.~mtmd_context()
+  - file: tools/mtmd/mtmd.cpp
+    line: 425-433
+    method_or_func: mtmd_context.lookup_token()
+  - file: tools/mtmd/mtmd.cpp
+    line: 435-447
+    method_or_func: mtmd_context.token_to_piece()
+  name: mtmd 核心上下文 —— 多模态推理的'交通指挥中心'
+  'no': 2
+  points:
+  - '**mtmd_context 构造：CLIP 模型的''装配车间'''
+  - '- 同时加载视觉编码器 (`ctx_v`) 和音频编码器 (`ctx_a`)，实现双模态''双引擎'''
+  - '- 嵌入维度一致性校验：文本嵌入维度必须等于视觉/音频投影器输出维度'
+  - '- 按 `projector_type` 分派初始化视觉/音频预处理器，支撑 20+ 种模型架构'
+  - '**init_vision()：视觉预处理器的''选美大赛'''
+  - '- MiniCPM-V、LLaVA-UHD 使用 `mtmd_image_preprocessor_llava_uhd`（支持图像切片）'
+  - '- Qwen2-VL/Qwen3-VL 使用 `mtmd_image_preprocessor_dyn_size`（动态尺寸）'
+  - '- Gemma3 使用固定尺寸预处理器，Kimi-VL 使用动态尺寸，InternVL/LFM2 走定制切片，DeepSeek-OCR/YouTuVL 走专用逻辑'
+  - '- 设置 img_beg/img_end 特殊标记 token，用于后续解码'
+  - '**init_audio()：音频预处理器的''调音师'''
+  - '- Whisper 系列（Qwen2A、Voxtral、Ultravox）：使用 `mtmd_audio_preprocessor_whisper`'
+  - '- Conformer 系列（LFM2A）：使用 `mtmd_audio_preprocessor_conformer`'
+  - '- 设置 aud_beg/aud_end，补充音频输入的起止标记'
+  - '**上下文工具与类型查询**'
+  - '- `get_clip_ctx()`：根据输入块类型返回视觉或音频 CLIP 上下文'
+  - '- `lookup_token()` / `token_to_piece()`：在词汇表中查询与转换 token（处理特殊标记）'
+  - '- `proj_type_v()` / `proj_type_a()`：查询当前视觉/音频投影器类型'
+- codes:
+  - file: tools/mtmd/mtmd.cpp
+    line: 508-521, 825-830
+    method_or_func: mtmd_tokenizer.mtmd_tokenizer()
+  - file: tools/mtmd/mtmd.cpp
+    line: 523-577, 845-858
+    method_or_func: mtmd_tokenizer.tokenize()
+  - file: tools/mtmd/mtmd.cpp
+    line: 579-601, 831-844
+    method_or_func: mtmd_tokenizer.add_text()
+  - file: tools/mtmd/mtmd.cpp
+    line: 603-794
+    method_or_func: mtmd_tokenizer.add_media()
+  - file: tools/mtmd/mtmd.cpp
+    line: 859-871
+    method_or_func: mtmd_tokenizer.add_image_media()
+  - file: tools/mtmd/mtmd.cpp
+    line: 872-921
+    method_or_func: mtmd_tokenizer.add_audio_media()
+  - file: tools/mtmd/mtmd.cpp
+    line: 922-940
+    method_or_func: mtmd_tokenizer.split_batch_to_chunk()
+  - file: tools/mtmd/mtmd.cpp
+    line: 941-959
+    method_or_func: mtmd_tokenizer.split_text()
+  - file: tools/mtmd/mtmd.cpp
+    line: 960-978
+    method_or_func: mtmd_tokenizer.mtmd_tokenize_text_internal()
+  name: Tokenization 与 Chunk 切分 —— 文本与媒体的'分词手术刀'
+  'no': 3
+  points:
+  - '**mtmd_tokenizer：多模态输入的''调度员'''
+  - '- 构造时保存上下文、文本、位图数组及词汇表引用，并自动兼容旧版 image_marker 为 media_marker'
+  - '- 按 `media_marker` (默认 `<__media__>`) 分割输入文本，交替生成文本 chunk 和媒体 chunk'
+  - '**tokenize() 主流程与特殊标记处理**'
+  - '- `split_text()`：按分隔符拆分字符串，保留分隔符作为独立部分'
+  - '- 自动插入 BOS/EOS：根据词汇表配置在首尾添加特殊 token'
+  - '- `add_text()`：将文本 token 追加到当前 chunk（连续文本自动合并）'
+  - '**媒体处理双通道**'
+  - '- `add_media()`：统一入口处理图像和音频，根据类型分发到图像或音频处理流程'
+  - '- `add_image_media()`：处理图像输入，调用图像预处理器生成 token，处理切片模板与网格布局'
+  - '- `add_audio_media()`：处理音频输入，调用音频预处理器生成梅尔频谱块，逐块封装为 audio chunk'
+  - '**辅助函数与批量处理**'
+  - '- `mtmd_tokenize_text_internal()`：处理 token 数量不确定的文本分词（动态扩容）'
+  - '- `split_batch_to_chunk()`：将 `clip_image_f32_batch` 拆分为独立的图像 chunk（每 entry 一个
+    chunk）'
+- codes:
+  - file: tools/mtmd/mtmd.cpp
+    line: 985-1010
+    method_or_func: mtmd_encode_chunk()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1011-1040
+    method_or_func: mtmd_encode()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1041-1043
+    method_or_func: mtmd_get_output_embd()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1044-1051
+    method_or_func: mtmd_decode_use_non_causal()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1052-1062
+    method_or_func: mtmd_decode_use_mrope()
+  - file: tools/mtmd/mtmd.cpp
+    line: 105-111
+    method_or_func: mtmd_get_clip_flash_attn_type()
+  - file: tools/mtmd/mtmd.cpp
+    line: 50-58
+    method_or_func: mtmd_image_tokens.clone()
+  - file: tools/mtmd/mtmd.cpp
+    line: 66-74
+    method_or_func: mtmd_audio_tokens.clone()
+  - file: tools/mtmd/mtmd-image.h
+    line: '17'
+    method_or_func: mtmd_image_preprocessor.mtmd_image_preprocessor()
+  - file: tools/mtmd/mtmd-image.h
+    line: '19'
+    method_or_func: mtmd_image_preprocessor.~mtmd_image_preprocessor()
+  - file: tools/mtmd/mtmd-image.h
+    line: '20'
+    method_or_func: mtmd_image_preprocessor.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: 22-23
+    method_or_func: mtmd_image_preprocessor.img_u8_to_f32()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 8-30
+    method_or_func: mtmd_image_preprocessor.img_u8_to_f32()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-30
+    method_or_func: mtmd_image_preprocessor.img_u8_to_f32 (overload)
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 39-90
+    method_or_func: img_tool.resize()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 91-110
+    method_or_func: img_tool.crop()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 151-170
+    method_or_func: img_tool.composite()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 171-180
+    method_or_func: img_tool.fill()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-5
+    method_or_func: img_tool.clip()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-5
+    method_or_func: img_tool.lerp()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-220
+    method_or_func: img_tool.resize_bilinear()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-280
+    method_or_func: img_tool.resize_bicubic()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-420
+    method_or_func: img_tool.resize_bicubic_pillow()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-125
+    method_or_func: img_tool.calc_size_preserved_ratio (overload 1)
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-150
+    method_or_func: img_tool.calc_size_preserved_ratio (overload 2)
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1-6
+    method_or_func: __main__
+  name: 多模态资源编码与图像预处理基座 —— 数据整形的'美容工坊'
+  'no': 4
+  points:
+  - '**编码与查询接口**'
+  - '- `mtmd_encode_chunk()`：统一处理文本（无操作）、图像（走 `mtmd_encode`）和音频（直接 `clip_image_batch_encode`）chunk'
+  - '- `mtmd_encode()`：针对 LLaVA/MiniCPM/GLM 等特殊模型逐张编码，或批量编码普通图像'
+  - '- `mtmd_get_output_embd()`：获取编码后的嵌入向量指针'
+  - '- `mtmd_decode_use_mrope()` / `mtmd_decode_use_non_causal()`：查询位置编码与注意力模式'
+  - '**图像预处理基类与工具集**'
+  - '- `mtmd_image_preprocessor::mtmd_image_preprocessor()` / `~mtmd_image_preprocessor()`：基类构造与析构'
+  - '- `mtmd_image_preprocessor::preprocess()`：纯虚接口，由派生类实现具体预处理逻辑'
+  - '- `mtmd_image_preprocessor::img_u8_to_f32()`（双重重载）：支持带 mean/std 归一化与不带归一化的转换'
+  - '- `img_tool::resize()`：智能缩放（支持 BILINEAR/BICUBIC/PILLOW 算法，可选保持比例+填充）'
+  - '- `img_tool::crop()` / `composite()` / `fill()`：图像裁剪、合成与纯色填充'
+  - '- `img_tool::clip()` / `lerp()`：基础数学工具函数'
+  - '**插值算法三剑客**'
+  - '- `resize_bilinear()`：双线性插值，平衡速度与质量'
+  - '- `resize_bicubic()`：双三次插值，更高质量的重采样'
+  - '- `resize_bicubic_pillow()`：基于Pillow算法的可分离双三次插值，定点优化'
+  - '**尺寸计算策略**'
+  - '- `calc_size_preserved_ratio()`（overload 1）：根据最长边和对齐约束计算缩放尺寸'
+  - '- `calc_size_preserved_ratio()`（overload 2）：根据最小/最大像素约束计算缩放尺寸（智能缩放）'
+- codes:
+  - file: tools/mtmd/mtmd-image.h
+    line: '45'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.mtmd_image_preprocessor_llava_uhd()
+  - file: tools/mtmd/mtmd-image.h
+    line: '46'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '57'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_slice_instructions()
+  - file: tools/mtmd/mtmd-image.h
+    line: '59'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.slice_image()
+  - file: tools/mtmd/mtmd-image.h
+    line: '61'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_best_resize()
+  - file: tools/mtmd/mtmd-image.h
+    line: '63'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.resize_maintain_aspect_ratio()
+  - file: tools/mtmd/mtmd-image.h
+    line: '72'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.select_best_resolution()
+  - file: tools/mtmd/mtmd-image.h
+    line: '73'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.ensure_divide()
+  - file: tools/mtmd/mtmd-image.h
+    line: '74'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_refine_size()
+  - file: tools/mtmd/mtmd-image.h
+    line: '75'
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_best_grid()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 386-400
+    method_or_func: mtmd_image_preprocessor_llava_uhd.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 402-697
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_slice_instructions()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 699-738
+    method_or_func: mtmd_image_preprocessor_llava_uhd.slice_image()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 741-754
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_best_resize()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 756-764
+    method_or_func: mtmd_image_preprocessor_llava_uhd.resize_maintain_aspect_ratio()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 766-774
+    method_or_func: mtmd_image_preprocessor_llava_uhd.select_best_resolution()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 776-778
+    method_or_func: mtmd_image_preprocessor_llava_uhd.ensure_divide()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 780-800
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_refine_size()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 802-827
+    method_or_func: mtmd_image_preprocessor_llava_uhd.get_best_grid()
+  - file: tools/mtmd/mtmd-image.h
+    line: '80'
+    method_or_func: mtmd_image_preprocessor_fixed_size.mtmd_image_preprocessor_fixed_size()
+  - file: tools/mtmd/mtmd-image.h
+    line: '81'
+    method_or_func: mtmd_image_preprocessor_fixed_size.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 829-840
+    method_or_func: mtmd_image_preprocessor_fixed_size.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '87'
+    method_or_func: mtmd_image_preprocessor_dyn_size.mtmd_image_preprocessor_dyn_size()
+  - file: tools/mtmd/mtmd-image.h
+    line: '88'
+    method_or_func: mtmd_image_preprocessor_dyn_size.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 842-862
+    method_or_func: mtmd_image_preprocessor_dyn_size.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '94'
+    method_or_func: mtmd_image_preprocessor_longest_edge.mtmd_image_preprocessor_longest_edge()
+  - file: tools/mtmd/mtmd-image.h
+    line: '95'
+    method_or_func: mtmd_image_preprocessor_longest_edge.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 864-884
+    method_or_func: mtmd_image_preprocessor_longest_edge.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '105'
+    method_or_func: mtmd_image_preprocessor_lfm2.get_slice_instructions()
+  - file: tools/mtmd/mtmd-image.h
+    line: 108-112
+    method_or_func: mtmd_image_preprocessor_lfm2.find_closest_aspect_ratio()
+  - file: tools/mtmd/mtmd-image.h
+    line: '113'
+    method_or_func: mtmd_image_preprocessor_lfm2.get_target_ratios()
+  - file: tools/mtmd/mtmd-image.h
+    line: '114'
+    method_or_func: mtmd_image_preprocessor_lfm2.get_grid_layout()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 886-935
+    method_or_func: mtmd_image_preprocessor_lfm2.get_slice_instructions()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 937-961
+    method_or_func: mtmd_image_preprocessor_lfm2.find_closest_aspect_ratio()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 963-985
+    method_or_func: mtmd_image_preprocessor_lfm2.get_target_ratios()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 987-991
+    method_or_func: mtmd_image_preprocessor_lfm2.get_grid_layout()
+  - file: tools/mtmd/mtmd-image.h
+    line: '117'
+    method_or_func: mtmd_image_preprocessor_idefics3.mtmd_image_preprocessor_idefics3()
+  - file: tools/mtmd/mtmd-image.h
+    line: '118'
+    method_or_func: mtmd_image_preprocessor_idefics3.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 993-1053
+    method_or_func: mtmd_image_preprocessor_idefics3.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '121'
+    method_or_func: mtmd_image_preprocessor_internvl.mtmd_image_preprocessor_internvl()
+  - file: tools/mtmd/mtmd-image.h
+    line: '122'
+    method_or_func: mtmd_image_preprocessor_internvl.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1055-1066
+    method_or_func: mtmd_image_preprocessor_internvl.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '125'
+    method_or_func: mtmd_image_preprocessor_deepseekocr.mtmd_image_preprocessor_deepseekocr()
+  - file: tools/mtmd/mtmd-image.h
+    line: '126'
+    method_or_func: mtmd_image_preprocessor_deepseekocr.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1068-1095
+    method_or_func: mtmd_image_preprocessor_deepseekocr.preprocess()
+  - file: tools/mtmd/mtmd-image.h
+    line: '129'
+    method_or_func: mtmd_image_preprocessor_youtuvl.mtmd_image_preprocessor_youtuvl()
+  - file: tools/mtmd/mtmd-image.h
+    line: '130'
+    method_or_func: mtmd_image_preprocessor_youtuvl.preprocess()
+  - file: tools/mtmd/mtmd-image.cpp
+    line: 1097-1152
+    method_or_func: mtmd_image_preprocessor_youtuvl.preprocess()
+  name: 专用图像预处理器家族 —— 各显神通的'整形外科医生'
+  'no': 5
+  points:
+  - '**LLaVA-UHD：高分辨率图像的''切片大师'''
+  - '- `mtmd_image_preprocessor_llava_uhd::mtmd_image_preprocessor_llava_uhd()`：构造函数初始化基类'
+  - '- `preprocess()`：执行切片预处理，生成 overview + 多切片'
+  - '- `get_slice_instructions()`：计算最佳切片策略（支持 pinpoints 候选分辨率或自动网格计算）'
+  - '- `slice_image()`：按指令裁剪图像为多个切片（overview_first 控制顺序）'
+  - '- `get_best_grid()` / `get_refine_size()` / `get_best_resize()`：网格布局优化与尺寸计算'
+  - '- `resize_maintain_aspect_ratio()` / `select_best_resolution()` / `ensure_divide()`：比例保持与对齐'
+  - '**LFM2 自适应网格切片**'
+  - '- `get_slice_instructions()`：基于 tile_size 和容差判断是否需要切片'
+  - '- `find_closest_aspect_ratio()`：在候选比例中寻找最接近原图的长宽比'
+  - '- `get_target_ratios()` / `get_grid_layout()`：生成候选比例并选择最佳网格'
+  - '**多样化预处理策略**'
+  - '- `fixed_size`：强制缩放到固定正方形（如 448x448）'
+  - '- `dyn_size`：基于 min/max_pixels 动态计算目标尺寸（保持比例）'
+  - '- `longest_edge`：限制最长边长度并等比缩放'
+  - '- `idefics3`：先按最长边约束缩放，再按 image_size 切分为 grid'
+  - '- `internvl`：基于 pinpoints 候选分辨率选择最佳缩放，支持 overview 后置'
+  - '- `deepseekocr`：根据面积选择最接近的原生分辨率（1024/1280），无切片'
+  - '- `youtuvl`：线性搜索最佳缩放比例以满足最大 patch 数限制'
+- codes:
+  - file: tools/mtmd/mtmd-audio.h
+    line: '31'
+    method_or_func: mtmd_audio_cache.fill_sin_cos_table()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '33'
+    method_or_func: mtmd_audio_cache.fill_hann_window()
+  - file: tools/mtmd/mtmd-audio.h
+    line: 38-48
+    method_or_func: mtmd_audio_cache.fill_mel_filterbank_matrix()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '58'
+    method_or_func: mtmd_audio_preprocessor.initialize()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '59'
+    method_or_func: mtmd_audio_preprocessor.preprocess()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '67'
+    method_or_func: mtmd_audio_preprocessor_whisper.initialize()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '68'
+    method_or_func: mtmd_audio_preprocessor_whisper.preprocess()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '76'
+    method_or_func: mtmd_audio_preprocessor_conformer.initialize()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '77'
+    method_or_func: mtmd_audio_preprocessor_conformer.preprocess()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '88'
+    method_or_func: mtmd_audio_streaming_istft.preprocessor_istft()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '91'
+    method_or_func: mtmd_audio_streaming_istft.reset()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '96'
+    method_or_func: mtmd_audio_streaming_istft.process_frame()
+  - file: tools/mtmd/mtmd-audio.h
+    line: '99'
+    method_or_func: mtmd_audio_streaming_istft.flush()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 16-24
+    method_or_func: mtmd_audio_cache.fill_sin_cos_table()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 26-32
+    method_or_func: mtmd_audio_cache.fill_hann_window()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 34-104
+    method_or_func: mtmd_audio_cache.fill_mel_filterbank_matrix()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 324-328
+    method_or_func: mtmd_audio_preprocessor_whisper.initialize()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 330-401
+    method_or_func: mtmd_audio_preprocessor_whisper.preprocess()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 409-413
+    method_or_func: mtmd_audio_preprocessor_conformer.initialize()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 415-453
+    method_or_func: mtmd_audio_preprocessor_conformer.preprocess()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 459-468
+    method_or_func: mtmd_audio_streaming_istft.mtmd_audio_streaming_istft()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 470-475
+    method_or_func: mtmd_audio_streaming_istft.reset()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 477-518
+    method_or_func: mtmd_audio_streaming_istft.process_frame()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 520-551
+    method_or_func: mtmd_audio_streaming_istft.flush()
+  - file: tools/mtmd/mtmd-audio.cpp
+    line: 1-14, 106-321
+    method_or_func: __main__
+  name: 音频预处理与特征提取 —— 声音世界的'频谱分析师'
+  'no': 6
+  points:
+  - '**mtmd_audio_cache：计算资源的''缓存仓库'''
+  - '- `fill_sin_cos_table()`：预计算 FFT 所需的正弦/余弦查找表'
+  - '- `fill_hann_window()`：生成汉宁窗函数（periodic/symmetric 可选）'
+  - '- `fill_mel_filterbank_matrix()`：构建梅尔滤波器组（Slaney 刻度，_area 归一化）'
+  - '**音频预处理器基类与双实现**'
+  - '- `mtmd_audio_preprocessor::initialize()` / `preprocess()`：抽象基类接口定义'
+  - '- `mtmd_audio_preprocessor_whisper::initialize()` / `preprocess()`：Whisper 风格，PCM
+    → FFT → Mel → 对数压缩 → 按 3000 帧分块'
+  - '- `mtmd_audio_preprocessor_conformer::initialize()` / `preprocess()`：Conformer
+    风格，支持中心填充、预强调和自然对数'
+  - '**流式 ISTFT：频谱到波形的''时光机'''
+  - '- `mtmd_audio_streaming_istft::mtmd_audio_streaming_istft()`：构造函数，初始化 FFT 大小、跳步、重叠缓冲区'
+  - '- `reset()`：重置内部状态与缓冲区'
+  - '- `process_frame()`：处理单帧频谱（重叠相加法），输出 hop_length 个样本'
+  - '- `flush()`：提取剩余缓冲区样本，完成流式处理'
+- codes:
+  - file: tools/mtmd/mtmd-helper.h
+    line: 23-30
+    method_or_func: mtmd_helper_log_set
+  - file: tools/mtmd/mtmd-helper.h
+    line: 31-34
+    method_or_func: mtmd_helper_bitmap_init_from_file
+  - file: tools/mtmd/mtmd-helper.h
+    line: 35-42
+    method_or_func: mtmd_helper_bitmap_init_from_buf
+  - file: tools/mtmd/mtmd-helper.h
+    line: 45-47
+    method_or_func: mtmd_helper_get_n_tokens
+  - file: tools/mtmd/mtmd-helper.h
+    line: 49-52
+    method_or_func: mtmd_helper_get_n_pos
+  - file: tools/mtmd/mtmd-helper.h
+    line: 54-67
+    method_or_func: mtmd_helper_eval_chunks
+  - file: tools/mtmd/mtmd-helper.h
+    line: 68-80
+    method_or_func: mtmd_helper_eval_chunk_single
+  - file: tools/mtmd/mtmd-helper.h
+    line: 83-95
+    method_or_func: mtmd_helper_decode_image_chunk
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 93-99
+    method_or_func: mtmd_helper_log_set()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 82-85
+    method_or_func: mtmd_helper_logger.log()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 64-80
+    method_or_func: mtmd_helper_logger.log_v()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 103-110
+    method_or_func: mtmd_helper_get_n_tokens()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 112-119
+    method_or_func: mtmd_helper_get_n_pos()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 155-173
+    method_or_func: decode_embd_batch.decode_embd_batch()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 175-182
+    method_or_func: decode_embd_batch.set_position_normal()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 185-201
+    method_or_func: decode_embd_batch.set_position_mrope_2d()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 204-219
+    method_or_func: decode_embd_batch.set_position_mrope_1d()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 222-246
+    method_or_func: decode_embd_batch.get_view()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 263-331
+    method_or_func: mtmd_helper_decode_image_chunk()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 336-405
+    method_or_func: mtmd_helper_eval_chunk_single()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 408-430
+    method_or_func: mtmd_helper_eval_chunks()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 462-486
+    method_or_func: mtmd_helper_bitmap_init_from_buf()
+  - file: tools/mtmd/mtmd-helper.cpp
+    line: 489-512
+    method_or_func: mtmd_helper_bitmap_init_from_file()
+  name: mtmd-helper 高层评估与资源加载 —— 解密'模型输入'的最后一公里
+  'no': 7
+  points:
+  - '**decode_embd_batch：M-RoPE 位置的''编排师''（含日志）'
+  - '- 构造时分配 pos/seq_id/logits 数组，支持普通（1维）与 M-RoPE（4维）位置'
+  - '- `set_position_normal()`：线性位置（pos_0 + i）'
+  - '- `set_position_mrope_2d()`：图像二维位置 (t=0, y, x, 0)，nx/ny 为网格尺寸'
+  - '- `set_position_mrope_1d()`：音频一维时间位置 (t, t, t, 0)'
+  - '- `get_view()`：支持 micro-batch 拆分，M-RoPE 模式需重新组织 pos 视图（块列转置）'
+  - '- `mtmd_helper_logger::log()` / `log_v()`：内部日志封装，支持变长参数与动态缓冲区'
+  - '**资源加载与统计**'
+  - '- `mtmd_helper_log_set()`：设置日志回调并同步到底层 mtmd'
+  - '- `mtmd_helper_get_n_tokens()` / `mtmd_helper_get_n_pos()`：统计输入 token 与位置总数'
+  - '- `mtmd_helper_bitmap_init_from_buf()` / `mtmd_helper_bitmap_init_from_file()`：自动检测类型并加载图像或音频资源（图像stb_image/音频miniaudio）'
+  - '**评估与解码流水线**'
+  - '- `mtmd_helper_eval_chunks()`：批量处理所有 chunk，自动分派文本与媒体'
+  - '- `mtmd_helper_eval_chunk_single()`：单 chunk 评估，文本直接 decode，媒体先 encode 再 decode'
+  - '- `mtmd_helper_decode_image_chunk()`：处理已编码的图像/音频嵌入，支持 M-RoPE 与非因果注意力'
+- codes:
+  - file: tools/mtmd/mtmd.cpp
+    line: 1267-1280
+    method_or_func: mtmd_debug_encode_impl()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1281-1297
+    method_or_func: mtmd_debug_encode_image()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1298-1320
+    method_or_func: mtmd_debug_encode_audio()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1321-1344
+    method_or_func: mtmd_debug_preprocess_image()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1345-1371
+    method_or_func: mtmd_debug_preprocess_audio()
+  - file: tools/mtmd/mtmd.cpp
+    line: 1232-1262
+    method_or_func: mtmd_test_create_input_chunks()
+  name: 多模态调试与测试 —— 模型行为的'显微镜'
+  'no': 8
+  points:
+  - '**调试编码接口**'
+  - '- `mtmd_debug_encode_impl()`：内部辅助函数，启用 debug 模式执行 CLIP 编码'
+  - '- `mtmd_debug_encode_image()`：对输入图像数据进行编码调试'
+  - '- `mtmd_debug_encode_audio()`：对输入音频数据进行编码调试'
+  - '**预处理验证**'
+  - '- `mtmd_debug_preprocess_image()`：验证图像预处理流程，输出切片信息'
+  - '- `mtmd_debug_preprocess_audio()`：验证音频预处理流程，输出梅尔频谱块信息'
+  - '**测试工具**'
+  - '- `mtmd_test_create_input_chunks()`：创建包含文本与图像 chunk 的测试用例，用于单元测试'

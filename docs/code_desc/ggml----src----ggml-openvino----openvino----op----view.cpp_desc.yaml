@@ -1,0 +1,56 @@
+classes: []
+desc: 该文件是 ggml 项目中 OpenVINO 后端的一个算子翻译器，用于将 ggml 的 view 操作转换为 OpenVINO 的图操作。它支持两种操作场景（op_case）：当
+  op_case 为 2 时，根据输出形状的第 2 和第 3 维计算乘积，调用 process_view_input 函数处理输入；当 op_case 为 3 时，先处理形状不匹配问题（必要时进行
+  Reshape），然后找到输入输出形状不同的维度，使用 Slice 算子在该维度上进行切片裁剪。对于其他未识别的 op_case，则直接返回原始输入。
+file: ggml/src/ggml-openvino/openvino/op/view.cpp
+funcs:
+- code:
+  - OutputVector translate_view(const NodeContext & context) {
+  - '    num_inputs_check(context, 1, 1);'
+  - ''
+  - '    if (context.get_op_case() == 2) {'
+  - '        auto dst_shape = context.get_output_shape().to_shape();'
+  - '        return rename_outputs_with_suffix({process_view_input(context, 0, dst_shape[2]
+    * dst_shape[3])},'
+  - '                                          context.get_name());'
+  - '    }'
+  - '    // op_case 3'
+  - '    if (context.get_op_case() == 3) {'
+  - '        auto input = context.get_input(0);'
+  - '        auto input_ov_shape = input.get_partial_shape();'
+  - ''
+  - '        auto input_llama_shape = context.get_input_shape(0).to_shape();'
+  - ''
+  - '        // if the input ov shape size is different from the input llama shape
+    size, it means the input is already reshaped and we need to reshape it back to
+    the original shape before slicing'
+  - '        if (input_ov_shape.size() != input_llama_shape.size()) {'
+  - '            input = std::make_shared<ov::op::v1::Reshape>(input, ov::op::v0::Constant::create(ov::element::i64,
+    {input_llama_shape.size()}, input_llama_shape), false);'
+  - '        }'
+  - ''
+  - '        auto dst_shape = context.get_output_shape().to_shape();'
+  - ''
+  - '        // find the index of dst_shape that is different from input shape, and
+    use that index to slice the input'
+  - '        int slice_dim = -1;'
+  - '        for (size_t i = 0; i < dst_shape.size(); ++i) {'
+  - '            if (dst_shape[i] != input_llama_shape[i]) {'
+  - '                slice_dim = i;'
+  - '                break;'
+  - '            }'
+  - '        }'
+  - ''
+  - '        auto begin = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});'
+  - '        auto end = ov::op::v0::Constant::create(ov::element::i64, {1}, {dst_shape[slice_dim]});'
+  - '        auto stride = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});'
+  - '        auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {slice_dim});'
+  - '        auto sliced = std::make_shared<ov::op::v8::Slice>(input, begin, end,
+    stride, axes);'
+  - '        return {sliced};'
+  - '    }'
+  - '    return {context.get_input(0)};'
+  - '}'
+  desc: 将 ggml 的 view 操作翻译为 OpenVINO 算子，支持两种不同的 op_case 处理逻辑：一种是基于输出形状维度乘积的变形，另一种是基于形状差异维度的切片操作。
+  line: 9-43
+  name: translate_view

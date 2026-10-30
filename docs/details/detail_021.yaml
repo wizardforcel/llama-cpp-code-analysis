@@ -1,0 +1,710 @@
+code_map:
+- src/llama-grammar.h
+- ├── 枚举与原子结构
+- '│   ├── enum llama_gretype                  # 9 种语法元素类型（END/ALT/RULE_REF/CHAR/CHAR_NOT/CHAR_RNG_UPPER/CHAR_ALT/CHAR_ANY/TOKEN/TOKEN_NOT）'
+- '│   ├── struct llama_grammar_element        # {type, value} 二元组'
+- '│   ├── struct llama_partial_utf8           # 跨 token 边界的部分 UTF-8 续接状态'
+- '│   └── struct llama_grammar_candidate      # 候选 token 包装（索引、码点、部分UTF-8、ID）'
+- ├── 类型别名
+- '│   ├── using llama_grammar_rule            # vector<element> 一条规则'
+- '│   ├── using llama_grammar_stack           # vector<const element*> 运行时栈'
+- '│   ├── using llama_grammar_rules           # 规则数组'
+- '│   └── using llama_grammar_stacks          # 多条候选推进路径'
+- ├── 解析器（llama_grammar_parser）
+- '│   ├── vocab / symbol_ids / rules          # 词表引用、符号表、规则表'
+- '│   ├── get_symbol_id / generate_symbol_id  # 命名/匿名符号分配'
+- '│   ├── add_rule                            # 自动扩容并写入规则'
+- '│   ├── parse_alternates / parse_sequence   # 选项/序列递归下降'
+- '│   ├── parse_rule / print / c_rules        # 单条规则解析、文本还原、C 接口转换'
+- '│   └── parse                               # 顶层入口与校验'
+- ├── 触发器（llama_grammar_trigger_pattern）
+- '│   ├── pattern / regex                     # 原始串与编译对象'
+- '│   └── find                                # ^...$ 全匹配 / regex_search 子串搜索'
+- ├── 运行时对象（llama_grammar）
+- '│   ├── vocab / rules / stacks              # 运行时数据三件套'
+- '│   ├── partial_utf8                        # 当前码点跨 token 续接'
+- '│   ├── lazy / awaiting_trigger             # 延迟语法开关'
+- '│   ├── trigger_buffer / trigger_buffer_positions  # 双轨触发缓冲'
+- '│   ├── trigger_tokens / trigger_patterns   # 触发源列表'
+- '│   └── token_pos (pair<llama_token, pair<size_t,size_t>>)  # token 位置记录'
+- └── 内部 API 声明
+- '    ├── llama_grammar_init_impl（数组版/字符串版）'
+- '    ├── llama_grammar_clone_impl'
+- '    ├── llama_grammar_free_impl'
+- '    ├── llama_grammar_apply_impl'
+- '    ├── llama_grammar_accept_impl / accept_str / accept_token'
+- '    └── llama_grammar_reject_candidates_for_stack'
+- src/llama-grammar.cpp
+- ├── 基础工具（helpers）
+- '│   ├── decode_utf8() 单字符版                # 14-31 行'
+- '│   ├── decode_utf8() 字符串版                # 33-95 行'
+- '│   ├── is_digit_char / is_word_char          # 字符分类'
+- '│   ├── parse_hex()                            # \x/\u/\U 转义'
+- '│   ├── parse_space                            # 空格/Tab/换行/# 注释'
+- '│   ├── parse_name / parse_int                 # 标识符/整数'
+- '│   ├── parse_char                             # 单字符字面量（含转义）'
+- '│   └── parse_token                            # <[id]> 与 <piece>'
+- ├── 打印与调试辅助
+- '│   ├── print_grammar_char                     # ASCII 直显 / 中文 <U+XXXX>'
+- '│   ├── is_char_element                        # 字符类判定'
+- '│   ├── print_rule_binary                      # 类型标签+十六进制值'
+- '│   ├── print_rule                             # 人类可读 GBNF 还原'
+- '│   └── llama_grammar_parser::c_rules / print  # C 接口转换与批量打印'
+- ├── 正则触发器（Regex utilities）
+- '│   └── llama_grammar_trigger_pattern::find    # 全匹配 / 子串搜索'
+- ├── 解析器成员实现
+- '│   ├── get_symbol_id / generate_symbol_id     # 437-455 行'
+- '│   ├── parse_alternates / parse_sequence      # 479-693 行'
+- '│   ├── parse_rule                             # 528-553 行'
+- '│   └── parse                                  # 695-733 行（顶层入口）'
+- ├── 字符/token 匹配引擎
+- '│   ├── llama_grammar_is_end_of_sequence       # 757-764 行'
+- '│   ├── llama_grammar_match_char               # 766-797 行（单字符）'
+- '│   ├── llama_grammar_match_partial_char       # 799-848 行（部分 UTF-8）'
+- '│   └── llama_grammar_match_token              # 850-859 行'
+- ├── 下推栈与左递归
+- '│   ├── llama_grammar_advance_stack            # 861-925 行（多 ALT 展开 + 去重）'
+- '│   ├── llama_grammar_detect_left_recursion    # 927-953 行（三色 DFS）'
+- '│   ├── llama_grammar_accept_chr               # 955-975 行'
+- '│   ├── llama_grammar_accept                   # 977-988 行'
+- '│   └── llama_grammar_accept_str               # 1388-1413 行'
+- ├── 候选过滤
+- '│   ├── llama_grammar_reject_candidates_for_stack  # 990-1057 行'
+- '│   └── llama_grammar_reject_candidates            # 1059-1075 行（多栈交集）'
+- ├── 语法对象构造与克隆
+- '│   ├── llama_grammar_init_impl（规则数组版）   # 1097-1135 行'
+- '│   ├── llama_grammar_init_impl（字符串版）     # 1181-1253 行'
+- '│   ├── llama_grammar_free_impl                # 1267-1275 行'
+- '│   └── llama_grammar_clone_impl               # 1277-1310 行（指针修复四重循环）'
+- ├── 与采样器集成
+- '│   ├── llama_grammar_apply_impl               # 1312-1347 行（候选 → logit 黑名单）'
+- '│   └── llama_grammar_accept_impl              # 1349-1386 行（含 lazy 状态机）'
+- └── 接受字符/token
+- '    └── llama_grammar_accept_token                  # 1415-1467 行'
+exercises:
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 14-233 行，掌握以下基础原语：
+  - 1. `decode_utf8()` 单字符/字符串两版（14-95 行）
+  - 2. `parse_hex()` / `parse_char()` / `parse_space()` / `parse_name()` / `parse_int()`（121-190
+    行）
+  - 3. `parse_token()`（192-233 行）
+  - 回答问题：
+  - '- 单字符版 `decode_utf8` 用哪个表判断字节长度？字符串版又用了哪个略有差异的 lookup？为什么要这样设计？'
+  - '- `parse_token` 在 `vocab == nullptr` 时如何处理？为什么必须有这个分支？'
+  - '- `<[123]>` 与 `<piece>` 两种语法分别对应什么使用场景？'
+  - '- 尝试手算字符串 `"a\\nb"` 在 `parse_char` 阶段的解析过程'
+  'no': 1
+  title: 通读词法与解析器入口
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 479-693 行，深入 `parse_alternates` 与 `parse_sequence`（注意：量词翻译逻辑为
+    `parse_sequence` 内的 lambda `handle_repetitions`，约 497-526 行）。
+  - 回答问题：
+  - '- `parse_sequence` 中 `[abc]` 字符集合与 `[^abc]` 否定集分别产生哪些 `llama_gretype` 序列？'
+  - '- lambda `handle_repetitions` 把 `S{m,n}` 翻译成什么结构？为什么 `n_opt = max_times - min_times`
+    是关键？'
+  - '- `MAX_REPETITION_THRESHOLD` 在哪些位置被检查？假设你写 `S{2000,2000}`，最终会产生多少条规则？'
+  - '- 用一张表写出 `S{2,4}` 展开后的规则序列（包括自动合成的 name_N 符号）'
+  'no': 2
+  title: 追踪规则展开与量词翻译
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 861-988 行，关注 `llama_grammar_advance_stack` 与 `llama_grammar_accept`。
+  - 回答问题：
+  - '- `std::set` 按指针地址排序去重，是如何避免同一栈被重复展开的？请结合 `RULE_REF` 引用同一规则时的情况说明。'
+  - '- 当栈顶为 `LLAMA_GRETYPE_RULE_REF` 时，函数会为规则的每个 `ALT` 分支生成一个新栈，这种「分支爆炸」如何被 `seen`
+    集合压制？'
+  - '- `llama_grammar_accept` 与 `llama_grammar_accept_chr` 的关系是什么？'
+  - '- 给定规则 `A ::= "x" B | "y"` 且 `B ::= "z"`，手写「输入字符 `x`」后栈的变化过程'
+  'no': 3
+  title: 推演下推自动机的栈推进
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 927-953 行的 `llama_grammar_detect_left_recursion`，以及两个
+    `llama_grammar_init_impl`（1097-1135 / 1181-1253 行）中调用它的位置。
+  - 回答问题：
+  - '- 三色 DFS 如何用 `rules_in_progress`（灰）/ `rules_visited`（黑）发现左递归环路？'
+  - '- `rules_may_be_empty` 在何时被置位？它在第二遍扫描里如何决定「继续向右探测非终结符」？'
+  - '- 为什么说「左递归会触发 `LLAMA_LOG_ERROR` 并返回 `nullptr`，而不是抛异常」？'
+  - '- 给定规则 `A ::= A "x" | "y"`，用伪代码写出三色 DFS 的访问顺序'
+  'no': 4
+  title: 剖析左递归检测与空串推导
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 990-1075 行（`reject_candidates_for_stack` / `reject_candidates`）以及
+    1312-1347 行（`apply_impl`）。
+  - 回答问题：
+  - '- 当栈顶为 `LLAMA_GRETYPE_TOKEN` 时，函数如何利用 `tok.code_points` 与 `tok.partial_utf8`
+    的哨兵值 `0` 区分「码点耗尽」与「继续匹配」？'
+  - '- 栈为空时函数会拒绝所有「仍含未消费码点或部分 UTF-8」的 token，这与 EOG（end-of-generation）有什么关系？'
+  - '- `apply_impl` 如何把 `reject_candidates` 的输出转成 `logit = -INFINITY`？为什么这样就能让采样器自然跳过？'
+  - '- 如果候选 token 同时被多个栈拒绝，是否会被多次置为 -INFINITY？这样有什么副作用吗？'
+  'no': 5
+  title: 拆解候选 token 过滤与采样器集成
+- contents:
+  - 为以下场景设计一个 lazy 语法并验证：让模型先自由生成解释文本，遇到关键字 `JSON:` 后才进入严格 JSON 输出模式。
+  - 提示：
+  - '- 触发 token 选 `JSON:` 对应的词表 ID'
+  - '- 触发正则可写 `JSON:\s*`'
+  - '- `trigger_buffer_positions` 会自动按 token 边界回放'
+  - 请尝试回答：
+  - '- 触发前，`awaiting_trigger = ?` 时 `apply_impl` 直接 return，会带来什么好处？'
+  - '- 触发后回放过程中，如果 token 跨越 trigger 起点会发生什么？'
+  - '- 触发条件同时设置 token 列表与正则列表，哪个先匹配就先触发吗？'
+  'no': 6
+  title: 设计一个延迟触发的 JSON 输出语法
+- contents:
+  - 阅读 `src/llama-grammar.cpp` 1277-1310 行的 `llama_grammar_clone_impl`。
+  - 回答问题：
+  - '- 为什么必须用四重循环（栈×栈内位置×旧规则×旧规则内位置）来修复指针？'
+  - '- 直接用 `std::vector` 深拷贝 rules 后再 deepcopy stacks 是否可行？为什么？'
+  - '- 假设旧栈中存在多个栈项指向同一条 `grammar.rules[i][j]`，新栈中它们仍然共享同一地址吗？'
+  - '- 这种「指针重定向」方案有什么潜在的性能瓶颈？O(stacks × 元素数 × rules × 规则长度)'
+  'no': 7
+  title: 阅读 clone_impl 的指针修复算法
+learning_targets:
+- 理解 GBNF 语法元素的统一抽象（llama_gretype 枚举与 llama_grammar_element 二元组结构）
+- 掌握 GBNF 解析器从文本到规则数组的完整流水线（parse_space → parse_name → parse_token → parse_sequence
+  → parse_alternates → parse_rule）
+- 了解字符范围、token 字面、重复量词（*/+/?/{m,n}）的解析机制与左递归检测
+- 理解下推自动机栈推进模型（llama_grammar_advance_stack）的多 ALT 分支展开与去重
+- 掌握候选 token 过滤（llama_grammar_reject_candidates）如何把语法约束映射到 logits
+- 熟悉延迟触发语法（lazy grammar）的 await 状态机、token 与正则触发条件及回放机制
+- 能阅读、修改并扩展自定义 GBNF 语法规则
+life_analogy:
+- 把 GBNF 语法系统想象成一个**出行检查站**：
+- '- **token（单词）** = 一位位旅客，每个人随身携带着行李（字符/码点）'
+- '- **llama_gretype 枚举** = 行李安检的几种检查类型（X 光机 / 人工开包 / 嗅探犬 / 通行章）'
+- '- **llama_grammar_element** = 每张行李清单上的单项标签（{类型, 编号}）'
+- '- **parse 解析** = 把贴在墙上的「安检规则」逐条读懂并转写成机器可识别的清单'
+- '- **重复量词 `*` / `+` / `{m,n}`** = 给某条规则批量生成子规则的复印机（复印太多就熔断保险丝）'
+- '- **左递归检测** = 检查规则中有没有「请把 A 规则再查一次自己」的死循环陷阱'
+- '- **llama_grammar_advance_stack** = 把「指向规则名」的标签展开为「具体要检查的物品」清单'
+- '- **下推栈（stack）** = 当前手头正在等待检查的物品序列，处理完一项就 pop 下一项'
+- '- **match_char / match_token** = 真正去翻看物品是否符合规则的判断器'
+- '- **reject_candidates** = 把候选 token 一一过安检，不合规的就贴上「-∞」拒绝登机'
+- '- **lazy 延迟触发** = 闸口平时开放，谁走过都放行；一旦识别到「触发关键词/正则」，闸机立刻落下开始严格检查'
+- '- **trigger_buffer + trigger_buffer_positions** = 闸口前的缓冲带，同时记录「文本快照」和「旅客编号」，触发后按编号精准回放'
+- 整套机制的设计哲学是：**先把规则「翻译」成机器可遍历的元素流，再用栈推进模拟推导出所有合法序列，最后在采样阶段把不合法的 token 拒之门外。**
+'no': 20
+summary:
+- concept: '`llama_gretype`'
+  desc: 9 类语法元素枚举，统一字符/token/规则/区间/集合的标签体系
+- concept: '`llama_grammar_element`'
+  desc: '{type, value} 二元组，是规则的最小积木'
+- concept: '`struct llama_grammar`'
+  desc: 运行时语法实例，聚合 vocab/rules/stacks/触发器等所有状态
+- concept: '`struct llama_grammar_trigger_pattern`'
+  desc: 正则触发器，封装 pattern + std::regex 编译对象与 find 方法
+- concept: '`decode_utf8`'
+  desc: 单字符/字符串双版本，支持跨 token 部分 UTF-8 续接
+- concept: '`parse_space / parse_name / parse_int`'
+  desc: '词法跳过与命名识别，理解 # 行注释'
+- concept: '`parse_char / parse_hex`'
+  desc: 处理 \x/\u/\U/\t/\r/\n/\\ 等字面与十六进制转义
+- concept: '`parse_token`'
+  desc: 支持 <[id]> 直接 ID 与 <piece> 词表反查两种 token 字面
+- concept: '`llama_grammar_parser`'
+  desc: 解析器类，封装 vocab / symbol_ids / rules 与解析入口
+- concept: '`get_symbol_id`'
+  desc: 显式命名 → 数字 ID 的查表分配
+- concept: '`generate_symbol_id`'
+  desc: 匿名规则用 name_N 形式合成新符号 ID
+- concept: '`add_rule`'
+  desc: 按 rule_id 自动扩容 rules 容器并写入规则
+- concept: '`parse_alternates`'
+  desc: 递归下降完成 `name ::= seq | seq | ...` 的选项组装
+- concept: '`parse_sequence`'
+  desc: 序列元素（含字面串、字符集、token、量词、分组）解析主循环
+- concept: '`parse_rule`'
+  desc: 解析单条 `name ::= alternates` 规则
+- concept: '`parse`'
+  desc: 顶层入口，校验所有规则非空、所有 RULE_REF 指向已存在规则
+- concept: '`print`'
+  desc: 反向建立 symbol_id_names 后批量打印 GBNF 文本
+- concept: '`c_rules`'
+  desc: 将 vector<vector<element>> 转换为 vector<element*> 的 C 接口数据
+- concept: 重复量词翻译逻辑（位于 parse_sequence 内的 lambda）
+  desc: 把 */+/?/{m,n} 量词翻译为多条合成规则（name_N），并设置 2000 阈值防爆
+- concept: '`MAX_REPETITION_THRESHOLD = 2000`'
+  desc: 防止恶意/错误语法生成的规则数爆炸
+- concept: '`print_rule / print_rule_binary`'
+  desc: 人类可读 GBNF 文本 / 类型标签调试输出
+- concept: '`llama_grammar_is_end_of_sequence`'
+  desc: 识别 END/ALT 这两个栈推进终止哨兵
+- concept: '`llama_grammar_match_char`'
+  desc: 字符级匹配，支持 [a] / [a-z] / [abc] / . 四类语法
+- concept: '`llama_grammar_match_partial_char`'
+  desc: 用区间 [low, high] 判断部分 UTF-8 是否能补全为合法字符
+- concept: '`llama_grammar_match_token`'
+  desc: token ID 等值匹配，支持 TOKEN_NOT 反向匹配
+- concept: '`llama_grammar_advance_stack`'
+  desc: 将 RULE_REF 展开为具体元素序列，按指针地址去重防止指数级栈爆炸
+- concept: '`llama_grammar_detect_left_recursion`'
+  desc: 三色 DFS 检测左递归，并顺便计算每条规则是否能推导出空串
+- concept: '`llama_grammar_accept_chr`'
+  desc: 单字符驱动单栈推进，忽略 token 类型元素
+- concept: '`llama_grammar_accept`'
+  desc: 单字符驱动所有栈并行推进
+- concept: '`llama_grammar_accept_str`'
+  desc: 字符串版本，按码点逐字符 accept 并维护 partial_utf8
+- concept: '`llama_grammar_reject_candidates_for_stack`'
+  desc: 单栈过滤：遍历候选 token 的码点序列，逐字符判断
+- concept: '`llama_grammar_reject_candidates`'
+  desc: 多栈交集过滤，多栈都拒绝的 token 才最终拒绝
+- concept: '`llama_grammar_apply_impl`'
+  desc: 把被拒绝 token 的 logit 设为 -INFINITY，直接喂给采样器
+- concept: '`llama_grammar_init_impl`（数组/字符串双版本）'
+  desc: 构造运行时 grammar 实例，把 vec_rules 用 std::move 送进对象以保证栈指针有效
+- concept: '`llama_grammar_clone_impl`'
+  desc: 四重循环重定向栈中指针到新 rules 内存，完成深拷贝
+- concept: '`llama_grammar_free_impl`'
+  desc: delete grammar，所有数据成员均为 RAII 自管
+- concept: '`llama_grammar_accept_impl`'
+  desc: 含 lazy 状态机的 token 接受入口，处理触发与正常两种路径
+- concept: '`llama_grammar_accept_token`'
+  desc: 单 token 推进所有栈，按栈顶类型分别匹配 token / 字符码点
+- concept: '`llama_grammar_get_rules / get_stacks`'
+  desc: 暴露 rules 与 stacks 给测试代码的访问器
+- concept: '`partial_utf8`'
+  desc: 维护跨 token 边界的 UTF-8 续接状态，避免多字节字符被错误切分
+- concept: '`awaiting_trigger` 状态机'
+  desc: lazy 语法的「等待触发」开关
+- concept: '`trigger_tokens / trigger_patterns`'
+  desc: 触发源：精确 token ID 列表 + 正则表达式列表
+- concept: '`trigger_buffer / trigger_buffer_positions`'
+  desc: 双轨缓冲：文本用于正则匹配，位置用于精确回放 token
+- concept: '`llama_grammar_trigger_pattern::find`'
+  desc: ^...$ 全匹配 + 普通 regex_search 子串搜索
+- concept: '`is_eog` 处理'
+  desc: grammar 拒绝 EOG 时报 GGML_ABORT；允许 EOG 时栈为空即可退出
+units:
+- codes:
+  - file: src/llama-grammar.h
+    line: 9-36
+    method_or_func: enum llama_gretype
+  - file: src/llama-grammar.h
+    line: 138-165
+    method_or_func: struct llama_grammar
+  - file: src/llama-grammar.h
+    line: 105-113
+    method_or_func: struct llama_grammar_trigger_pattern
+  - file: src/llama-grammar.cpp
+    line: 14-31
+    method_or_func: decode_utf8()
+  - file: src/llama-grammar.cpp
+    line: 33-95
+    method_or_func: decode_utf8()
+  - file: src/llama-grammar.cpp
+    line: 121-139
+    method_or_func: parse_hex()
+  - file: src/llama-grammar.cpp
+    line: 166-190
+    method_or_func: parse_char()
+  - file: src/llama-grammar.cpp
+    line: 97-99
+    method_or_func: is_digit_char()
+  - file: src/llama-grammar.cpp
+    line: 101-104
+    method_or_func: is_word_char()
+  name: GBNF 词法分析基石 —— 解读语法的「字符密码本」
+  'no': 1
+  points:
+  - '**`llama_gretype` 枚举：语法元素的全集**'
+  - '- 定义 GBNF 文法中所有可能出现的语法元素类型'
+  - '- 涵盖终结符（CHAR、TOKEN、CHAR_ANY）与非终结符（RULE_REF）'
+  - '- 包含特殊控制元素：END、ALT、CHAR_NOT、CHAR_RNG_UPPER、CHAR_ALT'
+  - '**`llama_grammar_element` 结构：最小的语法积木**'
+  - '- 用 `{type, value}` 二元组表示每一个原子单位'
+  - '- `value` 字段根据 `type` 多态承载 Unicode 码点、规则 ID 或 token ID'
+  - '**`struct llama_grammar`：运行时语法的容器**'
+  - '- 聚合 vocab、rules、stacks 三大运行时数据'
+  - '- 维护 partial_utf8、lazy/awaiting_trigger、trigger_buffer 等触发状态'
+  - '- `token_pos = pair<llama_token, pair<size_t,size_t>>` 记录 token 在 trigger_buffer
+    中的位置'
+  - '**`struct llama_grammar_trigger_pattern`：正则触发器**'
+  - '- 持有 pattern 原文与 std::regex 编译对象'
+  - '- find 方法同时支持 ^...$ 全匹配与普通 regex_search'
+  - '**`decode_utf8` 工具：把字节序列翻译成码点**'
+  - '- 单字符版通过查表确定 UTF-8 字节长度并拼接'
+  - '- 字符串版支持跨 token 边界的部分序列拼接（`partial_utf8`）'
+  - '- 遇到非法序列时返回 `{0, -1}` 哨兵值'
+  - '**字符分类与十六进制解析**'
+  - '- `is_digit_char` / `is_word_char` 用于词法边界判断'
+  - '- `parse_hex` 支持 `\x`/`\u`/`\U` 三种转义长度（2/4/8）'
+  - '- `parse_char` 处理 `\t`/`\r`/`\n` 与 `\\`/`\"`/`\[`/`\]` 等字面转义'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 141-155
+    method_or_func: parse_space()
+  - file: src/llama-grammar.cpp
+    line: 157-166
+    method_or_func: parse_name()
+  - file: src/llama-grammar.cpp
+    line: 169-180
+    method_or_func: parse_int()
+  - file: src/llama-grammar.cpp
+    line: 192-233
+    method_or_func: parse_token()
+  - file: src/llama-grammar.h
+    line: 82-103
+    method_or_func: struct llama_grammar_parser
+  - file: src/llama-grammar.cpp
+    line: 437-442
+    method_or_func: llama_grammar_parser::get_symbol_id()
+  - file: src/llama-grammar.cpp
+    line: 444-448
+    method_or_func: llama_grammar_parser::generate_symbol_id()
+  - file: src/llama-grammar.cpp
+    line: 450-455
+    method_or_func: llama_grammar_parser::add_rule()
+  - file: src/llama-grammar.cpp
+    line: 528-553
+    method_or_func: llama_grammar_parser::parse_rule()
+  - file: src/llama-grammar.cpp
+    line: 479-490
+    method_or_func: llama_grammar_parser::parse_alternates()
+  - file: src/llama-grammar.cpp
+    line: 492-693
+    method_or_func: llama_grammar_parser::parse_sequence()
+  name: 规则解析主干 —— 从文本到语法元素流
+  'no': 2
+  points:
+  - '**词法跳过与命名识别**'
+  - '- `parse_space` 处理空格/Tab/换行，并支持 `#` 行注释'
+  - '- `parse_name` / `parse_int` 分别识别标识符与整数'
+  - '**Token 字面解析**'
+  - '- `parse_token` 支持两种语法：`<[123]>`（直接 ID）和 `<piece>`（依赖词表）'
+  - '- 当 `vocab == nullptr` 时只能使用数字 ID 形式'
+  - '- 字面 token 形式通过 `vocab->tokenize` 反查 ID，必须恰好分词为 1 个 token'
+  - '**`llama_grammar_parser` 类骨架**'
+  - '- 聚合 vocab / symbol_ids / rules 三大成员'
+  - '- 通过 `get_symbol_id` / `generate_symbol_id` 完成符号分配'
+  - '- 提供 parse / print / c_rules 三大对外接口'
+  - '**`parse_rule`：解析 `name ::= alternates`**'
+  - '- 提取规则名 → 校验 `::=` → 委托给 `parse_alternates`'
+  - '- 处理行尾的 `\r\n` / `\n`，并递归扫描后续规则'
+  - '**`parse_alternates` 与 `parse_sequence`**'
+  - '- 在选项之间插入 `LLAMA_GRETYPE_ALT` 分隔符'
+  - '- 序列末尾追加 `LLAMA_GRETYPE_END` 哨兵元素'
+  - '- `add_rule` 自动扩容 rules 并写入新规则'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 557-693
+    method_or_func: llama_grammar_parser::parse_sequence()
+  - file: src/llama-grammar.cpp
+    line: 479-693
+    method_or_func: __main__
+  name: 字符范围与重复操作符 —— 文法的「量词引擎」
+  'no': 3
+  points:
+  - '**`[abc]` / `[a-z]` / `[^...]` 字符集合**'
+  - '- `parse_sequence` 识别 `[` 后切换至字符范围解析状态'
+  - '- `^` 触发 `LLAMA_GRETYPE_CHAR_NOT` 否定匹配'
+  - '- `-` 触发 `LLAMA_GRETYPE_CHAR_RNG_UPPER` 区间上限'
+  - '- 连续字符使用 `LLAMA_GRETYPE_CHAR_ALT` 串联'
+  - '**Token 直接引用与取反**'
+  - '- `<` 解析 token 字面（正向）'
+  - '- `!` 前缀产生 `LLAMA_GRETYPE_TOKEN_NOT`（取反匹配）'
+  - '**重复量词 `*` / `+` / `?` / `{m,n}`**'
+  - '- 内部通过 `parse_sequence` 内的 lambda 实现展开为额外规则'
+  - '- `S{m,n}` 拆为 `min` 份直接展开 + 递归规则实现可选区间'
+  - '- `MAX_REPETITION_THRESHOLD = 2000` 防止规则爆炸'
+  - '- `n_prev_rules` 跟踪累积规则数，及时中断'
+  - '**分组 `()` 与任意字符 `.`**'
+  - '- 括号内递归调用 `parse_alternates` 合成 name_N 子规则'
+  - '- `.` 直接产出 `LLAMA_GRETYPE_CHAR_ANY`'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 437-442
+    method_or_func: llama_grammar_parser::get_symbol_id()
+  - file: src/llama-grammar.cpp
+    line: 444-448
+    method_or_func: llama_grammar_parser::generate_symbol_id()
+  - file: src/llama-grammar.cpp
+    line: 450-455
+    method_or_func: llama_grammar_parser::add_rule()
+  - file: src/llama-grammar.cpp
+    line: 695-733
+    method_or_func: llama_grammar_parser::parse()
+  - file: src/llama-grammar.cpp
+    line: 735-755
+    method_or_func: llama_grammar_parser::print()
+  - file: src/llama-grammar.cpp
+    line: 757-764
+    method_or_func: llama_grammar_parser::c_rules()
+  - file: src/llama-grammar.h
+    line: 82-103
+    method_or_func: llama_grammar_parser.*
+  name: 语法校验与符号表 —— 防御性「规则审查官」
+  'no': 4
+  points:
+  - '**符号 ID 自动分配**'
+  - '- `get_symbol_id`：显式名称（如 `root`）→ 数字 ID 映射'
+  - '- `generate_symbol_id`：通过 `name_N` 形式合成分组括号 / 重复产生的匿名规则'
+  - '- `add_rule` 自动扩容 `rules` 容器，确保按 ID 索引访问合法'
+  - '**`parse` 顶层入口**'
+  - '- 反复调用 `parse_rule` 直至字符串耗尽'
+  - '- 校验所有规则非空、引用 ID 必须存在'
+  - '- 错误时打印 `error parsing grammar` 并清空 `rules` 返回 false'
+  - '**`print` 调试输出**'
+  - '- 反向建立 `symbol_id_names`（数字 → 字符串名）'
+  - '- 按规则 ID 顺序调用 `print_rule` 还原语法文本'
+  - '**`c_rules` 数据导出**'
+  - '- 把 vector<vector<element>> 转成 vector<element*>'
+  - '- 用于无规则修改需求的 C 接口（accept_* / apply_impl）'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 757-764
+    method_or_func: llama_grammar_is_end_of_sequence()
+  - file: src/llama-grammar.cpp
+    line: 766-797
+    method_or_func: llama_grammar_match_char()
+  - file: src/llama-grammar.cpp
+    line: 799-848
+    method_or_func: llama_grammar_match_partial_char()
+  - file: src/llama-grammar.cpp
+    line: 850-859
+    method_or_func: llama_grammar_match_token()
+  name: 字符与 Token 匹配引擎 —— 「合法字符的过滤器」
+  'no': 5
+  points:
+  - '**`llama_grammar_is_end_of_sequence`**'
+  - '- 识别 `LLAMA_GRETYPE_END` / `LLAMA_GRETYPE_ALT` 作为序列终结标记'
+  - '- 在栈推进、规则引用、候选过滤中频繁出现'
+  - '**`llama_grammar_match_char`：字符范围匹配**'
+  - '- 支持单字符、范围 `[a-z]`、任意字符 `.`、字符集合 `[abc]`'
+  - '- 通过 `LLAMA_GRETYPE_CHAR_ALT` 链式串联多组字符集合'
+  - '- 返回 `{是否匹配, 匹配后的下一个元素指针}`，驱动后续栈推进'
+  - '**`llama_grammar_match_partial_char`：部分 UTF-8 匹配**'
+  - '- 处理跨 token 边界的码点序列'
+  - '- 通过区间 `[low, high]` 判断「部分值能否补全为合法字符」'
+  - '- 排除 7 位字符被错误跨字节切分（overlong）的情况'
+  - '**`llama_grammar_match_token`：token 匹配**'
+  - '- 仅判断 token ID 等于/不等于规则中的字面 ID'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 861-925
+    method_or_func: llama_grammar_advance_stack()
+  - file: src/llama-grammar.cpp
+    line: 977-988
+    method_or_func: llama_grammar_accept()
+  - file: src/llama-grammar.cpp
+    line: 955-975
+    method_or_func: llama_grammar_accept_chr()
+  - file: src/llama-grammar.cpp
+    line: 1388-1413
+    method_or_func: llama_grammar_accept_str()
+  name: 下推栈推进 —— 语法推理的「状态机引擎」
+  'no': 6
+  points:
+  - '**`llama_grammar_advance_stack`：从规则引用展开为栈**'
+  - '- 遇到 `LLAMA_GRETYPE_RULE_REF` 时，将引用替换为具体规则的元素序列'
+  - '- 处理同一规则的多个 `LLAMA_GRETYPE_ALT` 分支，每条都生成独立的新栈'
+  - '- 使用 `std::set`（按指针地址排序）去重，防止指数级栈爆炸'
+  - '- 栈顶为字符/token 类型时即为终止状态，加入 `new_stacks`'
+  - '**`llama_grammar_accept`：单字符驱动栈推进**'
+  - '- 仅检查栈顶是否为字符类元素'
+  - '- 调用 `llama_grammar_match_char` 后弹出栈顶并 push 后续元素'
+  - '- 通过 `llama_grammar_advance_stack` 二次展开新的非终结符'
+  - '**`llama_grammar_accept_chr` 与延迟 Token**'
+  - '- 若栈顶是 token 类型则忽略字符，等待整个 token 进入'
+  - '- 字符匹配成功后弹出并继续展开新栈'
+  - '**`llama_grammar_accept_str`：字符串驱动栈推进**'
+  - '- 纯字符版本（不含 token 边界）'
+  - '- 逐码点调用 `llama_grammar_accept`，并保留 `partial_utf8` 状态'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 927-953
+    method_or_func: llama_grammar_detect_left_recursion()
+  - file: src/llama-grammar.cpp
+    line: 1097-1135
+    method_or_func: llama_grammar_init_impl()
+  - file: src/llama-grammar.cpp
+    line: 1181-1253
+    method_or_func: llama_grammar_init_impl()
+  name: 左递归检测 —— 语法正确性的「静态分析哨兵」
+  'no': 7
+  points:
+  - '**`llama_grammar_detect_left_recursion`**'
+  - '- 使用三色 DFS：`rules_in_progress`（灰色）/ `rules_visited`（黑色）/ `rules_may_be_empty`（推导空串的标记）'
+  - '- 灰冲灰即发现环路 → 报左递归错误'
+  - '- 同时计算每条规则是否可能推导出空串，用于后续判断何时可以停止递归'
+  - '- `recurse_into_nonterminal` 标志：左侧规则可推空时才继续向右探测'
+  - '**两个 `llama_grammar_init_impl` 重载的复用**'
+  - '- 都先调用 `llama_grammar_detect_left_recursion`'
+  - '- 一旦发现左递归即返回 `nullptr`，并将日志写入 `LLAMA_LOG_ERROR`'
+  - '- 这保证了构造出的 `llama_grammar` 在栈推进时不会陷入无限递归'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 1097-1135
+    method_or_func: llama_grammar_init_impl()
+  - file: src/llama-grammar.cpp
+    line: 1181-1253
+    method_or_func: llama_grammar_init_impl()
+  - file: src/llama-grammar.cpp
+    line: 1277-1310
+    method_or_func: llama_grammar_clone_impl()
+  - file: src/llama-grammar.cpp
+    line: 1267-1275
+    method_or_func: llama_grammar_free_impl()
+  - file: src/llama-grammar.cpp
+    line: 955-957
+    method_or_func: llama_grammar_get_rules()
+  - file: src/llama-grammar.cpp
+    line: 959-961
+    method_or_func: llama_grammar_get_stacks()
+  - file: src/llama-grammar.h
+    line: 138-165
+    method_or_func: struct llama_grammar
+  name: 语法对象构造与克隆 —— 从文本到运行时实例
+  'no': 8
+  points:
+  - '**`llama_grammar_init_impl`（规则数组版）**'
+  - '- 将 `llama_grammar_element **` 形式的规则数组转换为 `vector<vector<element>>`'
+  - '- 起点规则的每个 `ALT` 分支都生成一个初始栈'
+  - '- 通过 `std::move(vec_rules)` 保证栈中指针不会失效'
+  - '**`llama_grammar_init_impl`（字符串版）**'
+  - '- 调用 `parser.parse(grammar_str)` 解析文本'
+  - '- 校验起始符号 `grammar_root` 必须存在于 `symbol_ids`'
+  - '- 支持 `lazy` / `trigger_patterns` / `trigger_tokens` 三个可选字段'
+  - '**`llama_grammar_clone_impl`：深拷贝后修复指针**'
+  - '- 复制 `vocab` / `rules` / `stacks` / 触发器等所有字段'
+  - '- 通过四重循环比对指针地址，将 `stacks` 中的指针重定向到新的 `rules` 内存'
+  - '**`llama_grammar_free_impl`**'
+  - '- 直接 `delete grammar`，所有数据成员均为 RAII 自管'
+  - '**`llama_grammar_get_rules` / `llama_grammar_get_stacks`**'
+  - '- 测试用 API：暴露内部 rules 与 stacks 引用'
+  - '- 不参与正常推理流程'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 990-1057
+    method_or_func: llama_grammar_reject_candidates_for_stack()
+  - file: src/llama-grammar.cpp
+    line: 1059-1075
+    method_or_func: llama_grammar_reject_candidates()
+  - file: src/llama-grammar.cpp
+    line: 1312-1347
+    method_or_func: llama_grammar_apply_impl()
+  name: 候选 Token 过滤 —— 让采样「按规矩出牌」
+  'no': 9
+  points:
+  - '**`llama_grammar_reject_candidates_for_stack`**'
+  - '- 单栈过滤：返回不匹配当前栈顶的候选集合'
+  - '- 栈为空时只拒绝仍有未消费码点 / 部分 UTF-8 的 token'
+  - '- 栈顶为 token 时直接比较 ID（支持 `TOKEN_NOT` 反向匹配）'
+  - '- 栈顶为字符时遍历 token 的码点序列逐字符匹配'
+  - '**`llama_grammar_reject_candidates`**'
+  - '- 多栈交集：调用单栈版本并逐步裁剪结果'
+  - '- 多栈都拒绝的 token 才被最终拒绝'
+  - '**`llama_grammar_apply_impl` 与采样器集成**'
+  - '- 把所有候选 token 解码为码点 + 部分 UTF-8'
+  - '- 调用 `reject_candidates` 得到黑名单'
+  - '- 将被拒绝 token 的 `logit` 设为 `-INFINITY`，让采样器无法选中'
+  - '- 单独处理 `is_eog` 与空字符串 token 边界'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 1415-1467
+    method_or_func: llama_grammar_accept_token()
+  - file: src/llama-grammar.cpp
+    line: 1349-1386
+    method_or_func: llama_grammar_accept_impl()
+  - file: src/llama-grammar.cpp
+    line: 1388-1413
+    method_or_func: llama_grammar_accept_str()
+  name: Token 接受与栈推进 —— 推理循环的「齿轮」
+  'no': 10
+  points:
+  - '**`llama_grammar_accept_token`**'
+  - '- 同时推进所有当前栈，新栈归集到 `stacks_new`'
+  - '- 栈顶为 token：精确匹配 ID 后弹出并展开后续元素'
+  - '- 栈顶为字符：按 token 内码点逐字符调用 `accept_chr` 推进'
+  - '- 维护 `partial_utf8` 跨 token 的 UTF-8 续接状态'
+  - '**`llama_grammar_accept_impl`**'
+  - '- lazy 模式：先检查 trigger_tokens / trigger_patterns'
+  - '- 非 lazy 模式：EOG 处理后调用 `accept_token`'
+  - '- 不允许 EOG 且仍有非空栈时报 `GGML_ABORT`'
+  - '**`llama_grammar_accept_str`**'
+  - '- 字符串级入口：逐码点调用 `llama_grammar_accept`'
+  - '- 末尾 `partial_utf8` 必须被保留给下次调用'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 331-365
+    method_or_func: llama_grammar_trigger_pattern::find()
+  - file: src/llama-grammar.cpp
+    line: 1349-1386
+    method_or_func: llama_grammar_accept_impl()
+  - file: src/llama-grammar.cpp
+    line: 1312-1347
+    method_or_func: llama_grammar_apply_impl()
+  - file: src/llama-grammar.h
+    line: 138-165
+    method_or_func: struct llama_grammar
+  - file: src/llama-grammar.h
+    line: 105-113
+    method_or_func: struct llama_grammar_trigger_pattern
+  name: 延迟触发语法 —— 「等到关键信号再约束」
+  'no': 11
+  points:
+  - '**`llama_grammar_trigger_pattern::find`**'
+  - '- 优先尝试 `^...$` 全字符串 `regex_match`'
+  - '- 否则退化为普通 `regex_search` 子串匹配'
+  - '- 提取第一个非空捕获组的起点作为约束起点'
+  - '**`awaiting_trigger` 状态机**'
+  - '- 初始值为 `lazy`，即「等待触发」'
+  - '- 触发条件 1：token 命中 `trigger_tokens`'
+  - '- 触发条件 2：buffer 匹配任意 `trigger_patterns`'
+  - '- 触发后回放 `trigger_buffer_positions` 中已积累的 token（按位置截断）'
+  - '**`trigger_buffer` 双轨记录**'
+  - '- 字符串版（用于正则匹配）'
+  - '- `token_pos` 列表（用于精确回放）'
+  - '- 触发后清空，避免重复触发'
+  - '**调试日志**'
+  - '- `LLAMA_LOG_DEBUG` 区分「token 触发」与「正则触发」两个来源'
+  - '- 等待期间持续输出 `Grammar still awaiting trigger`'
+  - '**`llama_grammar_apply_impl` 与 lazy 联动**'
+  - '- 若 `awaiting_trigger == true` 则直接 return，不做任何 logit 修改'
+  - '- 让模型在触发前完全自由生成'
+- codes:
+  - file: src/llama-grammar.cpp
+    line: 235-241
+    method_or_func: print_grammar_char()
+  - file: src/llama-grammar.cpp
+    line: 243-254
+    method_or_func: is_char_element()
+  - file: src/llama-grammar.cpp
+    line: 256-289
+    method_or_func: print_rule_binary()
+  - file: src/llama-grammar.cpp
+    line: 291-329
+    method_or_func: print_rule()
+  - file: src/llama-grammar.cpp
+    line: 757-764
+    method_or_func: llama_grammar_parser::c_rules()
+  - file: src/llama-grammar.cpp
+    line: 735-755
+    method_or_func: llama_grammar_parser::print()
+  - file: src/llama-grammar.cpp
+    line: 955-957
+    method_or_func: llama_grammar_get_rules()
+  - file: src/llama-grammar.cpp
+    line: 959-961
+    method_or_func: llama_grammar_get_stacks()
+  name: 语法打印与调试辅助 —— 让规则「肉眼可见」
+  'no': 12
+  points:
+  - '**`print_grammar_char`**'
+  - '- 可打印 ASCII 直接输出字符'
+  - '- 不可打印字符（含中文等）输出 `<U+XXXX>`'
+  - '**`is_char_element` 与 `print_rule_binary`**'
+  - '- 判断元素是否为字符类（决定是否需要 `]` 收尾）'
+  - '- `print_rule_binary` 输出带类型标签和十六进制值，便于底层调试'
+  - '**`print_rule` 人类可读输出**'
+  - '- 按 GBNF 文法还原 `[...]` / `|` / `^` / `-` 等符号'
+  - '- 处理 `CHAR_ALT` 与 `CHAR_RNG_UPPER` 的边界校验'
+  - '- 通过 `LLAMA_GRETYPE_RULE_REF` 递归引用规则名'
+  - '**`llama_grammar_parser::print`**'
+  - '- 反向建立 `symbol_id_names`（数字 → 字符串名）'
+  - '- 异常时打印错误日志但不抛异常'
+  - '**`llama_grammar_parser::c_rules`**'
+  - '- 将 `vector<vector<element>>` 转换为 `vector<element*>`'
+  - '- 用于 `apply_impl` / `accept_*` 等无需修改规则的接口'
+  - '**`llama_grammar_get_rules` / `get_stacks`**'
+  - '- 给测试代码留出的内省 API'
+  - '- 与正常推理流程解耦'

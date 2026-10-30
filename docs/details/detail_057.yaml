@@ -1,0 +1,444 @@
+code_map:
+- gguf-py/gguf/constants.py
+- ├── Keys 元数据键容器 (26-364行)
+- '│   ├── class General                # 通用元数据键（类型/架构/作者/许可/采样参数）'
+- '│   ├── class LLM                    # LLM专属参数（vocab_size/context_length/embedding_length）'
+- '│   ├── class Attention              # 注意力参数（head_count/kv/temperature_scale/indexer）'
+- '│   ├── class Rope                   # RoPE位置编码参数（dimension_count/scaling/yarn_beta）'
+- '│   ├── class Split                  # 模型分片参数（split.no/split.count）'
+- '│   ├── class SSM                    # 状态空间模型参数（conv_kernel/inner_size/dt_b_c_rms）'
+- '│   ├── class KDA                    # KDA模块参数（head_dim）'
+- '│   ├── class WKV                    # RWKV位置编码参数（head_size）'
+- '│   ├── class PosNet                 # Position Network参数（embedding_length/block_count）'
+- '│   ├── class ConvNext               # ConvNext模型参数'
+- '│   ├── class Classifier             # 分类器输出标签'
+- '│   ├── class ShortConv              # ShortConv模块参数（l_cache）'
+- '│   ├── class Tokenizer              # 分词器配置（model/pre/merges/bos/eos/pad）'
+- '│   ├── class Adapter                # 适配器配置（lora_alpha/alora_invocation_tokens）'
+- '│   ├── class IMatrix                # 重要性矩阵元数据（chunk_count/chunk_size/datasets）'
+- '│   ├── class Clip                   # CLIP基础配置（projector_type/has_vision_encoder）'
+- '│   ├── class ClipVision             # CLIP视觉编码器参数（Attention/Projector/SAM子类）'
+- '│   ├── class ClipAudio              # CLIP音频编码器参数（num_mel_bins/Attention/Projector）'
+- '│   ├── class Diffusion              # 扩散模型参数（shift_logits）'
+- '│   └── class xIELU                  # xIELU激活函数参数（alpha_p/alpha_n/beta/eps）'
+- ├── GGUFType 文件类型枚举 (369-373行)
+- '│   ├── MODEL    = "model"           # 标准模型文件'
+- '│   ├── ADAPTER  = "adapter"         # 适配器文件（LoRA等）'
+- '│   ├── IMATRIX  = "imatrix"         # 重要性矩阵文件'
+- '│   └── MMPROJ   = "mmproj"          # 多模态投影文件'
+- ├── 模型架构与张量映射 (376-1630行, 2577-6300行)
+- '│   ├── MODEL_ARCH (Enum)            # 100+模型架构枚举（LLAMA/FALCON/GPT2/QWEN/DEEPSEEK等）'
+- '│   ├── MODEL_TENSOR (Enum)          # 张量类型枚举（TOKEN_EMBD/ATTN_Q/FFN_DOWN等）'
+- '│   ├── MODEL_ARCH_NAMES             # 架构→字符串名映射'
+- '│   ├── TENSOR_NAMES                 # 张量类型→标准命名模板'
+- '│   └── MODEL_TENSORS                # 架构→张量列表映射表'
+- ├── 量化与值类型 (3908-4061行)
+- '│   ├── TokenType                    # Token分类（NORMAL/UNKNOWN/CONTROL/USER_DEFINED/BYTE）'
+- '│   ├── RopeScalingType              # RoPE缩放（NONE/LINEAR/YARN/LONGROPE）'
+- '│   ├── PoolingType                  # 池化方式（NONE/MEAN/CLS/LAST/RANK）'
+- '│   ├── GGMLQuantizationType         # 量化类型（Q4_0/Q2_K/IQ2_XXS/MXFP4/NVFP4/Q1_0）'
+- '│   ├── ExpertGatingFuncType         # MoE门控（SOFTMAX/SIGMOID）'
+- '│   ├── LlamaFileType                # 文件级量化策略（MOSTLY_Q4_K_M/MOSTLY_MXFP4_MOE等）'
+- '│   ├── GGUFEndian                   # 字节序（LITTLE=0/BIG=1）'
+- '│   └── GGUFValueType                # 元数据值类型（UINT8/STRING/ARRAY/FLOAT64 + get_type()）'
+- └── 特殊化枚举 (4063-4097行)
+- '    └── VisionProjectorType          # 视觉投影器类型（gemma3/qwen2vl_merger/internvl等30+种）'
+- ''
+- gguf-py/gguf/tensor_mapping.py
+- ├── 映射配置定义 (572-1708行)
+- '│   ├── mappings_cfg                 # 静态映射表（MODEL_TENSOR→候选名称元组，572-1400行）'
+- '│   └── arch_block_mappings_cfg      # 架构特定块映射（如Mamba的SSM层，1443-1708行）'
+- ├── class TensorNameMap
+- '│   ├── __init__(arch, n_blocks)     # 初始化映射，循环生成n_blocks层映射'
+- '│   ├── get_type_and_name()          # 核心查询（支持后缀剥离重试）'
+- '│   ├── get_name() / get_type()      # 便捷查询封装'
+- '│   ├── __getitem__ / __contains__   # 字典式访问接口'
+- '│   └── __repr__                     # 调试输出'
+- '└── get_tensor_name_map()            # 工厂函数 (1758-1759行)'
+exercises:
+- contents:
+  - 在 `gguf-py/gguf/constants.py` 的 `Keys` 类中，为混合专家（MoE）架构添加新的元数据键：
+  - 1. 在 `Keys.LLM` 中添加 `EXPERT_FEED_FORWARD_LENGTH` 键，用于描述每个专家的FFN维度
+  - 2. 在 `Keys.Attention` 中添加 `SLIDING_WINDOW_PATTERN` 键，用于描述滑动窗口注意力的模式
+  - 3. 创建新的子类 `Keys.MoE`，包含 `EXPERT_COUNT`、`EXPERT_USED_COUNT`、`ROUTER_SCALING_FACTOR`
+    等键
+  - 注意遵循现有的命名风格（`{arch}.`前缀，全大写下划线命名）。
+  - 思考问题：
+  - '- 为什么MoE相关的键应该放在 `Keys.LLM` 还是新子类 `Keys.MoE` 中更合理？参考 `Keys.SSM` 的设计逻辑。'
+  - '- 如果需要为每层指定不同的专家数量（如 `[4, 4, 8, 8]`），应该选择 `GGUFValueType` 中的哪种类型？'
+  'no': 1
+  title: 扩展Keys：为MoE架构添加路由相关元数据键
+- contents:
+  - 在 `gguf-py/gguf/tensor_mapping.py` 中，找到 `TensorNameMap.__init__` 方法。
+  - 手动推演以下场景：假设初始化 `TensorNameMap(MODEL_ARCH.QWEN2, n_blocks=2)`，且 `mappings_cfg`
+    包含 `MODEL_TENSOR.TOKEN_EMBD`，`arch_block_mappings_cfg` 包含 `MODEL_TENSOR.ATTN_Q`，`block_mappings_cfg`
+    包含 `MODEL_TENSOR.FFN_UP`。
+  - 1. 写出最终 `self.mapping` 中包含的所有键值对（注意区分 `mappings_cfg` 与 `block_mappings_cfg` 的处理差异）
+  - 2. 解释 `get_name('model.layers.0.mlp.up_proj.weight', try_suffixes=['.weight'])`
+    的完整执行流程，包括后缀剥离如何工作
+  - 3. 如果要支持 `model.layers.0.mlp.experts.0.gate_proj` 这样的MoE专家名称，需要在 `mappings_cfg`
+    还是 `arch_block_mappings_cfg` 中添加映射？写出具体的映射条目。
+  'no': 2
+  title: 追踪TensorNameMap对特殊架构的映射生成
+- contents:
+  - 查看 `GGMLQuantizationType` 枚举（约3934行）和 `LlamaFileType`（约3978行）。
+  - 假设需要支持一种新的硬件加速器量化格式「HW_Q4」（硬件原生4-bit），请：
+  - 1. 在 `GGMLQuantizationType` 中添加 `HW_Q4` 枚举值，选择合适的整数值并解释原因（是否利用预留空间，是否与现有类型冲突）
+  - 2. 在 `LlamaFileType` 中添加 `MOSTLY_HW_Q4`，并说明它应该放在哪个位置以保持向后兼容
+  - 3. 修改 `GGUFValueType.get_type()` 方法，使其能够正确处理 `numpy.uint4` 类型（假设存在），返回适当的 `GGUFValueType`
+  - 4. 查阅 `MODEL_TENSORS` 中 `MODEL_ARCH.LLAMA` 的定义，说明「MOSTLY_HW_Q4」意味着哪些张量会被量化（提示：1D张量vs2D张量）
+  - 5. 思考 `GGUF_ENDIAN` 在处理这种新型量化格式时的作用，是否需要特殊处理？
+  'no': 3
+  title: 设计支持NVFP4和动态量化的类型系统扩展
+- contents:
+  - 查看 `GGUFType` 枚举（MODEL/ADAPTER/IMATRIX/MMPROJ）。
+  - 结合LlamaFileType，回答以下问题：
+  - 1. 当转换一个纯LoRA适配器时，`GGUFType` 应该设置为什么值？此时 `LlamaFileType` 还有意义吗？为什么？
+  - 2. 如果一个文件同时包含基础模型权重和LoRA权重（合并导出），应该选择哪种 `GGUFType`？
+  - 3. `IMATRIX` 类型的文件与 `MODEL` 类型的文件在 `Keys` 的使用上有何差异？（提示：查看 `Keys.IMatrix` 与 `Keys.LLM`
+    的键定义）
+  - 4. 设计一个场景：你需要创建一个包含视觉编码器和语言模型的多模态文件，但只保存投影层（projector），你会如何组合使用 `GGUFType` 和相关
+    `Keys`？
+  'no': 4
+  title: 分析GGUFType在实际转换流程中的应用
+learning_targets:
+- 掌握GGUF元数据键名（Keys）的分层设计与架构无关占位符模式，理解18个嵌套子类的职责划分
+- 理解MODEL_ARCH/MODEL_TENSOR/MODEL_TENSORS/GGUFType如何构成模型架构的统一坐标系
+- 深入量化类型（GGMLQuantizationType、LlamaFileType）与值类型（GGUFValueType）的类型系统
+- 掌握TokenType、RopeScalingType、PoolingType、ExpertGatingFuncType、VisionProjectorType等专项枚举的设计
+- 剖析TensorNameMap三层映射架构（mappings_cfg/arch_block_mappings_cfg/block_mappings_cfg）与动态生成机制
+- 理解GGUF_ENDIAN字节序与GGUFValueType.get_type()自动类型推导的实现原理
+life_analogy:
+- 想象GGUF的常量体系是一个**全球化智能物流中心的标准化编码系统**：
+- '- **Keys的18个子类** = 物流中心的**18个专业部门窗口**（收件部/分拣部/冷链部/国际部），每个部门（General/LLM/Attention/Tokenizer等）只处理特定类型的包裹信息，`{arch}`占位符就像「国家代码」，自动适配不同地区的格式要求'
+- '- **GGUFType** = 包裹的**四种运输方式标识**（MODEL=标准货运/ADAPTER=外挂配件/IMATRIX=质检报告/MMPROJ=多模态集装箱），决定整个物流链的处理流程'
+- '- **MODEL_ARCH** = 100+种**集装箱类型**（冷藏箱/油罐箱/框架箱/开顶箱），每种类型（llama/qwen/mamba/deepseek）都有唯一的ISO编码，新增型号只需注册新编码'
+- '- **MODEL_TENSOR** = 集装箱内的**货物分类学**（电子产品/纺织品/食品/危险品），无论哪种箱子，内部货物都按统一标准分类贴标'
+- '- **MODEL_TENSORS映射表** = 每种集装箱的**标准装箱清单**（Checking List），规定Qwen3必须装哪些货物，Mamba必须装哪些部件，DeepSeek需要哪些特殊设备'
+- '- **TensorNameMap** = **多语言翻译官+自动贴标机**，既懂英文（PyTorch的`model.layers.0.self_attn.q_proj.weight`），也懂世界语（GGUF的`blk.0.attn_q.weight`），并能为100层的超大型集装箱自动生成每一层的标签（`{bid}`展开为0,1,2...99）'
+- '- **量化类型** = 不同的**压缩包装工艺**（Q4_0是经济压缩，Q8_0是标准包装，F32是豪华精装，MXFP4是新型纳米压缩），LlamaFileType决定整个集装箱以哪种工艺为主，1D小件保持原包装'
+- '- **GGUFValueType.get_type()** = **智能材质检测仪**，放入Python对象自动判断应贴哪种标签（str→STRING, int→INT32,
+  list→ARRAY），避免人工填写错误'
+'no': 56
+summary:
+- concept: '`Keys`'
+  desc: GGUF元数据的「身份档案柜」，通过18个嵌套子类（General/LLM/Attention/Tokenizer/ClipVision等）组织500+标准键名，使用`{arch}`占位符实现架构无关设计
+- concept: '`GGUFType`'
+  desc: 文件类型「运输标识」，区分MODEL（标准模型）、ADAPTER（LoRA适配器）、IMATRIX（重要性矩阵）、MMPROJ（多模态投影）四种文件用途
+- concept: '`MODEL_ARCH`'
+  desc: 模型架构的「基因编码」，枚举100+种模型（LLaMA/Qwen/Mamba/DeepSeek/Falcon等），使用`auto()`自动生成唯一ID，支持REDEFINED_ARCH扩展
+- concept: '`MODEL_TENSOR`'
+  desc: 张量的「分类标签」，定义所有可能的张量类型（TOKEN_EMBD/ATTN_Q/FFN_DOWN/SSM_IN/TIME_MIX_W0等），作为跨架构的统一语言
+- concept: '`MODEL_TENSORS`'
+  desc: 架构到张量的「装箱清单」，声明每种架构必须包含的张量类型，用于转换器校验完整性与推理引擎内存分配
+- concept: '`GGMLQuantizationType`'
+  desc: 量化方案的「度量衡」，覆盖F32/F16/Q4_0/Q8_0/IQ系列/TQ系列/MXFP4/NVFP4/Q1_0等20+种压缩格式，支持新型硬件量化
+- concept: '`LlamaFileType`'
+  desc: 文件级量化策略，「MOSTLY_」前缀表示1D张量保持高精度、仅大矩阵量化的混合策略，包含MOSTLY_MXFP4_MOE等新型配置
+- concept: '`GGUFEndian`'
+  desc: 字节序「交通规则」，LITTLE（0）/BIG（1）枚举支持跨平台（x86/ARM/大型机）文件兼容
+- concept: '`GGUFValueType`'
+  desc: 元数据的「类型系统」，定义UINT8到FLOAT64等13种值类型，`get_type()`静态方法实现Python类型（str/int/float/list/bool）到GGUF类型的自动推导
+- concept: '`TokenType`'
+  desc: 分词单元的「身份标签」，区分NORMAL/UNKNOWN/CONTROL/USER_DEFINED/UNUSED/BYTE六种类型，影响tokenizer行为与特殊token处理
+- concept: '`RopeScalingType`'
+  desc: 长上下文「伸缩策略」，支持NONE/LINEAR/YARN/LONGROPE四种位置编码缩放模式，用于扩展模型上下文窗口
+- concept: '`PoolingType`'
+  desc: 嵌入模型的「聚合方式」，提供NONE/MEAN/CLS/LAST/RANK五种池化策略，适应不同下游任务（分类/检索/排序）
+- concept: '`ExpertGatingFuncType`'
+  desc: MoE的「路由算法」，SOFTMAX传统门控 vs SIGMOID现代门控（DeepSeek等），影响专家选择概率计算
+- concept: '`VisionProjectorType`'
+  desc: 多模态「视觉翻译器」，定义30+种视觉投影器类型（gemma3/qwen2vl_merger/internvl/cogvlm等），连接视觉与语言模型
+- concept: '`TensorNameMap`'
+  desc: 框架方言的「通用翻译官」，三层映射架构+后缀剥离算法实现PyTorch/HuggingFace命名到GGUF标准命名的自动转换
+- concept: '`mappings_cfg`'
+  desc: 静态映射「词典」，定义架构无关的通用张量映射（如embedding/output/norm等）
+- concept: '`arch_block_mappings_cfg`'
+  desc: 架构特定「补充协议」，处理Mamba的SSM层等特殊架构的专属张量映射
+- concept: '`block_mappings_cfg`'
+  desc: 动态映射「生成器」，通过`{bid}`占位符循环展开n_blocks层，自动生成所有层的映射关系
+- concept: '`get_type_and_name()`'
+  desc: 核心查询「算法」，支持后缀剥离重试（如处理.lora_A/.lora_B后缀），实现鲁棒的名称解析与类型推导
+units:
+- codes:
+  - file: gguf-py/gguf/constants.py
+    line: 26-364
+    method_or_func: Keys.*
+  - file: gguf-py/gguf/constants.py
+    line: 26-116
+    method_or_func: Keys.General.*
+  - file: gguf-py/gguf/constants.py
+    line: 120-162
+    method_or_func: Keys.LLM.*
+  - file: gguf-py/gguf/constants.py
+    line: 163-193
+    method_or_func: Keys.Attention.*
+  - file: gguf-py/gguf/constants.py
+    line: 196-210
+    method_or_func: Keys.Rope.*
+  - file: gguf-py/gguf/constants.py
+    line: 213-215
+    method_or_func: Keys.Split.*
+  - file: gguf-py/gguf/constants.py
+    line: 217-222
+    method_or_func: Keys.SSM.*
+  - file: gguf-py/gguf/constants.py
+    line: 226-227
+    method_or_func: Keys.KDA.*
+  - file: gguf-py/gguf/constants.py
+    line: 231-232
+    method_or_func: Keys.WKV.*
+  - file: gguf-py/gguf/constants.py
+    line: 236-237
+    method_or_func: Keys.PosNet.*
+  - file: gguf-py/gguf/constants.py
+    line: 241-242
+    method_or_func: Keys.ConvNext.*
+  - file: gguf-py/gguf/constants.py
+    line: 246-247
+    method_or_func: Keys.Classifier.*
+  - file: gguf-py/gguf/constants.py
+    line: 251-252
+    method_or_func: Keys.ShortConv.*
+  - file: gguf-py/gguf/constants.py
+    line: 256-289
+    method_or_func: Keys.Tokenizer.*
+  - file: gguf-py/gguf/constants.py
+    line: 293-297
+    method_or_func: Keys.Adapter.*
+  - file: gguf-py/gguf/constants.py
+    line: 301-303
+    method_or_func: Keys.IMatrix.*
+  - file: gguf-py/gguf/constants.py
+    line: 307-310
+    method_or_func: Keys.Clip.*
+  - file: gguf-py/gguf/constants.py
+    line: 313-337
+    method_or_func: Keys.ClipVision.*
+  - file: gguf-py/gguf/constants.py
+    line: 340-353
+    method_or_func: Keys.ClipAudio.*
+  - file: gguf-py/gguf/constants.py
+    line: 356-357
+    method_or_func: Keys.Diffusion.*
+  - file: gguf-py/gguf/constants.py
+    line: 361-364
+    method_or_func: Keys.xIELU.*
+  name: Keys 元数据键名体系 —— 模型的「身份档案柜」
+  'no': 1
+  points:
+  - '**为什么需要 Keys 类的 18 个嵌套子类？**'
+  - '- GGUF 文件是自描述的，所有模型属性都通过键值对存储，'
+  - '- 键名需要全局统一，避免不同转换器产生命名冲突'
+  - '- 按功能域划分子类：通用信息（General）、模型架构（LLM/Attention/RoPE）、特殊模块（SSM/KDA/WKV）、多模态（Clip/ClipVision/ClipAudio）、外部依赖（Tokenizer/Adapter/IMatrix）'
+  - '- 使用 `{arch}` 占位符实现架构无关的键名模板，例如 `{arch}.context_length` 可展开为 `llama.context_length`
+    或 `qwen2.context_length`'
+  - '**核心子类详解**'
+  - '- `General`：模型类型（MODEL/ADAPTER等）、架构名、量化版本、采样参数（temp/top_p等）'
+  - '- `LLM`：大语言模型专属超参数（vocab_size、context_length、embedding_length、rope参数）'
+  - '- `Attention`：注意力头数、KV头数、温度缩放、索引器（Indexer）参数'
+  - '- `Tokenizer`：分词器模型（bpe/spm）、pre_tokenizer、merges、特殊token ID（bos/eos/pad）'
+  - '**专业模块键名**'
+  - '- `SSM`：状态空间模型参数（conv_kernel、inner_size、dt_b_c_rms）'
+  - '- `KDA`：KDA模块的head_dim参数'
+  - '- `WKV`：RWKV模型的位置编码参数（head_size）'
+  - '- `ClipVision/ClipAudio`：视觉/音频编码器的完整配置（attention/projector/sam子类）'
+  - '**扩展性设计**'
+  - '- `Diffusion`：扩散模型的shift_logits参数'
+  - '- `xIELU`：新型激活函数的alpha_p/alpha_n/beta/eps参数'
+  - '- `ShortConv`：短卷积层的l_cache参数'
+- codes:
+  - file: gguf-py/gguf/constants.py
+    line: '370'
+    method_or_func: GGUFType.MODEL
+  - file: gguf-py/gguf/constants.py
+    line: '371'
+    method_or_func: GGUFType.ADAPTER
+  - file: gguf-py/gguf/constants.py
+    line: '372'
+    method_or_func: GGUFType.IMATRIX
+  - file: gguf-py/gguf/constants.py
+    line: '373'
+    method_or_func: GGUFType.MMPROJ
+  - file: gguf-py/gguf/constants.py
+    line: '379'
+    method_or_func: MODEL_ARCH.MMPROJ
+  - file: gguf-py/gguf/constants.py
+    line: '380'
+    method_or_func: MODEL_ARCH.LLAMA
+  - file: gguf-py/gguf/constants.py
+    line: '382'
+    method_or_func: MODEL_ARCH.FALCON
+  - file: gguf-py/gguf/constants.py
+    line: '387'
+    method_or_func: MODEL_ARCH.GPT2
+  - file: gguf-py/gguf/constants.py
+    line: '399'
+    method_or_func: MODEL_ARCH.QWEN
+  - file: gguf-py/gguf/constants.py
+    line: '439'
+    method_or_func: MODEL_ARCH.DEEPSEEK
+  - file: gguf-py/gguf/constants.py
+    line: 440-500
+    method_or_func: MODEL_ARCH.REDEFINED_ARCH
+  - file: gguf-py/gguf/constants.py
+    line: 827-1630
+    method_or_func: __main__
+  - file: gguf-py/gguf/constants.py
+    line: 2577-6300
+    method_or_func: __main__
+  name: 模型架构、文件类型与张量映射 —— 百种架构的「统一坐标系」
+  'no': 2
+  points:
+  - '**GGUFType：文件用途的「身份标识」**'
+  - '- `MODEL`：标准模型文件，包含完整权重与配置'
+  - '- `ADAPTER`：适配器文件（如LoRA），仅包含增量权重，需配合基础模型使用'
+  - '- `IMATRIX`：重要性矩阵文件，存储量化校准数据'
+  - '- `MMPROJ`：多模态投影文件，连接视觉/音频编码器与语言模型'
+  - '**MODEL_ARCH 枚举：架构的「基因编码」**'
+  - '- 从 LLAMA、QWEN、FALCON、GPT2 到 DEEPSEEK、MAMBA、JAMBA，覆盖 100+ 种模型架构'
+  - '- 使用 `auto()` 自动生成枚举值，新增架构无需手动编号，避免冲突'
+  - '- `REDEFINED_ARCH`：支持需要重新定义的架构变体'
+  - '- 每个架构对应唯一的字符串名称（如 `llama`、`qwen2`），通过 `MODEL_ARCH_NAMES` 映射'
+  - '**MODEL_TENSOR 枚举：张量的「分类标签」**'
+  - '- 定义所有可能的张量类型（TOKEN_EMBD、OUTPUT、ATTN_Q、ATTN_K、FFN_DOWN、SSM_IN、TIME_MIX_W0 等）'
+  - '- 与架构无关，同一类型张量在不同架构中含义一致（如 `ATTN_Q` 对LLaMA和Mamba都表示注意力查询权重）'
+  - '**MODEL_TENSORS 字典：架构到张量的「装箱清单」**'
+  - '- 核心作用：声明每种架构「应该有哪些张量」，用于转换器校验源模型完整性与推理引擎内存分配'
+  - '- 例如 LLAMA 架构需要 TOKEN_EMBD、ATTN_Q、ATTN_K、ATTN_V、ATTN_OUT、FFN_UP、FFN_DOWN 等'
+  - '- Mamba 架构还需要 SSM_IN、SSM_OUT、SSM_DT 等特有张量'
+  - '**TENSOR_NAMES 字典：张量的「标准命名规范」**'
+  - '- 将 MODEL_TENSOR 映射为实际字符串（如 `token_embd.weight`、`blk.{bid}.attn_q.weight`）'
+  - '- `{bid}` 占位符在运行时替换为具体层号（0, 1, 2...）'
+- codes:
+  - file: gguf-py/gguf/constants.py
+    line: 3934-3970
+    method_or_func: GGMLQuantizationType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 3978-4025
+    method_or_func: LlamaFileType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 4027-4031
+    method_or_func: GGUFEndian.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 4033-4047
+    method_or_func: GGUFValueType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 4048-4061
+    method_or_func: GGUFValueType.get_type()
+  name: 量化类型、值类型与字节序 —— 数据世界的「度量衡体系」
+  'no': 3
+  points:
+  - '**GGMLQuantizationType：模型的「瘦身方案库」**'
+  - '- 从 F32/F16 全精度到 Q4_0/Q8_0 整数量化，再到 IQ2_XXS/IQ4_NL 非均匀量化（查找表）'
+  - '- K-quant（Q2_K-Q6_K）：分组量化，在精度与体积间取得平衡'
+  - '- 特殊格式：TQ1_0/TQ2_0（三元量化）、MXFP4/NVFP4（微缩放 FP4）、Q1_0（1-bit 实验性）'
+  - '- 数值连续但非全连续（如缺少 4-5、31-33），预留扩展空间'
+  - '**LlamaFileType：文件级的量化策略「总指挥」**'
+  - '- 描述整个模型的主导量化类型（如 MOSTLY_Q4_K_M、MOSTLY_MXFP4_MOE）'
+  - '- 「MOSTLY」前缀表示 1D 张量（如 bias、norm）保持 F32/F16 高精度，仅大矩阵（2D+）量化'
+  - '- `GUESSED`：文件未指定时的推测策略'
+  - '**GGUFValueType：元数据的「类型系统」**'
+  - '- 定义 13 种值类型（UINT8 到 FLOAT64、STRING、ARRAY、BOOL）'
+  - '- `get_type()` 静态方法实现 Python 类型自动推导：str→STRING，list→ARRAY，int→INT32，float→FLOAT32，bool→BOOL'
+  - '- 明确区分有符号/无符号整数与不同位宽浮点数'
+  - '**GGUFEndian：跨平台的「字节序翻译官」**'
+  - '- LITTLE（0）：x86/x64/ARM 主流架构使用'
+  - '- BIG（1）：网络字节序、部分嵌入式系统'
+  - '- 读取时自动检测并转换，确保跨平台兼容性'
+- codes:
+  - file: gguf-py/gguf/constants.py
+    line: 3908-3915
+    method_or_func: TokenType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 3917-3923
+    method_or_func: RopeScalingType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 3925-3932
+    method_or_func: PoolingType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 3972-3976
+    method_or_func: ExpertGatingFuncType.__init__()
+  - file: gguf-py/gguf/constants.py
+    line: 4063-4097
+    method_or_func: VisionProjectorType.__init__()
+  name: 特殊化枚举 —— 分词、池化、门控与视觉的「扩展词典」
+  'no': 4
+  points:
+  - '**TokenType：分词单元的「身份标签」**'
+  - '- `NORMAL`：普通 token，`UNKNOWN`：未知 token，`CONTROL`：控制符（如<|im_start|>）'
+  - '- `USER_DEFINED`：用户自定义 token（如特殊领域术语），`UNUSED`：未使用保留位，`BYTE`：字节级 token（用于回退）'
+  - '- 影响分词器的合并策略、特殊token处理与输出过滤'
+  - '**RopeScalingType：长上下文的「伸缩策略」**'
+  - '- `NONE`：不缩放，原生上下文窗口'
+  - '- `LINEAR`：线性插值（如将4K扩展到8K）'
+  - '- `YARN`：NTK-aware 缩放，保持高频信息（LongRoPE等）'
+  - '- `LONGROPE`：微软长上下文扩展方案，支持128K+'
+  - '**PoolingType：嵌入模型的「聚合方式」**'
+  - '- `NONE`：取最后一层 hidden state（生成任务常用）'
+  - '- `MEAN`：平均池化（取序列所有token均值，适合语义相似度）'
+  - '- `CLS`：取 [CLS] token（BERT风格分类任务）'
+  - '- `LAST`：取最后一个 token（因果语言模型特征）'
+  - '- `RANK`：排序池化（用于检索排序任务）'
+  - '**ExpertGatingFuncType：MoE 的「路由算法」**'
+  - '- `SOFTMAX`：传统 softmax 门控（如 Mixtral），计算专家概率分布'
+  - '- `SIGMOID`：sigmoid 门控（如 DeepSeek-V2），二值化选择专家，更高效'
+  - '**VisionProjectorType：多模态的「视觉翻译器」**'
+  - '- 定义 30+ 种视觉投影器类型（gemma3、qwen2vl_merger、internvl、cogvlm、deepseekocr 等）'
+  - '- 每种类型对应不同的视觉-语言特征对齐架构（MLP、Cross-attention、Resampler 等）'
+  - '- 支持音频（qwen2a、voxtral）与视频理解扩展'
+- codes:
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1709-1724
+    method_or_func: TensorNameMap.__init__()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1726-1733
+    method_or_func: TensorNameMap.get_type_and_name()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1735-1739
+    method_or_func: TensorNameMap.get_name()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1741-1745
+    method_or_func: TensorNameMap.get_type()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1747-1750
+    method_or_func: TensorNameMap.__getitem__()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1752-1753
+    method_or_func: TensorNameMap.__contains__()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1755-1756
+    method_or_func: TensorNameMap.__repr__()
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 572-1400
+    method_or_func: __main__
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1443-1708
+    method_or_func: __main__
+  - file: gguf-py/gguf/tensor_mapping.py
+    line: 1758-1759
+    method_or_func: get_tensor_name_map()
+  name: TensorNameMap 映射引擎 —— 框架方言的「通用翻译官」
+  'no': 5
+  points:
+  - '**为什么需要 TensorNameMap？**'
+  - '- PyTorch/HuggingFace 使用 `model.layers.0.self_attn.q_proj.weight` 等命名'
+  - '- GGUF 使用标准化名称 `blk.0.attn_q.weight`'
+  - '- 不同框架（HF、Mamba、RWKV、T5）命名风格差异巨大，需要自动化映射机制'
+  - '**三层映射架构设计**'
+  - '- `mappings_cfg`（572-1400行）：静态映射，架构无关的通用张量（如 `token_embd`、`output`、`norm`）'
+  - '- `arch_block_mappings_cfg`（1443-1708行）：架构特定补充，处理 Mamba 的 SSM 层、RWKV 的 time_mix
+    等特殊结构'
+  - '- `block_mappings_cfg`：动态生成，按 `{bid}` 占位符展开所有层（第0层到第n-1层）'
+  - '**初始化流程深度解析（__init__）**'
+  - '- 第一阶段：遍历 mappings_cfg，过滤出当前架构实际拥有的张量类型（通过 MODEL_TENSORS 校验）'
+  - '- 第二阶段：处理架构特有的块映射（arch_block_mappings_cfg），合并到 block_mappings_cfg'
+  - '- 第三阶段：循环 n_blocks 次，替换 `{bid}` 占位符，生成所有层的具体映射（如 `blk.0.attn_q`、`blk.1.attn_q`...）'
+  - '**查询接口与后缀剥离算法**'
+  - '- `get_type_and_name()`：核心查询，支持后缀剥离重试（如处理 `.lora_A`、`.lora_B`、`.weight` 后缀）'
+  - '- `get_name()` / `get_type()`：便捷封装，分别返回标准名称或张量类型'
+  - '- `__getitem__` / `__contains__`：字典式访问接口，支持 `map[''name'']` 语法'
+  - '- `__repr__`：调试输出，直接展示内部映射字典'
+  - '**工厂函数与使用模式**'
+  - '- `get_tensor_name_map(arch, n_blocks)`：工厂函数，创建并返回配置好的映射实例'
+  - '- 典型使用：转换器初始化时创建映射，遍历源模型张量时调用 `get_type_and_name` 查询目标名称'

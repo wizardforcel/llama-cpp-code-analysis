@@ -1,0 +1,79 @@
+classes:
+- desc: LF-M2模型图构建器，继承自llm_graph_context，支持iswa模板变体，用于构建带长短程混合记忆的transformer计算图。
+  methods:
+  - code:
+    - template <bool iswa>
+    - 'llm_build_lfm2<iswa>::llm_build_lfm2(const llama_model & model, const llm_graph_params
+      & params) :'
+    - '    llm_graph_context(params) {'
+    - '    using inp_hybrid_type = std::conditional_t<iswa, llm_graph_input_mem_hybrid_iswa,  llm_graph_input_mem_hybrid>;'
+    - '    using inp_attn_type   = std::conditional_t<iswa, llm_graph_input_attn_kv_iswa,     llm_graph_input_attn_kv>;'
+    - '    using mem_hybrid_ctx  = std::conditional_t<iswa, llama_memory_hybrid_iswa_context,
+      llama_memory_hybrid_context>;'
+    - '    // lambda helpers for readability'
+    - '    auto build_dense_feed_forward = [&model, this](ggml_tensor * cur, int il)
+      -> ggml_tensor * {'
+    - '        GGML_ASSERT(!model.layers[il].ffn_up_b);'
+    - '        GGML_ASSERT(!model.layers[il].ffn_gate_b);'
+    - '        GGML_ASSERT(!model.layers[il].ffn_down_b);'
+    - '        return build_ffn(cur, ...);'
+    - '    };'
+    - '    auto build_moe_feed_forward = [&model, this](ggml_tensor * cur, int il)
+      -> ggml_tensor * {'
+    - '        return build_moe_ffn(cur, ...);'
+    - '    };'
+    - '    auto build_attn_block = [&model, this](ggml_tensor *   cur,'
+    - '                                           ggml_tensor *   inp_pos,'
+    - '                                           inp_attn_type * inp_attn,'
+    - '                                           int             il) -> ggml_tensor
+      * {'
+    - '        auto * q = build_lora_mm(model.layers[il].wq, cur);'
+    - '        auto * k = build_lora_mm(model.layers[il].wk, cur);'
+    - '        auto * v = build_lora_mm(model.layers[il].wv, cur);'
+    - '        ...'
+    - '        cur = build_attn(inp_attn, ...);'
+    - '        return cur;'
+    - '    };'
+    - '    auto build_shortconv_block = [&model, this](ggml_tensor *        cur,'
+    - '                                                llm_graph_input_rs * inp_recr,'
+    - '                                                int                  il) ->
+      ggml_tensor * {'
+    - '        auto * bx = build_lora_mm(model.layers[il].shortconv.in_proj, cur);'
+    - '        ...'
+    - '        auto * conv_out    = ggml_ssm_conv(ctx0, bx, conv_kernel);'
+    - '        ...'
+    - '        return y;'
+    - '    };'
+    - '    // actual graph construction starts here'
+    - '    ggml_tensor * cur = build_inp_embd(model.tok_embd);'
+    - '    ...'
+    - '    for (int il = 0; il < n_layer; ++il) {'
+    - '        cur = hparams.is_recurrent(il) ? build_shortconv_block(cur, inp_hybrid->get_recr(),
+      il) :'
+    - '                                             build_attn_block(cur, inp_pos,
+      inp_hybrid->get_attn(), il);'
+    - '        ...'
+    - '        ggml_tensor * ffn_out = is_moe_layer ? build_moe_feed_forward(ffn_norm_out,
+      il) : build_dense_feed_forward(ffn_norm_out, il);'
+    - '        ...'
+    - '    }'
+    - '    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);'
+    - '    ...'
+    - '    cur = build_lora_mm(model.output, cur);'
+    - '    res->t_logits = cur;'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构造函数，定义并执行整个LF-M2模型计算图的分层构建流程，包括embedding、注意力/卷积混合块、FFN块、最终归一化和输出投影。此方法内部调用各lambda辅助构建块。
+    line: 1-135
+    name: llm_build_lfm2
+  name: llm_build_lfm2
+desc: 该文件实现了llm_build_lfm2类的构造函数，定义了LF-M2（长程混合记忆）模型的计算图构建逻辑，包括稠密/稀疏混合注意力、短卷积块、MoE层等模块的图构建。通过模板参数iswa区分是否使用I-SWA（带有输入选择的可写混合记忆）变体。
+file: src/models/lfm2.cpp
+funcs:
+- code:
+  - // Explicit template instantiations
+  - template struct llm_build_lfm2<true>;
+  - template struct llm_build_lfm2<false>;
+  desc: 文件尾部的全局代码，为模板类llm_build_lfm2提供显式实例化，分别生成iswa=true和iswa=false的构建器实例，确保链接时可用。
+  line: 137-139
+  name: __main__

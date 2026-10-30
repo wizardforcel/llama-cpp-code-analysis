@@ -1,0 +1,127 @@
+classes:
+- desc: 保存示例类型、目标 Markdown 文件路径以及专属参数章节标题的配置结构体。
+  methods: []
+  name: md_file
+desc: 该 C++ 程序用于自动生成并更新多个示例工具 README.md 文件中的命令行帮助文档。程序根据不同示例类型初始化参数解析器，分类整理公共参数、采样参数和示例专属参数，将参数说明生成
+  Markdown 表格，并替换 README 文件中由特定标记包围的自动生成区域。
+file: examples/gen-docs/gen-docs.cpp
+funcs:
+- code:
+  - static void write_table_header(std::ostringstream & ss) {
+  - '    ss << "| Argument | Explanation |\n";'
+  - '    ss << "| -------- | ----------- |\n";'
+  - '}'
+  desc: 向字符串流中写入 Markdown 参数表格的表头。
+  line: 26-29
+  name: write_table_header
+- code:
+  - static void write_table_entry(std::ostringstream & ss, const common_arg & opt)
+    {
+  - '    ss << "| `";'
+  - '    auto all_args = opt.get_args();'
+  - '    for (const auto & arg : all_args) {'
+  - '        if (arg == all_args.front()) {'
+  - '            ss << arg;'
+  - '            if (all_args.size() > 1) ss << ", ";'
+  - '        } else {'
+  - '            ss << arg << (arg != all_args.back() ? ", " : "");'
+  - '        }'
+  - '    }'
+  - '    if (opt.value_hint) {'
+  - '        std::string md_value_hint(opt.value_hint);'
+  - '        string_replace_all(md_value_hint, "|", "\\|");'
+  - '        ss << " " << md_value_hint;'
+  - '    }'
+  - '    if (opt.value_hint_2) {'
+  - '        std::string md_value_hint_2(opt.value_hint_2);'
+  - '        string_replace_all(md_value_hint_2, "|", "\\|");'
+  - '        ss << " " << md_value_hint_2;'
+  - '    }'
+  - '    std::string md_help(opt.help);'
+  - '    md_help = string_strip(md_help);'
+  - '    string_replace_all(md_help, "\n", "<br/>");'
+  - '    string_replace_all(md_help, "|", "\\|");'
+  - '    ss << "` | " << md_help << " |\n";'
+  - '}'
+  desc: 将单个命令行参数及其参数提示和帮助文本格式化为一行 Markdown 表格内容。
+  line: 31-62
+  name: write_table_entry
+- code:
+  - static void write_table(std::ostringstream & ss, std::vector<common_arg *> & opts)
+    {
+  - '    write_table_header(ss);'
+  - '    for (const auto & opt : opts) {'
+  - '        write_table_entry(ss, *opt);'
+  - '    }'
+  - '}'
+  desc: 写入参数表头，并遍历参数集合生成所有参数表格行。
+  line: 64-69
+  name: write_table
+- code:
+  - static void write_help(std::ostringstream & ss, const md_file & md) {
+  - '    common_params params;'
+  - '    auto ctx_arg = common_params_parser_init(params, md.ex);'
+  - '    std::vector<common_arg *> common_options;'
+  - '    std::vector<common_arg *> sparam_options;'
+  - '    std::vector<common_arg *> specific_options;'
+  - '    for (auto & opt : ctx_arg.options) {'
+  - '        if (opt.is_sparam) {'
+  - '            sparam_options.push_back(&opt);'
+  - '        } else if (opt.in_example(ctx_arg.ex)) {'
+  - '            specific_options.push_back(&opt);'
+  - '        } else {'
+  - '            common_options.push_back(&opt);'
+  - '        }'
+  - '    }'
+  - '    ss << HELP_START_MARKER << "\n\n";'
+  - '    ss << NOTE_MESSAGE << "\n\n";'
+  - '    ss << "### Common params\n\n";'
+  - '    write_table(ss, common_options);'
+  - '    ss << "\n\n### Sampling params\n\n";'
+  - '    write_table(ss, sparam_options);'
+  - '    ss << "\n\n### " << md.specific_section_header << "\n\n";'
+  - '    write_table(ss, specific_options);'
+  - '    ss << "\n" << HELP_END_MARKER;'
+  - '}'
+  desc: 根据指定示例初始化参数列表，按公共参数、采样参数和示例专属参数分类，并生成完整的 Markdown 帮助区域。
+  line: 71-98
+  name: write_help
+- code:
+  - int main(int, char **) {
+  - '    std::setlocale(LC_NUMERIC, "C");'
+  - '    for (const auto & md : md_files) {'
+  - '        std::ifstream infile(md.fname);'
+  - '        if (!infile.is_open()) {'
+  - '            fprintf(stderr, "failed to open file ''%s'' for reading\n", md.fname.c_str());'
+  - '            return 1;'
+  - '        }'
+  - '        std::ostringstream ss;'
+  - '        ss << infile.rdbuf();'
+  - '        infile.close();'
+  - '        std::string content = ss.str();'
+  - '        size_t help_start = content.find(HELP_START_MARKER);'
+  - '        size_t help_end = content.find(HELP_END_MARKER);'
+  - '        if (help_start == std::string::npos || help_end == std::string::npos
+    || help_end <= help_start) {'
+  - '            fprintf(stderr, "failed to find help markers in file ''%s''\n", md.fname.c_str());'
+  - '            return 1;'
+  - '        }'
+  - '        std::ostringstream new_help_ss;'
+  - '        write_help(new_help_ss, md);'
+  - '        std::string new_help = new_help_ss.str();'
+  - '        content = content.substr(0, help_start) + new_help + content.substr(help_end
+    + strlen(HELP_END_MARKER));'
+  - '        std::ofstream outfile(md.fname);'
+  - '        if (!outfile.is_open()) {'
+  - '            fprintf(stderr, "failed to open file ''%s'' for writing\n", md.fname.c_str());'
+  - '            return 1;'
+  - '        }'
+  - '        outfile << content;'
+  - '        outfile.close();'
+  - '        printf("Updated help in ''%s''\n", md.fname.c_str());'
+  - '    }'
+  - '    return 0;'
+  - '}'
+  desc: 遍历配置的 Markdown 文件，读取并校验帮助标记，生成新的帮助内容并替换原有自动生成区域。
+  line: 100-137
+  name: main

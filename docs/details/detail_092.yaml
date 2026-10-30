@@ -1,0 +1,276 @@
+code_map:
+- examples/batched/batched.cpp
+- '├── __main__.print_usage()           # [12-16] 打印帮助信息'
+- '└── __main__.main()                # [18-216] 主函数与全局流程'
+- '    ├── 参数解析与后端初始化           # common_params_parse / llama_backend_init'
+- '    ├── 模型加载                        # llama_model_load_from_file'
+- '    ├── 提示词分词                      # common_tokenize'
+- '    ├── KV 需求计算                     # n_kv_req = tokens + (n_predict - tokens)
+  * n_parallel'
+- '    ├── 上下文参数配置                  # ctx_params.n_ctx / n_batch'
+- '    ├── 采样器军团配置                  # llama_sampler_chain_init × n_parallel'
+- '    ├── 初始批构建与编码                # llama_batch_init / common_batch_add / llama_decode'
+- '    │   └── Encoder-Decoder 分支       # llama_encode + decoder_start_token_id'
+- '    ├── 并行生成主循环                  # while (n_cur <= n_predict)'
+- '    │   ├── 批量清空                   # common_batch_clear'
+- '    │   ├── 逐序列采样                 # llama_sampler_sample'
+- '    │   ├── EOG 检测                   # llama_vocab_is_eog → i_batch[i] = -1'
+- '    │   ├── 单流实时输出               # n_parallel == 1 时立即打印'
+- '    │   └── 批提交解码                 # llama_decode'
+- '    └── 资源清理与性能统计             # llama_batch_free / llama_perf_context_print'
+- ''
+- examples/parallel/parallel.cpp
+- '├── struct client                      # 客户端状态结构体'
+- '│   ├── seq_id / id                    # 序列与客户端标识'
+- '│   ├── smpl                           # 独立采样器'
+- '│   ├── n_past / n_prompt / n_decoded  # 进度计数器'
+- '│   ├── ~client()                      # [62-69] 析构：释放采样器'
+- │   └── ...
+- '├── trim()                             # [21-32] 字符串去空白'
+- '├── print_date_time()                  # [105-114] 时间戳打印'
+- '├── split_string()                     # [117-126] 字符串分割'
+- '└── __main__                           # [128-292] 多客户端模拟主函数'
+- '    ├── 参数与初始化                     # common_params_parse / common_init_from_params'
+- '    ├── 客户端数组初始化                 # clients[i].smpl = common_sampler_init()'
+- '    ├── 系统提示词编码                   # 可选 is_sp_shared 模式'
+- '    │   ├── 编码系统提示                # llama_decode(system_tokens)'
+- '    │   └── KV 广播                     # llama_memory_seq_cp(mem, 0, i, -1, -1)'
+- '    ├── 主调度循环                       # while (true)'
+- '    │   ├── 批清空                       # common_batch_clear'
+- '    │   ├── 活跃客户端入批              # common_batch_add(client.sampled, ...)'
+- '    │   ├── 空闲槽位填充                # cont_batching 时分配新请求'
+- '    │   │   ├── 随机junk注入            # n_junk 干扰问答对'
+- '    │   │   └── 新提示词编码            # tokenize + common_batch_add'
+- '    │   ├── 批分片解码                  # batch_view 动态分片'
+- '    │   │   └── 失败降级                # n_batch /= 2 重试'
+- '    │   ├── 逐客户端采样                # common_sampler_sample / accept'
+- '    │   ├── 结束检测                    # EOG / n_predict / "User:" 截断'
+- '    │   └── 序列清理                    # llama_memory_seq_rm + seq_cp'
+- '    └── 性能统计与清理                  # t/s 计算 / llama_perf_context_print'
+- ''
+- examples/save-load-state/save-load-state.cpp
+- '└── __main__                           # [11-238] 状态持久化演示'
+- '    ├── 参数与初始化                     # kv_unified 自动启用'
+- '    ├── 第一轮：原始生成                 # common_prompt_batch_decode + 逐token循环'
+- '    │   └── 状态保存                     # state_file = "dump_state.bin"'
+- '    ├── 第二轮：状态恢复验证             # llama_state_load_file'
+- '    │   ├── 加载快照                     # 恢复 KV + RNG'
+- '    │   ├── 重放最后token               # common_replay_last_token'
+- '    │   └── 生成比对                     # result1 == result0 ?'
+- '    ├── 第三轮：序列级迁移               # llama_state_seq_get_data / set_data'
+- '    │   ├── 提取 seq 0 状态              # llama_state_seq_get_data'
+- '    │   ├── 清空 KV 缓存                 # llama_memory_clear'
+- '    │   ├── 注入到 seq 1                 # llama_state_seq_set_data(..., 1)'
+- '    │   └── 生成比对                     # result2 == result0 ?'
+- '    └── 资源清理与结果校验               # 三重一致性检查'
+exercises:
+- contents:
+  - 阅读 `examples/batched/batched.cpp` 的 `main` 中参数解析到 `n_kv_req` 计算部分（约第 18-90 行），回答：
+  - 1. 假设 prompt 有 10 个 token，n_predict = 32，n_parallel = 4，计算 n_kv_req 的值并解释其物理含义
+  - 2. 如果把 n_parallel 改为 128，n_kv_req 会如何变化？这会触发什么错误提示？
+  - 3. 为什么 ctx_params.n_batch 取 max(n_predict, n_parallel) 而不是两者之和？
+  - 动手：修改代码，在启动时打印 n_kv_req 的详细计算公式分解，并验证你的推导
+  'no': 1
+  title: 批量推理参数计算实验
+- contents:
+  - 阅读 `examples/batched/batched.cpp` 的 `main` 中主循环部分（约第 140-200 行），回答：
+  - 1. `i_batch[i] = batch.n_tokens` 这一行的作用是什么？为什么必须用当前批大小作为索引？
+  - 2. 如果某条序列在第 3 轮触发 EOG，后续轮次中 `batch` 的结构会如何变化？
+  - 3. 当所有序列都结束时，为什么 `batch.n_tokens == 0` 能作为退出条件？
+  - 动手：在循环中添加日志，打印每轮 batch.n_tokens 和所有 i_batch 值的变化，观察 n_parallel = 4 时的批填充模式
+  'no': 2
+  title: 并行生成主循环的批索引追踪
+- contents:
+  - 阅读 `examples/parallel/parallel.cpp` 的 `__main__` 中 is_sp_shared 与 cont_batching
+    相关代码，回答：
+  - 1. `is_sp_shared` 模式下，系统提示词是如何被多个客户端共享的？画出 KV 缓存复制的时序图
+  - 2. `cont_batching = true` 与 `false` 时，新客户端插入的时机有何不同？对吞吐量的影响是什么？
+  - 3. `llama_memory_seq_rm(mem, client.id + 1, -1, -1)` 之后为什么紧跟着 `llama_memory_seq_cp(mem,
+    0, client.id + 1, -1, -1)`？
+  - 4. `~client()` 析构函数的作用是什么？如果遗漏会导致什么资源泄漏？
+  - 动手：修改代码，关闭 is_sp_shared，对比两种模式下 prompt 处理阶段的总耗时
+  'no': 3
+  title: 连续批处理与共享提示词优化
+- contents:
+  - 阅读 `examples/parallel/parallel.cpp` 的 `__main__` 中 batch_view 分片逻辑，回答：
+  - 1. 为什么 `batch_view` 可以通过简单的指针偏移（`batch.token + i`）实现零拷贝分片？
+  - 2. 当 `llama_decode` 返回非零时，为什么要检查 `n_batch == 1 || ret < 0` 才直接退出？
+  - 3. `n_batch /= 2` 的降级策略在极端情况下（如 n_batch=1 仍失败）会怎样？这种设计有何局限？
+  - 动手：在代码中注入一个模拟内存不足的错误（人为限制可用内存），观察 n_cache_miss 的增长趋势和分片过程
+  'no': 4
+  title: 批分片降级机制分析
+- contents:
+  - 阅读 `examples/save-load-state/save-load-state.cpp` 全文，回答：
+  - 1. `llama_state_load_file` 恢复了哪些状态？为什么恢复后还需要 `common_replay_last_token`？
+  - 2. 序列迁移时（seq 0 → seq 1），为什么必须先 `llama_memory_clear` 再 `llama_state_seq_set_data`？
+  - 3. 如果 `result0 != result2`，最可能的原因是什么？（提示：考虑 RNG 状态和采样器种子）
+  - 4. `params.kv_unified = true` 在什么条件下自动启用？它对状态保存的格式有何影响？
+  - 动手：修改代码，尝试在恢复状态后使用不同的采样温度（temperature），观察生成结果是否仍然一致，并解释原因
+  'no': 5
+  title: 推理状态的保存、恢复与迁移
+- contents:
+  - 阅读 `examples/parallel/parallel.cpp` 中的 `trim()`、`split_string()`、`print_date_time()`
+    函数，回答：
+  - 1. `trim()` 函数的时间复杂度是多少？为什么它使用 `isspace()` 而不是简单的 `== ' '` 判断？
+  - 2. `split_string()` 使用 `std::istringstream` 的优缺点是什么？如果输入包含连续分隔符会怎么样？
+  - 3. `print_date_time()` 中的 `\033[35m` 和 `\033[0m` 是什么？在其他场景还有哪些类似用法？
+  - 动手：编写一个单元测试，验证 `split_string("a,,b", ',')` 的输出是否符合预期，并解释为什么
+  'no': 6
+  title: 辅助工具函数的实战应用
+learning_targets:
+- 掌握批量推理的核心参数配置：n_kv_req 计算、n_batch 与 n_parallel 的平衡策略
+- 理解 llama_batch 结构体的填充机制与 logits 标记策略
+- 剖析多序列并行生成的主循环：采样、EOG 检测、批更新
+- 掌握 continuous batching 的实现原理：client 状态机与动态槽位分配
+- 理解共享系统提示词（is_sp_shared）与 KV 缓存复用（llama_memory_seq_cp）的优化
+- 学习批分片视图（batch_view）技术：内存不足时的优雅降级策略
+- 掌握推理状态持久化：llama_state_save_file / llama_state_load_file 的使用
+- 理解跨上下文序列迁移：llama_state_seq_get_data / llama_state_seq_set_data
+- 分析统一 KV 缓存模式（kv_unified）在单并行场景下的内存优化
+- 熟悉辅助工具函数：trim、split_string、print_date_time 的日常用途
+life_analogy:
+- 想象 llama.cpp 的批量推理系统是一家**大型餐厅的中央厨房**：
+- '- **llama_batch** = 一张大托盘，可以同时承载多份食材（token）'
+- '- **n_parallel** = 同时服务的餐桌数量'
+- '- **n_kv_req** = 厨房为所有餐桌预留的餐位总数'
+- '- **采样器链** = 每张餐桌的专属调味师（Top-K→Top-P→Temp 流水线）'
+- '- **i_batch[]** = 每桌菜在托盘上的座位号（logits 索引）'
+- '- **EOG 检测** = 客人说"我吃饱了"，服务员撤掉该桌餐具（标记为 -1）'
+- '- **continuous batching** = 翻台机制：一桌客人刚走，新客人立刻补上'
+- '- **共享系统提示词** = 餐厅统一的餐前开胃菜，只需做一次，分发给所有桌'
+- '- **batch_view 分片** = 托盘太大端不动？分成小盘分批上菜'
+- '- **状态保存/恢复** = 把整桌菜品的烹饪进度拍照存档，换厨房后接着做'
+- '- **序列级迁移** = 把 A 桌的菜品精确复制到 B 桌，连火候都一模一样'
+- '- **~client()** = 客人离店时自动清理桌面，为下一波顾客做准备'
+- '- **trim() / split_string()** = 备菜间的刀具，把整根萝卜切成均匀小块'
+- 就像餐厅经理需要协调点菜、烹饪、上菜、翻台全流程，llama.cpp 的并行推理也需要精确管理批大小、KV 缓存、采样器与序列生命周期。
+'no': 91
+summary:
+- concept: n_kv_req
+  desc: KV 缓存需求总量 = prompt tokens + 生成 tokens × 并行数，决定 n_ctx 下限
+- concept: n_batch = max(n_predict, n_parallel)
+  desc: 批处理容量取预测长度与并行数的较大者，平衡内存与吞吐
+- concept: batch.logits[last] = true
+  desc: 仅标记最后一个 token 输出 logits，Prompt 编码的优化关键
+- concept: i_batch[]
+  desc: 记录每条序列在批中的逻辑索引，-1 表示该流已结束
+- concept: llama_sampler_sample(ctx, i_batch[i])
+  desc: 从指定批索引位置的 logits 中采样下一个 token
+- concept: common_batch_clear / common_batch_add
+  desc: 批处理的清空与填充原语，主循环的"呼吸节奏"
+- concept: llama_model_has_encoder / llama_encode
+  desc: 编码器-解码器架构的分离处理，需桥接 decoder_start_token_id
+- concept: client 结构体
+  desc: 封装客户端会话状态（seq_id、n_past、采样器构造与析构）
+- concept: is_sp_shared / llama_memory_seq_cp
+  desc: 系统提示词只编码一次，通过 KV 缓存复制广播给所有序列
+- concept: cont_batching
+  desc: 连续批处理：新请求立即填入空闲槽位，无需等待整批完成
+- concept: n_junk
+  desc: 随机插入干扰问答对，模拟真实场景的上下文污染
+- concept: batch_view
+  desc: llama_decode 失败时动态分片（n_batch /= 2），实现优雅降级
+- concept: n_cache_miss
+  desc: 记录批分片重试次数，衡量内存压力指标
+- concept: llama_memory_seq_rm + seq_cp
+  desc: 序列结束后清理旧 KV 并恢复共享系统提示词，实现槽位复用
+- concept: common_prompt_batch_decode(..., state_file, true)
+  desc: 编码 prompt 并同步保存 KV + RNG 状态到磁盘
+- concept: llama_state_load_file
+  desc: 跨上下文加载完整推理状态（KV 缓存 + 采样器状态）
+- concept: common_replay_last_token
+  desc: 状态恢复后重放最后一个 token，确保 logits 对齐
+- concept: llama_state_seq_get_data / set_data
+  desc: 单序列级状态提取与注入，支持跨上下文'手术式'迁移
+- concept: llama_memory_clear(ctx, true)
+  desc: 完全清空 KV 缓存，为序列迁移做准备
+- concept: params.kv_unified
+  desc: 单并行场景统一 KV 缓存布局，减少内存碎片
+- concept: result0 == result1 == result2
+  desc: 三重一致性校验：原始生成 ≡ 快照恢复 ≡ 序列迁移
+- concept: trim / split_string
+  desc: 字符串工具函数，前者去首尾空白，后者按分隔符切分字符串向量
+- concept: print_date_time
+  desc: 带颜色格式化的时间戳打印，用于日志追踪
+- concept: print_usage
+  desc: 打印程序使用说明与示例命令
+- concept: __main__.main / __main__.print_usage
+  desc: examples/batched/batched.cpp 的入口与帮助函数，本章核心解析对象
+units:
+- codes:
+  - file: examples/batched/batched.cpp
+    line: 12-16
+    method_or_func: __main__.print_usage()
+  - file: examples/batched/batched.cpp
+    line: 18-140
+    method_or_func: __main__.main()
+  name: 批量推理启动 —— 并发引擎的'点火钥匙'
+  'no': 1
+  points:
+  - '**参数即蓝图**：理解 `n_predict` 与 `n_parallel` 如何决定 KV 缓存需求总量（`n_kv_req` 计算）'
+  - '**批量上限的博弈**：`n_batch` 设置为 `max(n_predict, n_parallel)`，在内存与吞吐间寻找平衡点'
+  - '**编码器-解码器分离模式**：检测 `llama_model_has_encoder`，为 Encoder-Decoder 架构准备 `decoder_start_token_id`
+    桥梁'
+  - '**初始批的''播种''策略**：仅将最后一个 token 的 `logits` 标记为 true，实现 Prompt 的并行编码'
+  - '**采样器军团配置**：为每条独立序列创建独立的 Top-K → Top-P → Temp → Dist 采样链'
+  - '**print_usage 的导航作用**：程序自带帮助信息，指导用户正确传入 -m -p -n -np 等关键参数'
+  - '**函数归属标注**：`print_usage()` 与 `main()` 均属于 `__main__` 单元，作为示例程序的入口与全局流程载体'
+- codes:
+  - file: examples/batched/batched.cpp
+    line: 140-216
+    method_or_func: __main__.main()
+  name: 并行生成循环 —— 流水线上的'多轨并行'
+  'no': 2
+  points:
+  - '**批处理的''呼吸节奏''**：每轮循环先清空 (`common_batch_clear`)，再为每个活跃序列填充新 token'
+  - '**结束信号的博弈**：检测 EOG (End of Generation) 与长度上限，及时将流标记为 `-1` 释放资源'
+  - '**批内偏移追踪术**：`i_batch` 数组记录每条序列在当前 batch 中的逻辑索引，确保 logits 采样正确'
+  - '**单流实时输出**：`n_parallel == 1` 时立即打印 token，实现打字机效果；多流时则收集后统一展示'
+  - '**KV 缓存的共享之道**：注释掉的 `llama_kv_cache_seq_cp` 暗示了系统提示词被多序列复用的优化可能性'
+- codes:
+  - file: examples/parallel/parallel.cpp
+    line: 21-32
+    method_or_func: trim()
+  - file: examples/parallel/parallel.cpp
+    line: 117-126
+    method_or_func: split_string()
+  - file: examples/parallel/parallel.cpp
+    line: 105-114
+    method_or_func: print_date_time()
+  - file: examples/parallel/parallel.cpp
+    line: 62-69
+    method_or_func: client.~client()
+  name: 工具函数箱 —— 数据处理的'瑞士军刀'
+  'no': 3
+  points:
+  - '**字符串的精细修剪**：`trim()` 双侧扫描去除空白字符，保持原始字符串不动返回新字符串'
+  - '**时间的艺术印记**：`print_date_time()` 使用 ANSI 转义码（紫色高亮）格式化输出运行时参数时间快照'
+  - '**文本的智能切分**：`split_string()` 基于 `std::istringstream` 按分隔符流式切分，天然支持多字节字符'
+  - '**资源的安全释放**：`client` 结构体的析构函数 `~client()` 自动释放 `common_sampler`，防止内存泄漏'
+  - '**零开销抽象**：这些静态工具函数不依赖外部状态，可在编译期内联优化'
+- codes:
+  - file: examples/parallel/parallel.cpp
+    line: 128-292
+    method_or_func: __main__
+  name: 多客户端模拟 —— 并发世界的'虚拟用户风暴'
+  'no': 4
+  points:
+  - '**状态机驱动的客户端**：`client.seq_id == -1` 表示空闲槽位，`g_seq_id` 全局递增保证会话唯一性'
+  - '**共享提示词的智慧**：`is_sp_shared` 模式下，系统提示词仅编码一次，随后通过 `llama_memory_seq_cp` 广播给所有序列'
+  - '**连续批处理（Continuous Batching）**：`cont_batching` 允许新请求立即填入空闲槽位，实现无间断服务'
+  - '**随机性注入**：`n_junk` 随机插入干扰问答对，模拟真实场景中的上下文污染与模型鲁棒性测试'
+  - '**批分片视图技术**：当 `llama_decode` 因内存不足失败时，通过 `batch_view` 动态减半批次大小实现优雅降级'
+  - '**提示词的外部化**：支持从文件读取多行提示词，通过 `split_string` 分割后随机分配给客户端'
+- codes:
+  - file: examples/save-load-state/save-load-state.cpp
+    line: 11-238
+    method_or_func: __main__
+  name: 状态持久化与迁移 —— 推理现场的'精确复刻'
+  'no': 5
+  points:
+  - '**记忆快照的摄取**：`common_prompt_batch_decode` 配合 `state_file` 参数，将 KV Cache 与 RNG
+    状态冻结至二进制文件'
+  - '**跨上下文克隆**：第二个上下文通过 `llama_state_load_file` 读取快照，实现''秒级''恢复至完全相同的前序状态'
+  - '**序列级手术**：`llama_state_seq_get_data` / `llama_state_seq_set_data` 支持将单个对话序列从一个上下文''移植''到另一个'
+  - '**结果一致性校验**：通过强制比对 `result0`（原始）、`result1`（恢复后）、`result2`（序列迁移后）的字符串，验证状态保存的数学等价性'
+  - '**统一 KV 缓存模式**：`params.kv_unified` 在单并行场景下的自动启用，优化内存布局'

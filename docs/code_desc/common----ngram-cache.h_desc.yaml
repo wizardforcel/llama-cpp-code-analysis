@@ -1,0 +1,107 @@
+classes:
+- desc: 表示长度不超过 LLAMA_NGRAM_MAX 的 token n-gram，并提供构造、初始化和相等比较能力。
+  methods:
+  - code:
+    - common_ngram() {
+    - '    for (int i = 0; i < LLAMA_NGRAM_MAX; ++i) {'
+    - '        tokens[i] = LLAMA_TOKEN_NULL;'
+    - '    }'
+    - '}'
+    desc: 默认构造函数，将 n-gram 中的所有 token 初始化为 LLAMA_TOKEN_NULL。
+    line: 19-23
+    name: common_ngram
+  - code:
+    - common_ngram(const llama_token * input, const int ngram_size) {
+    - '    for (int i = 0; i < LLAMA_NGRAM_MAX; ++i) {'
+    - '        tokens[i] = i < ngram_size ? input[i] : LLAMA_TOKEN_NULL;'
+    - '    }'
+    - '}'
+    desc: 根据输入 token 数组和指定的 n-gram 长度构造 n-gram，未使用的位置填充为 LLAMA_TOKEN_NULL。
+    line: 25-29
+    name: common_ngram
+  - code:
+    - bool operator==(const common_ngram & other) const {
+    - '    for (int i = 0; i < LLAMA_NGRAM_MAX; ++i) {'
+    - '        if (tokens[i] != other.tokens[i]) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: 逐个比较两个 n-gram 的 token，判断它们是否完全相等。
+    line: 31-39
+    name: operator==
+  name: common_ngram
+- desc: 为单个 llama_token 提供基于 Fibonacci hashing 的哈希计算器。
+  methods:
+  - code:
+    - size_t operator()(const llama_token token) const {
+    - '    return token * 11400714819323198485llu;'
+    - '}'
+    desc: 将 token 乘以固定 Fibonacci 哈希常数，生成 size_t 类型的哈希值。
+    line: 43-46
+    name: operator()
+  name: common_token_hash_function
+- desc: 为 common_ngram 计算组合哈希值，以便将 n-gram 用作哈希容器的键。
+  methods:
+  - code:
+    - size_t operator()(const common_ngram & ngram) const {
+    - '    size_t hash = common_token_hash_function{}(ngram.tokens[0]);'
+    - '    for (int i = 1; i < LLAMA_NGRAM_MAX; ++i) {'
+    - '        hash ^= common_token_hash_function{}(ngram.tokens[i]);'
+    - '    }'
+    - '    return hash;'
+    - '}'
+    desc: 先计算首个 token 的哈希值，再将其余 token 的哈希值通过异或操作合并。
+    line: 50-56
+    name: operator()
+  name: common_ngram_hash_function
+desc: 该头文件定义了用于记录、哈希、更新、生成、持久化和合并 token n-gram 统计信息的数据结构与接口。它通过固定长度的 common_ngram
+  表示最多四元的 token 序列，并使用哈希映射保存每个 n-gram 后继 token 的经验计数分布，从而支持基于上下文、动态历史和静态语料缓存的 token
+  草拟功能。
+file: common/ngram-cache.h
+funcs:
+- code:
+  - void common_ngram_cache_update(
+  - '    common_ngram_cache & ngram_cache, int ngram_min, int ngram_max, std::vector<llama_token>
+    & inp_data, int nnew, bool print_progress);'
+  desc: 使用新增的 token 序列数据更新 n-gram 缓存，统计不同 n-gram 后继 token 的出现次数。
+  line: 70-72
+  name: common_ngram_cache_update
+- code:
+  - void common_ngram_cache_draft(
+  - '    std::vector<llama_token> & inp, std::vector<llama_token> & draft, int n_draft,
+    int ngram_min, int ngram_max,'
+  - '    common_ngram_cache & nc_context, common_ngram_cache & nc_dynamic, common_ngram_cache
+    & nc_static);'
+  desc: 根据上下文、动态历史和静态语料中的 n-gram 缓存，尝试为当前 token 序列草拟后续 token。
+  line: 82-85
+  name: common_ngram_cache_draft
+- code:
+  - void common_ngram_cache_save(common_ngram_cache & ngram_cache, const std::string
+    & filename);
+  desc: 将指定的 n-gram 缓存序列化并保存到文件。
+  line: '91'
+  name: common_ngram_cache_save
+- code:
+  - common_ngram_cache common_ngram_cache_load(const std::string & filename);
+  desc: 从文件加载此前保存的 n-gram 缓存并返回缓存对象。
+  line: '97'
+  name: common_ngram_cache_load
+- code:
+  - void common_ngram_cache_merge(common_ngram_cache & ngram_cache_target, common_ngram_cache
+    & ngram_cache_add);
+  desc: 将一个 n-gram 缓存中的统计信息合并到目标缓存中。
+  line: '103'
+  name: common_ngram_cache_merge
+- code:
+  - '#define LLAMA_NGRAM_MIN    1'
+  - '#define LLAMA_NGRAM_MAX    4'
+  - '#define LLAMA_NGRAM_STATIC 2'
+  - ''
+  - typedef std::unordered_map<llama_token, int32_t> common_ngram_cache_part;
+  - typedef std::unordered_map<common_ngram, common_ngram_cache_part, common_ngram_hash_function>
+    common_ngram_cache;
+  desc: 文件级全局声明、类型别名、常量宏和数据结构定义，用于提供 n-gram 缓存的基础类型与接口。
+  line: 9-15
+  name: __main__

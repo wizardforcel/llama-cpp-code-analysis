@@ -1,0 +1,406 @@
+classes:
+- desc: 实现一个固定容量的环形缓冲区，用于保存最近生成的 token 历史。
+  methods:
+  - code:
+    - 'ring_buffer(size_t cap) : capacity(cap), data(cap) {}'
+    desc: 按指定容量初始化环形缓冲区及底层存储。
+    line: 17-17
+    name: ring_buffer
+  - code:
+    - T & front() {
+    - '    if (sz == 0) {'
+    - '        throw std::runtime_error("ring buffer is empty");'
+    - '    }'
+    - '    return data[first];'
+    - '}'
+    desc: 返回缓冲区最前端元素，缓冲区为空时抛出异常。
+    line: 19-25
+    name: front
+  - code:
+    - const T & front() const {
+    - '    if (sz == 0) {'
+    - '        throw std::runtime_error("ring buffer is empty");'
+    - '    }'
+    - '    return data[first];'
+    - '}'
+    desc: 以只读方式返回缓冲区最前端元素。
+    line: 27-33
+    name: front const
+  - code:
+    - T & back() {
+    - '    if (sz == 0) {'
+    - '        throw std::runtime_error("ring buffer is empty");'
+    - '    }'
+    - '    return data[pos];'
+    - '}'
+    desc: 返回缓冲区最后一个元素，缓冲区为空时抛出异常。
+    line: 35-41
+    name: back
+  - code:
+    - const T & back() const {
+    - '    if (sz == 0) {'
+    - '        throw std::runtime_error("ring buffer is empty");'
+    - '    }'
+    - '    return data[pos];'
+    - '}'
+    desc: 以只读方式返回缓冲区最后一个元素。
+    line: 43-49
+    name: back const
+  - code:
+    - void push_back(const T & value) {
+    - '    if (sz == capacity) {'
+    - '        first = (first + 1) % capacity;'
+    - '    } else {'
+    - '        sz++;'
+    - '    }'
+    - '    data[pos] = value;'
+    - '    pos = (pos + 1) % capacity;'
+    - '}'
+    desc: 向环形缓冲区追加元素，容量满时覆盖最旧元素。
+    line: 51-61
+    name: push_back
+  - code:
+    - T pop_front() {
+    - '    if (sz == 0) {'
+    - '        throw std::runtime_error("ring buffer is empty");'
+    - '    }'
+    - '    T value = data[first];'
+    - '    first = (first + 1) % capacity;'
+    - '    sz--;'
+    - '    return value;'
+    - '}'
+    desc: 移除并返回最旧元素。
+    line: 63-72
+    name: pop_front
+  - code:
+    - const T & rat(size_t i) const {
+    - '    if (i >= sz) {'
+    - '        throw std::runtime_error("ring buffer: index out of bounds");'
+    - '    }'
+    - '    return data[(first + sz - i - 1) % capacity];'
+    - '}'
+    desc: 按从最新到最旧的相对索引读取元素。
+    line: 74-80
+    name: rat
+  - code:
+    - std::vector<T> to_vector() const {
+    - '    std::vector<T> result;'
+    - '    result.reserve(sz);'
+    - '    for (size_t i = 0; i < sz; i++) {'
+    - '        result.push_back(data[(first + i) % capacity]);'
+    - '    }'
+    - '    return result;'
+    - '}'
+    desc: 按从旧到新的顺序将缓冲区内容复制为 vector。
+    line: 82-90
+    name: to_vector
+  - code:
+    - void clear() {
+    - '    sz = 0;'
+    - '    first = 0;'
+    - '    pos = 0;'
+    - '}'
+    desc: 清空缓冲区并重置读写位置。
+    line: 92-97
+    name: clear
+  - code:
+    - bool empty() const {
+    - '    return sz == 0;'
+    - '}'
+    desc: 判断环形缓冲区是否为空。
+    line: 99-101
+    name: empty
+  - code:
+    - size_t size() const {
+    - '    return sz;'
+    - '}'
+    desc: 返回当前缓冲区元素数量。
+    line: 103-105
+    name: size
+  name: ring_buffer<T>
+- desc: 封装模型 token 采样所需的参数、采样器链、语法约束、推理预算、候选 logits 及历史 token。
+  methods:
+  - code:
+    - void reset() {
+    - '    prev.clear();'
+    - '    llama_sampler_reset(chain);'
+    - '}'
+    desc: 清空采样历史并重置底层采样器链。
+    line: 120-125
+    name: reset
+  - code:
+    - void set_logits(struct llama_context * ctx, int idx) {
+    - '    const float * sampled_probs = llama_get_sampled_probs_ith(ctx, idx);'
+    - '    const float * sampled_logits = llama_get_sampled_logits_ith(ctx, idx);'
+    - '    const llama_token * sampled_ids = llama_get_sampled_candidates_ith(ctx,
+      idx);'
+    - '    // 根据后端返回的数据填充 cur'
+    - '    cur_p = { cur.data(), cur.size(), -1, false };'
+    - '}'
+    desc: 从 llama 上下文读取采样概率、采样 logits 或完整 logits，并构造当前候选数组。
+    line: 127-164
+    name: set_logits
+  - code:
+    - common_time_meas tm() {
+    - '    return common_time_meas(t_total_us, params.no_perf);'
+    - '}'
+    desc: 创建当前采样操作的性能计时对象。
+    line: 166-168
+    name: tm
+  name: common_sampler
+desc: 该文件实现通用文本生成采样模块，负责维护固定容量的采样历史、构建和管理语法约束、推理预算及多种概率采样器链，并提供候选 token 获取、采样、接受、重置、克隆、性能统计以及采样器类型转换等功能。
+file: common/sampling.cpp
+funcs:
+- code:
+  - std::string common_params_sampling::print() const {
+  - '    char result[1024];'
+  - '    snprintf(result, sizeof(result), ...);'
+  - '    return std::string(result);'
+  - '}'
+  desc: 格式化输出采样参数配置。
+  line: 174-187
+  name: common_params_sampling::print
+- code:
+  - struct common_sampler * common_sampler_init(const struct llama_model * model,
+    struct common_params_sampling & params) {
+  - '    const llama_vocab * vocab = llama_model_get_vocab(model);'
+  - '    // 初始化 grammar、reasoning budget 和各种采样器'
+  - '    // 将采样器加入 chain'
+  - '    return result;'
+  - '}'
+  desc: 根据采样参数创建语法采样器、推理预算采样器和概率采样器链，并返回初始化后的通用采样器。
+  line: 189-374
+  name: common_sampler_init
+- code:
+  - void common_sampler_free(struct common_sampler * gsmpl) {
+  - '    if (!gsmpl) {'
+  - '        return;'
+  - '    }'
+  - '    llama_sampler_free(gsmpl->grmr);'
+  - '    llama_sampler_free(gsmpl->rbudget);'
+  - '    llama_sampler_free(gsmpl->chain);'
+  - '    delete gsmpl;'
+  - '}'
+  desc: 释放通用采样器及其关联的语法、推理预算和采样器链资源。
+  line: 376-388
+  name: common_sampler_free
+- code:
+  - static bool grammar_should_apply(struct common_sampler * gsmpl) {
+  - '    if (!gsmpl->grmr) return false;'
+  - '    if (!gsmpl->rbudget) return true;'
+  - '    if (gsmpl->params.grammar_lazy) {'
+  - '        const auto state = common_reasoning_budget_get_state(gsmpl->rbudget);'
+  - '        return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;'
+  - '    }'
+  - '    return true;'
+  - '}'
+  desc: 判断当前是否应启用语法约束，尤其处理惰性语法与推理预算状态的组合逻辑。
+  line: 390-404
+  name: grammar_should_apply
+- code:
+  - void common_sampler_accept(struct common_sampler * gsmpl, llama_token token, bool
+    accept_grammar) {
+  - '    if (!gsmpl) return;'
+  - '    accept_grammar = accept_grammar && grammar_should_apply(gsmpl);'
+  - '    llama_sampler_accept(gsmpl->rbudget, token);'
+  - '    if (gsmpl->grmr && accept_grammar) llama_sampler_accept(gsmpl->grmr, token);'
+  - '    llama_sampler_accept(gsmpl->chain, token);'
+  - '    gsmpl->prev.push_back(token);'
+  - '}'
+  desc: 接受生成 token，并同步更新推理预算、语法状态、采样器链和 token 历史。
+  line: 406-427
+  name: common_sampler_accept
+- code:
+  - void common_sampler_reset(struct common_sampler * gsmpl) {
+  - '    if (!gsmpl) return;'
+  - '    gsmpl->reset();'
+  - '}'
+  desc: 重置通用采样器状态。
+  line: 429-435
+  name: common_sampler_reset
+- code:
+  - struct common_sampler * common_sampler_clone(common_sampler * gsmpl) {
+  - '    return new common_sampler {'
+  - '        gsmpl->params,'
+  - '        llama_sampler_clone(gsmpl->grmr),'
+  - '        llama_sampler_clone(gsmpl->rbudget),'
+  - '        llama_sampler_clone(gsmpl->chain),'
+  - '        gsmpl->prev,'
+  - '        gsmpl->cur,'
+  - '        gsmpl->cur_p,'
+  - '    };'
+  - '}'
+  desc: 深度克隆采样器及其采样器链、历史和当前候选状态。
+  line: 437-449
+  name: common_sampler_clone
+- code:
+  - void common_perf_print(const struct llama_context * ctx, const struct common_sampler
+    * gsmpl) {
+  - '    // 获取并打印采样耗时、模型加载、提示词评估和生成评估等指标'
+  - '    if (gsmpl) {'
+  - '        LOG_INF(...);'
+  - '    }'
+  - '    if (ctx) {'
+  - '        LOG_INF(...);'
+  - '        llama_memory_breakdown_print(ctx);'
+  - '    }'
+  - '}'
+  desc: 输出采样器和 llama 上下文的性能统计信息。
+  line: 451-493
+  name: common_perf_print
+- code:
+  - struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl)
+    {
+  - '    if (!gsmpl) return nullptr;'
+  - '    return gsmpl->chain;'
+  - '}'
+  desc: 获取通用采样器内部的采样器链指针。
+  line: 495-501
+  name: common_sampler_get
+- code:
+  - llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context
+    * ctx, int idx, bool grammar_first) {
+  - '    llama_synchronize(ctx);'
+  - '    // 优先使用后端已选 token'
+  - '    // 读取 logits 并依次应用推理预算、语法和采样器链'
+  - '    // 必要时执行语法校验和重采样'
+  - '    return id;'
+  - '}'
+  desc: 从模型 logits 中执行完整采样流程，支持后端采样、推理预算、语法约束及语法拒绝重采样。
+  line: 503-577
+  name: common_sampler_sample
+- code:
+  - std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler
+    * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens
+    & draft, bool grammar_first) {
+  - '    GGML_ASSERT(idxs.size() == draft.size() + 1);'
+  - '    for (; i < draft.size(); i++) {'
+  - '        const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);'
+  - '        common_sampler_accept(gsmpl, id, true);'
+  - '        if (draft[i] != id) break;'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 结合 draft token 执行连续采样，并接受匹配的 token，支持提前终止和额外采样。
+  line: 579-604
+  name: common_sampler_sample_and_accept_n
+- code:
+  - std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler
+    * gsmpl, struct llama_context * ctx, const llama_tokens & draft, bool grammar_first)
+    {
+  - '    std::vector<int> idxs(draft.size() + 1);'
+  - '    for (size_t i = 0; i < idxs.size(); ++i) idxs[i] = i;'
+  - '    return common_sampler_sample_and_accept_n(gsmpl, ctx, idxs, draft, grammar_first);'
+  - '}'
+  desc: 为 draft token 自动生成连续索引，并调用带索引版本完成采样与接受。
+  line: 606-615
+  name: common_sampler_sample_and_accept_n
+- code:
+  - uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl) {
+  - '    return llama_sampler_get_seed(gsmpl->chain);'
+  - '}'
+  desc: 获取采样器链使用的随机种子。
+  line: 617-619
+  name: common_sampler_get_seed
+- code:
+  - llama_token_data_array * common_sampler_get_candidates(struct common_sampler *
+    gsmpl, bool do_sort) {
+  - '    auto * res = &gsmpl->cur_p;'
+  - '    if (do_sort && !res->sorted) {'
+  - '        std::sort(res->data, res->data + res->size, [](const llama_token_data
+    & a, const llama_token_data & b) {'
+  - '            return a.p > b.p;'
+  - '        });'
+  - '        res->sorted = true;'
+  - '    }'
+  - '    return res;'
+  - '}'
+  desc: 获取当前候选 token 数组，并可按概率排序且保持已选 token 索引正确。
+  line: 623-647
+  name: common_sampler_get_candidates
+- code:
+  - llama_token common_sampler_last(const struct common_sampler * gsmpl) {
+  - '    return gsmpl->prev.rat(0);'
+  - '}'
+  desc: 返回最近接受的 token。
+  line: 649-651
+  name: common_sampler_last
+- code:
+  - std::string common_sampler_print(const struct common_sampler * gsmpl) {
+  - '    std::string result = "logits ";'
+  - '    for (int i = 0; i < llama_sampler_chain_n(gsmpl->chain); i++) {'
+  - '        const auto * smpl = llama_sampler_chain_get(gsmpl->chain, i);'
+  - '        result += std::string("-> ");'
+  - '        result += std::string(llama_sampler_name(smpl)) + " ";'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 生成采样器链的可读字符串表示。
+  line: 653-665
+  name: common_sampler_print
+- code:
+  - std::string common_sampler_prev_str(common_sampler * gsmpl, llama_context * ctx_main,
+    int n) {
+  - '    n = std::min(n, (int) gsmpl->prev.size());'
+  - '    if (n <= 0) return "";'
+  - '    for (int i = n - 1; i >= 0; i--) {'
+  - '        const llama_token id = gsmpl->prev.rat(i);'
+  - '        result += common_token_to_piece(ctx_main, id);'
+  - '    }'
+  - '    return result;'
+  - '}'
+  desc: 将最近的 token 历史转换为对应的文本字符串。
+  line: 667-685
+  name: common_sampler_prev_str
+- code:
+  - char common_sampler_type_to_chr(enum common_sampler_type cnstr) {
+  - '    switch (cnstr) {'
+  - '        case COMMON_SAMPLER_TYPE_DRY: return ''d'';'
+  - '        case COMMON_SAMPLER_TYPE_TOP_K: return ''k'';'
+  - '        case COMMON_SAMPLER_TYPE_TOP_P: return ''p'';'
+  - '        default: return ''?'';'
+  - '    }'
+  - '}'
+  desc: 将采样器类型枚举转换为单字符缩写。
+  line: 687-703
+  name: common_sampler_type_to_chr
+- code:
+  - std::string common_sampler_type_to_str(enum common_sampler_type cnstr) {
+  - '    switch (cnstr) {'
+  - '        case COMMON_SAMPLER_TYPE_DRY: return "dry";'
+  - '        case COMMON_SAMPLER_TYPE_TOP_K: return "top_k";'
+  - '        case COMMON_SAMPLER_TYPE_TOP_P: return "top_p";'
+  - '        default: return "";'
+  - '    }'
+  - '}'
+  desc: 将采样器类型枚举转换为规范名称字符串。
+  line: 705-721
+  name: common_sampler_type_to_str
+- code:
+  - std::vector<common_sampler_type> common_sampler_types_from_names(const std::vector<std::string>
+    & names, bool allow_alt_names) {
+  - '    // 构建规范名称和别名映射'
+  - '    for (const auto & name : names) {'
+  - '        // 优先匹配规范名称，再根据配置匹配别名'
+  - '        // 无法匹配时记录警告'
+  - '    }'
+  - '    return samplers;'
+  - '}'
+  desc: 将规范或可选别名形式的采样器名称解析为枚举列表。
+  line: 723-778
+  name: common_sampler_types_from_names
+- code:
+  - std::vector<common_sampler_type> common_sampler_types_from_chars(const std::string
+    & chars) {
+  - '    // 建立字符到采样器类型的映射'
+  - '    for (const auto & c : chars) {'
+  - '        const auto sampler = sampler_name_map.find(c);'
+  - '        if (sampler != sampler_name_map.end()) {'
+  - '            samplers.push_back(sampler->second);'
+  - '        }'
+  - '    }'
+  - '    return samplers;'
+  - '}'
+  desc: 将采样器字符缩写解析为采样器类型枚举列表。
+  line: 780-811
+  name: common_sampler_types_from_chars

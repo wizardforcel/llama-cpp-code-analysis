@@ -1,0 +1,666 @@
+code_map:
+- src/models/rwkv6-base.cpp
+- '├── llm_build_rwkv6_base::llm_build_rwkv6_base()                       # 继承llm_graph_context'
+- '├── llm_build_rwkv6_base::build_rwkv6_channel_mix()                     # 通道混合子图（仅RWKV6）'
+- '└── llm_build_rwkv6_base::build_rwkv6_time_mix()                        # 时间混合子图（包含QRWKV识别）'
+- '    ├── sx = cur - x_prev                                              # token
+  shift差值'
+- '    ├── fused/legacy lerp分支                                          # 5路投影切片'
+- '    ├── n_head_kv广播                                                  # GQA兼容'
+- '    ├── w = exp(-exp(tanh(w1·xw)·w2 + decay))                        # 指数衰减权重'
+- '    ├── ggml_rwkv_wkv6/gated_linear_attn                               # QRWKV分支选择'
+- '    └── GroupNorm + ln缩放（仅非QRWKV）'
+- src/models/rwkv6.cpp
+- '└── llm_build_rwkv6::llm_build_rwkv6()                                 # 完整推理图'
+- '    ├── token_shift_count == 2校验'
+- '    ├── att_shift/ffn_shift拆分'
+- '    ├── x_prev = concat(shift, att_norm[:-1])                         # 类RNN推理关键'
+- '    ├── time_mix → ffn_norm → channel_mix 残差流'
+- '    ├── rescale_every_n_layers中途衰减'
+- '    └── output_norm + lora_mm output'
+- src/models/rwkv6qwen2.cpp
+- '└── llm_build_rwkv6qwen2::llm_build_rwkv6qwen2()                        # 混合架构：RWKV
+  time_mix + Qwen2 SwiGLU FFN'
+- '    ├── 不做token归一化、RMSNorm'
+- '    ├── token_shift_count == 1（只保留att_shift）'
+- '    └── build_ffn with LLM_FFN_SILU+LLM_FFN_PAR'
+- src/models/rwkv7-base.cpp
+- '├── llm_build_rwkv7_base::llm_build_rwkv7_base()                       # 继承llm_graph_context'
+- '├── llm_build_rwkv7_base::build_rwkv7_channel_mix()                    # 极简版：无receptance'
+- '└── llm_build_rwkv7_base::build_rwkv7_time_mix()                       # 引入delta规则与v_first'
+- '    ├── 5/6路fused lerp（has_gating）'
+- '    ├── w = sigmoid(w2·tanh(w1·xw)+w0)·exp(-0.606531)'
+- '    ├── v_first跨层残差注入（sigmoid加权）'
+- '    ├── kk = l2_norm(k·k_k), k += a·(k·k_a) - k·k_a'
+- '    ├── ggml_rwkv_wkv7(r,w,k,v,-kk,kk·a,state)'
+- '    ├── rk = sum_rows(k·r·r_k) + v·rk                                  # 非线性注入'
+- '    └── 可选GroupNorm + time_mix_ln缩放'
+- src/models/rwkv7.cpp
+- '└── llm_build_rwkv7::llm_build_rwkv7()                                 # 完整图'
+- '    ├── v_first = nullptr跨层传递'
+- '    ├── token_shift_count == 2'
+- '    └── 无rescale缩放'
+- src/models/arwkv7.cpp
+- '└── llm_build_arwkv7::llm_build_arwkv7()                               # RWKV7
+  + 标准Transformer FFN混合'
+- '    ├── n_embd == hparams.n_embd_r()强校验'
+- '    ├── 去掉channel_mix，改用Qwen2风格SwiGLU'
+- '    └── token_shift_count == 1'
+- src/models/delta-net-base.cpp
+- '├── get_slice_2d()                                                     # 工具函数：按第三维切片'
+- '├── llm_build_delta_net_base::llm_build_delta_net_base()               # 继承llm_graph_context'
+- '├── llm_build_delta_net_base::build_delta_net_chunking()               # 分块并行模式'
+- │   ├── KDA/GDA判定（gate维度）
+- │   ├── CS=16(KDA)/64(GDA)分块
+- │   ├── cumsum(g) → decay_mask = exp(tri(g_j - g_i))
+- │   ├── Tri-solve：lhs = I + tri(attn), lin_solve = solve_tri(lhs, -tri(attn))
+- │   └── 循环遍历chunks：v_prime + attn加权 + state更新
+- '├── llm_build_delta_net_base::build_delta_net_autoregressive()         # AR单token模式'
+- │   ├── s = s · exp(g)
+- │   ├── d = (v - s·k)·b → s += k·d
+- │   └── o = sum_rows(s·q)
+- '├── llm_build_delta_net_base::build_delta_net_fused()                  # 调用ggml_gated_delta_net'
+- │   ├── result输出拆分为output + new_state
+- '└── llm_build_delta_net_base::build_delta_net()                        # 三模式自动选择入口'
+- src/models/qwen3next.cpp
+- '├── llm_build_qwen3next::llm_build_qwen3next()                         # 奇数层DeltaNet，偶数层Attn'
+- ├── get_slice_2d工具函数
+- '├── llm_build_qwen3next::build_norm_gated()                            # RMSNorm
+  × sigmoid(gate)门控'
+- '├── llm_build_qwen3next::build_layer_attn()                            # 标准Attn（联合QG投影）'
+- '├── llm_build_qwen3next::build_qkvz()                                  # fused/legacy双路径'
+- '├── llm_build_qwen3next::build_layer_attn_linear()                     # DeltaNet层'
+- │   ├── build_qkvz → causal conv → L2 norm → build_delta_net
+- │   ├── state与conv_states持久化到r_l/s_l
+- │   └── 输出门控 × ssm_norm
+- '└── llm_build_qwen3next::build_layer_ffn()                             # MoE +
+  Shared Expert'
+- src/models/qwen35.cpp
+- '├── llm_build_qwen35::llm_build_qwen35()                               # IMRoPE
+  + LoRA缩放（无legacy路径）'
+- '├── llm_build_qwen35::build_qkvz()                                     # fused路径（无legacy）'
+- '├── llm_build_qwen35::build_norm_gated()                               # RMSNorm
+  × SiLU(gate)门控'
+- '├── llm_build_qwen35::build_layer_attn()                               # IMRoPE标准Attn'
+- '├── llm_build_qwen35::build_layer_attn_linear()                        # DeltaNet层（带LoRA缩放）'
+- '└── llm_build_qwen35::build_layer_ffn()                                # Dense
+  FFN'
+- src/models/qwen35moe.cpp
+- '├── llm_build_qwen35moe::llm_build_qwen35moe()                         # Qwen3.5
+  + MoE'
+- '├── llm_build_qwen35moe::build_qkvz()                                  # fused路径'
+- '├── llm_build_qwen35moe::build_norm_gated()                            # 门控归一化'
+- '├── llm_build_qwen35moe::build_layer_attn()                            # IMRoPE标准Attn'
+- '├── llm_build_qwen35moe::build_layer_attn_linear()                     # DeltaNet层'
+- '└── llm_build_qwen35moe::build_layer_ffn()                             # MoE +
+  Shared Expert（支持*_s LoRA缩放）'
+- src/models/kimi-linear.cpp
+- '├── causal_conv1d()                                                    # 因果卷积+Q/K/V状态共享'
+- │   ├── conv_state_all拆分Q/K/V（qkv偏移）
+- │   ├── last_conv_x回写到对应槽位
+- │   └── conv_weight reshape [d_conv, 1, d_inner, 1]→[d_conv, d_inner]
+- '└── llm_build_kimi_linear::llm_build_kimi_linear()                     # KDA+MLA双剑合璧'
+- '    ├── inp_kv/inp_k根据is_mla()分流'
+- '    ├── n_embd_head_qk_nope = qk_mla - qk_rope'
+- '    ├── KDA分支：g1=-exp(A_log)·softplus(f_b(f_a)+dt_b)，beta=sigmoid(·)'
+- '    ├── KDA build_delta_net自动选AR/Chunking'
+- '    ├── Kimi MLA：无RoPE，wkv_b吸收优化'
+- '    ├── 前n_layer_dense_lead层Dense FFN，其余MoE+Shared'
+- '    └── 显式传expert_weights_scale=2.446做归一化'
+exercises:
+- contents:
+  - 阅读 `src/models/rwkv6.cpp` 第15-65行（构造函数主循环），理解以下机制：
+  - 1. `token_shift_count == 2` 的含义是什么？为什么需要 att_shift 和 ff_shift 两个 shift？
+  - 2. `x_prev = ggml_concat(ctx0, att_shift, ggml_view_3d(att_norm, n_embd, n_seq_tokens-1,
+    n_seqs, ...), 1)` 这一行的形状含义是什么？
+  - 3. 为什么 RWKV 需要把 `att_norm` 的前 `n_seq_tokens-1` 个 token 拼到 `att_shift` 后面？
+  - 4. `token_shift = ggml_concat(att_norm[-1], ffn_norm[-1], 1)` 的目的是什么？
+  - 回答问题：
+  - '- 如果 `token_shift_count == 1`（如 RWKV6Qwen2），会发生什么？循环会发生怎样的简化？'
+  - '- 为什么 `inp_out_ids` 需要在最后一层用 `ggml_get_rows` 选择部分 token 输出？'
+  'no': 1
+  title: 理解RWKV的token_shift与类RNN推理
+- contents:
+  - 阅读 `src/models/rwkv6-base.cpp` 第32-186行（RWKV6 WKV调用）与 `src/models/rwkv7-base.cpp`
+    第42-184行（RWKV7 WKV调用），理解：
+  - 1. RWKV6 调用 `ggml_rwkv_wkv6(k, v, r, first, w, state)`，参数 `first`（time_mix_first）的来源是哪里？
+  - 2. RWKV7 调用 `ggml_rwkv_wkv7(r, w, k, v, -kk, kk*a, state)`，为什么参数顺序是 r/w/k/v 而不是
+    k/v/r？
+  - 3. RWKV7 的 `kk = l2_norm(k·k_k)` 和 `k += a·(k·k_a) - k·k_a` 实现的是什么数学操作？
+  - 4. RWKV6 用 `ggml_gated_linear_attn`（QRWKV分支）vs `ggml_rwkv_wkv6` 的判定条件是什么？
+  - 回答问题：
+  - '- 如果 `layer.time_mix_first == nullptr`，模型架构会切换到什么模式？这个模式与标准 RWKV6 的本质区别是什么？'
+  - '- RWKV7 中的 `v_first` 跨层残差注入与 Transformer 的残差连接有什么本质差异？'
+  'no': 2
+  title: 对比RWKV6与RWKV7的WKV算子差异
+- contents:
+  - 阅读 `src/models/delta-net-base.cpp` 第335-360行（`build_delta_net` 入口）以及第16-218行（chunking模式），理解：
+  - 1. `n_seq_tokens == 1` 时为什么必须走 AR 模式或 Fused 模式？Chunking 模式在这里有什么限制？
+  - 2. KDA 与 GDA 的判定条件 `g->ne[0] == S_k && g->ne[1] == H_k` 的几何含义是什么？
+  - '3. Chunking 模式中 `CS = kda ? 16 : 64` 的设计依据是什么？'
+  - 4. `solve_tri(lhs, -tri(attn), true, true, false)` 的三个 bool 参数分别代表什么？
+  - 5. 在循环中 `s = ggml_mul(ctx0, s, ch_g_last_exp_t); s = ggml_add(ctx0, s, kgv);`
+    的物理含义是什么？
+  - 回答问题：
+  - '- 为什么 KDA 的 decay_mask 需要 reshape 为 `[CS, 1, S_k, CHB]` 而 GDA 直接是 `[CS, CS, n_chunks,
+    ...]`？'
+  - '- AR 模式中 `s = s · g`（gate作用于state）的直觉解释是什么？'
+  'no': 3
+  title: 追踪DeltaNet的三种模式选择逻辑
+- contents:
+  - 阅读 `src/models/qwen3next.cpp` 第207-381行（`build_layer_attn_linear`），重点理解：
+  - 1. `build_qkvz` 在 `wqkv` 存在时走 fused 路径，否则走 legacy 路径的判断依据是什么？
+  - 2. `ggml_ssm_conv(conv_input, conv_kernel)` 中 `conv_input` 是如何拼接的（`conv_states
+    + qkv_mixed`）？
+  - 3. `last_conv_states = ggml_view_3d(conv_input, conv_kernel_size-1, conv_channels,
+    n_seqs, ...)` 取的是哪一段数据？
+  - 4. `ggml_cpy(last_conv_states, state_update_target)` 回写时如何计算 kv_head 偏移？
+  - 5. `gate = -A_log · softplus(alpha + dt_bias)` 的负号来自哪里（提示：A_log 在 convert_hf_to_gguf.py
+    中已经做过 -exp 处理）？
+  - 6. `ggml_l2_norm(q_conv, eps_norm)` 的作用是什么？为什么 DeltaNet 类架构要做 L2 归一化？
+  - 回答问题：
+  - '- 为什么 `num_k_heads != num_v_heads` 时需要做 `ggml_repeat_4d`？注释里的 `[TAG_GGML_GDN_BCAST]`
+    暗示了什么优化方向？'
+  - '- `ssm_norm` 与 `z` 的 `build_norm_gated` 门控操作相比标准 RMSNorm 多做了什么？'
+  'no': 4
+  title: 理解Qwen3Next的混合架构与Conv状态管理
+- contents:
+  - 阅读 `src/models/qwen35.cpp` 与 `src/models/qwen3next.cpp`，对比以下差异：
+  - 1. Qwen3.5 引入 `int sections[4]; std::copy(std::begin(hparams.rope_sections), ...,
+    sections);` 的目的是什么？
+  - 2. Qwen3.5 使用 `ggml_rope_multi` 而 Qwen3Next 使用 `ggml_rope_ext`，两者的 API 差异是什么？
+  - 3. Qwen3.5 所有 `build_lora_mm` 都传入 `*_s` 缩放参数（`wq_s/wk_s/wv_s/wo_s/ssm_*_s`），这是为了支持什么功能？
+  - 4. Qwen3.5 移除了 legacy 路径（`build_qkvz` 不再有 `else` 分支），这是基于什么假设？
+  - 5. Qwen3.5-MoE 相比 Qwen3.5 多支持了什么？
+  - 回答问题：
+  - '- IMRoPE（Interleaved MRoPE）的 `sections` 参数在视觉-语言多模态场景中有什么作用？'
+  - '- 为什么 `num_k_heads != num_v_heads && (!cparams.fused_gdn_ar || !cparams.fused_gdn_ch)`
+    才需要 repeat？两个开关同时开启时 fused 算子内部是怎么广播的？'
+  'no': 5
+  title: 对比Qwen3Next与Qwen3.5的架构差异
+- contents:
+  - 阅读 `src/models/kimi-linear.cpp` 第9-67行（`causal_conv1d` 工具函数）与第69-281行（主构造函数），理解：
+  - 1. `causal-conv1d` 的 `qkv` 参数（0/1/2）如何影响 `ggml_view_3d` 的 offset 计算？
+  - 2. 为什么 Q/K/V 共用同一个 `conv_state_all` 但通过 offset 切片？这种设计相比三个独立 state 张量有什么好处？
+  - 3. `last_conv_x = ggml_view_3d(conv_x, d_conv-1, d_inner, n_seqs, ...)` 取的是哪一段数据？
+  - 4. `conv_weight = ggml_reshape_2d(conv_w, d_conv, d_inner)` 为什么需要这个 reshape？GGUF
+    存储格式与 ggml_ssm_conv 期望的格式差异是什么？
+  - 5. KDA 分支中 `g1 = -exp(A_log)·softplus(f_b · f_a(cur) + dt_b)` 的 `-exp` 来自哪里（提示：convert_hf_to_gguf.py
+    预处理）？
+  - 6. Kimi MLA 为什么没有 RoPE？wk_b/wv_b 启用与未启用分别走什么路径？
+  - 回答问题：
+  - '- Kimi KDA 与 Qwen3Next DeltaNet 的核心差异是什么（除了 KDA 的 gate 维度差异）？'
+  - '- Kimi 模型 Dense FFN 与 MoE FFN 的过渡条件 `n_layer_dense_lead` 在生产推理时有什么实际意义？'
+  'no': 6
+  title: 剖析Kimi-Linear的causal_conv1d与KDA/MLA双剑合璧
+learning_targets:
+- 理解RWKV6/7的token shift机制与时间混合（time-mix）、通道混合（channel-mix）原理
+- 掌握RWKV7的数据依赖delta规则与first_layer_value跨层残差机制
+- 理解DeltaNet线性注意力的三种实现模式（AR/Fused/Chunking）及其自动选择策略
+- 掌握KDA（Kimi Delta Attention）vs GDA的差异以及chunk-based并行的三角矩阵求解
+- 理解Qwen3Next/Qwen3.5中DeltaNet+Attention混合架构与IMRoPE位置编码
+- 掌握Kimi-Linear的KDA自回归层+MLA无RoPE的混合注意力机制
+- 理解causal_conv1d如何在DeltaNet中处理Q/K/V并维护卷积状态
+- 了解循环式记忆（recurrent state）与KV缓存的区别，以及state持久化机制
+life_analogy:
+- 想象 RWKV/DeltaNet 的世界是一个**带记忆的流水线工厂**：
+- '- **token_shift（令牌平移）** = 工厂传送带上的「上一站记忆」'
+- '  - 每个工位（层）在处理新物料前，都会回头看一眼上一站留下的「影子」，把两者的差异 `sx = x_prev - cur` 作为时间信号'
+- '- **time_mix（时间混合）** = 流水线上按时间衰减的「记忆混合机」'
+- '  - 老记忆按指数 `w = exp(-exp(tanh(w1·xw)·w2 + decay))` 逐渐褪色（RWKV6）'
+- '  - RWKV7引入数据相关衰减，让每个数据自己决定保留多少历史'
+- '- **channel_mix（通道混合）** = 工位内的「特征加工机」'
+- '  - 把当前特征和上一站特征 lerp 混合，再走 ReLU²→Value 的标准配方'
+- '- **delta rule（增量规则）** = 工厂的「错账本」'
+- '  - 每来一个新订单 `k`，就在账本上记录「与历史的差异 `β(v-s·k)`」，而不是覆盖历史'
+- '  - 这样账本永远在「增量更新」，既能记住过去，又能适应新变化'
+- '- **state（循环状态）** = 工厂的「永久档案柜」'
+- '  - 每个工位都有自己的档案柜（s_l/r_l），下班时（每一步推理）归档，第二天上班时（下一步）取出'
+- '  - 这就是为什么 RNN 类架构不需要像 Transformer 那样缓存所有 K/V，只需保存一个状态'
+- '- **build_delta_net 三模式选择** = 「流水线调度员」'
+- '  - 单件生产（n_tokens==1）→ 走AR单工位（手工精加工）'
+- '  - 大批量 + fused算子 → 走Fused专线（高速自动化）'
+- '  - 大批量无fused → 走Chunking分块线（分批并行加工）'
+- '- **QRWKV vs RWKV6** = 「两种不同的记忆算法」'
+- '  - RWKV6：用 `wkv6` 算子，标准指数衰减'
+- '  - QRWKV：用 `gated_linear_attn` 算子，门控线性注意力（更现代的变体）'
+- '- **build_norm_gated** = 「加权质检仪」'
+- '  - RMSNorm 把特征标准化，sigmoid(gate) 当作「质检权重」，最后相乘输出'
+- '  - Qwen3Next用SiLU，Kimi用sigmoid（细节差异体现模型个性）'
+'no': 29
+summary:
+- concept: '`llm_build_rwkv6_base::llm_build_rwkv6_base`'
+  desc: RWKV6基础构造函数，继承llm_graph_context并保存model引用
+- concept: '`llm_build_rwkv6_base::build_rwkv6_channel_mix`'
+  desc: RWKV6的通道混合：ReLU²→Value 与 receptance 门控，仅服务 LLM_ARCH_RWKV6
+- concept: '`llm_build_rwkv6_base::build_rwkv6_time_mix`'
+  desc: RWKV6的时间混合：token shift→5路fused lerp→WKV6算子，可识别QRWKV切换 gated_linear_attn
+- concept: '`llm_build_rwkv6::llm_build_rwkv6`'
+  desc: RWKV6完整图：token_shift_count==2，att/ffn双shift，rescale_every_n_layers中途衰减
+- concept: '`llm_build_rwkv6qwen2::llm_build_rwkv6qwen2`'
+  desc: RWKV时间混合 + Qwen2 SwiGLU FFN的混合架构，token_shift_count==1，RMSNorm
+- concept: '`llm_build_rwkv7_base::llm_build_rwkv7_base`'
+  desc: RWKV7基础构造函数，与RWKV6 base结构相同
+- concept: '`llm_build_rwkv7_base::build_rwkv7_channel_mix`'
+  desc: RWKV7的通道混合极简化：无receptance门控，仅relu²(linear)→value
+- concept: '`llm_build_rwkv7_base::build_rwkv7_time_mix`'
+  desc: RWKV7的时间混合：data-dependent delta规则（k_k/k_a/a），first_layer_value跨层残差，可选GroupNorm
+- concept: '`ggml_rwkv_wkv7`'
+  desc: RWKV7专用WKV算子，输入(r,w,k,v,-kk,kk·a,state)一次完成delta更新
+- concept: '`llm_build_rwkv7::llm_build_rwkv7`'
+  desc: RWKV7完整图：v_first跨层传递，无rescale缩放，可选GroupNorm
+- concept: '`llm_build_arwkv7::llm_build_arwkv7`'
+  desc: RWKV7 + 标准Transformer FFN的混合变体，token_shift_count==1，纯FFN残差
+- concept: '`llm_build_delta_net_base::llm_build_delta_net_base`'
+  desc: DeltaNet基础构造函数，仅继承llm_graph_context不保存额外成员
+- concept: '`get_slice_2d` (delta-net)'
+  desc: 工具函数：取张量第三维度的单切片（输出shape为[x,y,1,b]）
+- concept: '`llm_build_delta_net_base::build_delta_net_chunking`'
+  desc: DeltaNet分块并行模式：cumsum(g)→decay_mask→tri-solve→循环chunk更新状态
+- concept: '`llm_build_delta_net_base::build_delta_net_autoregressive`'
+  desc: DeltaNet单token AR模式：s=s·exp(g)→d=(v-s·k)·b→s+=k·d→o=sum_rows(s·q)
+- concept: '`llm_build_delta_net_base::build_delta_net_fused`'
+  desc: DeltaNet融合算子模式：调用ggml_gated_delta_net，结果view_4d拆分为output+new_state
+- concept: '`llm_build_delta_net_base::build_delta_net`'
+  desc: 三模式自动选择入口：根据n_seq_tokens与fused_gdn_ar/ch开关分流
+- concept: '`llm_build_qwen3next::llm_build_qwen3next`'
+  desc: Qwen3Next主图：奇数层DeltaNet，偶数层Attn，FFN包含MoE+Shared Expert
+- concept: '`llm_build_qwen3next::build_norm_gated`'
+  desc: 门控归一化：RMSNorm·SiLU(gate)，实现delta_net输出的非线性调制
+- concept: '`llm_build_qwen3next::build_layer_attn`'
+  desc: Qwen3Next标准Attention：联合QG投影→view_4d拆分→Q/K RMSNorm→RoPE→gated attn
+- concept: '`llm_build_qwen3next::build_qkvz`'
+  desc: Q/K/V/Z投影：fused(wqkv/wqkv_gate)与legacy(ssm_in多路slice)双路径
+- concept: '`llm_build_qwen3next::build_layer_attn_linear`'
+  desc: DeltaNet线性注意力层：causal conv1d→L2 norm→build_delta_net→norm_gated门控
+- concept: '`llm_build_qwen3next::build_layer_ffn`'
+  desc: MoE+Shared Expert混合FFN（含sigmoid门控）
+- concept: '`llm_build_qwen35::llm_build_qwen35`'
+  desc: Qwen3.5主图：IMRoPE+LoRA缩放（无legacy路径）+ Dense FFN
+- concept: '`llm_build_qwen35::build_qkvz`'
+  desc: Qwen3.5 QKVZ投影：仅fused路径，传入_*_s LoRA缩放参数
+- concept: '`llm_build_qwen35::build_norm_gated`'
+  desc: Qwen3.5门控归一化：RMSNorm·SiLU(gate)
+- concept: '`llm_build_qwen35::build_layer_attn`'
+  desc: Qwen3.5标准Attn：IMRoPE(ggml_rope_multi)+split+Q/K Norm
+- concept: '`llm_build_qwen35::build_layer_attn_linear`'
+  desc: Qwen3.5 DeltaNet层：所有投影均带LoRA缩放，分离ssm_beta/ssm_alpha
+- concept: '`llm_build_qwen35::build_layer_ffn`'
+  desc: Qwen3.5 Dense FFN：传入_*_s LoRA缩放参数，SwiGLU+并行门控
+- concept: '`llm_build_qwen35moe::llm_build_qwen35moe`'
+  desc: Qwen3.5+MoE主图，结构与Qwen3Next相似但使用Qwen3.5的Linear层
+- concept: '`llm_build_qwen35moe::build_qkvz`'
+  desc: Qwen3.5-MoE QKVZ投影（fused only）
+- concept: '`llm_build_qwen35moe::build_norm_gated`'
+  desc: Qwen3.5-MoE门控归一化
+- concept: '`llm_build_qwen35moe::build_layer_attn`'
+  desc: Qwen3.5-MoE标准Attn层（IMRoPE）
+- concept: '`llm_build_qwen35moe::build_layer_attn_linear`'
+  desc: Qwen3.5-MoE DeltaNet层（带LoRA缩放）
+- concept: '`llm_build_qwen35moe::build_layer_ffn`'
+  desc: Qwen3.5-MoE FFN层：MoE+Shared Expert，支持_*_s LoRA缩放
+- concept: '`causal_conv1d` (Kimi)'
+  desc: Kimi专用因果卷积：Q/K/V共享conv_state_all，按qkv偏移切片，last_conv_x回写
+- concept: '`llm_build_kimi_linear::llm_build_kimi_linear`'
+  desc: Kimi混合架构：KDA自回归层 + MLA无RoPE层 + Dense→MoE的FFN过渡
+- concept: '`is_recurrent(il)`'
+  desc: 层类型判定：根据hparams决定该层用DeltaNet还是标准Attention，Qwen3Next/3.5/Kimi均使用
+- concept: '`build_rs` + `ggml_cpy`'
+  desc: 循环状态持久化：从mctx读取s_l/r_l，ggml_cpy回写到对应kv_head槽位
+- concept: '`time_mix_lerp_fused`'
+  desc: 5/6路融合lerp投影权重（RWKV7），一次矩阵乘切分为r/w/k/v/a(/g)，节省计算
+- concept: '`fused_gdn_ar/ch`'
+  desc: DeltaNet融合算子开关：cparams级别控制AR/Chunking是否走ggml_gated_delta_net路径
+units:
+- codes:
+  - file: src/models/rwkv6-base.cpp
+    line: 5-8
+    method_or_func: llm_build_rwkv6_base::llm_build_rwkv6_base()
+  - file: src/models/rwkv6-base.cpp
+    line: 10-34
+    method_or_func: llm_build_rwkv6_base::build_rwkv6_channel_mix()
+  - file: src/models/rwkv6-base.cpp
+    line: 36-186
+    method_or_func: llm_build_rwkv6_base::build_rwkv6_time_mix()
+  name: RWKV6 基础构建器 —— 时间与通道混合的「双重奏」
+  'no': 1
+  points:
+  - '**`llm_build_rwkv6_base` 是什么？**'
+  - '- RWKV6 图构建器的基类，封装时间混合（time-mix）与通道混合（channel-mix）两大核心子图'
+  - '- 继承自 `llm_graph_context`，可通过子类复用 RWKV 的循环状态与线性注意力计算'
+  - '**`build_rwkv6_channel_mix` 解析**'
+  - '- 通过 `x_prev - cur` 计算「token shift」差异 `sx`'
+  - '- 用 `lerp_k/lerp_r` 两个可学习权重控制当前与前一时刻的混合比例'
+  - '- `receptance = sigmoid(W_r · xr)`、`key = relu(W_k · xk)^2`、`value = r ⊙ W_v
+    · k` 构成通道混合公式'
+  - '- `LLM_ARCH_RWKV6` 分支专用，其他架构直接 GGML_ABORT'
+  - '**`build_rwkv6_time_mix` 解析**'
+  - '- 输入张量维度计算：`n_embd / head_size` 得到头数，`n_head_kv` 支持 GQA 风格的多头键值'
+  - '- **QRWKV 识别**：当 `layer.time_mix_first == nullptr` 时切换到 sigmoid 门控与 `gated_linear_attn`
+    算子'
+  - '- **Fused lerp**：若存在 `time_mix_lerp_fused`，则一次性投影出 5 路（W/K/V/R/G），通过 `view_2d`
+    切片获取'
+  - '- **Legacy lerp**：否则逐项 `lerp_w/k/v/r/g` 与 `sx` 混合（兼容旧权重）'
+  - '- **多头键值广播**：`n_head_kv != n_head` 时通过 `repeat` 把 K/V 复制到所有注意力头'
+  - '- **WKV 算子**：`w = exp(-exp(w1→tanh→w2 + decay))` 形成指数衰减权重'
+  - '- **QRWKV vs RWKV6**：前者用 `ggml_gated_linear_attn(k, v, r, w, state, scale)`，后者用
+    `ggml_rwkv_wkv6(k, v, r, first, w, state)`'
+  - '- **状态持久化**：`build_rs` 读取 `s_l` 状态、`ggml_cpy` 回写到对应 kv_head 槽位'
+  - '- **GroupNorm**：RWKV6（非 QRWKV）在头部维度做 group norm 并附加 `time_mix_ln / time_mix_ln_b`
+    缩放偏移'
+- codes:
+  - file: src/models/rwkv6.cpp
+    line: 1-127
+    method_or_func: llm_build_rwkv6::llm_build_rwkv6()
+  name: RWKV6 主模型图构建 —— 经典 RWKV 的「完整推理骨架」
+  'no': 2
+  points:
+  - '**`llm_build_rwkv6` 概览**'
+  - '- 在基类基础上完成 token embedding、归一化、N 层循环与最终 output 的完整推理图'
+  - '- 校验 `token_shift_count == 2`，表示每层需要保存 attention 与 FFN 两个上一时刻 token'
+  - '**Token shift 状态加载**'
+  - '- 通过 `build_rwkv_token_shift_load` 读取上一时刻的 token shift 缓存'
+  - '- 切分为 `att_shift` 与 `ffn_shift` 两个独立张量，分别给时间混合与通道混合使用'
+  - '**`x_prev` 拼接**'
+  - '- 把上一时刻 token shift 与当前时刻 `[0..n_seq_tokens-1]` 拼接，形成包含「历史 + 当前」的输入'
+  - '- 这是 RWKV 类线性注意力实现「类 RNN 推理」的关键技巧'
+  - '**双层结构：Time-Mix + Channel-Mix**'
+  - '- `att_norm → time_mix → ffn_inp(+inpL) → ffn_norm → channel_mix → ffn_out(+ffn_inp)`'
+  - '- `time_mix` 由 `build_rwkv6_time_mix` 完成；`channel_mix` 调用基类的 `build_rwkv6_channel_mix(LLM_ARCH_RWKV6)`'
+  - '**Token shift 状态存储**'
+  - '- 取 `att_norm` 与 `ffn_norm` 的最后一个时间步作为下一时刻的 shift 输入'
+  - '- 通过 `build_rwkv_token_shift_store` 把结果写回 `r_l` 缓存'
+  - '**Rescale 缩放与控制向量**'
+  - '- `rescale_every_n_layers != 0` 时每隔 N 层将输出乘以 0.5（训练稳定性技巧）'
+  - '- `build_cvec` 注入控制向量（control vector）以支持 Activation Steering'
+  - '**最终输出**'
+  - '- `output_norm` → `output (lora_mm)` → `t_logits`，并通过 `ggml_build_forward_expand`
+    把 logits 加入前向图'
+- codes:
+  - file: src/models/rwkv6qwen2.cpp
+    line: 1-101
+    method_or_func: llm_build_rwkv6qwen2::llm_build_rwkv6qwen2()
+  name: RWKV6Qwen2 混合架构 —— RWKV 与 Transformer 的「跨界融合」
+  'no': 3
+  points:
+  - '**为什么需要 RWKV6Qwen2？**'
+  - '- 把 RWKV 的时间混合（线性注意力）与 Qwen2 的标准 FFN 拼接在一起'
+  - '- 让部分层使用 RWKV 时间复杂度 O(n) 的优势，保留 SwiGLU FFN 的高质量特征提取'
+  - '**整体结构差异**'
+  - '- 不做 token 归一化（`inpL = build_inp_embd` 后直接进入主循环），与标准 RWKV6 不同'
+  - '- 使用 RMSNorm（`LLM_NORM_RMS`）而非 RWKV6 的默认 Norm'
+  - '- **token_shift_count == 1**：每层只需要保存一个 token shift（去掉 ff_shift）'
+  - '**Token shift 与 time_mix**'
+  - '- 把 `token_shift` 直接作为 `x_prev` 与 `att_norm` 拼接'
+  - '- `build_rwkv6_time_mix` 输出后再加上 `inpL` 形成残差'
+  - '**FFN 标准 Qwen2 风格**'
+  - '- `build_ffn` 用 `LLM_FFN_SILU` 激活 + `LLM_FFN_PAR` 并行门控（SwiGLU）'
+  - '- 包含 `ffn_up / ffn_gate / ffn_down` 三组权重，无 bias 项（与 Qwen2 保持一致）'
+  - '**残差与输出**'
+  - '- `cur = ffn_out + ffn_inp` 形成标准 Transformer 残差'
+  - '- `inp_out_ids` 用于最后一层只输出部分 token（speculative decoding 等场景）'
+  - '- 最终 RMSNorm + output projection 输出 logits'
+- codes:
+  - file: src/models/rwkv7-base.cpp
+    line: 5-8
+    method_or_func: llm_build_rwkv7_base::llm_build_rwkv7_base()
+  - file: src/models/rwkv7-base.cpp
+    line: 10-29
+    method_or_func: llm_build_rwkv7_base::build_rwkv7_channel_mix()
+  - file: src/models/rwkv7-base.cpp
+    line: 31-184
+    method_or_func: llm_build_rwkv7_base::build_rwkv7_time_mix()
+  name: RWKV7 基础构建器 —— 改进版 RWKV 的「进化引擎」
+  'no': 4
+  points:
+  - '**RWKV7 vs RWKV6 的关键差异**'
+  - '- 引入 delta 规则（data-dependent decay），通过 `k_k`、`k_a`、`a` 三个动态权重生成状态更新步长'
+  - '- 引入 Value Residual（`first_layer_value`）：首层 V 通过 sigmoid 加权残差注入到后续层'
+  - '- 引入 LoRA 风格的动态 `g1/g2` 门控与 `v0/v1/v2` 线性变化'
+  - '**`build_rwkv7_channel_mix` 极简化**'
+  - '- 不再有 receptance 门控，只保留 key 与 value 两组线性层'
+  - '- `xk = lerp_k * sx + cur` → `k = relu(W_k · xk)^2` → `cur = W_v · k`'
+  - '**`build_rwkv7_time_mix` 重点解析**'
+  - '- **5/6 路 fused lerp**：通过 `time_mix_lerp_fused` 与 `repeat` 把 x_prev 复制成 [n_embd,
+    n_seq_tokens, n_seqs, 5 or 6]'
+  - '- **可学习 W 衰减**：`w = sigmoid(w2 · tanh(w1 · xw) + w0) * exp(-0.606531)`（固定常数相当于
+    log(2) 缩放）'
+  - '- **Value 残差**：`v_first` 不为空时，`v = v + sigmoid(v0 + v2·(v1·xv)) · (v_first -
+    v)`'
+  - '- **Gating**：`g = g2 · sigmoid(g1 · xg)`（可选），最终用于输出缩放'
+  - '- **Delta rule 矩阵 a**：`a = sigmoid(a0 + a2·(a1·xa))`'
+  - '- **L2 Normalization**：`kk = l2_norm(k * k_k)`、`k = k + a * (k * k_a) - k * k_a`'
+  - '- **WKV7 算子**：`ggml_rwkv_wkv7(r, w, k, v, -kk, kk*a, state)` 把所有动态量一次性交给优化算子'
+  - '- **值-键积注入**：`rk = sum_rows(k * r * r_k)`、`cur += v · rk`（额外的非线性）'
+  - '- **Group Norm**：可选（`time_mix_ln && time_mix_ln_b` 才启用）'
+  - '**first_layer_value 跨层传递**'
+  - '- 通过 `ggml_tensor*& first_layer_value` 引用，让第一层 V 在每层中以 sigmoid 权重残差注入'
+- codes:
+  - file: src/models/rwkv7.cpp
+    line: 1-112
+    method_or_func: llm_build_rwkv7::llm_build_rwkv7()
+  - file: src/models/arwkv7.cpp
+    line: 1-95
+    method_or_func: llm_build_arwkv7::llm_build_arwkv7()
+  name: RWKV7 主模型与 ARWKV7 变体 —— 「数据依赖」时代的 RWKV
+  'no': 5
+  points:
+  - '**`llm_build_rwkv7` 主体结构**'
+  - '- 与 RWKV6 类似但引入 `first_layer_value` 跨层共享，初始为 nullptr'
+  - '- 同样采用 `token_shift_count == 2`，分别保存 attn/ffn 两个 token shift'
+  - '- **GroupNorm 可选**：由 `layer.time_mix_ln && layer.time_mix_ln_b` 决定是否启用'
+  - '- 没有 rescale 缩放步骤（RWKV7 训练更稳定，无需中途衰减）'
+  - '**`llm_build_arwkv7` 变体**'
+  - '- `n_embd == hparams.n_embd_r()` 强校验：循环维度与残差维度必须匹配'
+  - '- **纯 FFN 残差**：去掉 channel_mix，改用 Qwen2 风格的 SwiGLU FFN'
+  - '- **token_shift_count == 1**：每层只保留 attn_shift，简化状态管理'
+  - '- 使用 `LLM_NORM_RMS` 与标准 Transformer 残差流（`cur = ffn_out + ffn_inp`）'
+  - '- **FFN 实现**：`build_ffn` 用 `LLM_FFN_SILU` + `LLM_FFN_PAR`，无 bias 项'
+  - '**架构定位差异**'
+  - '- `rwkv6/7`：纯 RWKV，channel_mix 是核心'
+  - '- `rwkv6qwen2/arwkv7`：RWKV + 标准 Transformer FFN，hybrid 路线'
+- codes:
+  - file: src/models/delta-net-base.cpp
+    line: 7-11
+    method_or_func: get_slice_2d()
+  - file: src/models/delta-net-base.cpp
+    line: 13-13
+    method_or_func: llm_build_delta_net_base::llm_build_delta_net_base()
+  - file: src/models/delta-net-base.cpp
+    line: 25-218
+    method_or_func: llm_build_delta_net_base::build_delta_net_chunking()
+  - file: src/models/delta-net-base.cpp
+    line: 220-289
+    method_or_func: llm_build_delta_net_base::build_delta_net_autoregressive()
+  - file: src/models/delta-net-base.cpp
+    line: 291-339
+    method_or_func: llm_build_delta_net_base::build_delta_net_fused()
+  - file: src/models/delta-net-base.cpp
+    line: 341-360
+    method_or_func: llm_build_delta_net_base::build_delta_net()
+  name: DeltaNet 基础构建器 —— 线性注意力的「三种实现模式」
+  'no': 6
+  points:
+  - '**DeltaNet 是什么？**'
+  - '- 用 delta rule 替代传统 softmax 注意力的线性注意力机制，复杂度从 O(n²) 降到 O(n)'
+  - '- 通过 `q, k, v, g(ate), b(eta), s(tate)` 六个输入张量驱动，门控与衰减因子由输入决定'
+  - '**三种模式的入口：`build_delta_net`**'
+  - '- `n_seq_tokens == 1` → 自动回归模式（`build_delta_net_autoregressive`，单 token 解码）'
+  - '- `n_seq_tokens > 1` + `fused_gdn_ch == true` → 融合算子模式（`build_delta_net_fused`）'
+  - '- 否则 → 分块模式（`build_delta_net_chunking`，分块并行计算）'
+  - '**KDA vs GDA 判定**'
+  - '- `kda = (g->ne[0] == S_k && g->ne[1] == H_k)`：gate 维度等于 K 维度时为 KDA（Kimi Delta
+    Attention）'
+  - '- 否则为 GDA：gate 只有 1 个通道（per-head 标量门控）'
+  - '**Chunking 模式（`build_delta_net_chunking`）**'
+  - '- **Pad + Reshape**：把 n_tokens 补齐到 CS（KDA=16, GDA=64）的整数倍'
+  - '- **β 调制**：K/V 与 β 相乘得到 `k_b/v_b`，引入 delta rule 的混合因子'
+  - '- **Cumsum G**：对 g 做 cumsum 得到 `g_cs`，后续用 `g_j - g_i` 构造指数衰减 mask'
+  - '- **KDA 三步矩阵构造**：`decay_mask = exp(tri(g_j - g_i))`，分别与 `k_b`、`q` 相乘得 Akk、Kq'
+  - '- **Tri-Solve**：`lhs = I + tri(attn)`，`lin_solve = solve_tri(lhs, -tri(attn))`
+    解三角矩阵'
+  - '- **状态更新**：`s_new = s * g_last + (k_g_diff) · v_new` 实现 O(1) 递推'
+  - '- **逐 chunk 处理**：循环遍历 n_chunks，对每个 chunk 做 `v_prime = k_cd · s`、attention 加权和、状态更新'
+  - '**Autoregressive 模式（`build_delta_net_autoregressive`）**'
+  - '- 假设 `n_tokens == 1`，把 QKV 重排后直接用矩阵乘 + sum_rows 计算'
+  - '- **状态缩放**：`s = s * exp(g)`（按 gate 缩放历史状态）'
+  - '- **Delta 更新**：`d = (v - s · k) * b` → `s = s + k · d` → `o = sum_rows(s · q)`'
+  - '**Fused 模式（`build_delta_net_fused`）**'
+  - '- 调用 `ggml_gated_delta_net(q, k, v, g, b, s)` 一站式算子'
+  - '- 输出张量通过 `view_4d` 切分为 `output` 与 `new_state` 两部分'
+  - '- 算子内部根据 `n_tokens == 1` 自动选择 AR/Chunking 路径'
+- codes:
+  - file: src/models/qwen3next.cpp
+    line: 1-83
+    method_or_func: llm_build_qwen3next::llm_build_qwen3next()
+  - file: src/models/qwen3next.cpp
+    line: 85-91
+    method_or_func: get_slice_2d()
+  - file: src/models/qwen3next.cpp
+    line: 93-100
+    method_or_func: llm_build_qwen3next::build_norm_gated()
+  - file: src/models/qwen3next.cpp
+    line: 102-167
+    method_or_func: llm_build_qwen3next::build_layer_attn()
+  - file: src/models/qwen3next.cpp
+    line: 169-235
+    method_or_func: llm_build_qwen3next::build_qkvz()
+  - file: src/models/qwen3next.cpp
+    line: 237-381
+    method_or_func: llm_build_qwen3next::build_layer_attn_linear()
+  - file: src/models/qwen3next.cpp
+    line: 383-426
+    method_or_func: llm_build_qwen3next::build_layer_ffn()
+  name: Qwen3Next 混合架构 —— DeltaNet + Attention 的「双层交响」
+  'no': 7
+  points:
+  - '**架构核心**'
+  - '- 奇数层用 Linear Attention（DeltaNet），偶数层用标准 Attention'
+  - '- 通过 `hparams.is_recurrent(il)` 区分两种层类型'
+  - '- 残差结构：`cur = linear/attn_out + inpSA`，`ffn_residual = cur`（保留 MoE 残差位置）'
+  - '**`build_layer_attn`（标准 Attention）**'
+  - '- **联合 QG 投影**：`Qcur_full = wq · cur`，reshape 为 `[head_dim*2, n_head, n_tokens,
+    1]`'
+  - '- **拆分 Q/Gate**：`Qcur` 取前半，`gate` 取后半，通过 `view_4d` 实现零拷贝'
+  - '- **Q/K Norm**：Q 与 K 都做 RMSNorm（Qwen 系列特点）'
+  - '- **Gated Attention**：`cur = sigmoid(gate) * attn_output`，最后用 `wo` 投影回 n_embd'
+  - '**`build_layer_attn_linear`（线性注意力）**'
+  - '- **`build_qkvz`**：根据是否存在 `wqkv` 选择 fused 路径或 legacy 路径'
+  - '- **Fused 路径**：`qkv_mixed = wqkv · cur`、`z = wqkv_gate · cur`，性能更优'
+  - '- **Legacy 路径**：`ssm_in` 一次性投影出 Q/K/V/Z，再通过 `view_4d` 切片'
+  - '- **β/α 投影**：`ssm_beta_alpha` 投影出 β 与 α，β 用 sigmoid 门控，α 经 softplus 与 dt_bias'
+  - '- **Gate = -A_log · softplus(α + dt_bias)**：实现 delta rule 的衰减因子'
+  - '- **Conv1d**：把 `conv_states` 与 `qkv_mixed` 拼接后用 `ggml_ssm_conv` 做因果卷积'
+  - '- **L2 Normalization**：Q/K 做 `ggml_l2_norm(eps)` 提升训练稳定性'
+  - '- **多头广播**：若 K 头数 ≠ V 头数，对 Q/K 做 repeat 广播（兼容 fused GDN 的广播配置）'
+  - '- **`build_delta_net`**：调用基础类的方法，自动选择 AR/Fused/Chunking 模式'
+  - '- **输出门控**：`build_norm_gated(ssm_norm)` 把 z 通过 SiLU 后与 RMSNorm 结果相乘'
+  - '- **Conv 状态回写**：`ggml_cpy` 把 `last_conv_states` 写回 `conv_states_all` 对应槽位'
+  - '**`build_layer_ffn` 支持 MoE + 共享专家**'
+  - '- MoE：`build_moe_ffn` 路由 + 专家并行，激活函数 SiLU，gating SOFTMAX'
+  - '- Shared Expert：单独构建 SwiGLU FFN 并通过 `ffn_gate_inp_shexp` 做 sigmoid 门控'
+  - '- Dense FFN：用于非 MoE 层（Qwen3Next 当前未启用）'
+- codes:
+  - file: src/models/qwen35.cpp
+    line: 1-79
+    method_or_func: llm_build_qwen35::llm_build_qwen35()
+  - file: src/models/qwen35.cpp
+    line: 81-99
+    method_or_func: llm_build_qwen35::build_qkvz()
+  - file: src/models/qwen35.cpp
+    line: 101-108
+    method_or_func: llm_build_qwen35::build_norm_gated()
+  - file: src/models/qwen35.cpp
+    line: 110-171
+    method_or_func: llm_build_qwen35::build_layer_attn()
+  - file: src/models/qwen35.cpp
+    line: 173-313
+    method_or_func: llm_build_qwen35::build_layer_attn_linear()
+  - file: src/models/qwen35.cpp
+    line: 315-326
+    method_or_func: llm_build_qwen35::build_layer_ffn()
+  - file: src/models/qwen35moe.cpp
+    line: 1-79
+    method_or_func: llm_build_qwen35moe::llm_build_qwen35moe()
+  - file: src/models/qwen35moe.cpp
+    line: 81-99
+    method_or_func: llm_build_qwen35moe::build_qkvz()
+  - file: src/models/qwen35moe.cpp
+    line: 101-108
+    method_or_func: llm_build_qwen35moe::build_norm_gated()
+  - file: src/models/qwen35moe.cpp
+    line: 110-171
+    method_or_func: llm_build_qwen35moe::build_layer_attn()
+  - file: src/models/qwen35moe.cpp
+    line: 173-313
+    method_or_func: llm_build_qwen35moe::build_layer_attn_linear()
+  - file: src/models/qwen35moe.cpp
+    line: 315-365
+    method_or_func: llm_build_qwen35moe::build_layer_ffn()
+  name: Qwen3.5 与 Qwen3.5-MoE —— MRoPE 加持的工业级 DeltaNet 落地
+  'no': 8
+  points:
+  - '**Qwen3.5 vs Qwen3Next 关键差异**'
+  - '- 引入 IMRoPE（Interleaved MRoPE），通过 `hparams.rope_sections` 控制多模态 RoPE'
+  - '- 所有线性层显式支持 LoRA 缩放（`*_s` 参数），方便在运行时动态调整'
+  - '- 优化后的 `build_qkvz`：直接用 `wqkv` 与 `wqkv_gate`，没有 legacy 路径'
+  - '**`build_layer_attn`（标准 Attention）**'
+  - '- 与 Qwen3Next 类似，但 Q/K Norm 与 RoPE 都使用 IMRoPE（`ggml_rope_multi`）'
+  - '- **Q 拆分**：`Qcur = view_3d(Qcur_full, head_dim, n_head, n_tokens)` 取前半'
+  - '- **Gate 拆分**：`gate = view_3d` 取后半，再用 `cont_2d` 整理为 `[head_dim*n_head, n_tokens]`'
+  - '- **`ggml_rope_multi` 旋转**：传入 `sections` 数组实现多模态位置编码'
+  - '**`build_layer_attn_linear`（DeltaNet 层）**'
+  - '- 与 Qwen3Next 类似，但输入投影单独：`ssm_beta`、`ssm_alpha` 不再共用权重'
+  - '- **Gate 公式**：`-A_log · softplus(alpha + dt_bias)`（与 Qwen3Next 一致）'
+  - '- **Conv1d + SiLU + L2 Norm**：标准的 causal conv → SiLU → L2 norm 流程'
+  - '- **多头广播优化**：只在 `!fused_gdn_ar || !fused_gdn_ch` 时才做 repeat，否则由 fused 算子内部广播'
+  - '**Qwen3.5 Dense FFN（`build_layer_ffn`）**'
+  - '- `GGML_ASSERT(ffn_gate_inp == nullptr)`：Qwen3.5 标准版不含 MoE'
+  - '- 显式传入 `*_s` LoRA 缩放参数：`ffn_up_s / ffn_gate_s / ffn_down_s`'
+  - '- SwiGLU 并行门控（`LLM_FFN_SILU` + `LLM_FFN_PAR`）'
+  - '**Qwen3.5-MoE 变体**'
+  - '- 与 Qwen3Next 类似但使用 `build_qkvz`（fused-only）+ 单独的 `ssm_beta/ssm_alpha`'
+  - '- **MoE 增强**：传入 `ffn_up_exps_s / ffn_gate_exps_s / ffn_down_exps_s` 等 LoRA 缩放'
+  - '- Shared Expert 同样支持 sigmoid 门控'
+  - '- 整体结构与 Qwen3Next 一致（linear + attn 交替 + MoE）'
+- codes:
+  - file: src/models/kimi-linear.cpp
+    line: 9-67
+    method_or_func: causal_conv1d()
+  - file: src/models/kimi-linear.cpp
+    line: 69-281
+    method_or_func: llm_build_kimi_linear::llm_build_kimi_linear()
+  name: Kimi-Linear 混合架构 —— KDA 自回归 + MLA 的「双剑合璧」
+  'no': 9
+  points:
+  - '**Kimi-Linear 是什么？**'
+  - '- 月之暗面（Moonshot）Kimi 模型的线性注意力实现'
+  - '- **核心特点**：交替使用 KDA（Kimi Delta Attention）和 MLA（Multi-head Latent Attention）'
+  - '- KDA 是 DeltaNet 的变体（KDA：gate per-element；GDA：gate per-head）'
+  - '**`causal_conv1d` 工具函数**'
+  - '- 对 Q/K/V 分别做 causal conv1d 处理'
+  - '- **QKV 状态共享**：conv_state_all 共享一个大张量 `[3*conv_state_size, n_seqs]`，按 Q/K/V 切片'
+  - '- **状态回写**：`last_conv_x` 取拼接后最后 `d_conv-1` 行写回对应 kv_head 的槽位'
+  - '- **权重 reshape**：`[d_conv, 1, d_inner, 1]` → `[d_conv, d_inner]` 适配 `ggml_ssm_conv`'
+  - '**KDA 自回归层**'
+  - '- **g1 计算**：`g1 = softplus(f_b · f_a(cur) + dt_bias) * A_log`'
+  - '- **A_log 已被预处理**：convert_hf_to_gguf.py 中已经做过 `-exp(A_log)`，所以直接相乘'
+  - '- **beta 计算**：`beta = sigmoid(ssm_beta · cur)`'
+  - '- **L2 Normalization**：Q/K 做 `ggml_l2_norm(eps_norm)`'
+  - '- **DeltaNet 调用**：通过 `build_delta_net(Qcur, Kcur, Vcur, g1, beta, state, il)`
+    自动选 AR/Chunking 路径'
+  - '- **输出门控 g2**：`g2 = g_b · g_a(cur_2d)`'
+  - '- **Sigmoid Gating（注意不是 SiLU）**：`gated = RMSNorm(out) * sigmoid(g2)`'
+  - '- **KV Head 状态回写**：`ggml_cpy(new_state → ssm_states_all[kv_head*size])`'
+  - '**MLA 层（带 KV 缓存）**'
+  - '- **KV 压缩**：`kv_cmpr_pe = wkv_a_mqa · cur` → `[kv_lora_rank + qk_rope_head_dim,
+    n_tokens]`'
+  - '- **kv_c 归一化**：`build_norm(kv_cmpr, attn_kv_a_norm, RMS)`'
+  - '- **MLA 缓存路径（wk_b && wv_b）**：`q_nope = Qcur[:qk_nope] · wk_b → kv_lora_rank`，与
+    `q_pe` 拼接'
+  - '- **MLA 无缓存路径**：退化为 MHA，KV 通过 `wkv_b` 解压，`k_pe` 通过 `repeat` 广播到所有头'
+  - '- **无 RoPE**：Kimi MLA 不使用位置编码（与标准 MLA 不同）'
+  - '**FFN：Dense + MoE 混合**'
+  - '- 前 `n_layer_dense_lead` 层用标准 SwiGLU FFN（`LLM_FFN_SILU`）'
+  - '- 之后用 MoE：`build_moe_ffn` + 共享专家（无 sigmoid 门控）'
+  - '- **MoE Renormalize**：传入 `true` + `expert_weights_scale` 做权重归一化'

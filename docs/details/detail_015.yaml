@@ -1,0 +1,577 @@
+code_map:
+- src/unicode.h
+- '├── struct unicode_cpt_flags              # 码点类别位标志(NUMBER/LETTER/HAN/NFD...)'
+- │   ├── enum UNDEFINED/NUMBER/LETTER/SEPARATOR/ACCENT_MARK/PUNCTUATION/SYMBOL/CONTROL
+- │   ├── enum WHITESPACE/LOWERCASE/UPPERCASE/NFD
+- '│   ├── unicode_cpt_flags()               # 字节序兼容构造函数'
+- '│   ├── as_uint()                          # 合并为uint16'
+- '│   └── category_flag()                    # 提取类别位'
+- '├── size_t unicode_len_utf8()             # 查表法获取UTF-8序列长度'
+- '├── std::string unicode_cpt_to_utf8()      # 码点→UTF-8字节'
+- '├── uint32_t unicode_cpt_from_utf8()      # UTF-8→码点, 含边界检查'
+- '├── std::vector<uint32_t> unicode_cpts_from_utf8()    # 字节流→码点流, 错误用0xFFFD替换'
+- '├── std::vector<uint32_t> unicode_cpts_normalize_nfd() # NFD规范化'
+- '├── unicode_cpt_flags unicode_cpt_flags_from_cpt()  # O(1)查码点类别表'
+- '├── unicode_cpt_flags unicode_cpt_flags_from_utf8() # 字符串→类别'
+- '├── std::string unicode_byte_to_utf8()    # GPT-2字节回退: byte→占位字符'
+- '├── uint8_t unicode_utf8_to_byte()       # 反向映射'
+- '├── uint32_t unicode_tolower()            # 二分查表大小写转换'
+- '├── bool unicode_cpt_is_han()            # CJK汉字区间判断(9个Unicode block)'
+- '└── unicode_regex_split()                  # 顶层分词正则分发器'
+- ''
+- src/unicode.cpp
+- '├── size_t unicode_len_utf8()             # 16项查表'
+- '├── unicode_cpts_to_utf8()                # 辅助:码点流→字符串'
+- '├── unicode_cpt_from_utf8()                # 多字节解码, 边界检查+异常'
+- '├── unicode_cpts_normalize_nfd()           # std::upper_bound二分查找折叠'
+- '├── unicode_cpts_from_utf8()               # try-catch包裹, 失败回退到0xFFFD'
+- '├── unicode_cpt_flags_array()              # 静态数组构造, 区间→flags填充'
+- '├── unicode_byte_to_utf8_map()             # 静态表构造<0xXX>与单字节映射'
+- '├── unicode_utf8_to_byte_map()             # 反向映射表'
+- '├── unicode_byte_encoding_process()        # GPT-2字节编码(用于BPE)'
+- '├── unicode_regex_split_custom_gpt2()      # GPT-2预分词器'
+- '├── unicode_regex_split_custom_llama3()    # LLaMA-3预分词器'
+- '├── unicode_regex_split_custom_kimi_k2()   # Kimi-K2预分词器'
+- '├── unicode_regex_split_custom_afmoe()     # AFMOE预分词器'
+- '├── unicode_regex_split_custom_newlines()  # Gemma4专用: 仅按\n切分'
+- '├── unicode_regex_split_custom()           # 总分发: regex字符串→具体实现'
+- '├── unicode_regex_split_stl()              # std::regex回退(支持collapsed类别替换)'
+- '└── unicode_regex_split()                  # unicode类别折叠 + 多regex链式调用'
+- ''
+- src/unicode-data.h
+- '├── struct range_nfd                      # NFD区间三元组(first/last/nfd)'
+- '├── MAX_CODEPOINTS = 0x110000             # Unicode最大码点数'
+- '└── 外部常量声明: ranges_flags / whitespace / lowercase / uppercase / nfd'
+- ''
+- src/unicode-data.cpp
+- '├── unicode_ranges_flags                  # 码点区间→类别位(用于cpt_flags数组)'
+- '├── unicode_set_whitespace                # 24个空白码点集合(\s)'
+- '├── unicode_map_lowercase/uppercase       # 升序pair列表,支持二分查找'
+- '└── unicode_ranges_nfd                    # NFD分解区间(查找父字符→基本字符)'
+- ''
+- src/llama-vocab.h
+- '├── enum llama_vocab_pre_type             # 50+种预分词器类型枚举'
+- '├── struct llama_vocab::token_data        # text/score/attr三元组'
+- '└── class llama_vocab (pimpl)             # 对外接口(隐藏数千行实现)'
+- ''
+- src/llama-vocab.cpp
+- '├── struct naive_trie                     # O(n)最长前缀匹配树(RWKV/PLaMo2用)'
+- '│   ├── insert()                           # 递归插入字符到子节点'
+- '│   ├── get_longest_prefix()               # 沿树向下走最长匹配'
+- '│   └── traverse()                         # 单字符向下走'
+- '├── struct llm_symbol                     # UTF-8链子节点(prev/next/text/n)'
+- '├── struct llm_tokenizer_spm_session      # SPM合并: 优先级队列+score'
+- '│   ├── tokenize()                         # 初始化链表→种子队列→贪心合并→resegment'
+- '│   ├── resegment()                        # 兜底: 查rev_merge或按字节回退'
+- '│   └── try_add_bigram()                   # 添加pair并更新work_queue'
+- '├── struct llm_bigram_spm                 # SPM bigram: left/right/score/size'
+- '│   └── struct comparator                 # (score<) || (score== && left>)'
+- '├── struct llm_tokenizer_bpe              # 按pre_type绑定regex_expressions(40+种)'
+- '│   └── llm_tokenizer_bpe(vocab)          # 构造函数: switch分发regex_exprs'
+- '├── struct llm_bigram_bpe                 # BPE bigram: left/right/text/rank/size'
+- '│   └── struct comparator                 # rank> || rank== && left>'
+- '├── struct llama_priority_queue           # pop_move: 移动语义的pop'
+- '├── struct llm_tokenizer_bpe_session      # BPE合并: rank表+跨word链表'
+- '│   ├── append()                           # 追加到output'
+- '│   ├── append_bos()/append_eos()         # 自动加BOS/EOS'
+- '│   ├── check_double_bos_eos()            # 检测重复BOS/EOS并警告'
+- '│   ├── tokenize()                         # regex切分word→char链表→贪心合并'
+- '│   └── add_new_bigram()                   # 查vocab.find_bpe_rank()'
+- '├── struct llm_tokenizer_wpm_session      # WordPiece: 最长前缀匹配+UNK兜底'
+- '│   ├── tokenize()                         # 循环最长前缀+UNK兜底'
+- '│   ├── preprocess()                       # NFD+小写+标点/汉字分词'
+- '│   └── is_chinese_char()                 # 8个CJK区间判断'
+- '├── struct llm_tokenizer_ugm_session      # Unigram: Viterbi算法'
+- '│   ├── tokenize()                         # tokenization_results DP表+回溯'
+- '│   ├── normalize()                        # 调用XCDA查找最长前缀替换'
+- '│   ├── normalize_prefix()                # XCDA遍历,返回长度'
+- '│   └── struct xcda_array_view            # BASE/LCHECK/LEAF位运算解码'
+- '├── struct llm_tokenizer_rwkv_session     # RWKV: naive_trie匹配+转义解码'
+- '│   └── tokenize()                         # trie遍历找最长匹配token'
+- '├── llama_unescape_rwkv_token()           # RWKV的\xNN转义解析'
+- '├── struct llm_tokenizer_plamo2           # PLaMo2: 展平Trie+DP'
+- '│   ├── build()                            # 构建tokens_/bytes_/to_suffix_id_/table_'
+- '│   └── encode()                           # scores/path DP, 含字节回退'
+- '├── struct llm_tokenizer_plamo2_session   # 包装plamo2.encode'
+- '│   └── tokenize()                         # 调用tokenizer.encode()并追加'
+- '├── struct fragment_buffer_variant        # TOKEN/RAW_TEXT片段容器'
+- '├── struct llama_vocab::impl              # pimpl实现'
+- '│   ├── load()                             # 从GGUF读tokenizer.model/pre/list/score/type'
+- '│   ├── init_tokenizer()                  # 根据type构造具体tokenizer'
+- '│   ├── tokenizer_st_partition()          # 特殊token切分(按text长度倒序匹配)'
+- '│   ├── token_to_piece_for_cache()        # 构造token→piece缓存(预生成)'
+- '│   ├── tokenize()                         # 顶层分发: fragment_buffer→各session'
+- '│   ├── token_to_piece()                   # 按vocab type还原token文本(▁/字节解码)'
+- '│   ├── detokenize()                       # 调token_to_piece + clean_spaces三遍清理'
+- '│   ├── print_info()                       # 打印BOS/EOS/FIM/EOG等所有特殊token'
+- │   ├── is_normal/is_unknown/is_control/is_byte/is_user_defined/is_unused/is_eog()
+- '│   ├── token_to_byte()                    # <0xXX>字符串→单字节'
+- '│   ├── token_get_attr()                   # 返回attr位标志'
+- '│   ├── get_type()                         # 返回vocab type'
+- '│   └── type_name()                        # "SPM"/"BPE"/"WPM"/"UGM"/"RWKV"/"PLaMo2"'
+- └── free functions
+- '    ├── llama_escape_whitespace           # '' '' ↔ \xE2\x96\x81(▁)'
+- '    ├── llama_unescape_whitespace         # 反向解码(SPM风格)'
+- '    └── llama_decode_text                 # BPE字节token→原始字节'
+- '    ├── llama_tokenize/llama_detokenize/llama_token_to_piece  # C API入口'
+- '    └── llama_vocab_bos/llama_vocab_eos/... # 特殊token C API'
+- '    ├── naive_trie.*                      # 字典树增删查'
+- '    └── llama_priority_queue.pop_move()   # 移动pop'
+exercises:
+- contents:
+  - 阅读 `src/unicode.cpp` 第23-130行（`unicode_cpt_from_utf8`、`unicode_cpts_from_utf8`）以及第388-490行（NFD规范化、tolower、is_han），理解：
+  - 1. UTF-8字节序列长度的查表逻辑（`unicode_len_utf8`）
+  - 2. 多字节UTF-8字符解码时如何处理截断或非法字节
+  - 3. NFD规范化如何把 `é` (U+00E9) 折叠到 `e` (U+0065) + U+0301 重音
+  - 4. `unicode_cpt_is_han` 检查的9个CJK区间及其在Kimi-K2分词中的作用
+  - 回答问题：
+  - '- 为什么 `unicode_cpts_from_utf8` 选择 `0xFFFD` 替换非法输入而不是抛出异常？'
+  - '- `unicode_tolower` 采用二分查找，调用次数极多，是否应该改为哈希表以提升性能？'
+  - '- 如果不调用 `unicode_cpts_normalize_nfd`，WPM分词会遇到什么问题？'
+  'no': 1
+  title: 阅读Unicode编码与规范化模块
+- contents:
+  - 阅读 `src/llama-vocab.cpp` 第104-211行（`llm_tokenizer_spm_session`）以及第68-82行（`llm_bigram_spm`），理解：
+  - 1. 优先级队列的排序规则：`(l.score < r.score) || (l.score == r.score && l.left > r.left)`
+  - 2. `try_add_bigram` 中 `rev_merge` 的双重作用：既是work_queue的来源，也是resegment的逆向索引
+  - 3. 合并时如何跳过已被合并的符号（`left_sym.n == 0 || right_sym.n == 0`）
+  - 4. 词表外子串如何通过 `byte_to_token` 退化为字节token
+  - 回答问题：
+  - '- 为什么 SPM 的比较器用 `<` 而 BPE 的比较器用 `>`？'
+  - '- 如果 `rev_merge` 中某个 `text` 对应到已被合并的符号，resegment 会发生什么？'
+  - '- SPM 没有显式的 rank 表，它如何保证与训练时的一致性？'
+  'no': 2
+  title: 追踪SPM分词器的合并过程
+- contents:
+  - 阅读 `src/llama-vocab.cpp` 第260-540行（`llm_bigram_bpe`、`llm_tokenizer_bpe`）以及第700-848行（`llm_tokenizer_bpe_session`），理解：
+  - 1. `llm_tokenizer_bpe` 构造函数中针对40+种 `LLAMA_VOCAB_PRE_TYPE` 的 regex 表达式分发
+  - 2. `add_new_bigram` 通过 `vocab.find_bpe_rank()` 查 BPE rank 表，未找到则跳过
+  - 3. 合并校验 `left_token + right_token != bigram.text` 如何过滤过期的 bigram
+  - 4. `symbols_final` 跨 word 链表的设计：BPE 内部 word 独立合并，最终拼接时维护 next/prev
+  - 回答问题：
+  - '- 为什么 LLaMA-3 的 regex 把 `(?i:''s|...)` 改写为 `(?:''[sS]|''[tT]|''[rR][eE]|''[vV][eE]|''[mM]|''[lL][lL]|''[dD])`？'
+  - '- BPE 跨 word 链表与 SPM 的全局链表有何本质区别？'
+  - '- 如果一个 pair 在BPE rank表中不存在但属于常见子串（如「th」），BPE 会如何处理？'
+  'no': 3
+  title: 对比BPE与SPM合并策略的差异
+- contents:
+  - 阅读 `src/llama-vocab.cpp` 第870-1720行（WPM/UGM/RWKV/PLaMo2各session），理解：
+  - 1. **WPM**：最长前缀匹配 + `token_unk` 兜底；`preprocess` 用 NFD+小写+标点/汉字分词
+  - 2. **UGM**：Viterbi DP 算法 `tokenization_results[input_offset]` 存储最优解；`xcda_array_view`
+    的位运算 BASE/LCHECK/LEAF 解码
+  - 3. **RWKV**：`naive_trie` 字典树 + `llama_unescape_rwkv_token` 的 `\xNN` 转义解析
+  - 4. **PLaMo2**：把 Trie 展平为 `[piece_length, token_id, score, piece_id]` 四列表 + `scores/path`
+    DP
+  - 回答问题：
+  - '- WPM 与 SPM 的最大区别是什么？'
+  - '- UGM 的 Viterbi 算法为什么需要 `user_defined_token_matcher` 优先匹配？'
+  - '- RWKV 的 `naive_trie::get_longest_prefix` 是否比 `std::unordered_map` 更快？为什么？'
+  - '- PLaMo2 的 `to_suffix_id_` 编码 `piece_code = (cpt << 32) | suffix_id` 的目的是什么？'
+  'no': 4
+  title: 理解WPM/UGM/RWKV/PLaMo2的差异化设计
+- contents:
+  - 阅读 `src/llama-vocab.cpp` 第2497-2590行（`tokenizer_st_partition`）以及第2960-3050行（`detokenize`），理解：
+  - 1. `cache_special_tokens` 按 text 长度倒序排序的原因（避免短token抢占长token）
+  - 2. `LSTRIP`/`RSTRIP` 属性如何剥离特殊token前后的空格
+  - 3. `detokenize` 的三遍清理算法：去除 `?`,`!`,`.`,`,` 前的多余空格、合并 ` ' ` 周围空格、处理 `'s`,`'m`,`'re`,`'ve`
+    缩写
+  - 4. `token_to_piece` 在不同vocab_type下的差异化处理：SPM的`▁`↔空格、BPE的字节token解码、RWKV的转义解码
+  - 回答问题：
+  - '- 为什么 `tokenizer_st_partition` 用前向列表 `std::forward_list` 而不是 `std::list`/`std::vector`？'
+  - '- 如果一个特殊token文本是另一个特殊token的前缀（如 `<|` 和 `<|im_start|`），长度倒序如何保证正确切分？'
+  - '- `clean_spaces = false` 的模型（如 SPM/Qwen2）为何不需要三遍清理？'
+  - '- 在 `detokenize` 第三遍中，为何仅对 `''s`/`''m` 等缩写去空格，而保留 `''t`/`''d` 的空格？'
+  'no': 5
+  title: 分析特殊token切分与detokenize清理逻辑
+learning_targets:
+- 理解UTF-8与Unicode码点的双向转换机制及其错误处理策略
+- 掌握NFD规范化、NFD折叠表及大小写映射的底层实现
+- 熟悉unicode_regex_split分发器如何为GPT-2/LLaMA3/Kimi-K2/AFMOE等模型定制正则分词
+- 理解llama_vocab::impl的pimpl模式与GGUF元数据加载流水线
+- 掌握SPM优先级队列合并与BPE rank表合并的差异
+- 了解特殊token（EOT/EOM/EOG/字节回退/FIM）的自动检测与分类逻辑
+- 能阅读detokenize三遍清理算法并修改clean_spaces策略
+- 阅读UGM分词的Viterbi DP算法及XCDA压缩双数组解码
+- 掌握PLaMo2的Trie展平与动态规划回溯实现
+life_analogy:
+- 想象llama.cpp的分词系统是一家**国际快递公司的分拣中心**，负责把不同语言、不同形式的「包裹」(文本)拆成标准化的「快递箱」(token)
+- '- **UTF-8字节流** = 快递车上还没拆包的包裹（一串原始字节）'
+- '- **Unicode码点(codepoint)** = 拆包后的单个物品（每个字符）'
+- '- **NFD规范化** = 把「café」统一拆成「cafe+´」，避免「é」和「e+´」两种写法混淆'
+- '- **GPT-2字节回退** = 给每个0-255的字节分配一个Unicode占位字符，保证任何字节都能被tokenize'
+- '- **SPM优先级队列** = 按「分数」（对数概率）从高到低排序的优先队列，先合并高分token'
+- '- **BPE rank表** = 训练时按频次排序的合并规则表，rank小（出现早）的优先合并'
+- '- **特殊token分区** = 把<|im_start|>、</s>等「快递面单」预先切出来，剩下的才是普通文本'
+- '- **detokenize三遍清理** = 快递员取件时：去掉「 ?」前的多余空格、合并「 '' 」两侧空格、处理「 ''s」的撇号缩写'
+- '- **naive_trie字典树** = 快递分拣柜，每层货架放一种字符前缀，沿着货架最快找到匹配'
+- '- **XCDA紧凑双数组** = 智能货架编号系统，用一个字节就能定位任何前缀对应的归一化字符串'
+- 就像分拣中心需要协调传送带、扫码枪、堆垛机一样，llama.cpp需要在Unicode编码、词表匹配、特殊token切分之间精确配合
+- 特别token就是「特殊面单」：不能被通用规则误处理，必须优先识别为完整单元
+'no': 14
+summary:
+- concept: '`unicode_cpt_to_utf8/from_utf8`'
+  desc: UTF-8字节与Unicode码点的双向通道，错误用0xFFFD替换
+- concept: '`unicode_cpts_normalize_nfd`'
+  desc: NFD规范化，将带音标字符拆为基本字符+组合标记，二分查找
+- concept: '`unicode_tolower`'
+  desc: ASCII二分查表大小写转换，支持LLaMA-3的大小写不敏感正则
+- concept: '`unicode_cpt_is_han`'
+  desc: CJK汉字区间判断（9个Unicode block），支持Kimi-K2中文分词
+- concept: '`unicode_cpt_flags_array`'
+  desc: 预构造1.1M码点类别位标志数组，O(1)查表
+- concept: '`unicode_regex_split_custom_gpt2/llama3/kimi_k2/afmoe/newlines`'
+  desc: 模型专属预分词器，通过分发器自动选择具体实现
+- concept: '`unicode_regex_split_custom`'
+  desc: 正则字符串→具体分词函数的switch分发器，未匹配时回退到std::regex
+- concept: '`unicode_byte_to_utf8/utf8_to_byte`'
+  desc: GPT-2字节回退双向映射，0-255字节对应256个不同Unicode占位字符
+- concept: '`naive_trie`'
+  desc: RWKV/PLaMo2用的字典树，insert/get_longest_prefix/traverse三件套
+- concept: '`llama_vocab::impl::load`'
+  desc: 从GGUF元数据加载tokenizer.model/pre/list/score/type四要素
+- concept: '`llama_vocab::impl::init_tokenizer`'
+  desc: 根据vocab_type构造SPM/BPE/WPM/UGM/RWKV/PLaMo2具体分词器
+- concept: '`llm_tokenizer_spm_session::tokenize`'
+  desc: SPM三阶段：链表初始化→seed队列→贪心合并score最高的 pair
+- concept: '`llm_tokenizer_spm_session::resegment`'
+  desc: SPM兜底逻辑：查rev_merge逆向索引或按字节回退
+- concept: '`llm_tokenizer_bpe_session::tokenize`'
+  desc: BPE按regex切word→char链表→按rank表贪心合并，校验过期bigram
+- concept: '`llm_tokenizer_bpe_session::add_new_bigram`'
+  desc: 查询vocab.find_bpe_rank()，未在merge表中则跳过
+- concept: '`llm_tokenizer_bpe_session::append_bos/eos/check_double_bos_eos`'
+  desc: BPE session的BOS/EOS自动注入与重复警告
+- concept: '`llm_tokenizer_wpm_session::preprocess`'
+  desc: WPM：NFD规范化→小写化→标点/汉字分词→最长前缀匹配
+- concept: '`llm_tokenizer_ugm_session::tokenize`'
+  desc: Unigram Viterbi DP算法，tokenization_results记录每个位置最优解
+- concept: '`llm_tokenizer_ugm_session::normalize_prefix`'
+  desc: 通过XCDA紧凑双数组O(1)查找最长规范化前缀
+- concept: '`llm_tokenizer_rwkv_session::tokenize`'
+  desc: RWKV：naive_trie遍历+转义解码（\xNN→原始字节）
+- concept: '`llm_tokenizer_plamo2::encode`'
+  desc: PLaMo2：展平Trie为[piece_length,token_id,score,piece_id]四列表+DP回溯
+- concept: '`tokenizer_st_partition`'
+  desc: 特殊token切分器，按长度倒序匹配避免短token抢占长token
+- concept: '`token_to_piece_for_cache`'
+  desc: 构造token→piece的预生成缓存，避免推理时重复计算
+- concept: '`special_eog_ids`'
+  desc: 终止生成token集合，由token文本启发式匹配+KV元数据构建
+- concept: '`cache_special_tokens`'
+  desc: 控制token按text长度倒序缓存，O(1)用于运行时扫描用
+- concept: '`detokenize三遍清理`'
+  desc: first pass去多余空格、second pass合并' '、third pass处理's/re/ve缩写
+- concept: '`escape_whitespaces`'
+  desc: SPM风格' '↔▁转换，BPE模型可选启用
+- concept: '`llama_unescape_rwkv_token`'
+  desc: RWKV的\xNN/\t/\n/\r转义序列解析为原始字节
+- concept: '`xcda_array_view`'
+  desc: BASE/LCHECK/LEAF三位位运算解码SentencePiece压缩双数组
+units:
+- codes:
+  - file: src/unicode.h
+    line: 50-63
+    method_or_func: unicode_cpt_to_utf8()
+  - file: src/unicode.cpp
+    line: 23-58
+    method_or_func: unicode_cpt_from_utf8()
+  - file: src/unicode.cpp
+    line: 388-402
+    method_or_func: unicode_cpts_normalize_nfd()
+  - file: src/unicode.cpp
+    line: 404-419
+    method_or_func: unicode_cpts_from_utf8()
+  - file: src/unicode.cpp
+    line: 446-457
+    method_or_func: unicode_tolower()
+  - file: src/unicode.cpp
+    line: 459-490
+    method_or_func: unicode_cpt_is_han()
+  - file: src/unicode.cpp
+    line: 180-220
+    method_or_func: unicode_cpt_flags_array()
+  - file: src/unicode.cpp
+    line: 421-425
+    method_or_func: unicode_cpt_flags_from_cpt()
+  - file: src/unicode.cpp
+    line: 427-435
+    method_or_func: unicode_cpt_flags_from_utf8()
+  name: Unicode 支持：编码与规范化 —— 文本与 Token 的「第一道翻译官」
+  'no': 1
+  points:
+  - '**为什么需要 utf8 ↔ codepoint 的双向通道？**'
+  - '- Tokenizer 的最小操作单位是 Unicode 码点而非字节，因此必须先把 UTF-8 字节流拆成码点序列'
+  - '- 通过 `unicode_cpt_to_utf8()` / `unicode_cpt_from_utf8()` 实现字节与码点的互转，错误输入用 `0xFFFD`
+    替换避免异常向上传播'
+  - '- NFD 规范化（`unicode_cpts_normalize_nfd`）解决「音标复合字符」在不同源数据中的形态差异，是 SPM/WPM 分词器稳定性的前提'
+  - '- 大小写转换（`unicode_tolower`）支持 LLaMA3 等大小写不敏感的预分词正则（如 `''(?i:''s|...)`）'
+  - '- 汉字识别（`unicode_cpt_is_han`）为 Kimi-K2 等模型提供 CJK 字符的快速判别，配合正则 `\p{Han}+` 完成中文分词'
+- codes:
+  - file: src/unicode.cpp
+    line: 167-266
+    method_or_func: unicode_regex_split_custom_gpt2()
+  - file: src/unicode.cpp
+    line: 268-379
+    method_or_func: unicode_regex_split_custom_llama3()
+  - file: src/unicode.cpp
+    line: 402-528
+    method_or_func: unicode_regex_split_custom_kimi_k2()
+  - file: src/unicode.cpp
+    line: 530-585
+    method_or_func: unicode_regex_split_custom_afmoe()
+  - file: src/unicode.cpp
+    line: 590-615
+    method_or_func: unicode_regex_split_custom_newlines()
+  - file: src/unicode.cpp
+    line: 617-651
+    method_or_func: unicode_regex_split_custom()
+  - file: src/unicode.cpp
+    line: 381-400
+    method_or_func: unicode_regex_split_stl()
+  - file: src/unicode.cpp
+    line: 780-920
+    method_or_func: unicode_regex_split()
+  - file: src/unicode.cpp
+    line: 158-175
+    method_or_func: unicode_byte_encoding_process()
+  name: 正则表达式分词 —— 模型预分词的「自定义加速器」
+  'no': 2
+  points:
+  - '**为什么需要为不同模型定制正则分词？**'
+  - '- 标准 `std::regex` 对 Unicode 类别（`\p{L}` 等）支持有限，且性能较差；每种模型有独特的预分词规则'
+  - '- GPT-2 分词器用 `''s|''t|''re|''ve|''m|''ll|''d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
+    把文本切成单词、数字、标点三大类'
+  - '- LLaMA-3 在 GPT-2 基础上增加数字定长（`\p{N}{1,3}`）、行尾换行处理、大小写不敏感等扩展'
+  - '- Kimi-K2 用 Han 字符优先匹配，并支持大小写不敏感的英文子词（含撇号缩写）'
+  - '- AFMOE 数字按 `digit_count % 3` 分组（1/2 + 3+3+...），模拟十进制分组的可读性'
+  - '- Gemma4 仅按 `\n` 切分（BPE 内部不允许 token 跨换行）'
+  - '- 通过 `unicode_regex_split_custom` 分发器自动选择对应实现，未匹配时回退到 `std::regex`'
+- codes:
+  - file: src/llama-vocab.h
+    line: 1-160
+    method_or_func: llama_vocab.*
+  - file: src/llama-vocab.cpp
+    line: 1808-2200
+    method_or_func: llama_vocab::impl::load()
+  - file: src/llama-vocab.cpp
+    line: 2460-2485
+    method_or_func: llama_vocab::impl::init_tokenizer()
+  - file: src/llama-vocab.cpp
+    line: 2497-2590
+    method_or_func: llama_vocab::impl::tokenizer_st_partition()
+  - file: src/llama-vocab.cpp
+    line: 2592-2605
+    method_or_func: llama_vocab::impl::token_to_piece_for_cache()
+  - file: src/llama-vocab.cpp
+    line: 2280-2290
+    method_or_func: llama_vocab::impl::type_name()
+  - file: src/llama-vocab.cpp
+    line: 2430-2455
+    method_or_func: llama_vocab::impl::token_to_byte()
+  name: llama_vocab 类：词汇表核心 —— Token 世界的「百科全书」
+  'no': 3
+  points:
+  - '**为什么用 pimpl 模式管理 vocab？**'
+  - '- `llama_vocab` 通过 `unique_ptr<impl>` 隐藏数千行实现细节，对外只暴露精简的查询/转换接口'
+  - '- `load()` 从 GGUF 元数据读取 `tokenizer.model`、`tokenizer.pre`、`tokenizer.list/score/type`
+    字段'
+  - '- 根据 `tokenizer_model` 字符串识别 SPM/BPE/WPM/UGM/RWKV/PLaMo2 类型并初始化对应 tokenizer'
+  - '- 特殊 token（BOS/EOS/EOT/SEP/PAD/FIM_*）既支持 GGUF KV 显式配置，也支持按 token 文本自动检测兜底'
+  - '- `special_eog_ids` 集合统一管理所有「生成终止 token」，由 token 文本匹配 + EOT/EOM 启发式构建'
+  - '- `cache_special_tokens` 按文本长度倒序排列，保证 `tokenizer_st_partition` 用最长匹配优先切分'
+  - '- `token_to_piece_for_cache` 在 load 时预生成所有 token→文本缓存，避免推理时重复计算'
+- codes:
+  - file: src/llama-vocab.cpp
+    line: 104-160
+    method_or_func: llm_tokenizer_spm_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 163-188
+    method_or_func: llm_tokenizer_spm_session::resegment()
+  - file: src/llama-vocab.cpp
+    line: 190-211
+    method_or_func: llm_tokenizer_spm_session::try_add_bigram()
+  - file: src/llama-vocab.cpp
+    line: 68-82
+    method_or_func: llm_bigram_spm
+  name: SPM 分词器实现 —— SentencePiece 的「优先级队列合并」
+  'no': 4
+  points:
+  - '**为什么 SPM 用优先级队列而非 BPE 的 rank？**'
+  - '- SPM（SentencePiece）按 token 的 `score`（对数概率）排序，score 高的 pair 优先合并；与 BPE 的固定 rank
+    表形成对比'
+  - '`llm_tokenizer_spm_session::tokenize` 三阶段流程：'
+  - '- **初始化符号链表**：按码点切分文本，每个符号含 prev/next 指针维护双向链表'
+  - '- **种子队列**：扫描所有相邻字符对，调用 `try_add_bigram` 检查是否在 vocab 中'
+  - '- **贪心合并**：循环 pop 队列顶 bigram，若两符号未被合并且长度匹配则合并右侧到左侧'
+  - '`resegment` 兜底逻辑：当合并后的子串仍不在 vocab 中时，先查 `rev_merge` 缓存尝试再分，否则按字节回退'
+  - '`try_add_bigram` 同时维护 `work_queue` 和 `rev_merge`（文本→(left,right) 映射），是 resegment
+    的逆向索引'
+  - '`llm_bigram_spm::comparator` 排序规则：`(l.score < r.score) || (l.score == r.score
+    && l.left > r.left)`'
+- codes:
+  - file: src/llama-vocab.cpp
+    line: 300-540
+    method_or_func: llm_tokenizer_bpe::llm_tokenizer_bpe()
+  - file: src/llama-vocab.cpp
+    line: 700-820
+    method_or_func: llm_tokenizer_bpe_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 822-848
+    method_or_func: llm_tokenizer_bpe_session::add_new_bigram()
+  - file: src/llama-vocab.cpp
+    line: 615-625
+    method_or_func: llm_tokenizer_bpe_session::append_bos()
+  - file: src/llama-vocab.cpp
+    line: 627-635
+    method_or_func: llm_tokenizer_bpe_session::append_eos()
+  - file: src/llama-vocab.cpp
+    line: 637-655
+    method_or_func: llm_tokenizer_bpe_session::check_double_bos_eos()
+  - file: src/llama-vocab.cpp
+    line: 260-280
+    method_or_func: llm_bigram_bpe
+  - file: src/llama-vocab.cpp
+    line: 240-258
+    method_or_func: llama_priority_queue.pop_move()
+  name: BPE 分词器实现 —— GPT/LLaMA 家族的「rank 表驱动合并」
+  'no': 5
+  points:
+  - '**为什么 BPE 用 rank 而非 score？**'
+  - '- BPE（Byte Pair Encoding）按「合并规则的出现顺序」分配 rank，rank 小的 pair 优先合并'
+  - '- 训练阶段把所有相邻 token pair 按频次排序写入 merges.txt；推理时按 rank 合并即可保证一致性'
+  - '`llm_tokenizer_bpe` 构造函数：为每个 `LLAMA_VOCAB_PRE_TYPE_*` 绑定专属 `regex_exprs`（如 LLaMA3
+    用 `(?i:''s|...)`）'
+  - '`llm_tokenizer_bpe_session::tokenize` 关键点：'
+  - '- 先用 `unicode_regex_split` 按 regex 切分文本为 word 集合（可选 `byte_encode` GPT-2 字节编码）'
+  - '- 每个 word 内部建立字符级符号链表，循环 `add_new_bigram` 加入优先级队列'
+  - '- 合并时校验 `left_token+right_token == bigram.text` 防止过期 bigram 误用'
+  - '- 合并后通过 `symbols_final` 跨 word 维护 next/prev 链表，最终输出保持原始顺序'
+  - '`llm_tokenizer_bpe_session::append_bos/append_eos/check_double_bos_eos` 处理自动
+    BOS/EOS 注入与重复警告'
+  - '`llama_priority_queue::pop_move` 提供移动语义的 pop，避免大对象拷贝'
+- codes:
+  - file: src/llama-vocab.cpp
+    line: 870-915
+    method_or_func: llm_tokenizer_wpm_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 917-955
+    method_or_func: llm_tokenizer_wpm_session::preprocess()
+  - file: src/llama-vocab.cpp
+    line: 957-970
+    method_or_func: llm_tokenizer_wpm_session.is_chinese_char()
+  - file: src/llama-vocab.cpp
+    line: 1100-1180
+    method_or_func: llm_tokenizer_ugm_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 1240-1290
+    method_or_func: llm_tokenizer_ugm_session::normalize()
+  - file: src/llama-vocab.cpp
+    line: 1300-1370
+    method_or_func: llm_tokenizer_ugm_session::normalize_prefix()
+  - file: src/llama-vocab.cpp
+    line: 1370-1400
+    method_or_func: llm_tokenizer_rwkv_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 1290-1340
+    method_or_func: llama_unescape_rwkv_token()
+  - file: src/llama-vocab.cpp
+    line: 1640-1720
+    method_or_func: llm_tokenizer_plamo2::encode()
+  - file: src/llama-vocab.cpp
+    line: 1450-1620
+    method_or_func: llm_tokenizer_plamo2.build()
+  - file: src/llama-vocab.cpp
+    line: 1720-1735
+    method_or_func: llm_tokenizer_plamo2_session::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 30-48
+    method_or_func: naive_trie.insert()
+  - file: src/llama-vocab.cpp
+    line: 50-60
+    method_or_func: naive_trie.get_longest_prefix()
+  - file: src/llama-vocab.cpp
+    line: 62-70
+    method_or_func: naive_trie.traverse()
+  name: WPM / UGM / RWKV / PLaMo2 分词器 —— 百花齐放的「专用工具箱」
+  'no': 6
+  points:
+  - '**为什么需要多种专用分词器？**'
+  - '- WPM（WordPiece）用于 BERT 类编码器模型，靠最长前缀匹配 + `token_unk` 兜底'
+  - '- UGM（Unigram）用于 T5 等基于 SentencePiece 的 LM，用 Viterbi 算法找全局最优分词路径'
+  - '- RWKV 通过 `naive_trie` 字典树实现 O(n) 的最长匹配查找'
+  - '- PLaMo2 用 Trie 表 + 动态规划（`scores`/`path` 数组）实现基于后缀表的贪心匹配'
+  - '`llm_tokenizer_wpm_session::preprocess` 完成 NFD 规范化、小写化、标点/汉字分词预处理，再按 `max_token_len`
+    贪心匹配'
+  - '`llm_tokenizer_ugm_session` 通过 XCDA（XOR-compressed Double Array）实现 O(1) 前缀规范化查表
+    + Viterbi 反向回溯'
+  - '`llm_tokenizer_ugm_session::normalize_prefix` 通过 `xcda_array_view` 位运算解码 BASE/LCHECK/LEAF'
+  - '`llm_tokenizer_rwkv_session` 通过 `naive_trie::traverse` 找到最长匹配 token，未匹配则返回 unk'
+  - '`llm_tokenizer_plamo2::build` 构造 `tokens_`/`bytes_`/`to_suffix_id_`/`table_`
+    四张表'
+  - '`llm_tokenizer_plamo2::encode` 从后向前 DP 回溯，未匹配则回退到字节token'
+- codes:
+  - file: src/llama-vocab.cpp
+    line: 2620-2790
+    method_or_func: llama_vocab::impl::tokenize()
+  - file: src/llama-vocab.cpp
+    line: 2840-2930
+    method_or_func: llama_vocab::impl::token_to_piece()
+  - file: src/llama-vocab.cpp
+    line: 2960-3050
+    method_or_func: llama_vocab::impl::detokenize()
+  - file: src/llama-vocab.cpp
+    line: 3050-3095
+    method_or_func: llama_vocab::impl::print_info()
+  - file: src/llama-vocab.cpp
+    line: 2607-2609
+    method_or_func: llama_escape_whitespace()
+  - file: src/llama-vocab.cpp
+    line: 2611-2613
+    method_or_func: llama_unescape_whitespace()
+  - file: src/llama-vocab.cpp
+    line: 2615-2635
+    method_or_func: llama_decode_text()
+  - file: src/llama-vocab.cpp
+    line: 2300-2430
+    method_or_func: llama_vocab::impl.is_normal/is_unknown/is_control/is_byte/is_user_defined/is_unused/is_eog()
+  - file: src/llama-vocab.cpp
+    line: 2455-2460
+    method_or_func: llama_vocab::impl.token_get_attr()
+  - file: src/llama-vocab.cpp
+    line: 2270-2275
+    method_or_func: llama_vocab::impl.get_type()
+  - file: src/llama-vocab.cpp
+    line: 3280-3300
+    method_or_func: llama_tokenize()
+  - file: src/llama-vocab.cpp
+    line: 3310-3320
+    method_or_func: llama_detokenize()
+  - file: src/llama-vocab.cpp
+    line: 3300-3310
+    method_or_func: llama_token_to_piece()
+  - file: src/llama-vocab.cpp
+    line: 3140-3180
+    method_or_func: llama_vocab_bos/eos/eot/sep/nl/pad/mask()
+  - file: src/llama-vocab.cpp
+    line: 3185-3210
+    method_or_func: llama_vocab_fim_pre/suf/mid/pad/rep/sep()
+  - file: src/llama-vocab.cpp
+    line: 3110-3140
+    method_or_func: llama_vocab_n_tokens/nl/type/get_text/get_score/get_attr/is_eog/is_control()
+  name: 分词与反分词 —— 文本与 Token 的「双向翻译官」
+  'no': 7
+  points:
+  - '**为什么分词/反分词要严格对称？**'
+  - '- 推理服务需要把用户输入文本转成 token ID 给模型，再把模型输出的 token ID 还原成文本回传'
+  - '`llama_vocab::impl::tokenize` 主入口：'
+  - '- 先用 `tokenizer_st_partition` 切出特殊 token（按 cache 长度倒序匹配）'
+  - '- 按 vocab 类型分发到 SPM/BPE/WPM/UGM/RWKV/PLaMo2 的 session::tokenize'
+  - '- BPE 额外处理 `escape_whitespaces`（`▁` ↔ 空格转换）和 `byte_encode`（GPT-2 字节映射）'
+  - '`llama_vocab::impl::detokenize` 三遍清理：'
+  - '- 第一遍去掉 `?`,`!`,`.`,`,` 前的多余空格'
+  - '- 第二遍处理被空格包围的撇号 `'' ''`'
+  - '- 第三遍处理 `''s`,`''m`,`''re`,`''ve` 等英语缩写前的空格'
+  - '`token_to_piece_for_cache` 在 load 时预生成所有 token→文本缓存，避免推理时重复计算'
+  - '`token_to_piece` 按 vocab 类型差异化还原：SPM `▁`↔空格、BPE 字节token解码、RWKV 转义解码'
+  - C API 层（`llama_tokenize`/`llama_detokenize`/`llama_token_to_piece`）将 C++ 接口暴露给
+    C 用户

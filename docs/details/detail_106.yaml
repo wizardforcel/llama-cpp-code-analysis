@@ -1,0 +1,405 @@
+code_map:
+- tests/test-jinja.cpp
+- ├── 基础设施与辅助函数
+- '│   ├── test_template()           # 统一测试入口，根据 g_python_mode 路由至 C++ 或 Python 测试（2116行）'
+- '│   ├── test_template_cpp()       # C++ 渲染核心：词法分析→语法解析→运行时执行→结果断言（1929行）'
+- '│   └── test_template_py()        # Python Jinja2 交叉验证：通过子进程调用原生 Python 库（2062行）'
+- ├── 词法与空白控制
+- '│   ├── test_whitespace_control() # trim_blocks/lstrip_blocks/显式剥离标记（94行）'
+- '│   └── test_comments()           # 注释剔除与代码隔离（560行）'
+- ├── 控制流与表达式
+- '│   ├── test_conditionals()       # if/elif/else/真值/逻辑运算（121行）'
+- '│   ├── test_expressions()        # 变量访问/切片/算术/三元表达式（254行）'
+- '│   └── test_loops()              # for/loop变量/字典遍历/range（217行）'
+- ├── 变量与作用域
+- '│   ├── test_set_statement()      # set赋值/混合类型键/元组解包（300行）'
+- '│   └── test_namespace()          # namespace计数器与状态累积（592行）'
+- ├── 数据变换与格式化
+- '│   ├── test_filters()            # upper/lower/trim/tojson/indent等（339行）'
+- '│   └── test_literals()           # 字面量类型（int/float/bool/list/dict）（501行）'
+- ├── 高级功能
+- '│   ├── test_macros()             # 宏定义/默认参数/关键字参数（570行）'
+- '│   ├── test_tests()              # is测试（类型/数值/成员）（599行）'
+- '│   ├── test_string_methods()     # Python风格字符串方法（748行）'
+- '│   ├── test_array_methods()      # 数组方法（pop/append等）（1432行）'
+- '│   └── test_object_methods()     # 对象方法（get/dictsort等）（1637行）'
+- └── 质量保障与混沌工程
+- '    ├── test_hasher()             # 模板哈希一致性（1788行）'
+- '    ├── test_stats()              # 变量使用统计（1881行）'
+- '    ├── test_fuzzing()            # 畸形输入/深度嵌套/随机内置函数（2164行）'
+- '    └── __main__                  # 全局模糊测试循环：随机内置函数与参数组合（2429行）'
+exercises:
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 2116-2123 行 `test_template()` 与第 1929-1960 行 `test_template_cpp()`。
+  - 回答以下问题：
+  - 1. `g_python_mode` 为 true 和 false 时，`test_template` 分别将测试委托给哪个函数？这种设计有何工程价值？
+  - 2. `test_template_cpp` 中模板渲染的完整流水线包含哪几个关键步骤（提示：lexer → parser → runtime）？
+  - 3. 如果要测试一个涉及浮点数精度边界的新特性，应该优先使用 `test_template_cpp` 还是 `test_template_py`？为什么？
+  'no': 1
+  title: 双轨测试机制解析
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 94-119 行的 `test_whitespace_control()` 函数。
+  - 构造以下测试场景并预测输出：
+  - 1. 使用 `trim_blocks=true` 但模板中存在 `{% if true %}  \n  hello`（标签后有两个空格再换行）
+  - '2. 使用 `{%- if true -%}` 但中间包含 `{# comment #}` 注释'
+  - 3. 在 `for` 循环中使用 `loop.last` 并结合 `lstrip_blocks`
+  - 思考问题：
+  - '- `trim_blocks` 与 `lstrip_blocks` 同时开启时，对 `{% endfor %}\n` 的处理顺序是什么？'
+  - '- 为什么需要同时测试 `{%- ... -%}` 和 `{{- ... -}}` 两种标记？'
+  'no': 2
+  title: 空白控制边界实验
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 121-215 行的 `test_conditionals()` 函数。
+  - 设计测试用例验证以下场景：
+  - 1. `{% if [] %}`（空数组）、`{% if {} %}`（空对象）、`{% if '' %}`（空字符串）的 falsy 判定
+  - 2. `a and b` 当 `a` 为 `undefined` 时的短路行为（是否报错）
+  - 3. `0 == false` 与 `0 is eq(false)` 的区别
+  - 4. 混合类型比较：`1 < '2'` 的结果（隐式转换或类型错误）
+  - 思考问题：
+  - '- 为什么 `is defined` 测试对模板健壮性至关重要？'
+  - '- C++ 实现如何处理 Python 中 `None == None` 的语义？'
+  'no': 3
+  title: 真值表与短路求值验证
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 339-499 行的 `test_filters()` 函数，重点关注 `tojson` 和 `indent`。
+  - 完成以下实践任务：
+  - 1. 构造一个包含中文、特殊字符和嵌套数组的字典，分别用 `tojson(ensure_ascii=true)` 和 `tojson(ensure_ascii=false)`
+    输出，对比差异
+  - 2. 使用 `sort(attribute='name')` 对对象数组排序，再用 `join(attribute='age')` 连接，观察键名不存在时的行为
+  - 3. 测试 `indent(width='>>> ')` 对包含空行（`\n\n`）的多行文本的处理
+  - 思考问题：
+  - '- `tojson` 的 `separators` 参数与 `indent` 参数同时使用时，哪个优先级更高？'
+  - '- 为什么 `upper` 过滤器可以递归处理数组和字典？'
+  'no': 4
+  title: 过滤器组合与 JSON 序列化陷阱
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 570-590 行的 `test_macros()` 函数。
+  - 编写宏实现以下功能并测试：
+  - 1. 定义宏 `render_list(items, prefix='', suffix='')`，在循环中使用 `loop.first` 添加前缀
+  - 2. 调用宏时使用乱序关键字参数：`render_list(suffix='>', items=[1,2], prefix='<')`
+  - 3. 在宏内部使用 `namespace` 统计总字符数，并在宏外部访问该计数器
+  - 思考问题：
+  - '- 宏是否可以访问调用者上下文中的全局变量？这与 Python 函数的作用域规则有何异同？'
+  - '- 如果宏的参数默认值是可变对象（如 `[]`），会发生什么？如何防御？'
+  'no': 5
+  title: 宏的高级参数传递与作用域
+- contents:
+  - 阅读 `tests/test-jinja.cpp` 第 2164-2395 行的 `test_fuzzing()` 函数及第 2429-2478 行的全局测试循环。
+  - 基于 `random_string()` 和 `fuzz_test_template()` 的设计思路：
+  - 1. 构造三个会导致模板解析深度嵌套的畸形输入（如 `{% if {% if ...` 或 `{{ 'a' * 10000 }}`）
+  - 2. 测试对未定义值调用字符串方法（`undefined.upper()`）和数组方法的行为
+  - 3. 分析 `fuzz_test_template` 中为什么捕获所有异常后返回 `true`（异常是否算测试通过）
+  - 4. 查看 `test_template_py()` 如何通过子进程调用 Python Jinja2 进行交叉验证
+  - 思考问题：
+  - '- 模糊测试在模板引擎质量保证中的独特价值是什么（与普通单元测试对比）？'
+  - '- 如果想发现 C++ 实现与 Python 实现的行为差异，应该优先测试哪些边界场景？'
+  'no': 6
+  title: 模糊测试与混沌工程实践
+learning_targets:
+- 掌握 Jinja2 模板引擎的空白控制机制（trim_blocks、lstrip_blocks、显式剥离标记）及其测试验证方法
+- 理解条件语句（if/elif/else）、比较运算符与逻辑运算符的短路求值及真值判定规则
+- 熟练运用变量访问路径（点号/方括号）、数组切片、负索引及三元表达式进行数据提取
+- 掌握循环结构中的 loop 变量（index/first/last）、字典遍历、for-else 分支及 range 生成器
+- 理解 set 赋值、namespace 可变状态管理及元组解包在模板中的作用域规则
+- 熟悉字符串变换、序列操作、JSON 序列化等过滤器的链式调用与参数配置
+- 掌握宏（macro）的定义、默认参数、关键字参数及乱序传参的解析机制
+- 了解 is 测试的类型检测（odd/even/divisibleby/boolean 等）与集合成员测试（in）
+- 熟悉 Python 风格的对象方法调用（字符串方法、数组方法、对象方法）在 C++ 实现中的映射
+- 理解模板哈希、变量统计、Python 交叉验证及模糊测试（fuzzing）在质量保障中的作用
+- 掌握统一测试入口 test_template 与 C++ 渲染核心 test_template_cpp 的双轨测试机制
+life_analogy:
+- 想象 C++ Jinja 模板引擎是一家**精密的新闻出版工厂**：
+- '- **统一测试入口（test_template）** = 总调度台，根据开关（g_python_mode）决定是将任务派给「C++ 印刷车间」还是「Python
+  母版校对室」'
+- '- **C++ 渲染核心（test_template_cpp）** = 高速印刷机，将模板（油墨）与变量（纸张）高速压印成最终输出，并自动对比质检样张'
+- '- **Python 交叉验证（test_template_py）** = 原厂母版校对，通过子进程将 C++ 的输出与 Python Jinja2 的标准件进行
+  100% 比对'
+- '- **空白控制（trim_blocks/lstrip_blocks）** = 排版车间的「自动裁边机」，精确切除每行文字多余的空白边距'
+- '- **条件语句（if/elif/else）** = 编辑部的「内容审查官」，根据稿件质量（真值判断）决定刊登哪一版'
+- '- **循环结构（for/loop.index）** = 印刷机的「重复印刷单元」，能自动编号（index）并识别第一张和最后一张纸（first/last）'
+- '- **过滤器（filters）** = 文字加工流水线，依次进行「大写转换（upper）→ 修剪（trim）→ JSON 打包（tojson）」'
+- '- **宏（macro）** = 预制好的「标准信件模板」，只需填入姓名和地址（参数）即可批量生成个性化信件'
+- '- **namespace** = 编辑部的「共享记事板」，允许不同部门（循环）在板子上累计计数，突破单张纸的局限'
+- '- **模糊测试（fuzzing）** = 质检部的「混沌工程实验」，故意往机器里扔奇形怪状的纸张（畸形输入），确保印刷机不会卡纸（崩溃）'
+'no': 105
+summary:
+- concept: test_template
+  desc: 统一测试入口，根据 g_python_mode 在 C++ 与 Python 双引擎间路由测试用例
+- concept: test_template_cpp
+  desc: C++ 渲染核心，封装词法分析→语法解析→运行时执行→结果断言的完整流水线
+- concept: test_template_py
+  desc: Python 交叉验证机制，通过子进程调用 Jinja2 确保 C++ 实现行为一致
+- concept: trim_blocks / lstrip_blocks
+  desc: 自动移除块标签后的换行与前导空白，保持输出纯净
+- concept: '{%- ... -%}'
+  desc: 显式空白剥离标记，手动精确控制模板边界
+- concept: is defined / is not defined
+  desc: 防御性编程测试，避免未定义变量导致的崩溃
+- concept: loop.index / loop.first / loop.last
+  desc: 循环状态变量，支持 1-based 索引与首尾边界检测
+- concept: for ... else
+  desc: Python 风格循环，空集合或 undefined 时执行 else 分支
+- concept: namespace()
+  desc: 突破模板作用域限制的可变对象，用于跨循环状态累积
+- concept: '|default / |d'
+  desc: 默认值过滤器，处理 undefined 或 falsy 值
+- concept: '|tojson'
+  desc: JSON 序列化过滤器，支持 ensure_ascii、sort_keys、indent 等精细化控制
+- concept: '|indent'
+  desc: 文本缩进过滤器，支持首行控制、空行处理及自定义缩进字符串
+- concept: is odd / is even / is divisibleby
+  desc: 数值特性测试，用于奇偶判断与整除检测
+- concept: is iterable / is mapping / is sequence
+  desc: 类型检测测试，区分数组、对象与字符串
+- concept: reject / select + in
+  desc: 集合过滤组合技，基于成员测试筛选元素
+- concept: macro / endmacro
+  desc: 模板函数封装，支持默认参数与关键字参数乱序传递
+- concept: string.upper() / array.pop()
+  desc: Python 风格方法调用，C++ 实现与 Python 语义对齐
+- concept: fuzz_test_template
+  desc: 混沌工程测试，对畸形输入与随机参数组合进行崩溃防护验证
+units:
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 2116-2123
+    method_or_func: test_template()
+  - file: tests/test-jinja.cpp
+    line: 1929-1960
+    method_or_func: test_template_cpp()
+  - file: tests/test-jinja.cpp
+    line: 2062-2114
+    method_or_func: test_template_py()
+  name: 测试基建与统一入口 —— 模板的「质检流水线」
+  'no': 1
+  points:
+  - '**双轨测试架构：C++ 自测与 Python 交叉验证**'
+  - '- `test_template()` 作为统一入口，根据 `g_python_mode` 开关决定调用 C++ 实现还是 Python 子进程'
+  - '- 这种设计使得同一套测试用例既能验证 C++ 实现的正确性，又能作为「黄金标准」与 Python Jinja2 进行 100% 行为对齐'
+  - ''
+  - '**C++ 渲染核心：test_template_cpp()**'
+  - '- 完整流水线：`lexer.tokenize()` → `parse_from_tokens()` → `runtime.execute()` → 结果断言'
+  - '- 封装异常捕获机制，将解析错误、运行时错误标准化为测试失败而非崩溃'
+  - ''
+  - '**Python 交叉验证核心：test_template_py()**'
+  - '- 通过 `subprocess` 创建子进程执行 Python 脚本，将模板与变量传递给原生 Jinja2 渲染'
+  - '- 严格比对输出字节级一致性，确保 C++ 实现是 Python 语义的忠实子集或超集'
+  - ''
+  - '**统一断言与错误报告**'
+  - '- 所有测试用例通过 `t.test(name, lambda)` 包装，自动统计通过/失败数并捕获异常上下文'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 94-119
+    method_or_func: test_whitespace_control()
+  - file: tests/test-jinja.cpp
+    line: 560-568
+    method_or_func: test_comments()
+  name: 词法闸门与空白控制 —— 模板的「格式化妆师」
+  'no': 2
+  points:
+  - '**trim_blocks 与 lstrip_blocks：看不见的格式整形师**'
+  - '- `{% if true %}\n` 后的换行如何被自动修剪？'
+  - '- 块标签前的空白如何被 lstrip_blocks 吞噬，保持输出纯净？'
+  - '- 显式标记 `{%- ... -%}` 如何实现手动精修，剥离所有多余空白？'
+  - ''
+  - '**注释的「隐形斗篷」：从源码到输出的秘密消失**'
+  - '- `{# comment #}` 如何在解析阶段被彻底剔除，不留下任何痕迹？'
+  - '- 测试验证：注释内部的代码是否会被误执行？'
+  - ''
+  - '**为什么需要独立的空白控制测试？**'
+  - '- 聊天模板对格式极度敏感，额外的换行或空格会污染模型输入'
+  - '- 确保 C++ 实现与 Python Jinja2 在空白处理上的行为一致性'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 121-215
+    method_or_func: test_conditionals()
+  name: 控制流与逻辑决策 —— 模板的「条件分支裁判」
+  'no': 3
+  points:
+  - '**条件语句的三重门：if / elif / else 的精确裁决**'
+  - '- 真值判断的边界：空数组、空对象、0、0.0、空字符串如何被判定为 falsy？'
+  - '- `is defined` / `is not defined` 测试如何防御未定义变量导致的崩溃？'
+  - '- 嵌套 if 的条件穿透：多层逻辑嵌套时的上下文变量可见性'
+  - ''
+  - '**比较运算符与逻辑门的真值表**'
+  - '- 数值比较（`>`, `<`, `==`）在混合类型（int/float/bool）下的隐式转换规则'
+  - '- `and` / `or` / `not` 的短路求值策略与组合逻辑'
+  - '- `in` 操作符的多态支持：数组元素、字符串子串、对象键名的存在性检查'
+  - ''
+  - '**Python 语义对齐**'
+  - '- 验证 C++ 实现是否与 Python Jinja2 对 `None`、`True`、`False` 的处理完全一致'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 254-298
+    method_or_func: test_expressions()
+  name: 表达式求值与数据切片 —— 变量的「解构手术刀」
+  'no': 4
+  points:
+  - '**变量访问的双通道：点号与方括号**'
+  - '- `user.name` 与 `user[''name'']` 的等价性与边界情况（空键、未定义键）'
+  - '- 未定义属性的优雅降级：`a[]` 与 `a[undefined]` 如何返回 undefined 而非抛错？'
+  - ''
+  - '**数组的瑞士军刀：索引、切片与步长**'
+  - '- 负索引（`items[-1]`）的模运算实现'
+  - '- 切片操作 `[1:-1]` 与步长 `[::2]` 的区间计算逻辑'
+  - '- 元组（tuple）不可变序列的切片支持'
+  - ''
+  - '**算术与字符串拼接**'
+  - '- 四则运算的优先级与括号分组 `(a + b) * c`'
+  - '- 波浪号 `~` 字符串连接操作与 `+` 号的类型严格性差异'
+  - '- 三元表达式 `''yes'' if cond else ''no''` 的惰性求值'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 217-252
+    method_or_func: test_loops()
+  name: 循环迭代引擎 —— 列表与字典的「遍历机制」
+  'no': 5
+  points:
+  - '**for 循环的元老级特性：索引与状态感知**'
+  - '- `loop.index` / `loop.index0`：1-based 与 0-based 索引的双轨制'
+  - '- `loop.first` / `loop.last`：边界检测与首尾特殊处理（如添加括号）'
+  - '- `loop.length`：在迭代前预知总长度的实现机制'
+  - ''
+  - '**字典遍历与键值解构**'
+  - '- `for k, v in data.items()` 的元组解包赋值'
+  - '- 空集合与未定义变量的 `else` 分支兜底策略'
+  - ''
+  - '**range 函数与嵌套循环**'
+  - '- `range(3)` 生成器的惰性求值与整数序列生成'
+  - '- 双重循环的上下文隔离：内层循环变量如何遮蔽外层同名变量'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 300-337
+    method_or_func: test_set_statement()
+  - file: tests/test-jinja.cpp
+    line: 592-597
+    method_or_func: test_namespace()
+  name: 变量赋值与作用域 —— 模板的「内存沙盒」
+  'no': 6
+  points:
+  - '**set 语句的赋值艺术**'
+  - '- 简单赋值与表达式计算：`{% set x = a + b %}`'
+  - '- 复杂字面量构造：列表、字典及混合类型键（int/float/str/bool/None/tuple）的字典'
+  - ''
+  - '**namespace：突破模板作用域限制的「特洛伊木马」**'
+  - '- 为什么需要 namespace？解决循环内无法修改外部变量的问题'
+  - '- `namespace(count=0)` 的对象式属性赋值与状态累积'
+  - '- 元组解包赋值：`a, b, c = (1, 2, 3)` 的多变量并行赋值'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 339-499
+    method_or_func: test_filters()
+  - file: tests/test-jinja.cpp
+    line: 501-558
+    method_or_func: test_literals()
+  name: 过滤器与字面值处理 —— 数据的「格式化流水线」
+  'no': 7
+  points:
+  - '**字符串变换全家桶**'
+  - '- 大小写转换：`upper` / `lower` / `capitalize` / `title` 对字符串、数组、字典的递归处理'
+  - '- 修剪与替换：`trim`（含自定义字符集）、`replace` 的链式调用'
+  - ''
+  - '**序列操作与类型转换**'
+  - '- `first` / `last` / `length` / `reverse` / `sort`（含键排序、逆序）'
+  - '- `join` 的默认分隔符与自定义分隔符'
+  - '- `int` / `float` / `abs` 的类型转换与进制处理（`base=2`）'
+  - ''
+  - '**JSON 序列化与高级格式化**'
+  - '- `tojson` 的精细化控制：`ensure_ascii`、`sort_keys`、`indent`、`separators` 的排列组合'
+  - '- `indent` 过滤器的首行缩进、空行处理及自定义缩进字符串（如 `>>>>`）'
+  - ''
+  - '**字面量的类型边界**'
+  - '- 整数、浮点、布尔、None、列表、字典在模板中的直接构造与输出'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 570-590
+    method_or_func: test_macros()
+  name: 宏与代码复用 —— 模板的「函数封装术」
+  'no': 8
+  points:
+  - '**宏定义：带默认参数的模板函数**'
+  - '- `{% macro greet(name) %}` 的定义与调用语法'
+  - '- 默认参数 `name=''Guest''` 与关键字参数 `b=False` 的灵活组合'
+  - ''
+  - '**参数传递的鲁棒性**'
+  - '- 位置参数与关键字参数的混合调用'
+  - '- 乱序关键字参数：`greet(last=''Smith'', first=''John'')` 的正确解析'
+  - '- 多参数返回与多值解包'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 599-746
+    method_or_func: test_tests()
+  name: 类型测试与断言 —— 模板的「运行时质检员」
+  'no': 9
+  points:
+  - '**is 测试的类型光谱**'
+  - '- 数值特性：`odd` / `even` / `divisibleby` / `ge` / `gt` / `le` / `lt` / `eq` / `ne`'
+  - '- 类型检测：`boolean` / `callable` / `float` / `integer` / `sequence` / `string` /
+    `number` / `iterable` / `mapping`'
+  - '- 特殊状态：`defined` / `undefined` / `none` / `sameas` / `escaped`'
+  - ''
+  - '**集合成员测试**'
+  - '- `in` 操作符的三种形态：数组包含、子串匹配、对象键存在性'
+  - '- `reject` 与 `select` 过滤器结合 `in` 测试实现集合过滤'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 748-773
+    method_or_func: test_string_methods()
+  - file: tests/test-jinja.cpp
+    line: 1432-1635
+    method_or_func: test_array_methods()
+  - file: tests/test-jinja.cpp
+    line: 1637-1786
+    method_or_func: test_object_methods()
+  name: 对象方法调用与 Python 互操作 —— 跨越语言边界的「约定」
+  'no': 10
+  points:
+  - '**字符串方法的 Python 风格**'
+  - '- `upper()` / `lower()` / `strip()` / `lstrip()` / `rstrip()` / `title()` / `capitalize()`
+    与过滤器的等价性'
+  - '- `startswith()` / `endswith()` 的前缀/后缀检测'
+  - '- `split()` / `rsplit()` 的分隔符、最大分割数参数'
+  - '- `replace()` 的计数限制参数'
+  - ''
+  - '**数组与字典的「面向对象」接口**'
+  - '- `array.pop()` 的弹出语义与返回值'
+  - '- `object.get()` 的安全访问与默认值'
+  - '- `dictsort` 的键排序与值排序'
+  - ''
+  - '**未定义值的防御性处理**'
+  - '- 对 undefined 值调用字符串方法（如 `undefined|upper`）应安全返回空字符串而非崩溃'
+- codes:
+  - file: tests/test-jinja.cpp
+    line: 1788-1879
+    method_or_func: test_hasher()
+  - file: tests/test-jinja.cpp
+    line: 1881-1927
+    method_or_func: test_stats()
+  - file: tests/test-jinja.cpp
+    line: 2131-2145
+    method_or_func: random_string()
+  - file: tests/test-jinja.cpp
+    line: 2149-2162
+    method_or_func: fuzz_test_template()
+  - file: tests/test-jinja.cpp
+    line: 2164-2395
+    method_or_func: test_fuzzing()
+  - file: tests/test-jinja.cpp
+    line: 2429-2478
+    method_or_func: __main__
+  name: 高级特性与健壮性 —— 哈希、统计与「混沌工程」
+  'no': 11
+  points:
+  - '**模板哈希与调试支持**'
+  - '- 分块更新与整块更新的哈希一致性验证'
+  - '- 模板变量使用统计：追踪模板中引用的变量及使用情况'
+  - ''
+  - '**Python 交叉验证机制**'
+  - '- `test_template_py` 如何通过子进程调用 Python Jinja2 确保 100% 行为一致'
+  - '- `g_python_mode` 全局开关的控制逻辑'
+  - ''
+  - '**模糊测试：模板的「压力测试」**'
+  - '- `random_string` 生成随机标识符与字符串'
+  - '- `fuzz_test_template` 捕获异常但不崩溃的容错机制'
+  - '- `test_fuzzing` 对畸形输入、深度嵌套、空值运算、越界访问的鲁棒性验证'
+  - '- 随机内置函数调用：对全局函数和方法调用的随机参数组合测试'

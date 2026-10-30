@@ -1,0 +1,1664 @@
+code_map:
+- ggml/include/ggml-opencl.h
+- '├── ggml_backend_opencl_init()          # 初始化 OpenCL 后端实例'
+- '├── ggml_backend_is_opencl()          # 检查后端类型'
+- '├── ggml_backend_opencl_buffer_type() # 设备端缓冲区类型'
+- '├── ggml_backend_opencl_host_buffer_type() # 主机端 pinned 缓冲区'
+- '└── ggml_backend_opencl_reg()         # 后端注册入口'
+- ''
+- ggml/src/ggml-opencl/ggml-opencl.cpp
+- ├── 设备探测与初始化（229-3000行）
+- '│   ├── get_adreno_gpu_gen()          # Adreno GPU 代数识别（A7X/A8X/X1E）'
+- '│   ├── get_adreno_cl_compiler_version() # 编译器版本解析'
+- '│   ├── ggml_opencl_probe_devices()   # 平台与设备枚举'
+- '│   ├── ggml_cl2_init()               # 设备上下文初始化（FP16/版本检查）'
+- '│   ├── parse_cl_version()            # OpenCL 版本字符串解析'
+- '│   ├── get_opencl_platform_version() # 平台版本获取'
+- '│   ├── get_opencl_c_version()        # 设备支持的 OpenCL C 版本'
+- '│   └── align_to()                    # 内存对齐工具'
+- ├── 内核加载与编译（678-1200行）
+- '│   ├── build_program_from_source()   # clCreateProgramWithSource 封装'
+- '│   ├── load_cl_kernels()             # 批量编译 Q4_0/Q4_K/MXFP4 等量化内核'
+- '│   └── read_file()                   # 外部内核文件读取辅助'
+- ├── 量化张量管理（3376-4391行）
+- '│   ├── ggml_tensor_extra_cl::reset()  # 通用张量额外数据重置'
+- '│   ├── ggml_tensor_extra_cl_q4_0::reset()  # 释放量化内存对象'
+- '│   ├── ggml_tensor_extra_cl_q4_1::reset()  # Q4_1 专用内存管理'
+- '│   ├── ggml_tensor_extra_cl_mxfp4::reset() # MXFP4 专用内存管理'
+- '│   ├── ggml_tensor_extra_cl_q8_0::reset()  # Q8_0 专用内存管理'
+- '│   ├── ggml_tensor_extra_cl_q4_K::reset()  # Q4_K 专用内存管理'
+- '│   ├── ggml_tensor_extra_cl_q6_K::reset()  # Q6_K 专用内存管理'
+- '│   └── ggml_backend_opencl_buffer_context::ggml_opencl_alloc_temp_tensor_extra_*()  #
+  临时张量内存池分配'
+- ├── 缓冲区操作（4440-5890行）
+- '│   ├── ggml_backend_opencl_buffer_init_tensor()      # 张量初始化'
+- '│   ├── ggml_backend_opencl_buffer_set_tensor()       # 主机→设备数据写入（含量化转换）'
+- '│   ├── ggml_backend_opencl_buffer_get_tensor()       # 设备→主机数据读取（含反量化恢复）'
+- '│   ├── ggml_backend_opencl_buffer_free_buffer()      # 缓冲区释放'
+- '│   ├── ggml_backend_opencl_buffer_clear()            # 缓冲区清零'
+- '│   ├── ggml_backend_opencl_buffer_reset()            # 内存池重置'
+- '│   └── transpose_2d() / transpose_2d_as_*b()         # 矩阵转置内核'
+- ├── 算子执行与融合（3746-3896行）
+- '│   ├── sync_with_other_backends()    # 多设备事件同步'
+- '│   ├── ggml_opencl_can_fuse()        # RMS_NORM+MUL 等融合检测'
+- '│   ├── ggml_backend_opencl_graph_compute()  # 图计算主循环'
+- '│   ├── ggml_opencl_op_rms_norm_fused()      # RMSNorm+MUL 融合实现'
+- '│   ├── ggml_opencl_op_norm_fused()          # NORM+MUL+ADD 融合实现'
+- '│   └── ggml_opencl_op_group_norm_fused()    # GroupNorm+MUL+ADD 融合实现'
+- ├── 算子分发核心（6110-14117行）
+- '│   ├── ggml_cl_can_mul_mat()         # 矩阵乘法可行性判断'
+- '│   ├── ggml_cl_compute_forward()     # 算子分发总入口'
+- '│   ├── ggml_cl_add() / mul / div / sub  # 基本算术运算'
+- '│   ├── ggml_cl_mul_mat()             # 通用矩阵乘法路由器'
+- '│   ├── ggml_cl_mul_mat_q4_0_f32_adreno()   # Q4_0 GEMV/GEMM Adreno 优化'
+- '│   ├── ggml_cl_mul_mat_q4_1_f32_adreno()   # Q4_1 Adreno 优化'
+- '│   ├── ggml_cl_mul_mat_q4_K_f32_adreno()   # Q4_K Adreno 优化'
+- '│   ├── ggml_cl_mul_mat_q6_K_f32_adreno()   # Q6_K Adreno 优化'
+- '│   ├── ggml_cl_mul_mat_q8_0_f32_adreno()   # Q8_0 Adreno 优化'
+- '│   ├── ggml_cl_mul_mat_kq_kqv_adreno()     # KQ/KQV 注意力优化'
+- '│   ├── ggml_cl_mul_mat_id()          # MoE 专家矩阵乘法'
+- '│   ├── ggml_cl_flash_attn() / flash_attn_ext()  # Flash Attention'
+- '│   ├── ggml_cl_soft_max()            # Softmax'
+- '│   ├── ggml_cl_rope()                # 旋转位置编码'
+- '│   ├── ggml_cl_norm() / rms_norm / l2_norm / group_norm()  # 归一化族'
+- '│   ├── ggml_cl_conv_2d()             # 2D 卷积'
+- '│   ├── ggml_cl_ssm_conv()            # SSM 卷积'
+- '│   ├── ggml_cl_get_rows() / set_rows()    # 行提取/设置'
+- '│   ├── ggml_cl_cpy() / dup() / set()      # 数据拷贝'
+- '│   ├── ggml_cl_gelu / silu / relu / sigmoid / tanh()  # 激活函数族'
+- '│   ├── ggml_cl_glu()                 # GLU 变体（GEGLU/ReGLU/SwiGLU）'
+- '│   ├── ggml_cl_argsort() / cumsum() / sum_rows() / mean()  # 归约操作'
+- '│   └── ggml_opencl_supports_op()     # 算子支持性检查'
+- └── 后端接口注册（4108-6062行）
+- '    ├── ggml_backend_opencl_init()    # 后端实例创建'
+- '    ├── ggml_backend_opencl_device_get_*() # 设备属性查询接口族'
+- '    └── ggml_backend_opencl_reg()     # 后端注册入口'
+- ''
+- ggml/src/ggml-opencl/kernels/embed_kernel.py
+- '└── main()                            # 逐行读取 .cl 文件，输出 R"()" 原始字符串格式'
+- ''
+- ggml/include/ggml-vulkan.h
+- '├── ggml_backend_vk_init()            # 按设备编号初始化 Vulkan 后端'
+- '├── ggml_backend_is_vk()              # 检查后端类型'
+- '├── ggml_backend_vk_get_device_count()      # 枚举可用设备'
+- '├── ggml_backend_vk_get_device_description() # 获取设备描述'
+- '├── ggml_backend_vk_get_device_memory()      # 查询显存'
+- '├── ggml_backend_vk_buffer_type()          # 设备本地显存类型'
+- '└── ggml_backend_vk_host_buffer_type()     # 主机 pinned 内存类型'
+- ''
+- ggml/src/ggml-vulkan/ggml-vulkan.cpp
+- ├── 设备架构识别（201-292行）
+- '│   └── get_device_architecture()     # AMD GCN/RDNA、Intel Xe2、NVIDIA Turing/Coopmat
+  检测'
+- ├── 设备初始化与枚举（5358-5900行）
+- '│   ├── ggml_vk_instance_init()       # Vulkan 实例创建与设备枚举'
+- '│   ├── ggml_vk_get_device()          # 设备初始化（扩展检测、特性启用）'
+- '│   ├── ggml_vk_find_queue_family_index() # 队列族选择'
+- '│   └── ggml_vk_print_gpu_info()      # 设备信息打印'
+- ├── 内存与缓冲区管理（2142-2650行）
+- '│   ├── ggml_vk_create_buffer()       # 设备内存分配（DeviceLocal/HostVisible/导入导出）'
+- '│   ├── ggml_vk_host_malloc()         # Pinned 主机内存分配'
+- '│   ├── vk_subbuffer                  # 缓冲区子视图（偏移+范围）'
+- '│   ├── ggml_vk_tensor_subbuffer()    # 张量子缓冲区视图'
+- '│   ├── vk_memory_logger              # 内存分配日志追踪'
+- '│   ├── ggml_vk_create_buffer_check() # 缓冲区创建错误检查'
+- '│   └── ggml_vk_create_buffer_device() # 设备专用缓冲区创建'
+- ├── 数据传输（6767-7080行）
+- '│   ├── ggml_vk_buffer_write_async()      # 异步写入'
+- '│   ├── ggml_vk_buffer_read_async()       # 异步读取'
+- '│   ├── ggml_vk_buffer_write_2d()         # 同步 2D 写入'
+- '│   ├── ggml_vk_buffer_read()             # 同步读取'
+- '│   ├── ggml_vk_buffer_copy()             # 缓冲区复制（同设备/跨设备）'
+- '│   └── ggml_vk_buffer_memset_async()     # 异步内存填充'
+- ├── 管线与着色器管理（2142-4440行）
+- '│   ├── ggml_vk_create_pipeline_func() # 计算管线组装（着色器模块+描述符布局+推送常量）'
+- '│   ├── ggml_vk_load_shaders()        # 批量加载 SPIR-V 着色器'
+- '│   ├── get_subgroup_size()           # 按管线名查询子组大小'
+- '│   ├── vk_pipeline_struct            # 管线属性封装（工作组大小、寄存器计数）'
+- '│   └── init_pushconst_fastdiv()      # 快速除法预计算模板'
+- ├── 计算图执行（1100-15150行）
+- '│   ├── ggml_vk_dispatch_pipeline()   # 计算工作组分派与描述符集更新'
+- '│   ├── ggml_vk_op_get_pipeline()     # 算子→管线路由'
+- '│   ├── ggml_vk_matmul()              # 矩阵乘法（支持 split-k 优化）'
+- '│   ├── ggml_vk_mul_mat_q_f16()       # 量化矩阵乘法核心'
+- '│   ├── ggml_vk_mul_mat_vec_q_f16()   # 矩阵-向量乘法'
+- '│   ├── ggml_vk_mul_mat_id_q_f16()    # MoE 专家矩阵乘法'
+- '│   ├── ggml_vk_flash_attn()          # Flash Attention 实现'
+- '│   ├── ggml_vk_soft_max()            # Softmax（含大矩阵分阶段）'
+- '│   ├── ggml_vk_rms_norm()            # RMSNorm（含融合路径）'
+- '│   ├── ggml_vk_get_rows() / set_rows()   # 行提取/设置'
+- '│   ├── ggml_vk_argsort() / topk()        # 排序与 TopK'
+- '│   ├── ggml_vk_can_fuse()            # RMS_NORM+MUL、ROPE+VIEW+SET_ROWS 融合检测'
+- '│   ├── ggml_vk_can_fuse_rope_set_rows()  # ROPE+VIEW+SET_ROWS 融合验证'
+- '│   ├── ggml_vk_can_fuse_rms_norm_mul_rope() # RMS+MUL+ROPE 三融合检查'
+- '│   ├── ggml_vk_fuse_multi_add()      # 多 ADD 操作融合'
+- '│   ├── ggml_vk_graph_optimize()      # 计算图拓扑排序与融合模式保持'
+- '│   ├── ggml_backend_vk_graph_compute() # 主计算循环'
+- '│   ├── ggml_vk_build_graph()         # 图节点构建与调度'
+- '│   └── ggml_vk_preallocate_buffers()     # 预分配缓冲区管理'
+- ├── 算子支持性检查与调度（15360-16150行）
+- '│   ├── ggml_backend_vk_device_supports_op()  # 算子能力检查（量化类型、Flash Attention维度）'
+- '│   ├── ggml_backend_vk_device_offload_op()   # 基于批处理大小的卸载决策'
+- '│   └── ggml_backend_vk_event_record()        # 事件记录与同步'
+- └── 后端接口注册（15200-17000行）
+- '    ├── ggml_backend_vk_init()        # 后端实例创建'
+- '    ├── ggml_backend_vk_device_supports_op() # 算子支持性检查'
+- '    └── ggml_backend_vk_reg()         # 后端注册入口'
+- ''
+- ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+- '├── string_to_spv_func()              # 调用 glslangValidator/glslc 编译单个着色器'
+- '├── matmul_shaders()                  # 生成矩阵乘法着色器变体（F16/F32/量化）'
+- '├── process_shaders()                 # 批量编译数百个着色器（多线程异步）'
+- '├── write_output_files()              # 生成包含 SPIR-V 数据的 C++ 头/源文件'
+- '└── acquire_compile_slot()            # 编译并发槽位控制'
+- ''
+- ggml/include/ggml-webgpu.h
+- '├── ggml_backend_webgpu_init()        # WebGPU 后端初始化'
+- '└── ggml_backend_webgpu_reg()         # 后端注册（支持动态库加载）'
+- ''
+- ggml/src/ggml-webgpu/ggml-webgpu.cpp
+- ├── 参数竞技场（170-196行）
+- '│   └── webgpu_param_arena            # 基于槽位的 uniform buffer 分配器（alloc_slot/reset/cleanup/init）'
+- ├── 缓冲区管理（506-515行）
+- '│   └── ggml_webgpu_create_buffer()   # 封装 device.CreateBuffer（Storage/Uniform/CopyDst）'
+- ├── 算子编码器（800-2700行）
+- '│   ├── ggml_webgpu_mul_mat()         # 矩阵乘法（快速/传统路径选择）'
+- '│   ├── ggml_webgpu_mul_mat_id()      # MoE 专家矩阵乘法（两阶段 gather+main）'
+- '│   ├── ggml_webgpu_flash_attn()      # Flash Attention（subgroup_matrix 支持）'
+- '│   ├── ggml_webgpu_soft_max()        # Softmax（含 mask/sink）'
+- '│   ├── ggml_webgpu_glu()             # GLU 激活（ReGLU/GEGLU/SwiGLU）'
+- '│   ├── ggml_webgpu_rope()            # 旋转位置编码'
+- '│   ├── ggml_webgpu_binary_op()       # 二元操作（inplace/overlap 检测）'
+- '│   ├── ggml_webgpu_concat()          # 张量拼接'
+- '│   ├── ggml_webgpu_repeat()          # 张量重复'
+- '│   ├── ggml_webgpu_scale()           # 缩放'
+- '│   ├── ggml_webgpu_cpy()             # 数据复制'
+- '│   ├── ggml_webgpu_set() / set_rows() / get_rows()  # 行操作族'
+- '│   ├── ggml_webgpu_argsort()         # 排序（多阶段归并）'
+- '│   ├── ggml_webgpu_cumsum()          # 累积和'
+- '│   ├── ggml_webgpu_sum_rows()        # 行求和'
+- '│   ├── ggml_webgpu_argmax()          # Argmax'
+- '│   ├── ggml_webgpu_row_norm()        # 行归一化'
+- '│   ├── ggml_webgpu_ssm_conv()        # SSM 卷积'
+- '│   ├── ggml_webgpu_gated_delta_net() # Gated Delta Net'
+- '│   ├── ggml_webgpu_pad()             # 填充'
+- '│   ├── ggml_webgpu_solve_tri()       # 三角求解'
+- '│   ├── ggml_webgpu_encode_node()     # 节点分发器（根据 op 路由到具体实现）'
+- '│   └── ggml_backend_webgpu_device_supports_op()  # 算子能力检查（量化类型支持列表）'
+- ├── 计算图执行（2833-2865行）
+- '│   └── ggml_backend_webgpu_graph_compute() # 批量编码与命令提交'
+- └── 后端注册（3603-3878行）
+- '    ├── ggml_backend_webgpu_device_supports_op()  # 算子能力检查（含量化类型支持列表）'
+- '    └── ggml_backend_webgpu_reg()     # 全局实例创建与 Dawn/Emscripten 配置'
+- ''
+- ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+- '├── ggml_webgpu_shader_lib            # 着色器管线缓存中心'
+- '│   ├── get_sum_rows_pipeline()       # SumRows 管线（带 WG_SIZE 宏定义）'
+- '│   ├── get_row_norm_pipeline()       # 行归一化（RMS/L2 Norm 变体）'
+- '│   ├── get_flash_attn_pipeline()     # Flash Attention（支持 KV_F16/Q4_0、mask、sinks、logit_softcap）'
+- '│   ├── get_flash_attn_blk_pipeline() # Flash Attention 分块变体'
+- '│   ├── get_flash_attn_vec_reduce_pipeline() # Flash Attention 向量归约'
+- '│   ├── get_mul_mat_vec_pipeline()    # 矩阵向量乘（向量化优化）'
+- '│   ├── get_mul_mat_fast_pipeline()   # 快速矩阵乘（subgroup_matrix 利用）'
+- '│   ├── get_mul_mat_legacy_pipeline() # 传统矩阵乘'
+- '│   ├── get_mul_mat_id_gather_pipeline() # MoE gather 预采集'
+- '│   ├── get_mul_mat_id_pipeline()     # MoE main 管线'
+- '│   ├── get_cpy_pipeline()            # 数据拷贝（f32/f16/i32 组合）'
+- '│   ├── get_glu_pipeline()            # GLU 激活（含分裂模式）'
+- '│   ├── get_rope_pipeline()           # RoPE 位置编码'
+- '│   ├── get_soft_max_pipeline()       # Softmax（含 mask/sink）'
+- '│   ├── get_argsort_pipeline()        # Argsort'
+- '│   ├── get_argsort_merge_pipeline()  # Argsort 归并'
+- '│   ├── get_get_rows_pipeline()       # GetRows'
+- '│   ├── get_set_rows_pipeline()       # SetRows'
+- '│   ├── get_set_pipeline()            # Set 操作'
+- '│   ├── get_scale_pipeline()          # Scale'
+- '│   ├── get_solve_tri_pipeline()      # 三角求解'
+- '│   ├── get_ssm_conv_pipeline()       # SSM 卷积'
+- '│   ├── get_gated_delta_net_pipeline() # Gated Delta Net'
+- '│   ├── get_pad_pipeline()            # Pad'
+- '│   ├── get_unary_pipeline()          # 一元运算'
+- '│   ├── get_repeat_pipeline()         # 重复'
+- '│   ├── get_concat_pipeline()         # 拼接'
+- '│   ├── get_cumsum_pipeline()         # 累积和'
+- '│   ├── get_argmax_pipeline()         # Argmax'
+- '│   ├── get_sum_rows_pipeline()       # 行求和'
+- '│   └── ggml_webgpu_create_pipeline() # 管线创建封装'
+- ├── 辅助函数（622-738行）
+- '│   ├── ggml_webgpu_hash_combine()    # 管线键哈希'
+- '│   ├── ggml_webgpu_flash_attn_pick_vec_ne() # Flash Attention 向量化因子选择'
+- '│   ├── ggml_webgpu_flash_attn_wg_mem_bytes() # Flash Attention 共享内存计算'
+- '│   ├── ggml_webgpu_flash_attn_max_kv_tile()  # 最大 KV tile 大小计算'
+- '│   └── ggml_webgpu_preprocess_flash_attn_*_shader() # 着色器预处理封装'
+- '└── 预处理集成（pre_wgsl::Preprocessor） # 基于 #define/#if/#ifdef 的 WGSL 条件编译'
+- ''
+- ggml/src/ggml-webgpu/pre_wgsl.hpp
+- '├── ExprLexer                          # #if/#elif 表达式词法分析器'
+- '│   └── ExprLexer.next()               # 获取下一个词法标记'
+- '├── ExprParser                         # 递归下降表达式解析器'
+- '│   ├── parse()                        # 入口'
+- '│   ├── parseLogicalOr/And()           # 逻辑运算'
+- '│   ├── parseEquality/Relational()     # 比较运算'
+- '│   ├── parseShift/Add/Mult()          # 算术运算'
+- '│   ├── parseUnary/Primary()           # 一元/原子运算'
+- '│   └── evalMacroExpression()          # 宏表达式求值'
+- '└── Preprocessor 类                   # WGSL 宏展开、条件编译、#include 处理'
+- '    ├── preprocess() / preprocess_file()       # 全功能预处理'
+- '    ├── preprocess_includes() / preprocess_includes_file() # 仅 #include 处理'
+- '    ├── processString()                        # 逐行处理逻辑'
+- '    ├── handleDirective()                      # 指令处理器'
+- '    ├── buildMacros()                          # 宏映射构建'
+- '    ├── loadFile()                             # 文件加载'
+- '    ├── parseMacroDefinitions()                # 宏定义解析'
+- '    ├── processFile() / processIncludeFile()   # 文件级处理'
+- '    └── condActive()                           # 条件活动状态检查'
+- ''
+- ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+- '├── expand_includes()                 # 递归展开 #include 指令'
+- '├── chunk_shader()                    # 超长着色器分块（避免编译器限制）'
+- '├── raw_delim()                       # 选择不冲突的原始字符串定界符'
+- '└── write_shader()                    # 生成 C++ 字符串常量（单块或数组拼接模式）'
+exercises:
+- contents:
+  - 阅读 `ggml/src/ggml-opencl/ggml-opencl.cpp` 第 3376-3692 行（ggml_tensor_extra_cl_q4_0/q4_1/mxfp4/q8_0/q4_K/q6_K
+    的 reset 方法）和第 4280-4391 行（ggml_backend_opencl_buffer_context 的分配函数）。
+  - 回答问题：
+  - '- 为什么每种量化类型（Q4_0、Q4_K、Q6_K）需要独立的 extra 结构体？它们各自管理哪些 OpenCL 内存对象？'
+  - '- `ggml_opencl_alloc_temp_tensor_extra_*` 系列函数使用了什么设计模式来避免内存泄漏？'
+  - '- 在 `ggml_backend_opencl_buffer_set_tensor` 中（第 4518-5060 行），Q4_0 和 Q4_K 的数据转换路径有何不同？'
+  'no': 1
+  title: OpenCL 量化张量管理分析
+- contents:
+  - 阅读 `ggml/src/ggml-vulkan/ggml-vulkan.cpp` 第 14950-15150 行的 `ggml_vk_graph_optimize()`
+    函数。
+  - 回答问题：
+  - '- 该函数使用了什么算法来重排计算图节点？为什么需要保持 `topk_moe_*` 模式的连续性？'
+  - '- `ggml_vk_can_fuse()` 函数（第 14077-14130 行）如何判断 RMS_NORM + MUL 可以融合？需要满足哪些内存布局约束？'
+  - '- 对比 `ggml_vk_fuse_multi_add()`（第 14335-14400 行）和单个 ADD 操作，融合后的性能优势是什么？'
+  - '- 在 `ggml_vk_graph_optimize` 中，为什么要跳过 empty 节点（GGML_OP_RESHAPE/VIEW/PERMUTE）？'
+  'no': 2
+  title: Vulkan 图优化机制深入解析
+- contents:
+  - 阅读 `ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp` 第 887-931 行（get_sum_rows_pipeline、get_row_norm_pipeline）和第
+    2035-2188 行（get_flash_attn_pipeline）。
+  - 回答问题：
+  - '- `ggml_webgpu_shader_lib` 使用什么数据结构来缓存管线？键（key）的构成要素有哪些（以 Flash Attention 为例）？'
+  - '- `pre_wgsl::Preprocessor` 如何通过 `#define` 宏生成不同变体？列举至少 3 个影响 Flash Attention
+    的宏定义。'
+  - '- `ggml_webgpu_flash_attn_max_kv_tile()` 函数（第 719-738 行）如何根据工作组内存限制计算最大 KV tile
+    大小？'
+  - '- 为什么 WebGPU 后端需要 `embed_wgsl.py` 的 `chunk_shader()` 功能？它与 OpenCL 的 `embed_kernel.py`
+    有何异同？'
+  'no': 3
+  title: WebGPU 着色器库缓存机制研究
+- contents:
+  - 对比阅读以下三个文件中的算子支持检查逻辑：
+  - '- OpenCL: `ggml/src/ggml-opencl/ggml-opencl.cpp` 第 3903-4099 行（ggml_opencl_supports_op）'
+  - '- Vulkan: `ggml/src/ggml-vulkan/ggml-vulkan.cpp` 第 15360-15490 行（ggml_backend_vk_device_supports_op）'
+  - '- WebGPU: `ggml/src/ggml-webgpu/ggml-webgpu.cpp` 第 3633-3783 行（ggml_backend_webgpu_device_supports_op）'
+  - 回答问题：
+  - '- 三个后端对 GGML_OP_MUL_MAT 的支持条件有何差异？（考虑数据类型、量化格式、维度限制）'
+  - '- 哪个后端对 Flash Attention 的支持条件最严格？为什么？'
+  - '- WebGPU 的 `ggml_webgpu_supported_qtype()` 函数支持哪些量化类型？与 OpenCL 的 `ggml_opencl_supports_op`
+    中的量化类型列表有何区别？'
+  - '- 如果要添加一个新的激活函数（如 GELU_QUICK），需要在三个后端的哪些位置进行修改？'
+  'no': 4
+  title: 跨后端算子支持性检查对比
+- contents:
+  - 阅读 `ggml/src/ggml-vulkan/ggml-vulkan.cpp` 第 12533-12642 行的 `ggml_vk_preallocate_buffers()`
+    和第 2100-2300 行的缓冲区管理函数。
+  - 回答问题：
+  - '- `prealloc_x`、`prealloc_y`、`prealloc_split_k` 分别用于什么场景？何时会触发重新分配？'
+  - '- `ggml_vk_guess_split_k()` 函数（第 7085-7124 行）如何根据 GPU 核心数和矩阵维度决定 split-k 值？'
+  - '- 对比 `ggml_vk_buffer_write()` 和 `ggml_vk_buffer_write_async()`，后者在什么条件下可以跳过 staging
+    缓冲区？'
+  - '- `ggml_vk_ensure_sync_staging_buffer()` 的作用是什么？它与异步传输有何关系？'
+  'no': 5
+  title: Vulkan 内存管理与预分配策略
+- contents:
+  - 阅读 `ggml/src/ggml-vulkan/ggml-vulkan.cpp` 第 984-1010 行（init_pushconst_fastdiv）和第
+    1146-2001 行（init_pushconst_tensor_offsets 系列模板特化）。
+  - 回答问题：
+  - '- `init_fastdiv_values()` 函数如何计算快速除法所需的魔数（mp）和移位量（L）？其数学原理是什么？'
+  - '- `vk_op_unary_push_constants`、`vk_op_pad_push_constants` 和 `vk_op_sum_rows_push_constants`
+    的 push constants 结构有何异同？'
+  - '- 为什么需要 `init_pushconst_tensor_offsets` 的多个模板特化版本？它们分别处理哪些算子？'
+  - '- 在 `ggml_vk_rms_norm()`（第 11099-11188 行）中，如何利用 push constants 实现算子融合？'
+  'no': 6
+  title: Vulkan Push Constants 与快速除法机制
+learning_targets:
+- 理解 OpenCL、Vulkan、WebGPU 三大通用 GPU 后端的初始化流程与设备管理机制
+- 掌握 Adreno GPU 硬件识别（get_adreno_gpu_gen）与编译器版本检测的实现原理
+- 理解 OpenCL 内核批量加载（load_cl_kernels）与嵌入式源码（GGML_OPENCL_EMBED_KERNELS）的编译机制
+- 掌握量化张量在 OpenCL 设备端的存储结构（ggml_tensor_extra_cl_q4_0/q4_K 等）与内存池管理
+- 理解算子融合（ggml_opencl_can_fuse / ggml_vk_can_fuse）与图优化（graph_optimize / graph_compute）在后端实现逻辑
+- 掌握 Vulkan SPIR-V 着色器的批量生成（process_shaders）与 push constant 设计模式
+- 理解 WebGPU 参数竞技场（webgpu_param_arena）与 WGSL 着色器库（ggml_webgpu_shader_lib）的缓存机制
+- 了解着色器代码嵌入工具（embed_kernel.py / embed_wgsl.py）的源码打包原理
+- 掌握跨平台 GPU 后端针对量化格式（Q4_0/Q4_K/Q6_K/MXFP4）的矩阵乘法优化策略
+- 理解 Flash Attention 在各后端上的共享内存优化、GQA 分组、mask 处理与 split-k 分解策略
+- 对比三大后端在算子支持矩阵（supports_op）上的约束差异与回退策略
+- 掌握 Vulkan 后端中 push constants 的模板化初始化与快速除法（fastdiv）预计算机制
+life_analogy:
+- 想象 llama.cpp 的三大通用 GPU 后端是三条通往不同目的地的**高速公路系统**：
+- '- **OpenCL** = 专为**高通 Adreno 移动 GPU** 优化的**方程式赛道**：'
+- '  - *get_adreno_gpu_gen()* = 入口处的**车型识别员**，根据车牌号（设备名）识别是 A7X、A8X 还是 X1E 代际的超跑'
+- '  - *use_adreno_kernels()* = **赛道准入门槛**，只有尺寸足够大的矩阵（ne0/ne1 ≥ 512/128）才能进入专用车道'
+- '  - *ggml_tensor_extra_cl_q4_k* = **压缩货物的专用集装箱**，将量化后的权重（Q4_K 等）拆分成 ql/qh/s/d 多个隔间存放'
+- '  - *Image1D 缓冲区* = 赛道旁的**高速传送带**，专门优化矩阵转置和数据搬运效率'
+- ''
+- '- **Vulkan** = **多厂商兼容的标准化高速公路网**（支持 AMD/NVIDIA/Intel）：'
+- '  - *get_device_architecture()* = **地质勘探仪**，通过探测岩层（扩展特性）判断是 GCN 老矿区、RDNA 新矿区还是
+  NVIDIA 的 Turing 富矿区'
+- '  - *vulkan-shaders-gen* = **预制件工厂**，提前用 GLSL 图纸（.comp 文件）批量生产 SPIR-V 预制板（数百种着色器变体）'
+- '  - *push constants* = **快递面单**，每次调度管线时只需填写少量关键参数（矩阵维度、步长）即可快速发车'
+- '  - *ggml_vk_can_fuse()* = **拼车算法**，检测 RMS_NORM+MUL、ROPE+VIEW 等可以合并运输的货物，减少车次'
+- '  - *split-k* = **多车道并行**，把大矩阵乘法拆成多段交给不同车道同时处理，最后汇总'
+- ''
+- '- **WebGPU** = **浏览器里的轻量级磁悬浮**：'
+- '  - *webgpu_param_arena* = **共享充电宝站**，通过槽位（slot）机制快速借还 uniform 参数缓冲区，避免频繁申请'
+- '  - *ggml_webgpu_shader_lib* = **自助图书馆**，根据当前操作（Flash Attention、矩阵乘）和硬件配置（subgroup_matrix
+  支持）自动借阅对应的 WGSL 教材'
+- '  - *embed_wgsl.py* = **电子书打包器**，把分散的 WGSL 章节（#include 指令）合并成单本电子书（C++ 字符串常量），并自动分卷（chunk）防止文件过大'
+- '  - *pre_wgsl::Preprocessor* = **自动翻译机**，将 #define/#if 等条件编译指令翻译成最终的 WGSL 代码'
+- ''
+- 三条道路虽然路况（API 规范）不同，但目标一致：把 GGML 计算图这辆「货车」安全高效地从 CPU 娘家送到 GPU 婆家，并确保沿途的量化货物（Q4_0/Q4_K）和计算指令（着色器/内核）都能准确送达。
+'no': 39
+summary:
+- concept: '`ggml_backend_opencl_init()`'
+  desc: OpenCL 后端入口，创建 GPU 计算环境
+- concept: '`get_adreno_gpu_gen()`'
+  desc: 通过设备名识别 Adreno A7X/A8X/X1E 代际
+- concept: '`load_cl_kernels()`'
+  desc: 批量编译 OpenCL 内核，支持嵌入/外置源码双模式
+- concept: '`ggml_tensor_extra_cl_q4_K`'
+  desc: Q4_K 量化张量的设备端容器，管理 q/s/d 多块内存
+- concept: '`ggml_opencl_can_fuse()`'
+  desc: 检测 RMS_NORM+MUL 等可融合算子模式
+- concept: '`use_adreno_kernels()`'
+  desc: 基于编译器版本和张量维度（≥512）决定启用 Adreno 优化
+- concept: '`ggml_backend_vk_init()`'
+  desc: Vulkan 后端初始化，按设备编号创建实例
+- concept: '`get_device_architecture()`'
+  desc: 识别 GPU 架构（AMD GCN/RDNA、Intel Xe2、NVIDIA Turing）
+- concept: '`ggml_vk_create_pipeline_func()`'
+  desc: 组装 Vulkan 计算管线（着色器+布局+push constants）
+- concept: '`ggml_vk_graph_optimize()`'
+  desc: 图拓扑排序优化，保持融合模式连续性
+- concept: '`ggml_vk_fuse_multi_add()`'
+  desc: 合并多个 ADD 操作为单一内核
+- concept: '`process_shaders()`'
+  desc: 批量编译 GLSL 到 SPIR-V，生成数百个着色器变体
+- concept: '`webgpu_param_arena`'
+  desc: WebGPU 参数竞技场，基于槽位的 uniform buffer 复用
+- concept: '`ggml_webgpu_shader_lib`'
+  desc: WGSL 管线缓存库，支持 Flash Attention 多配置键值索引
+- concept: '`embed_wgsl.py`'
+  desc: '递归展开 #include，分块打包 WGSL 为 C++ 字符串'
+- concept: '`ggml_vk_host_malloc()`'
+  desc: 分配 pinned 主机内存，优化 CPU-GPU 传输
+- concept: '`ggml_cl2_init()`'
+  desc: OpenCL 设备初始化，检测 FP16 支持和 OpenCL 版本
+- concept: '`build_program_from_source()`'
+  desc: OpenCL 程序编译封装，失败时输出详细日志
+- concept: '`ggml_vk_matmul()`'
+  desc: Vulkan 矩阵乘法，支持 split-k 和批量处理
+- concept: '`ggml_webgpu_mul_mat()`'
+  desc: WebGPU 矩阵乘，自动选择快速/传统/向量化路径
+- concept: '`ggml_backend_vk_device_supports_op()`'
+  desc: Vulkan 算子支持性检查，验证数据类型和维度约束
+- concept: '`ggml_webgpu_supported_qtype()`'
+  desc: WebGPU 量化类型白名单，覆盖 Q4_0 至 IQ4_XS 系列
+- concept: '`ggml_vk_flash_attn()`'
+  desc: Vulkan Flash Attention 实现，支持 GQA、split-k、mask 优化
+- concept: '`ggml_vk_preallocate_buffers()`'
+  desc: Vulkan 预分配缓冲区管理，优化临时内存复用
+- concept: '`ggml_vk_get_to_fp16()`'
+  desc: 获取到 FP16 的量化转换管线，支持多种量化格式
+- concept: '`ggml_vk_dispatch_pipeline()`'
+  desc: Vulkan 计算管线分发，管理描述符集和推送常量
+- concept: '`pre_wgsl::Preprocessor`'
+  desc: WGSL 预处理器，支持宏展开、条件编译、#include
+- concept: '`init_pushconst_fastdiv()`'
+  desc: Vulkan 快速除法预计算，用于 push constants 中的整数除法优化
+- concept: '`ggml_vk_op_f32()`'
+  desc: Vulkan 通用浮点算子模板函数，统一管线调度入口
+- concept: '`ggml_vk_mul_mat_id_q_f16()`'
+  desc: MoE 专家矩阵乘法，支持量化和非连续内存
+units:
+- codes:
+  - file: ggml/include/ggml-opencl.h
+    line: 12-12
+    method_or_func: ggml_backend_opencl_init()
+  - file: ggml/include/ggml-opencl.h
+    line: 13-13
+    method_or_func: ggml_backend_is_opencl()
+  - file: ggml/include/ggml-opencl.h
+    line: 15-15
+    method_or_func: ggml_backend_opencl_buffer_type()
+  - file: ggml/include/ggml-opencl.h
+    line: 16-16
+    method_or_func: ggml_backend_opencl_host_buffer_type()
+  - file: ggml/include/ggml-opencl.h
+    line: 18-18
+    method_or_func: ggml_backend_opencl_reg()
+  name: OpenCL 公共 API —— 通用 GPU 的"调度台入口"
+  'no': 1
+  points:
+  - '**ggml_backend_opencl_init()** —— 初始化 OpenCL 后端实例，建立 GPU 计算环境'
+  - '- 作为入口点，负责创建和配置 OpenCL 设备上下文'
+  - '- 返回 ggml_backend_t 句柄供上层调用'
+  - '**ggml_backend_is_opencl()** —— 检查后端是否为 OpenCL 类型'
+  - '- 用于后端类型识别和运行时校验'
+  - '**ggml_backend_opencl_buffer_type()** —— 设备端缓冲区类型注册'
+  - '- 为 GPU 显存分配提供类型标识'
+  - '- 支持后续的张量内存管理'
+  - '**ggml_backend_opencl_host_buffer_type()** —— 主机端缓冲区类型'
+  - '- 用于 CPU-GPU 间的数据传输优化'
+  - '- 支持 pinned memory 提升传输效率'
+  - '**ggml_backend_opencl_reg()** —— 后端注册'
+  - '- 注册 OpenCL 后端到全局后端管理器'
+  - '- 使后端可被自动发现和动态加载'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 229-243
+    method_or_func: get_adreno_gpu_gen()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 2503-2780
+    method_or_func: ggml_opencl_probe_devices()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 2780-3000
+    method_or_func: ggml_cl2_init()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 246-268
+    method_or_func: get_adreno_cl_compiler_version()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 154-174
+    method_or_func: parse_cl_version()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 177-190
+    method_or_func: get_opencl_platform_version()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 193-226
+    method_or_func: get_opencl_c_version()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 145-150
+    method_or_func: align_to()
+  name: OpenCL 设备探测与初始化 —— 硬件侦察兵
+  'no': 2
+  points:
+  - '**get_adreno_gpu_gen()** —— Adreno GPU 代数识别'
+  - '- 通过设备名称字符串匹配识别 A7X/A8X/X1E 等 GPU 代际'
+  - '- 为后续内核选择提供硬件特性依据'
+  - '**ggml_cl_compiler_version 类** —— 编译器版本管理'
+  - '- same() / newer_than() / newer_than_or_same() 方法用于版本比较'
+  - '- 支持 E031/DX 不同类型的 Adreno 编译器'
+  - '**ggml_opencl_probe_devices()** —— 平台与设备扫描'
+  - '- 枚举系统可用的 OpenCL 平台和设备'
+  - '- 支持多设备管理和环境变量过滤'
+  - '**ggml_cl2_init()** —— 设备上下文初始化'
+  - '- 验证 FP16 支持、OpenCL 版本兼容性'
+  - '- 创建命令队列并触发内核加载'
+  - '**get_adreno_cl_compiler_version()** —— 编译器版本解析'
+  - '- 从驱动版本字符串提取 E031/DX 编译器版本号'
+  - '- 用于决定是否可用特定 Adreno 优化内核'
+  - '**辅助函数族** —— 版本解析与字符处理'
+  - '- parse_cl_version() / get_opencl_platform_version() / get_opencl_c_version()'
+  - '- align_to() / read_file() / populateProfilingInfo()'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 703-1200
+    method_or_func: load_cl_kernels()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 678-701
+    method_or_func: build_program_from_source()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 665-676
+    method_or_func: read_file()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 924-1679
+    method_or_func: __main__
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 1726-2159
+    method_or_func: __main__
+  name: OpenCL 内核加载与编译 —— 着色器的"装配车间"
+  'no': 3
+  points:
+  - '**load_cl_kernels()** —— 内核批量加载器'
+  - '- 通过 GGML_OPENCL_EMBED_KERNELS 宏切换嵌入/外置源码模式'
+  - '- 编译 Q4_0, Q4_1, Q6_K, MXFP4 等多种量化格式的专用内核'
+  - '- 针对 upsample、timestep_embedding 等可选内核实现容错加载'
+  - '**build_program_from_source()** —— 程序编译封装'
+  - '- 封装 clCreateProgramWithSource 和 clBuildProgram'
+  - '- 编译失败时输出详细日志并终止'
+  - '**内核变体管理** —— 针对不同数据类型（f32/f16）和维度配置创建专用内核对象'
+  - '- 为 Flash Attention 的多种 head_dim 组合创建专用内核'
+  - '- 针对 Adreno 编译器版本跳过不兼容内核'
+  - '**__main__ 全局初始化** —— 所有内核的批量创建'
+  - '- 包含数百个 clCreateKernel 调用覆盖全部算子'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4280-4295
+    method_or_func: ggml_backend_opencl_buffer_context.ggml_opencl_alloc_temp_tensor_extra()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3376-3395
+    method_or_func: ggml_tensor_extra_cl_q4_0::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3619-3638
+    method_or_func: ggml_tensor_extra_cl_q4_K::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3668-3692
+    method_or_func: ggml_tensor_extra_cl_q6_K::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3448-3474
+    method_or_func: ggml_tensor_extra_cl_q4_1::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3521-3546
+    method_or_func: ggml_tensor_extra_cl_mxfp4::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3579-3598
+    method_or_func: ggml_tensor_extra_cl_q8_0::reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4392-4430
+    method_or_func: ggml_backend_opencl_buffer_context.reset()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3020-3070
+    method_or_func: transpose_2d()
+  name: OpenCL 量化张量管理 —— 压缩数据的"仓储系统"
+  'no': 4
+  points:
+  - '**ggml_tensor_extra_cl 结构族** —— 量化数据容器'
+  - '- q4_0, q4_1, q6_K, mxfp4 等结构分别管理量化值、缩放因子、偏移量的设备内存'
+  - '- 实现 reset() 方法防止内存泄漏，释放所有 cl_mem 对象'
+  - '**ggml_tensor_extra_cl_q4_0::reset()** —— Q4_0 专用内存释放'
+  - '- 释放 q（量化值）、d（缩放因子）内存对象及图像对象'
+  - '**ggml_tensor_extra_cl_q4_K::reset()** —— Q4_K 专用内存管理'
+  - '- 释放 q（量化值）、s（块缩放）、d（超块缩放）、dm（最小值）内存对象'
+  - '**ggml_backend_opencl_buffer_context** —— 缓冲区上下文'
+  - '- 管理临时张量额外数据的对象池（temp_tensor_extras_*）'
+  - '- 提供 ggml_opencl_alloc_temp_tensor_extra_* 系列分配函数'
+  - '- 通过 reset() 实现资源复用，避免频繁 new/delete'
+  - '**Adreno 量化张量转置** —— 图像缓冲区优化'
+  - '- 通过 transpose_2d_as_8b/16b/32b 优化矩阵转置'
+  - '- 利用 Image1D 缓冲区提升内存带宽利用率'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3781-3840
+    method_or_func: ggml_opencl_can_fuse()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3847-3896
+    method_or_func: ggml_backend_opencl_graph_compute()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3758-3771
+    method_or_func: sync_with_other_backends()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 3903-4099
+    method_or_func: ggml_opencl_supports_op()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7800-7868
+    method_or_func: ggml_opencl_op_rms_norm_fused()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7870-7938
+    method_or_func: ggml_opencl_op_norm_fused()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7940-7977
+    method_or_func: ggml_opencl_op_group_norm_fused()
+  name: OpenCL 算子执行引擎 —— 计算图的"执行器"
+  'no': 5
+  points:
+  - '**ggml_opencl_can_fuse()** —— 算子融合判断'
+  - '- 检测 RMS_NORM+MUL、NORM+MUL+ADD、GROUP_NORM+MUL+ADD 等可融合模式'
+  - '- 验证张量形状和数据类型兼容性'
+  - '**ggml_backend_opencl_graph_compute()** —— 图计算主循环'
+  - '- 遍历计算图节点，跳过空操作和视图操作'
+  - '- 根据融合条件调用融合内核或单独算子'
+  - '**sync_with_other_backends()** —— 多设备同步'
+  - '- 通过 clEnqueueMarkerWithWaitList + Barrier 协调多个 OpenCL 设备间的执行顺序'
+  - '**ggml_opencl_supports_op()** —— 算子能力检查'
+  - '- 详尽检查每种算子的数据类型、量化格式、维度约束'
+  - '- 涵盖 GET_ROWS/MUL_MAT/FLASH_ATTN_EXT/ROPE/SOFT_MAX 等全部算子'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4461-4490
+    method_or_func: ggml_backend_opencl_buffer_init_tensor()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4518-5060
+    method_or_func: ggml_backend_opencl_buffer_set_tensor()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 5057-5890
+    method_or_func: ggml_backend_opencl_buffer_get_tensor()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4451-4454
+    method_or_func: ggml_backend_opencl_buffer_free_buffer()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 5813-5821
+    method_or_func: ggml_backend_opencl_buffer_clear()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 5823-5826
+    method_or_func: ggml_backend_opencl_buffer_reset()
+  name: OpenCL 缓冲区管理 —— 数据通路的"物流中心"
+  'no': 6
+  points:
+  - '**ggml_backend_opencl_buffer_init_tensor()** —— 张量初始化'
+  - '- 为视图张量复用父张量的 extra 数据'
+  - '- 为新张量从对象池分配 ggml_tensor_extra_cl'
+  - '**ggml_backend_opencl_buffer_set_tensor()** —— 主机→设备数据写入'
+  - '- 对 Q4_0/Q4_K/Q6_K 等量化类型执行专门的数据转换'
+  - '- 调用 convert_block 内核重排量化数据为 Adreno 优化布局'
+  - '- 使用 Image1D 缓冲区优化内存访问'
+  - '**ggml_backend_openclbuffer_get_tensor()** —— 设备→主机数据读取'
+  - '- 执行反转置和数据恢复操作'
+  - '- 支持从量化格式恢复为通用格式'
+  - '**缓冲区生命周期管理** —— free/clear/reset/alloc'
+  - '- ggml_backend_opencl_buffer_free_buffer() 释放所有 cl_mem'
+  - '- ggml_backend_opencl_buffer_clear() 执行缓冲区填充'
+  - '- ggml_backend_opencl_buffer_reset() 回收对象池'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4492-4501
+    method_or_func: use_adreno_kernels()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4503-4507
+    method_or_func: use_adreno_moe_kernels()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 4509-4516
+    method_or_func: enable_adreno_trans_weight()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 10591-11200
+    method_or_func: ggml_cl_mul_mat()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 10001-10300
+    method_or_func: ggml_cl_mul_mat_q4_k_f32_adreno()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 10301-10590
+    method_or_func: ggml_cl_mul_mat_q6_K_f32_adreno()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9341-9457
+    method_or_func: ggml_cl_mul_mat_kq_kqv_adreno()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9549-9675
+    method_or_func: ggml_cl_mul_mat_q8_0_f32_adreno()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9458-9548
+    method_or_func: ggml_cl_mul_mat_q4_1_f32_adreno()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 11800-12350
+    method_or_func: ggml_cl_mul_mat_id()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9237-9271
+    method_or_func: ggml_cl_mul_mat_f16_f32_tiled()
+  name: OpenCL 矩阵运算核心 —— Adreno GPU 的"加速引擎"
+  'no': 7
+  points:
+  - '**ggml_cl_mul_mat()** —— 通用矩阵乘法路由'
+  - '- 根据输入类型（F32/F16/Q4_0/Q4_K 等）选择最优内核'
+  - '- 支持批量矩阵乘法和向量-矩阵乘法'
+  - '- 集成 Adreno 专用内核路径和普通路径'
+  - '**Adreno 专用优化** —— 按量化类型分治'
+  - '- ggml_cl_mul_mat_q4_0_f32_adreno() —— Q4_0 量化矩阵的 GEMV/GEMM'
+  - '- ggml_cl_mul_mat_q4_1_f32_adreno() —— Q4_1 带偏移量化优化'
+  - '- ggml_cl_mul_mat_q4_k_f32_adreno() —— Q4_K 超块量化优化'
+  - '- ggml_cl_mul_mat_q6_K_f32_adreno() —— Q6_K 高位量化优化'
+  - '- ggml_cl_mul_mat_q8_0_f32_adreno() —— Q8_0 8位量化优化'
+  - '- ggml_cl_mul_mat_kq_kqv_adreno() —— KQ/KQV 注意力专用优化'
+  - '**use_adreno_kernels()** 与相关策略函数'
+  - '- 根据编译器版本和张量维度阈值决定是否启用优化路径'
+  - '- enable_adreno_trans_weight() 控制转置优化'
+  - '- use_adreno_moe_kernels() 检测 MoE 场景'
+  - '**通用路径** —— 不依赖 Adreno 优化的标准实现'
+  - '- ggml_cl_mul_mat_f16_f32_tiled() —— 分块平铺 GEMM'
+  - '- ggml_cl_mul_mat_id() —— MoE 专家矩阵乘法'
+- codes:
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 6333-6460
+    method_or_func: ggml_cl_add()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 6841-7060
+    method_or_func: ggml_cl_mul()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7061-7270
+    method_or_func: ggml_cl_div()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7271-7480
+    method_or_func: ggml_cl_sub()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7481-7560
+    method_or_func: ggml_cl_sqr()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7561-7640
+    method_or_func: ggml_cl_sqrt()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7641-7730
+    method_or_func: ggml_cl_mean()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7731-7830
+    method_or_func: ggml_cl_ssm_conv()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7831-7890
+    method_or_func: ggml_cl_gelu()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7891-7950
+    method_or_func: ggml_cl_gelu_erf()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7951-8010
+    method_or_func: ggml_cl_gelu_quick()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7516-7549
+    method_or_func: ggml_cl_silu()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7551-7574
+    method_or_func: ggml_cl_relu()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7576-7608
+    method_or_func: ggml_cl_sigmoid()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8066-8136
+    method_or_func: ggml_cl_tanh()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8138-8155
+    method_or_func: ggml_cl_neg()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8404-8468
+    method_or_func: ggml_cl_exp()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8469-8546
+    method_or_func: ggml_cl_expm1()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8547-8624
+    method_or_func: ggml_cl_softplus()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8625-8676
+    method_or_func: ggml_cl_repeat()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8678-8756
+    method_or_func: ggml_cl_pad()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8758-8831
+    method_or_func: ggml_cl_upscale()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8832-8898
+    method_or_func: ggml_cl_concat()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8899-8936
+    method_or_func: ggml_cl_timestep_embedding()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8938-9038
+    method_or_func: ggml_cl_flash_attn()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9166-9235
+    method_or_func: ggml_cl_flash_attn_ext()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 9272-9340
+    method_or_func: ggml_cl_conv_2d()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7748-7798
+    method_or_func: ggml_cl_rms_norm()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7703-7746
+    method_or_func: ggml_cl_norm()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 7979-8018
+    method_or_func: ggml_cl_group_norm()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 8020-8064
+    method_or_func: ggml_cl_l2_norm()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12681-12796
+    method_or_func: ggml_cl_rope()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12585-12680
+    method_or_func: ggml_cl_soft_max()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 13510-13711
+    method_or_func: ggml_cl_glu()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 6188-6248
+    method_or_func: ggml_cl_get_rows()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 6250-6331
+    method_or_func: ggml_cl_set_rows()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12333-12408
+    method_or_func: ggml_cl_cpy()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12409-12413
+    method_or_func: ggml_cl_dup()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12414-12480
+    method_or_func: ggml_cl_set()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12543-12584
+    method_or_func: ggml_cl_diag()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 12481-12542
+    method_or_func: ggml_cl_diag_mask_inf()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 13041-13109
+    method_or_func: ggml_cl_argsort()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 13241-13308
+    method_or_func: ggml_cl_sum_rows()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 13309-13509
+    method_or_func: ggml_cl_cumsum()
+  - file: ggml/src/ggml-opencl/ggml-opencl.cpp
+    line: 13712-14117
+    method_or_func: ggml_cl_compute_forward()
+  name: OpenCL 算子实现库 —— 神经网络的"工具箱"
+  'no': 8
+  points:
+  - '**基本算术运算** —— 元素级算子'
+  - '- ggml_cl_add / mul / div / sub —— 支持广播和 F16/F32'
+  - '- ggml_cl_sqr / sqrt —— 支持 4 元素向量化'
+  - '**归一化族** —— LayerNorm 变体'
+  - '- ggml_cl_norm —— L2 归一化'
+  - '- ggml_cl_rms_norm —— RMS 归一化（支持 Adreno/Intel 子组大小差异）'
+  - '- ggml_cl_l2_norm —— L2 范数'
+  - '- ggml_cl_group_norm —— 组归一化'
+  - '**激活函数** —— 覆盖主流激活'
+  - '- ggml_cl_gelu / gelu_erf / gelu_quick / silu / relu / sigmoid / tanh'
+  - '- ggml_cl_neg / exp / expm1 / softplus'
+  - '- ggml_cl_glu —— GEGLU/ReGLU/SwiGLU/SwiGLU_OAI/GEGLU_ERF/GEGLU_QUICK'
+  - '**Flash Attention 与位置编码**'
+  - '- ggml_cl_flash_attn / flash_attn_ext —— 支持多 head_dim 组合和 mask/sinks'
+  - '- ggml_cl_rope —— 支持 norm/neox/mrope/vision 四种模式'
+  - '**其他算子**'
+  - '- ggml_cl_get_rows / set_rows —— 行提取与设置（支持量化类型）'
+  - '- ggml_cl_conv_2d —— 2D 卷积（支持 F16/F32 混合）'
+  - '- ggml_cl_ssm_conv —— SSM 卷积'
+  - '- ggml_cl_soft_max —— Softmax（含 mask 和缩放飞线）'
+  - '- ggml_cl_argsort / cumsum / sum_rows / mean —— 归约操作'
+  - '- ggml_cl_cpy / dup / set —— 数据复制'
+  - '- ggml_cl_repeat / pad / upscale / concat / timestep_embedding'
+  - '- ggml_cl_tri / fill / clamp —— 矩阵工具'
+  - '- ggml_cl_diag / diag_mask_inf —— 对角线操作'
+- codes:
+  - file: ggml/src/ggml-opencl/kernels/embed_kernel.py
+    line: 8-20
+    method_or_func: main()
+  name: OpenCL 内核嵌入工具 —— 源码的"打包器"
+  'no': 9
+  points:
+  - '**embed_kernel.py** —— 内核代码嵌入脚本'
+  - '- 将 .cl 文件逐行转换为 C++ 原始字符串字面量'
+  - '- 使用 R"()" 语法避免转义字符问题'
+  - '- 生成可直接编译进二进制文件的 C++ 头文件'
+  - '**工作流程**'
+  - '- 读取 OpenCL 内核源码文件'
+  - '- 逐行包装为 R"(line)" 格式'
+  - '- 输出为 ggml-opencl.cpp 可包含的嵌入头文件'
+- codes:
+  - file: ggml/include/ggml-vulkan.h
+    line: '14'
+    method_or_func: ggml_backend_vk_init()
+  - file: ggml/include/ggml-vulkan.h
+    line: '17'
+    method_or_func: ggml_backend_is_vk()
+  - file: ggml/include/ggml-vulkan.h
+    line: '18'
+    method_or_func: ggml_backend_vk_get_device_count()
+  - file: ggml/include/ggml-vulkan.h
+    line: '19'
+    method_or_func: ggml_backend_vk_get_device_description()
+  - file: ggml/include/ggml-vulkan.h
+    line: '20'
+    method_or_func: ggml_backend_vk_get_device_memory()
+  - file: ggml/include/ggml-vulkan.h
+    line: '22'
+    method_or_func: ggml_backend_vk_buffer_type()
+  - file: ggml/include/ggml-vulkan.h
+    line: 24-25
+    method_or_func: ggml_backend_vk_host_buffer_type()
+  - file: ggml/include/ggml-vulkan.h
+    line: '27'
+    method_or_func: ggml_backend_vk_reg()
+  name: Vulkan 公共 API —— 跨平台 GPU 的"通用插座"
+  'no': 10
+  points:
+  - '**ggml_backend_vk_init()** —— Vulkan 后端初始化'
+  - '- 按设备编号初始化指定 GPU'
+  - '- 返回配置完整的后端实例'
+  - '**ggml_backend_is_vk()** —— 检查后端是否为 Vulkan 类型'
+  - '**设备管理接口**'
+  - '- ggml_backend_vk_get_device_count() —— 枚举可用设备'
+  - '- ggml_backend_vk_get_device_description() —— 获取设备描述'
+  - '- ggml_backend_vk_get_device_memory() —— 查询显存状态'
+  - '**双缓冲区类型**'
+  - '- ggml_backend_vk_buffer_type() —— 设备本地显存'
+  - '- ggml_backend_vk_host_buffer_type() —— 主机 pinned 内存，优化 CPU-GPU 传输'
+  - '**ggml_backend_vk_reg()** —— 后端注册'
+  - '- 注册 Vulkan 后端到全局后端管理器'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 201-292
+    method_or_func: get_device_architecture()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 5653-5869
+    method_or_func: ggml_vk_instance_init()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 4835-4942
+    method_or_func: ggml_vk_get_device()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 2360-2394
+    method_or_func: ggml_vk_find_queue_family_index()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 5358-5652
+    method_or_func: ggml_vk_print_gpu_info()
+  name: Vulkan 设备架构识别 —— GPU 的"DNA 检测"
+  'no': 11
+  points:
+  - '**get_device_architecture()** —— 硬件架构识别'
+  - '- AMD: 检测 GCN、RDNA1/2/3 代际'
+  - '- Intel: 区分 Xe2 与传统架构'
+  - '- NVIDIA: 识别 Turing 前后的 cooperative matrix 支持'
+  - '- 基于扩展特性和 subgroupsize 属性进行精确分类'
+  - '**vk_device_struct** —— 设备能力封装'
+  - '- 存储物理设备属性、队列信息、管线缓存'
+  - '- 记录支持的特性（coopmat、integer_dot_product 等）'
+  - '**ggml_vk_instance_init()** —— Vulkan 实例初始化'
+  - '- 创建 Vulkan 实例并枚举物理设备'
+  - '- 解析设备扩展与特性支持'
+  - '- 检测设备去重与驱动优先级排序'
+  - '**ggml_vk_get_device()** —— 设备上下文初始化'
+  - '- 配置队列族、特性启用、扩展加载'
+  - '- 初始化缓冲区类型、命令池、同步原语'
+  - '**ggml_vk_print_gpu_info()** —— 设备信息打印'
+  - '- 输出设备名称、驱动、架构、特性支持矩阵'
+- codes:
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 900-1600
+    method_or_func: process_shaders()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 1600-2400
+    method_or_func: write_output_files()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 301-361
+    method_or_func: string_to_spv_func()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 398-523
+    method_or_func: matmul_shaders()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 378-396
+    method_or_func: string_to_spv()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 289-299
+    method_or_func: acquire_compile_slot()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 253-264
+    method_or_func: write_binary_file()
+  - file: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+    line: 266-270
+    method_or_func: write_file_if_changed()
+  name: Vulkan 着色器编译系统 —— 从 GLSL 到 SPIR-V 的"翻译流水线"
+  'no': 12
+  points:
+  - '**vulkan-shaders-gen.cpp** —— 着色器生成器主程序'
+  - '- 调用 glslangValidator 或 glslc 编译 GLSL 源码'
+  - '- 使用模板宏（A_TYPE, D_TYPE）生成多类型变体'
+  - '**process_shaders()** —— 批量编译调度'
+  - '- 为矩阵乘法、Flash Attention、归一化等操作生成数百个着色器变体'
+  - '- 支持异步并行编译加速构建'
+  - '**写输出文件** —— write_output_files()'
+  - '- 生成包含 SPIR-V 二进制数据的 C++ 头文件和源文件'
+  - '- 生成索引数组结构用于映射量化类型到对应着色器变体'
+  - '**辅助工具函数** —— 编译基础设施'
+  - '- string_to_spv() —— 调度单个着色器编译'
+  - '- acquire_compile_slot() —— 并发编译槽管理'
+  - '- write_binary_file() / write_file_if_changed() —— 文件写入'
+  - '- is_quantized_type() / is_k_quant() / is_iq_quant() —— 类型判断'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 2486-2592
+    method_or_func: ggml_vk_create_buffer()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6472-6496
+    method_or_func: ggml_vk_host_malloc()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6542-6562
+    method_or_func: ggml_vk_tensor_subbuffer()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6838-6897
+    method_or_func: ggml_vk_buffer_write_2d_async()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6985-7010
+    method_or_func: ggml_vk_buffer_read()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 7023-7048
+    method_or_func: ggml_vk_buffer_copy()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6899-6903
+    method_or_func: ggml_vk_buffer_write_async()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6981-6983
+    method_or_func: ggml_vk_buffer_read_async()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 2603-2628
+    method_or_func: ggml_vk_create_buffer_device()
+  name: Vulkan 内存与缓冲区管理 —— 显存的"仓库管理员"
+  'no': 13
+  points:
+  - '**ggml_vk_create_buffer()** —— 设备内存分配'
+  - '- 支持多种内存属性（DeviceLocal, HostVisible, HostCoherent）'
+  - '- 处理外部内存导入（import）用于零拷贝场景'
+  - '**ggml_vk_host_malloc()** —— Pinned 主机内存'
+  - '- 分配 CPU-GPU 共享的固定内存'
+  - '- 优化数据传输带宽'
+  - '**缓冲区子分配** —— 内存池化'
+  - '- suballocation_block_size 机制减少内存碎片'
+  - '- vk_subbuffer 提供偏移视图支持张量操作'
+  - '**数据传输** —— 主机与设备间数据搬运'
+  - '- ggml_vk_buffer_write_async / read_async —— 异步传输'
+  - '- ggml_vk_buffer_write_2d / read —— 同步传输'
+  - '- ggml_vk_buffer_copy —— 缓冲区复制（支持跨设备）'
+  - '- ggml_vk_buffer_memset_async —— 异步内存填充'
+  - '**vk_memory_logger** —— 内存分配追踪'
+  - '- log_allocation / log_deallocation 记录内存分配/释放'
+  - '- 支持调试内存泄漏'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 2142-2242
+    method_or_func: ggml_vk_create_pipeline_func()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 6614-6652
+    method_or_func: ggml_vk_dispatch_pipeline()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 7172-7222
+    method_or_func: ggml_vk_matmul()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 943-961
+    method_or_func: vk_op_unary_push_constants_init()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 993-997
+    method_or_func: init_pushconst_fastdiv()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 998-1005
+    method_or_func: init_pushconst_fastdiv (specialization for vk_op_unary_push_constants)
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 1006-1010
+    method_or_func: init_pushconst_fastdiv (specialization for vk_op_conv2d_push_constants)
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 1082-1085
+    method_or_func: init_pushconst_fastdiv (specialization for vk_op_sum_rows_push_constants)
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 1146-1158
+    method_or_func: init_pushconst_tensor_offsets
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9615-9621
+    method_or_func: init_pushconst_tensor_offsets<vk_op_unary_push_constants>
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9643-9651
+    method_or_func: init_pushconst_tensor_offsets<vk_op_binary_push_constants>
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9629-9635
+    method_or_func: init_pushconst_tensor_offsets<vk_op_pad_push_constants>
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9636-9642
+    method_or_func: init_pushconst_tensor_offsets<vk_op_im2col_3d_push_constants>
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9652-9659
+    method_or_func: init_pushconst_tensor_offsets<vk_op_upscale_push_constants>
+  name: Vulkan 管线创建与调度 —— GPU 计算的"指挥中心"
+  'no': 14
+  points:
+  - '**ggml_vk_create_pipeline_func()** —— 计算管线组装'
+  - '- 绑定着色器模块、描述符集布局、推送常量范围'
+  - '- 支持特化常量和运行时子组大小配置'
+  - '**ggml_vk_dispatch_pipeline()** —— 工作负载分发'
+  - '- 计算工作组网格（wg0, wg1, wg2）'
+  - '- 更新描述符集并调度计算命令'
+  - '- 处理 push constants 和 error_handling'
+  - '**ggml_vk_matmul()** —— 矩阵乘法执行'
+  - '- 支持 split-k 优化提升大矩阵并行度'
+  - '- 处理批量数据和广播语义'
+  - '**push constants 初始化** —— vk_op_*_push_constants_init'
+  - '- vk_op_unary_push_constants_init —— 一元操作'
+  - '- vk_op_pad_push_constants_init —— 填充'
+  - '- init_pushconst_fastdiv —— 快速除法魔数计算'
+  - '- 模板特化版本处理不同算子（conv2d, sum_rows 等）的偏移'
+  - '**init_pushconst_tensor_offsets** —— 张量偏移初始化'
+  - '- 针对不同 push constant 结构的模板特化'
+  - '- 处理一元、二元、pad、im2col、sum_rows 等类型的偏移对齐'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14077-14130
+    method_or_func: ggml_vk_can_fuse()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14950-15150
+    method_or_func: ggml_vk_graph_optimize()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14335-14400
+    method_or_func: ggml_vk_fuse_multi_add()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14180-14220
+    method_or_func: ggml_vk_can_fuse_topk_moe()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14240-14270
+    method_or_func: ggml_vk_can_fuse_rope_set_rows()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14300-14330
+    method_or_func: ggml_vk_can_fuse_rms_norm_mul_rope()
+  name: Vulkan 算子融合与图优化 —— 性能提升的"炼金术"
+  'no': 15
+  points:
+  - '**ggml_vk_can_fuse()** —— 融合可行性检测'
+  - '- 识别 RMS_NORM+MUL、ROPE+VIEW+SET_ROWS 等可融合模式'
+  - '- 检查数据类型、形状和内存连续性约束'
+  - '**ggml_vk_graph_optimize()** —— 计算图重排'
+  - '- 拓扑排序优化，将融合模式保持连续'
+  - '- 提升 GPU 利用率和减少同步开销'
+  - '**多 Add 融合** —— ggml_vk_fuse_multi_add()'
+  - '- 将多个 ADD 操作合并为单一内核'
+  - '- 减少内核启动开销'
+  - '**TopK MoE 融合** —— ggml_vk_can_fuse_topk_moe()'
+  - '- 检测 MoE 门控模式'
+  - '- 支持 EARLY_SOFTMAX_NORM / SIGMOID_NORM_BIAS 等变体'
+  - '**RoPE 融合** —— ggml_vk_can_fuse_rope_set_rows() / ggml_vk_can_fuse_rms_norm_mul_rope()'
+  - '- 检测 ROPE+VIEW+SET_ROWS 和 RMS_NORM+MUL+ROPE 组合'
+  - '- 验证 push constant 大小限制'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 14130-14500
+    method_or_func: ggml_backend_vk_context.ggml_backend_vk_graph_compute()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 12646-12708
+    method_or_func: ggml_vk_build_graph()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 12533-12642
+    method_or_func: ggml_vk_preallocate_buffers()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15150-15175
+    method_or_func: ggml_backend_vk_event_record()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15175-15190
+    method_or_func: ggml_backend_vk_event_wait()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 9337-9612
+    method_or_func: ggml_vk_op_get_pipeline()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 1427-1697
+    method_or_func: ggml_vk_flash_attn()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 7765-7984
+    method_or_func: ggml_vk_mul_mat_vec_q_f16()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 8195-8337
+    method_or_func: ggml_vk_mul_mat_id_q_f16()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 11266-11328
+    method_or_func: ggml_vk_soft_max()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 11099-11188
+    method_or_func: ggml_vk_rms_norm()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 7429-8200
+    method_or_func: ggml_vk_mul_mat_q_f16()
+  name: Vulkan 计算图执行引擎 —— 推理的"主运行时"
+  'no': 16
+  points:
+  - '**ggml_backend_vk_graph_compute()** —— 图计算主循环'
+  - '- 遍历计算图节点，跳过空操作和不可计算节点'
+  - '- 管理批量提交和事件同步'
+  - '**ggml_vk_build_graph()** —— 图节点构建'
+  - '- 根据操作类型分发到具体算子函数'
+  - '- 处理融合算子的多节点组合'
+  - '**ggml_vk_preallocate_buffers()** —— 预分配缓冲区'
+  - '- 管理 prealloc_x, prealloc_y, prealloc_split_k, prealloc_add_rms_partials'
+  - '- 按需分配并同步'
+  - '**事件与同步** —— 跨设备协调'
+  - '- ggml_backend_vk_event_record() —— 事件记录'
+  - '- ggml_backend_vk_event_wait() —— 事件等待'
+  - '- ggml_vk_sync_buffers() —— 缓冲区同步屏障'
+  - '**算子分发体系** —— ggml_vk_op_get_pipeline()'
+  - '- 根据算子类型和数据类型路由到合适管线'
+  - '- 支持 GET_ROWS/CPY/UNARY/BINARY/MUL_MAT/FLASH_ATTN 等全部算子'
+  - '**关键算子实现**'
+  - '- ggml_vk_mul_mat_vec_q_f16 —— GEMV 优化路径'
+  - '- ggml_vk_mul_mat_id_q_f16 —— MoE 专家乘'
+  - '- ggml_vk_flash_attn —— 支持 GQA、split-k、mask optimize'
+  - '- ggml_vk_soft_max —— 大矩阵分阶段 Softmax'
+  - '- ggml_vk_rms_norm —— RMS 归一化（含融合路径）'
+  - '- ggml_vk_mul_mat_q_f16 —— 量化矩阵乘法核心，处理类型转换和分块'
+- codes:
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15360-15490
+    method_or_func: ggml_backend_vk_device_supports_op()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 16040-16050
+    method_or_func: ggml_backend_vk_device_offload_op()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15205-15220
+    method_or_func: ggml_backend_vk_init()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 16220-16250
+    method_or_func: ggml_backend_vk_reg()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15335-15355
+    method_or_func: ggml_backend_vk_device_get_props()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15330-15335
+    method_or_func: ggml_backend_vk_device_get_type()
+  - file: ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    line: 15305-15310
+    method_or_func: ggml_backend_vk_device_get_name()
+  name: Vulkan 后端接口 —— 与 GGML 框架的"接驳器"
+  'no': 17
+  points:
+  - '**设备属性查询**'
+  - '- ggml_backend_vk_device_get_name/description/memory/type'
+  - '- ggml_backend_vk_get_device_pci_id —— PCI 总线标识'
+  - '**算子支持检查** —— ggml_backend_vk_device_supports_op()'
+  - '- 详细检查每种算子的类型/维度/布局约束'
+  - '- 针对 MUL_MAT 检查量化类型和 CRM 支持'
+  - '**卸载决策** —— ggml_backend_vk_device_offload_op()'
+  - '- 基于批处理大小阈值决定是否将操作卸载到 GPU'
+  - '**后端注册**'
+  - '- ggml_backend_vk_reg() —— 注册 Vulkan 后端'
+  - '- ggml_backend_vk_init() —— 初始化指定设备'
+  - '- ggml_backend_is_vk() —— 类型识别'
+- codes:
+  - file: ggml/include/ggml-webgpu.h
+    line: 9-9
+    method_or_func: ggml_backend_webgpu_init()
+  - file: ggml/include/ggml-webgpu.h
+    line: 11-11
+    method_or_func: ggml_backend_webgpu_reg()
+  name: WebGPU 公共 API —— 浏览器与跨平台的"轻量级通道"
+  'no': 18
+  points:
+  - '**ggml_backend_webgpu_init()** —— WebGPU 后端初始化'
+  - '- 创建 WebGPU 实例和设备'
+  - '- 适用于 Web 和原生应用的最小依赖场景'
+  - '**ggml_backend_webgpu_reg()** —— 后端注册'
+  - '- 提供设备枚举和属性查询接口'
+  - '- 支持动态库加载模式'
+- codes:
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 887-899
+    method_or_func: ggml_webgpu_shader_lib.get_sum_rows_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 900-931
+    method_or_func: ggml_webgpu_shader_lib.get_row_norm_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 932-946
+    method_or_func: ggml_webgpu_shader_lib.get_argmax_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1283-1342
+    method_or_func: ggml_webgpu_shader_lib.get_mul_mat_vec_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1344-1399
+    method_or_func: ggml_webgpu_shader_lib.get_mul_mat_fast_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1401-1441
+    method_or_func: ggml_webgpu_shader_lib.get_mul_mat_legacy_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1443-1455
+    method_or_func: ggml_webgpu_shader_lib.get_mul_mat_id_gather_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1457-1516
+    method_or_func: ggml_webgpu_shader_lib.get_mul_mat_id_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1518-1556
+    method_or_func: ggml_webgpu_shader_lib.get_unary_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2035-2188
+    method_or_func: ggml_webgpu_shader_lib.get_flash_attn_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2188-2216
+    method_or_func: ggml_webgpu_shader_lib.get_flash_attn_blk_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2216-2243
+    method_or_func: ggml_webgpu_shader_lib.get_flash_attn_vec_reduce_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2243-2315
+    method_or_func: ggml_webgpu_shader_lib.get_cpy_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2315-2413
+    method_or_func: ggml_webgpu_shader_lib.get_glu_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2413-2483
+    method_or_func: ggml_webgpu_shader_lib.get_rope_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2483-2565
+    method_or_func: ggml_webgpu_shader_lib.get_soft_max_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 947-983
+    method_or_func: ggml_webgpu_shader_lib.get_set_rows_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1162-1183
+    method_or_func: ggml_webgpu_shader_lib.get_scale_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1060-1087
+    method_or_func: ggml_webgpu_shader_lib.get_argsort_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 1115-1160
+    method_or_func: ggml_webgpu_shader_lib.get_get_rows_pipeline()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 886-886
+    method_or_func: ggml_webgpu_shader_lib.ggml_webgpu_shader_lib()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+    line: 2565-2600
+    method_or_func: ggml_webgpu_shader_lib.ggml_webgpu_create_pipeline()
+  name: WebGPU 着色器库管理 —— WGSL 的"图书馆"
+  'no': 19
+  points:
+  - '**ggml_webgpu_shader_lib 类** —— 管线缓存中心'
+  - '- 为 sum_rows、row_norm、argmax、set_rows 等操作提供管线'
+  - '- 实现 get_*_pipeline() 系列方法，基于键值缓存避免重复编译'
+  - '**管线键设计** —— 多维度配置索引'
+  - '- 根据操作类型、数据类型（f32/f16）、量化格式（q4_0 等）索引'
+  - '- 支持 Flash Attention 的多种配置（head_dim, kv_type, mask 等）'
+  - '**矩阵乘法管线族**'
+  - '- get_mul_mat_vec_pipeline() —— 矩阵向量乘（向量化优化）'
+  - '- get_mul_mat_fast_pipeline() —— 利用 subgroup_matrix 的快速路径'
+  - '- get_mul_mat_legacy_pipeline() —— 传统分块路径'
+  - '- get_mul_mat_id_pipeline() —— MoE 专家乘'
+  - '**Flash Attention 管线族**'
+  - '- get_flash_attn_pipeline() —— 主路径（支持多种 head_dim、mask/sinks）'
+  - '- get_flash_attn_blk_pipeline() —— 分块优化'
+  - '- get_flash_attn_vec_reduce_pipeline() —— 向量归约'
+  - '**辅助计算** —— ggml_webgpu_flash_attn_*'
+  - '- flash_attn_pick_vec_ne() —— 选择向量化因子'
+  - '- flash_attn_wg_mem_bytes() —— 计算共享内存用量'
+  - '- flash_attn_max_kv_tile() —— 计算最大 KV tile'
+  - '**预处理集成** —— pre_wgsl::Preprocessor'
+  - '- 基于宏定义（#define）和条件编译（#if/#ifdef）生成最终 WGSL 代码'
+  - '- 支持 #include 指令实现代码复用'
+  - '**核心管线获取方法**'
+  - '- get_cpy_pipeline() —— 数据拷贝（f32/f16/i32 组合）'
+  - '- get_glu_pipeline() —— GLU 激活（含分裂模式）'
+  - '- get_rope_pipeline() —— RoPE 位置编码'
+  - '- get_soft_max_pipeline() —— Softmax（含 mask/sink）'
+  - '- get_argsort_pipeline() —— Argsort'
+  - '- get_set_rows_pipeline() —— SetRows'
+  - '- get_scale_pipeline() —— Scale'
+- codes:
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 178-184
+    method_or_func: webgpu_param_arena.alloc_slot()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 170-176
+    method_or_func: webgpu_param_arena.init()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: '186'
+    method_or_func: webgpu_param_arena.reset()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 506-515
+    method_or_func: ggml_webgpu_create_buffer()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 821-823
+    method_or_func: ggml_webgpu_tensor_binding_size()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 703-716
+    method_or_func: ggml_backend_webgpu_build()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 628-701
+    method_or_func: ggml_backend_webgpu_build_multi()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 718-746
+    method_or_func: ggml_backend_webgpu_buffer_memset()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 806-809
+    method_or_func: ggml_webgpu_tensor_buf()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 802-804
+    method_or_func: ggml_webgpu_tensor_offset()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 811-814
+    method_or_func: ggml_webgpu_tensor_misalignment()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 816-819
+    method_or_func: ggml_webgpu_tensor_align_offset()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 826-829
+    method_or_func: ggml_webgpu_tensor_equal()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 832-836
+    method_or_func: ggml_webgpu_tensor_overlap()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 840-847
+    method_or_func: ggml_webgpu_detect_binary_overlap()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3482-3498
+    method_or_func: ggml_backend_webgpu_backend_init()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3457-3480
+    method_or_func: initialize_webgpu_context()
+  name: WebGPU 参数与缓冲区管理 —— 数据通路的"交通管制"
+  'no': 20
+  points:
+  - '**webgpu_param_arena** —— 参数竞技场'
+  - '- 基于槽位的 uniform buffer 分配器'
+  - '- 支持批量编码时的快速参数重置和复用'
+  - '**ggml_webgpu_create_buffer()** —— 缓冲区创建'
+  - '- 封装 WebGPU Buffer 对象创建'
+  - '- 支持存储、Uniform、CopyDst 等多种用途'
+  - '**张量绑定策略**'
+  - '- ggml_webgpu_tensor_buf() —— 获取张量底层缓冲区'
+  - '- ggml_webgpu_tensor_binding_size() —— 计算满足对齐要求的绑定大小'
+  - '- 处理非对齐访问的偏移调整'
+  - '- ggml_webgpu_tensor_offset() —— 基础偏移计算（考虑视图）'
+  - '- ggml_webgpu_tensor_misalignment() —— 错位量计算'
+  - '- ggml_webgpu_tensor_align_offset() —— 对齐偏移量'
+  - '**张量关系检测**'
+  - '- ggml_webgpu_tensor_equal() —— 完全相等判断（同缓冲区同偏移）'
+  - '- ggml_webgpu_tensor_overlap() —— 缓冲区重叠检测'
+  - '- ggml_webgpu_detect_binary_overlap() —— 二元操作标志检测'
+  - '**算子构建与提交**'
+  - '- ggml_backend_webgpu_build() / build_multi() —— 封装编码与提交流程'
+  - '- ggml_backend_webgpu_buffer_memset() —— 缓冲区填充'
+  - '**初始化与配置**'
+  - '- ggml_backend_webgpu_backend_init() —— 后端初始化'
+  - '- initialize_webgpu_context() —— WebGPU 上下文初始化'
+- codes:
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2833-2865
+    method_or_func: ggml_backend_webgpu_graph_compute()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2744-2831
+    method_or_func: ggml_webgpu_encode_node()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1114-1203
+    method_or_func: ggml_webgpu_mul_mat()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1205-1315
+    method_or_func: ggml_webgpu_mul_mat_id()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1552-1775
+    method_or_func: ggml_webgpu_flash_attn()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2418-2512
+    method_or_func: ggml_webgpu_soft_max()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2312-2372
+    method_or_func: ggml_webgpu_glu()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2214-2310
+    method_or_func: ggml_webgpu_rope()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 2536-2687
+    method_or_func: ggml_webgpu_argsort()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1852-1940
+    method_or_func: ggml_webgpu_binary_op()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1780-1850
+    method_or_func: ggml_webgpu_unary_op()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1942-1990
+    method_or_func: ggml_webgpu_concat()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 1992-2030
+    method_or_func: ggml_webgpu_repeat()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 849-877
+    method_or_func: ggml_webgpu_cpy()
+  name: WebGPU 计算图执行 —— 浏览器里的"推理引擎"
+  'no': 21
+  points:
+  - '**ggml_backend_webgpu_graph_compute()** —— 图计算入口'
+  - '- 遍历计算图节点，编码为 WebGPU 命令'
+  - '- 批量提交命令缓冲区减少 CPU 开销'
+  - '**ggml_webgpu_encode_node()** —— 节点分发器'
+  - '- 根据操作类型路由到 unary、binary、matmul 等具体实现'
+  - '- 处理 Flash Attention 的复杂多阶段执行'
+  - '**关键算子实现**'
+  - '- ggml_webgpu_mul_mat() —— 根据类型和形状选择快速/传统/向量路径'
+  - '- ggml_webgpu_mul_mat_id() —— MoE 两阶段（gather+main）矩阵乘'
+  - '- ggml_webgpu_flash_attn() —— 支持 GQA、mask、sinks、logit_softcap'
+  - '- ggml_webgpu_soft_max() —— 含 mask 和 sink 支持'
+  - '- ggml_webgpu_glu() —— 支持 GEGLU/ReGLU/SwiGLU 等变体'
+  - '- ggml_webgpu_rope() —— 旋转位置编码'
+  - '- ggml_webgpu_argsort() —— 多阶段归并排序'
+  - '- ggml_webgpu_binary_op() —— 二元运算（检测重叠）'
+  - '- ggml_webgpu_unary_op() —— 一元运算（XIELU、GELU 等）'
+  - '**性能剖析支持**'
+  - '- 集成 timestamp query 测量 GPU 时间'
+  - '- 支持 CPU 端时间统计和瓶颈分析'
+- codes:
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3633-3783
+    method_or_func: ggml_backend_webgpu_device_supports_op()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3608-3631
+    method_or_func: ggml_webgpu_supported_qtype()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3079-3108
+    method_or_func: ggml_backend_webgpu_buffer_set_tensor()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3364-3455
+    method_or_func: create_webgpu_device()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3839-3870
+    method_or_func: ggml_backend_webgpu_reg()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3873-3876
+    method_or_func: ggml_backend_webgpu_init()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3300-3303
+    method_or_func: ggml_backend_webgpu_device_get_name()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3305-3308
+    method_or_func: ggml_backend_webgpu_device_get_description()
+  - file: ggml/src/ggml-webgpu/ggml-webgpu.cpp
+    line: 3323-3327
+    method_or_func: ggml_backend_webgpu_device_get_type()
+  name: WebGPU 后端接口与算子支持 —— 能力的"边界定义"
+  'no': 22
+  points:
+  - '**ggml_backend_webgpu_device_supports_op()** —— 算子支持检查'
+  - '- 详细检查每种算子的类型/维度约束'
+  - '- 对 MUL_MAT 检查量化类型白名单'
+  - '- 对 FLASH_ATTN 检查 subgroup_matrix 支持和共享内存限制'
+  - '**ggml_webgpu_supported_qtype()** —— 量化类型白名单'
+  - '- 支持 Q4_0 到 IQ4_XS 的全部量化格式'
+  - '- 覆盖传统和 K-quant、I-quant 系列'
+  - '**缓冲区接口**'
+  - '- ggml_backend_webgpu_buffer_set_tensor / get_tensor —— 主机-设备传输'
+  - '- ggml_backend_webgpu_buffer_memset_tensor —— 张量填充'
+  - '- ggml_backend_webgpu_buffer_clear —— 缓冲区清零'
+  - '**设备属性查询**'
+  - '- ggml_backend_webgpu_device_get_name/description/memory/type'
+  - '- 返回设备类型为 GPU 并查询 WebGPU 限制'
+  - '**后端注册与初始化**'
+  - '- ggml_backend_webgpu_reg() —— 创建 WebGPU 实例'
+  - '- create_webgpu_device() —— 适配器/设备创建（含 Dawn/Emscripten 配置）'
+  - '- ggml_backend_webgpu_init() —— 后端初始化入口'
+- codes:
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 550-558
+    method_or_func: Preprocessor.preprocess()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 709-824
+    method_or_func: Preprocessor.handleDirective()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 677-704
+    method_or_func: Preprocessor.processString()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 652-663
+    method_or_func: Preprocessor.processFile()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 631-639
+    method_or_func: Preprocessor.loadFile()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 605-626
+    method_or_func: Preprocessor.buildMacros()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 588-600
+    method_or_func: Preprocessor.parseMacroDefinitions()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 641-646
+    method_or_func: Preprocessor.condActive()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 540-548
+    method_or_func: Preprocessor.preprocess_file()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 569-576
+    method_or_func: Preprocessor.preprocess_includes()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 275-275
+    method_or_func: ExprParser.parse()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 297-303
+    method_or_func: ExprParser.parseLogicalOr()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 305-311
+    method_or_func: ExprParser.parseLogicalAnd()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 452-460
+    method_or_func: ExprParser.evalMacroExpression()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 140-172
+    method_or_func: ExprLexer.next()
+  - file: ggml/src/ggml-webgpu/pre_wgsl.hpp
+    line: 17-111
+    method_or_func: __main__
+  name: WGSL 预处理器 —— 着色器代码的"翻译官"
+  'no': 23
+  points:
+  - '**pre_wgsl::Preprocessor** —— WGSL 预处理器核心'
+  - '- 实现 #define 宏定义与展开'
+  - '- 支持 #if/#ifdef/#ifndef/#elif/#else/#endif 条件编译'
+  - '- 支持 #include 指令递归展开'
+  - '**ExprLexer + ExprParser** —— 表达式解析引擎'
+  - '- 词法分析器支持标识符、数字、运算符、括号识别'
+  - '- 递归下降解析器支持逻辑/关系/算术/位运算'
+  - '- 支持 defined() 函数检查宏是否定义'
+  - '- evalMacroExpression() 递归评估宏表达式'
+  - '**宏处理**'
+  - '- parseMacroDefinitions() —— 解析 NAME=VALUE 格式宏定义'
+  - '- buildMacros() —— 构建宏映射表'
+  - '- expandMacrosRecursive() —— 递归宏展开'
+  - '**文件处理**'
+  - '- preprocess() —— 处理内存字符串'
+  - '- preprocess_file() —— 处理文件'
+  - '- preprocess_includes() —— 仅处理 #include'
+  - '- processString() —— 核心逐行处理逻辑'
+  - '- handleDirective() —— 指令处理器（#define/#if/#include 等）'
+- codes:
+  - file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+    line: 33-49
+    method_or_func: write_shader()
+  - file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+    line: 4-18
+    method_or_func: expand_includes()
+  - file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+    line: 21-23
+    method_or_func: chunk_shader()
+  - file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+    line: 26-30
+    method_or_func: raw_delim()
+  - file: ggml/src/ggml-webgpu/wgsl-shaders/embed_wgsl.py
+    line: 51-67
+    method_or_func: main()
+  name: WGSL 嵌入工具 —— 着色器的"装配工"
+  'no': 24
+  points:
+  - '**embed_wgsl.py** —— WGSL 文件嵌入脚本'
+  - '- 递归处理 #include 指令展开嵌套引用'
+  - '- 将 WGSL 代码转换为 C++ 字符串常量'
+  - '**chunk_shader()** —— 大文件分块'
+  - '- 按最大长度分割超长着色器代码'
+  - '- 生成数组和拼接函数避免编译器限制'
+  - '**raw_delim()** —— 语法安全包装'
+  - '- 自动选择不冲突的原始字符串定界符'
+  - '- 确保生成的 C++ 代码可编译'

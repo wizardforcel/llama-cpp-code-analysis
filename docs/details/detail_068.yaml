@@ -1,0 +1,312 @@
+code_map:
+- tools/cli/cli.cpp
+- ├── class cli_context (行 66-241)
+- '│   ├── cli_context()                    # 构造初始化采样/推理参数'
+- '│   ├── generate_completion()            # 异步流式生成与 SSE 响应处理'
+- '│   ├── load_input_file()                # 文本/媒体文件加载与标记'
+- '│   └── format_chat()                    # Jinja 聊天模板格式化'
+- ├── static functions
+- '│   ├── should_stop()                    # 中断标志检查 (行 34-36)'
+- '│   ├── signal_handler()                 # SIGINT/SIGTERM 处理 (行 39-48)'
+- '│   └── auto_completion_callback()       # 命令与路径自动补全 (行 253-341)'
+- '└── main()                               # 主循环与 REPL 交互 (行 349-600)'
+- ''
+- tools/completion/completion.cpp
+- '├── global variables (__main__)          # 全局状态指针与标志 (行 1-75)'
+- ├── static functions
+- '│   ├── print_usage()                    # 使用说明 (行 38-44)'
+- '│   ├── file_exists()/file_is_empty()    # 文件状态检查 (行 46-56)'
+- '│   └── sigint_handler()                 # Ctrl+C 处理 (行 60-75)'
+- '└── main()                               # 核心生成循环 (行 78-1000, 覆盖 78-690, 876-1000)'
+- '    ├── 会话管理                         # llama_state_load/save_file'
+- '    ├── 前缀复用                         # session_tokens 与 embd_inp 匹配'
+- '    ├── Self-Extend 分组注意力           # grp_attn_n/w 参数处理'
+- '    ├── 上下文移位                       # llama_memory_seq_rm/add/div'
+- '    ├── 反提示词检测                     # antiprompt/antiprompt_token'
+- '    └── 线程池管理                       # ggml_threadpool 主/批分离'
+- ''
+- tools/tokenize/tokenize.cpp
+- ├── static functions
+- '│   ├── print_usage_information()        # 帮助信息 (行 20-39)'
+- '│   ├── llama_log_callback_null()        # 日志静默 (行 41-45)'
+- '│   ├── read_prompt_from_file()          # 二进制安全文件读取 (行 47-65)'
+- '│   ├── ingest_args()                    # Windows 宽字符转 UTF-8 (行 79-117)'
+- '│   └── write_utf8_cstr_to_stdout()      # 跨平台 UTF-8 输出 (行 129-178)'
+- '└── main()                               # 分词主流程 (行 180-366)'
+- '    ├── vocab_only 模型加载'
+- '    ├── 多源输入处理 (prompt/file/stdin)'
+- '    ├── 转义与特殊 token 控制'
+- '    └── 双模式输出 (ID 数组/文本片段)'
+- ''
+- tools/mtmd/mtmd-cli.cpp
+- ├── class mtmd_cli_context (行 74-146)
+- '│   ├── mtmd_cli_context()               # 多模态上下文构造'
+- '│   ├── ~mtmd_cli_context()              # 资源释放'
+- '│   ├── init_vision_context()            # 视觉编码器加载 (行 111-128)'
+- '│   ├── check_antiprompt()               # 反提示词匹配'
+- '│   └── load_media()                     # 图像/音频加载'
+- ├── static functions
+- '│   ├── show_additional_info()           # 使用说明 (行 27-36)'
+- '│   ├── sigint_handler()                 # 中断处理 (行 40-50)'
+- '│   ├── generate_response()              # 生成循环 (行 148-184)'
+- '│   ├── chat_add_and_format()            # 消息格式化 (行 186-194)'
+- '│   └── eval_message()                   # 多模态评估 (行 196-229)'
+- '└── main()                               # 双模式入口 (行 231-354)'
+- '    ├── 单轮模式 (单 prompt + 多图)'
+- '    └── 聊天模式 (交互式 /image /audio 命令)'
+exercises:
+- contents:
+  - 阅读 `tools/cli/cli.cpp` 与 `tools/mtmd/mtmd-cli.cpp` 中的类与代码片段，理解为什么 `cli_context`
+    和 `mtmd_cli_context` 的方法会「无法被检测」但实际上是存在的：
+  - 1. 观察 `cli_context` 的定义：它是如何封装的？它的数据成员（defaults, input_files 等）是如何被初始化的？
+  - 2. 搜索关键方法的应用点，例如 `generate_completion(`, `load_input_file(`, `init_vision_context(`，看看它们在哪些地方被调用，由谁调用（是使用
+    `.` 还是 `->`）？
+  - 3. 理解 C++ 中，当你看到 `ptr->method()` 时，如何在头文件中找到对应的 `ClassName::methodName()` 定义？
+  - 思考问题：
+  - '- 为什么这些方法的「mapper」（对应的核心功能）是一样的，但「名称」的匹配规则需要优化？'
+  - '- 如果给你一个不认识的 C++ 项目，你如何快速定位一个「在这行代码里调用了 `generate_xxx()` 」对应的类的名字？'
+  'no': 1
+  title: 类方法识别：从智能指针到声明
+- contents:
+  - 分析 `tools/cli/cli.cpp` 中的 `cli_context::generate_completion()`（行 100-205），理解其异步交互与可视化机制：
+  - 1. `server_response_reader` 是如何工作的？`rd.next()` 返回的是什么？
+  - 2. `dynamic_cast` 在这段代码中的作用是什么？为什么需要分别处理 `server_task_result_cmpl_partial` 和 `server_task_result_cmpl_final`？
+  - 3. 观察 `console::set_display(DISPLAY_TYPE_REASONING)` 与 `console::log`，理解「推理过程」与「最终答案」是如何在终端上区分显示的。
+  - 4. `should_stop()` 在这个循环中是怎么起作用的？与 `mtmd-cli` 中的 `g_is_generating` 有什么设计上的相通之处？
+  - 回答问题：
+  - '- 为什么要区分 ``（推理内容）与常规内容？在哪些类型的模型中，移除推理内容的显示会变得不可用？'
+  - '- `verbose_prompt` 变量在生成前后是怎么改变控制台输出的？这对用户调试有什么价值？'
+  'no': 2
+  title: llama-cli 的流式生成可视化
+- contents:
+  - 分析 `tools/mtmd/mtmd-cli.cpp` 中 `mtmd_cli_context` 的完整生命周期以及媒体 bucked 与 KV cache
+    的关系：
+  - 1. 构造函数（行 74-104）中初始化了哪些组件？的顺序为什么重要？（例如：先初始化 model/ctx 再初始化 vision）
+  - 2. 析构函数（行 106-109）负责释放什么？为什么需要显式调用 `llama_batch_free` 和 `common_sampler_free`？
+  - 3. `init_vision_context()` 中 `mparams` 的字段分别代表什么意义？（例如 `image_min_tokens`, `flash_attn_type`,
+    `mmproj_use_gpu`）
+  - 4. `load_media()` 与 `check_antiprompt()` 在多模态流中分别扮演什么角色？它们如何与 `generate_response()`
+    中的停止条件协同工作？
+  - 5. `eval_message()` 中通过 `mtmd_tokenize` 和 `mtmd_helper_eval_chunks` 的处理过程是什么样的？为什么需要
+    `chunks` 而不是直接处理？
+  'no': 3
+  title: llama-mtmd-cli 的多模态资源管理
+- contents:
+  - 对比三个工具的输入处理逻辑，理解通用性与特异性的设计选择：
+  - 1. `llama-cli`：分析 `main()` 中如何处理命令行参数（`params.prompt`）与交互输入？两者如何结合？`console::readline`
+    与 `params.multiline_input` 的关系是什么？
+  - 2. `llama-completion`：`main()` 中的多行输入控制逻辑？`is_interacting` 与 `waiting_for_first_input`
+    的状态机如何流转？`input_prefix`/`input_suffix` 在什么阶段被应用？
+  - 3. `llama-tokenize`：为什么支持三种互斥输入（--prompt, --file, --stdin）？`read_prompt_from_file`
+    以二进制模式打开文件有什么好处？`ingest_args` 在 Windows 上解决了什么核心问题？
+  - 思考问题：
+  - '- 如果你要为 llama.cpp 设计一个全新的「批量处理工具」，你会如何设计它的输入接口？命令行参数？
+
+    - 在什么场景下，llama-completion 的使用比 llama-cli 更合适？它有哪些功能是 llama-cli 没有的？'
+  'no': 4
+  title: 三种 CLI 工具的输入处理对比
+learning_targets:
+- 掌握基于智能指针的 C++ 类方法识别方法，理解通过 `->` 操作符调用的类成员函数
+- 深入理解 llama-cli 中 cli_context 的完整实现，包括构造、流式生成、文件输入和聊天模板格式化
+- 剖析 llama-mtmd-cli 中 mtmd_cli_context 的生命周期管理、视觉上下文初始化与媒体加载机制
+- 对比分析不同工具中命令行交互组件的设计模式与实现差异
+life_analogy:
+- 想象你正在学习一个复杂的「智能家居系统」的说明书。有时候，说明书上写的功能名称和它内部真正的「零件名」看起来不一样，但功能是一样的。
+- '- **cli_context** = **空调遥控器的内部芯片**：你按下「制冷」按钮（方法调用），芯片（类）就知道去启动压缩机。虽然按钮上没写「压缩机启动」，但功能是一样的。'
+- '- **mtmd_cli_context** = **智能电视的「大脑」**：负责协调屏幕（视觉）、音响（音频）和网络（文本输入）。构造它就像给电视装上大脑，能处理图像和声音，理解你的语音指令。'
+- 在这个例子里，说明书（细纲）在描述「智能遥控系统」（功能），而我们手里拿的是电路板（具体代码）。我们需要把电路板上的每个电阻、电容、芯片（类方法）都识别出来，并知道它们提供了「智能遥控」里的哪些功能。
+'no': 67
+summary:
+- concept: cli_context
+  desc: llama-cli 的中央控制器：封装 server_context，管理消息历史、输入文件，提供聊天与会话管理接口
+- concept: generate_completion()
+  desc: 异步流式生成的核心，server_response_reader 逐 token 输出，集成推理可视化和 should_stop 中断
+- concept: load_input_file()
+  desc: 统一文件输入处理：文本读取为字符串，媒体以 raw_buffer 存储并标记，支持命令行与交互命令双路径
+- concept: mtmd_cli_context
+  desc: 多模态运行时核心：集成 LLM 上下文、视觉/音频编码器、聊天模板，管理位图与反提示词令牌
+- concept: init_vision_context()
+  desc: 视觉模型加载入口：配置 GPU、FlashAttention、图像 token 限制，调用 mtmd_init_from_file 完成加载
+- concept: generate_response()
+  desc: 多模态生成主循环：从采样器到解码，再到 EOG/反提示词/中断检测的完整流程
+- concept: session_tokens
+  desc: llama-completion 的会话状态载体，实现上下文前缀复用与 KV 缓存持久化
+- concept: vocab_only
+  desc: llama-tokenize 的轻量加载模式，仅加载词汇表不加载权重，实现秒级分词响应
+units:
+- codes:
+  - file: tools/cli/cli.cpp
+    line: 66-99
+    method_or_func: cli_context::cli_context()
+  - file: tools/cli/cli.cpp
+    line: 100-205
+    method_or_func: cli_context::generate_completion()
+  - file: tools/cli/cli.cpp
+    line: 207-223
+    method_or_func: cli_context::load_input_file()
+  - file: tools/cli/cli.cpp
+    line: 225-241
+    method_or_func: cli_context::format_chat()
+  - file: tools/cli/cli.cpp
+    line: 34-36
+    method_or_func: should_stop()
+  - file: tools/cli/cli.cpp
+    line: 39-48
+    method_or_func: signal_handler()
+  - file: tools/cli/cli.cpp
+    line: 253-341
+    method_or_func: auto_completion_callback()
+  - file: tools/cli/cli.cpp
+    line: 349-600
+    method_or_func: main()
+  name: llama-cli 交互式聊天核心 —— cli_context 的深度解析
+  'no': 1
+  points:
+  - '**cli_context 构造函数：初始化聊天会话的中央控制器**'
+  - '- 从 common_params 加载采样参数、推理参数和用户设置，构建 defaults 对象'
+  - '- 配置流式模式（stream=true），确保实时响应'
+  - '- 设置推理预算（reasoning_budget）和对应的消息模板'
+  - '**流式响应处理：generate_completion() 的异步交互机制**'
+  - '- 使用 server_response_reader 异步获取推理结果，实现非阻塞交互'
+  - '- 动态类型识别（dynamic_cast）区分部分结果（partial）和最终结果（final）'
+  - '- 分离处理常规内容（content_delta）与推理内容（reasoning_content_delta），支持思维链可视化'
+  - '- 集成 should_stop 标志，允许优雅中断生成'
+  - '**文件与媒体输入处理**'
+  - '- load_input_file() 区分文本与媒体文件：文本文件直接读取内容，媒体文件以 raw_buffer 存储并使用 mtmd_default_marker()
+    标记'
+  - '- 支持命令行参数和交互式命令两种输入路径'
+  - '**聊天模板格式化**'
+  - '- format_chat() 将内部消息列表转换为模型可识别的 Jinja 模板格式'
+  - '- 支持 OpenAI 兼容格式（oaicompat），适配多种前端'
+  - '- 控制 enable_thinking 参数，适配支持思维链的模型'
+  - '**命令行交互与自动补全**'
+  - '- auto_completion_callback() 提供命令（/exit, /regen）与文件路径的智能补全'
+  - '- 处理跨平台路径（Unix 的 ~ vs Windows 的 C:\）'
+  - '- 实现 glob 模式的文件匹配与路径不存在时的回退策略'
+- codes:
+  - file: tools/completion/completion.cpp
+    line: 1-75
+    method_or_func: __main__
+  - file: tools/completion/completion.cpp
+    line: 38-44
+    method_or_func: print_usage()
+  - file: tools/completion/completion.cpp
+    line: 46-49
+    method_or_func: file_exists()
+  - file: tools/completion/completion.cpp
+    line: 51-56
+    method_or_func: file_is_empty()
+  - file: tools/completion/completion.cpp
+    line: 60-75
+    method_or_func: sigint_handler()
+  - file: tools/completion/completion.cpp
+    line: 78-690
+    method_or_func: main()
+  - file: tools/completion/completion.cpp
+    line: 876-1000
+    method_or_func: main()
+  name: llama-completion 全局状态管理 —— 经典生成模式的基石
+  'no': 2
+  points:
+  - '**全局指针与静态变量**'
+  - '- 定义模型（g_model）、上下文（g_ctx）、采样器（g_smpl）等全局可用指针'
+  - '- 管理会话状态（session_tokens）与生成缓冲区（g_output_ss）'
+  - '**辅助函数与使用说明**'
+  - '- print_usage() 提供标准的命令行使用示例'
+  - '- file_exists() 与 file_is_empty() 检查会话文件状态'
+  - '- sigint_handler() 处理 Ctrl+C：交互模式下中断当前生成，非交互模式下保存性能统计并退出'
+  - '**main() 主循环核心逻辑**'
+  - '- 从参数初始化线程池（CPU 后端检测与匹配）'
+  - '- 加载模型、应用 LoRA 适配器、初始化聊天模板'
+  - '- 处理会话文件加载、保存与前缀匹配（session_tokens 复用 KV 缓存）'
+  - '- 实现上下文移位（context shifting）与 Self-Extend（分组注意力）两种长上下文策略'
+  - '- 检测反提示词（antiprompt）实现自动停止与交互恢复'
+  - '- 处理编码器模型（encoder-decoder）的特殊输入流程'
+- codes:
+  - file: tools/tokenize/tokenize.cpp
+    line: 20-39
+    method_or_func: print_usage_information()
+  - file: tools/tokenize/tokenize.cpp
+    line: 41-45
+    method_or_func: llama_log_callback_null()
+  - file: tools/tokenize/tokenize.cpp
+    line: 47-65
+    method_or_func: read_prompt_from_file()
+  - file: tools/tokenize/tokenize.cpp
+    line: 79-117
+    method_or_func: ingest_args()
+  - file: tools/tokenize/tokenize.cpp
+    line: 129-178
+    method_or_func: write_utf8_cstr_to_stdout()
+  - file: tools/tokenize/tokenize.cpp
+    line: 180-366
+    method_or_func: main()
+  name: llama-tokenize 独立分词工具 —— 文本的原子化解剖师
+  'no': 3
+  points:
+  - '**用户界面与帮助**'
+  - '- print_usage_information() 提供完整的命令行参数说明'
+  - '- llama_log_callback_null() 允许静默日志，避免干扰分词结果输出'
+  - '**多源输入处理**'
+  - '- read_prompt_from_file() 以二进制安全方式从文件读取提示词'
+  - '- ingest_args() 处理 Windows 宽字符命令行参数，转换为 UTF-8 编码'
+  - '- 支持 --prompt、--file、--stdin 三种互斥输入源'
+  - '**跨平台文本处理**'
+  - '- write_utf8_cstr_to_stdout() 处理 Windows 控制台 UTF-8 输出，检测非法 UTF-8 序列并回退为十六进制表示'
+  - '*** 仅在 Windows 需要控制台特殊处理；Unix 直接输出即可'
+  - '**主流程**'
+  - '- 加载模型（vocab_only 模式，仅加载词汇表，不加载权重）'
+  - '- 处理转义字符（escape）与特殊 token（parse_special）'
+  - '- 输出 token ID 与对应的文本片段，或仅输出 ID 数组（Python 可解析格式）'
+- codes:
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 74-104
+    method_or_func: mtmd_cli_context::mtmd_cli_context()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 106-109
+    method_or_func: mtmd_cli_context::~mtmd_cli_context()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 111-128
+    method_or_func: mtmd_cli_context::init_vision_context()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 130-137
+    method_or_func: mtmd_cli_context::check_antiprompt()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 139-146
+    method_or_func: mtmd_cli_context::load_media()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 27-36
+    method_or_func: show_additional_info()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 40-50
+    method_or_func: sigint_handler()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 148-184
+    method_or_func: generate_response()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 186-194
+    method_or_func: chat_add_and_format()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 196-229
+    method_or_func: eval_message()
+  - file: tools/mtmd/mtmd-cli.cpp
+    line: 231-354
+    method_or_func: __main__
+  name: llama-mtmd-cli 多模态交互核心 —— mtmd_cli_context 的完整实现
+  'no': 4
+  points:
+  - '**mtmd_cli_context 的生命周期管理**'
+  - '- 构造函数（mtmd_cli_context::mtmd_cli_context）初始化 llama 模型、上下文、采样器、批次、聊天模板，加载视觉模型，处理特殊标记（vicuna/deepseek）'
+  - '- 析构函数（~mtmd_cli_context）释放批次与采样器资源，实现 RAII 资源管理'
+  - '**视觉上下文与媒体处理**'
+  - '- init_vision_context() 配置视觉编码器参数（GPU 使用、Flash Attention、图像 token 数量限制），加载 mmproj
+    模型'
+  - '- load_media() 加载图像/音频文件为位图对象，存入 bitmaps 缓存'
+  - '- check_antiprompt() 检测生成的 token 序列是否以反提示词结尾，用于提前停止生成'
+  - '**多模态评估与生成**'
+  - '- eval_message() 将聊天消息格式化后，通过 mtmd_tokenize() 切块处理（文本+位图），再使用 mtmd_helper_eval_chunks()
+    执行多模态前向传播'
+  - '- generate_response() 核心循环：从采样器采样→解码→检查 EOG/反提示词/中断标志→输出 token 到控制台'
+  - '**双模式交互**'
+  - '- 单轮模式：命令行一次性提供模型、图像、音频、提示词'
+  - '- 聊天模式：交互式命令（/image, /audio, /clear, /quit），维护聊天历史与 KV 缓存'

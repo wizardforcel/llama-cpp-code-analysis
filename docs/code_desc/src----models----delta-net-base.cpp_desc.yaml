@@ -1,0 +1,156 @@
+classes:
+- desc: DeltaNet 模型的基础构建类，继承自 llm_graph_context，提供 DeltaNet 注意力机制的各种构建方法。
+  methods:
+  - code:
+    - 'llm_build_delta_net_base::llm_build_delta_net_base(const llm_graph_params &
+      params) : llm_graph_context(params) {}'
+    desc: 构造函数，接受 llm_graph_params 参数并初始化基类。
+    line: 10-10
+    name: llm_build_delta_net_base
+  - code:
+    - std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_net_chunking(
+    - '        ggml_tensor * q,'
+    - '        ggml_tensor * k,'
+    - '        ggml_tensor * v,'
+    - '        ggml_tensor * g,'
+    - '        ggml_tensor * b,'
+    - '        ggml_tensor * s,'
+    - '        int           il) {'
+    - '    const int64_t S_k      = q->ne[0];'
+    - '    const int64_t H_k      = q->ne[1];'
+    - '    const int64_t n_tokens = q->ne[2];'
+    - '    const int64_t n_seqs   = q->ne[3];'
+    - '    '
+    - '    const int64_t S_v = v->ne[0];'
+    - '    const int64_t H_v = v->ne[1];'
+    - '    const bool kda = (g->ne[0] == S_k && g->ne[1] == H_k);'
+    - '    '
+    - '    GGML_ASSERT(S_k == S_v);'
+    - '    GGML_ASSERT(H_v % H_k == 0);'
+    - '    '
+    - '    const float scale = 1.0f / sqrtf(S_k);'
+    - '    '
+    - '    q = ggml_scale(ctx0, q, scale);'
+    - '    '
+    - '    cb(q, "q_in", il);'
+    - '    cb(k, "k_in", il);'
+    - '    cb(v, "v_in", il);'
+    - '    cb(b, "b_in", il);'
+    - '    cb(g, "g_in", il);'
+    - '    '
+    - '    // 后续省略部分代码'
+    - '    '
+    - '    return {o, s};'
+    - '}'
+    desc: 分块计算 DeltaNet 注意力，将输入序列分成多个块（chunk），通过块内计算和块间状态传递实现高效计算，处理多 token 序列。
+    line: 14-208
+    name: build_delta_net_chunking
+  - code:
+    - std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_net_autoregressive(
+    - '        ggml_tensor * q,'
+    - '        ggml_tensor * k,'
+    - '        ggml_tensor * v,'
+    - '        ggml_tensor * g,'
+    - '        ggml_tensor * b,'
+    - '        ggml_tensor * s,'
+    - '        int           il) {'
+    - '    const int64_t n_tokens = q->ne[2];'
+    - '    GGML_ASSERT(n_tokens == 1);'
+    - '    '
+    - '    // 归一化查询向量'
+    - '    const float scale = 1.0f / sqrtf(S_k);'
+    - '    q = ggml_scale(ctx0, q, scale);'
+    - '    '
+    - '    // 状态衰减与更新'
+    - '    g = ggml_reshape_4d(ctx0, g, 1, g->ne[0], H_v, n_seqs);'
+    - '    b = ggml_reshape_4d(ctx0, b, 1,        1, H_v, n_seqs);'
+    - '    g = ggml_exp(ctx0, g);'
+    - '    s = ggml_mul(ctx0, s, g);'
+    - '    '
+    - '    // 计算输出'
+    - '    ggml_tensor * s_q = ggml_mul     (ctx0, s, q);'
+    - '    ggml_tensor * o   = ggml_sum_rows(ctx0, s_q);'
+    - '    '
+    - '    return {o, s};'
+    - '}'
+    desc: 自回归模式下的 DeltaNet 注意力计算，适用于单 token 的生成场景，通过更新状态 s 保持序列上下文。
+    line: 211-293
+    name: build_delta_net_autoregressive
+  - code:
+    - std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_net_fused(
+    - '        ggml_tensor * q,'
+    - '        ggml_tensor * k,'
+    - '        ggml_tensor * v,'
+    - '        ggml_tensor * g,'
+    - '        ggml_tensor * b,'
+    - '        ggml_tensor * s,'
+    - '        int           il) {'
+    - '    ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v, g, b, s);'
+    - '    '
+    - '    if (n_tokens == 1) {'
+    - '        cb(result, LLAMA_TENSOR_NAME_FGDN_AR, il);'
+    - '    } else {'
+    - '        cb(result, LLAMA_TENSOR_NAME_FGDN_CH, il);'
+    - '    }'
+    - '    '
+    - '    // 分割输出和状态'
+    - '    ggml_tensor * output = ggml_view_4d(ctx0, result,'
+    - '            S_v, H_v, n_tokens, n_seqs,'
+    - '            ggml_row_size(result->type, S_v),'
+    - '            ggml_row_size(result->type, S_v * H_v),'
+    - '            ggml_row_size(result->type, S_v * H_v * n_tokens), 0);'
+    - '    '
+    - '    ggml_tensor * new_state = ggml_view_4d(ctx0, result,'
+    - '            S_v, S_v, H_v, n_seqs,'
+    - '            ggml_row_size(result->type, S_v),'
+    - '            ggml_row_size(result->type, S_v * S_v),'
+    - '            ggml_row_size(result->type, S_v * S_v * H_v),'
+    - '            ggml_row_size(result->type, S_v * H_v * n_tokens * n_seqs));'
+    - '    '
+    - '    return {output, new_state};'
+    - '}'
+    desc: 融合计算 DeltaNet 注意力，直接调用 ggml_gated_delta_net 实现底层融合内核，用于高性能场景。
+    line: 296-341
+    name: build_delta_net_fused
+  - code:
+    - std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_net(
+    - '        ggml_tensor * q,'
+    - '        ggml_tensor * k,'
+    - '        ggml_tensor * v,'
+    - '        ggml_tensor * g,'
+    - '        ggml_tensor * b,'
+    - '        ggml_tensor * s,'
+    - '        int           il) {'
+    - '    const int64_t n_seq_tokens = q->ne[2];'
+    - '    '
+    - '    if (n_seq_tokens == 1) {'
+    - '        if (cparams.fused_gdn_ar) {'
+    - '            return build_delta_net_fused(q, k, v, g, b, s, il);'
+    - '        }'
+    - '        return build_delta_net_autoregressive(q, k, v, g, b, s, il);'
+    - '    }'
+    - '    '
+    - '    if (cparams.fused_gdn_ch) {'
+    - '        return build_delta_net_fused(q, k, v, g, b, s, il);'
+    - '    }'
+    - '    '
+    - '    return build_delta_net_chunking(q, k, v, g, b, s, il);'
+    - '}'
+    desc: DeltaNet 的统一构建入口，根据输入 token 数量和配置参数，选择使用融合、自回归或分块计算模式。
+    line: 344-369
+    name: build_delta_net
+  name: llm_build_delta_net_base
+desc: 该文件是 llama.cpp 中 DeltaNet 模型的基础实现部分，包含了 DeltaNet 架构的核心计算图构建逻辑。它定义了 llm_build_delta_net_base
+  类，提供了三种不同场景下的 DeltaNet 注意力机制实现（分块计算、自回归计算和融合计算），以及一个统一的分发函数。该代码实现了 DeltaNet 的线性注意力机制，通过状态
+  s 来替代传统的 KV 缓存，实现高效的序列建模。
+file: src/models/delta-net-base.cpp
+funcs:
+- code:
+  - static ggml_tensor * get_slice_2d(ggml_context * ctx0, ggml_tensor * t, int64_t
+    c) {
+  - '    return ggml_view_4d(ctx0, t, t->ne[0], t->ne[1], 1, t->ne[3],'
+  - '        t->nb[1], t->nb[2], t->nb[3], t->nb[2] * c);'
+  - '}'
+  desc: 静态工具函数，用于从张量的第三维（维度 c）中提取一个切片，调整张量维度为 [x, y, 1, b]。
+  line: 6-9
+  name: get_slice_2d

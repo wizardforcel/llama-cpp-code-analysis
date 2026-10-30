@@ -1,0 +1,339 @@
+code_map:
+- tools/server/bench/bench.py
+- '├── __main__()                              # 全局入口：调用 main() 启动基准测试（282-283行）'
+- '├── main()                                  # 总控编排：参数解析→服务器启动→k6 压测→Prometheus
+  采集→GitHub env 输出（28-217行）'
+- '├── start_benchmark()                       # 执行 k6 压测并注入 SERVER_BENCH_* 环境变量（219-238行）'
+- '├── start_server()                          # 双阶段就绪探测协调器：先监听端口再健康检查（240-260行）'
+- '├── start_server_background()               # 创建 llama-server 子进程并分流日志（262-279行）'
+- '├── is_server_listening()                   # TCP 端口探测：socket.connect_ex 连接检查（281-287行）'
+- '├── is_server_ready()                       # HTTP 健康检查：GET /health → 200 判定（289-292行）'
+- '└── escape_metric_name()                    # 指标名规范化：re.sub 非字母数字→下划线，转大写（294-295行）'
+- ''
+- tools/server/bench/script.js
+- '├── __main__                                # 全局配置：server_url/n_prompt/model/dataset_path/max_tokens
+  环境变量解析 + SharedArray 数据集加载 + Trend/Counter/Rate 指标创建 + options 阈值配置（9-76行）'
+- '├── setup()                                 # 输出基准测试配置信息到控制台（44-46行）'
+- '└── default()                               # k6 主测试函数：SSE 流式请求发送 + 事件回调指标采集 +
+  性能指标计算（80-150行）'
+exercises:
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 240-260 行（start_server 函数），理解以下逻辑：
+  - 1. 为什么需要同时检测 is_server_listening() 和 is_server_ready() 两个阶段？
+  - 2. max_attempts 在 CI 环境（GITHUB_ACTIONS）为什么翻倍至 1200 次？
+  - 3. 如果服务器在 600 次（非 CI）或 1200 次（CI）尝试后仍未就绪，assert False 会抛出什么异常？
+  - 4. start_server() 返回的 server_process 对象在 main() 中如何被用于后续生命周期管理？
+  'no': 1
+  title: 分析 bench.py 的双阶段就绪探测机制
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 262-279 行（start_server_background 函数），完成以下分析：
+  - 1. server_path 的默认值 '../../../build/bin/llama-server' 与 LLAMA_SERVER_BIN_PATH
+    环境变量的覆盖逻辑是什么？
+  - 2. server_args 中 '--n-predict', args.max_tokens * 2 的设计意图是什么？为什么要设为最大 token 数的两倍？
+  - 3. '--cont-batching'、'--metrics'、'--flash-attn' 这三个参数各自开启什么服务器特性？
+  - 4. 为什么使用两个 threading.Thread 分别分流 stdout 和 stderr？如果只有一个线程会发生什么？
+  - 5. server_log() 内的 iter(in_stream.readline, b'') 哨兵模式如何工作？
+  'no': 2
+  title: 深入 start_server_background() 的子进程创建机制
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 294-295 行，完成以下任务：
+  - 1. 理解 re.sub('[^A-Z0-9]', '_', metric_name.upper()) 的正则表达式含义：[^A-Z0-9] 匹配所有非大写字母和数字的字符，替换为下划线
+  - 2. 分析几个示例转换：'llamacpp_prompt_processing_second' → 'LLAMACPP_PROMPT_PROCESSING_SECOND'，'http_req_duration'
+    → 'HTTP_REQ_DURATION'
+  - 3. 思考为什么 GitHub Actions 环境变量需要这种命名规范（只能包含字母、数字和下划线）
+  - 4. 在 main() 第 68-70 行找到 escape_metric_name() 的调用位置，理解它如何将 k6-results.json 中的指标名转为
+    env 变量名
+  'no': 3
+  title: 追踪 escape_metric_name() 的命名转换逻辑
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 93-110 行（main() 的 try/finally 块），完成以下分析：
+  - 1. 理解服务器终止的三阶段策略：SIGINT（或 Windows CTRL_C_EVENT）→ 500ms 超时 → force kill
+  - 2. 解释 os.name == 'nt' 时为什么选择 CTRL_C_EVENT 而不是 SIGINT
+  - '3. 分析 while is_server_listening(args.host, args.port): time.sleep(0.1) 循环的作用：为什么需要确认端口完全释放？'
+  - 4. 思考如果 server_process 为 None（启动失败），这段终止逻辑如何被跳过
+  'no': 4
+  title: 分析 main() 中的服务器优雅终止流程
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 282-283 行，完成以下思考：
+  - '1. 为什么使用 if __name__ == ''__main__'': main() 而不是直接调用 main()？'
+  - 2. 这种设计允许 bench.py 既作为独立脚本运行，又可作为模块被其他 Python 文件导入而不执行 main()
+  - 3. 如果 bench.py 被导入到其他脚本中，main() 函数如何被显式调用？
+  'no': 5
+  title: 理解 __main__ 入口点的模块设计
+- contents:
+  - 阅读 tools/server/bench/bench.py 第 219-238 行，完成以下分析：
+  - 1. 理解 k6_path 的默认值 './k6' 和 BENCH_K6_BIN_PATH 环境变量的覆盖逻辑
+  - 2. 分析 k6_args 的组成：'run', args.scenario, '--no-color', '--no-connection-reuse',
+    '--no-vu-connection-reuse', '--duration', '--iterations', '--vus', '--summary-export',
+    '--out' 各自的作用
+  - 3. 理解 SERVER_BENCH_N_PROMPTS、SERVER_BENCH_MAX_PROMPT_TOKENS、SERVER_BENCH_MAX_CONTEXT
+    这三个环境变量如何被注入到 k6 进程，并被 script.js 读取
+  - 4. 思考为什么使用 shell=True 而不是数组形式传递参数
+  'no': 6
+  title: 深入 start_benchmark() 的 k6 调用机制
+- contents:
+  - 阅读 tools/server/bench/script.js 第 9-42 行（__main__ 全局配置），完成以下任务：
+  - 1. 理解 server_url/n_prompt/model/dataset_path/max_tokens 等环境变量如何从 __ENV 读取并设置默认值
+  - 2. 分析 SharedArray 的 dataset 预处理逻辑：filter 过滤少于 2 轮对话、filter 非 human 开头、map 提取 prompt
+    和 token 数、filter 过滤超长或过短序列、slice 截取前 N 条
+  - 3. 理解 tokenizer 函数 message.split(/[\s,'".?]/) 的分词逻辑及其局限性
+  - 4. 思考为什么使用 SharedArray 而不是普通数组：k6 的内存共享机制如何节省 VU 内存
+  'no': 7
+  title: 分析 script.js 的数据集预处理流程
+- contents:
+  - 阅读 tools/server/bench/script.js 第 80-150 行（default 函数），完成以下分析：
+  - 1. 理解 sse.open() 的三个参数：URL、params（POST body）、回调函数
+  - 2. 分析 client.on('event') 回调中的事件处理：如何识别首个事件（promptEvalEndTime）、如何解析 chunk.usage
+    获取 token 统计、如何识别 [DONE] 结束标记
+  - 3. 理解 llamacpp_emit_first_token_second 指标的记录时机：(promptEvalEndTime - startTime)
+    / 1.e3 转换为秒
+  - 4. 分析 finish_reason 的两种值 'length'（被截断）和 'stop'（正常结束）如何分别被记录到 llamacpp_completions_truncated_rate
+    和 llamacpp_completions_stop_rate
+  - 5. 理解 sleep(0.3) 的作用：模拟真实用户阅读响应的间隔，避免请求过于密集
+  'no': 8
+  title: 追踪 script.js 的 SSE 流式请求处理
+- contents:
+  - 阅读 tools/server/bench/script.js 第 44-76 行，完成以下对比：
+  - 1. Trend 指标（llamacpp_prompt_tokens、llamacpp_completion_tokens、llamacpp_tokens_second、llamacpp_prompt_processing_second、llamacpp_emit_first_token_second）：用于记录数值分布，可计算
+    avg/p95/p99 等统计量
+  - 2. Counter 指标（llamacpp_prompt_tokens_total_counter、llamacpp_completion_tokens_total_counter）：用于累计总数，只增不减
+  - 3. Rate 指标（llamacpp_completions_truncated_rate、llamacpp_completions_stop_rate）：用于记录布尔比例，计算百分比
+  - 4. 思考为什么 TTFB（llamacpp_emit_first_token_second）使用 Trend 而不是 Counter：因为关心的是时间分布而非累计次数
+  - '5. 分析 options.thresholds 中 llamacpp_completions_truncated_rate 的阈值设置：rate < 0.8
+    且 abortOnFail: true，意味着超过 80% 截断率将中断测试'
+  'no': 9
+  title: 对比 script.js 的指标类型选择
+- contents:
+  - 阅读 tools/server/bench/script.js 第 44-46 行，完成以下思考：
+  - 1. setup() 是 k6 的生命周期钩子，在测试开始前执行一次
+  - 2. 分析 console.info 输出的配置信息：server_url、n_prompt、model、dataset_path、max_tokens
+  - 3. 理解为什么需要在测试开始前打印配置：便于在 CI 日志中追溯测试参数，调试配置错误
+  - 4. 思考如果添加自定义配置（如 temperature），需要在哪些位置同时修改：__main__ 环境变量读取 + setup() 输出 + default()
+    中 payload 构造
+  'no': 10
+  title: 理解 script.js 的 setup() 函数作用
+learning_targets:
+- 掌握 k6 + Prometheus 基准测试编排器 bench.py 的完整生命周期：参数解析→服务器启动→双阶段就绪探测→k6 压测执行→Prometheus
+  指标采集→GitHub Actions 环境变量输出
+- 理解 bench.py 中 start_server() 的双阶段健康检查策略：is_server_listening() 做 TCP 端口探测，is_server_ready()
+  轮询 /health 端点，以及 CI 环境重试上限翻倍的工程设计
+- 掌握 start_benchmark() 的 k6 子进程调用机制：环境变量注入、BENCH_K6_BIN_PATH 自定义路径、--summary-export
+  结果导出
+- 掌握 start_server_background() 的子进程创建细节：llama-server 参数组装（--hf-repo/--hf-file/--ctx-size/--parallel/--n-predict/--cont-batching/--metrics/--flash-attn）、LLAMA_SERVER_BIN_PATH
+  覆盖、stdout/stderr 双线程日志分流
+- 理解 script.js 的 k6 脚本结构：SharedArray 数据集共享、SSE 流式请求解析、Trend/Counter/Rate 指标记录、三段式时间戳的
+  TTFB/TPOT 计算
+- 掌握 escape_metric_name() 的命名规范化逻辑：re.sub 非字母数字字符转下划线并转大写，适配 GitHub env 变量命名规则
+- 理解 results.github.env 文件的写入格式：BENCH_RESULTS/BENCH_ITERATIONS/BENCH_GRAPH_TITLE/BENCH_GRAPH_XLABEL
+  等 CI 字段
+- 掌握 __main__ 入口的模块设计与 main() 中服务器优雅终止流程（SIGINT → 500ms 超时 → force kill → 端口释放轮询）
+- 理解 Windows 与 POSIX 系统下信号处理的差异（CTRL_C_EVENT vs SIGINT）
+life_analogy:
+- '- 想象 bench.py 是一位**全科医生**，负责给 llama-server 做全面体检：'
+- '  - start_server() = 被叫上门的医生，先按门铃（TCP 探测 is_server_listening），再等患者开门（HTTP /health
+  探测 is_server_ready）'
+- '  - 双阶段就绪探测 = 先确认人在家（端口通），再确认人清醒（服务健康）——就像敲门后要听到回应才进屋'
+- '  - start_server_background() = 医生的出诊准备：拎起医疗箱（组装 llama-server 参数）、打开记录仪（双线程日志分流）、选择交通工具（LLAMA_SERVER_BIN_PATH
+  自定义路径）'
+- '  - escape_metric_name() = 医生把所有测量指标翻译成标准病历格式——把 "llamacpp_prompt_processing_second"
+  这种驼峰式名称转为 "LLAMACPP_PROMPT_PROCESSING_SECOND" 的标准化格式，方便医院信息系统（GitHub Actions）统一归档'
+- '  - main() 的服务器关闭逻辑 = 体检结束后的病房整理：先温柔唤醒（SIGINT），等 500ms 如果还不醒就强制关机（force kill），最后还要确认设备完全断电（while
+  is_server_listening 轮询）'
+- '  - __main__ 入口 = 门铃按钮，按下后整个体检流程自动启动'
+- '- 想象 script.js 是**快递员的工作记录仪**：'
+- '  - SharedArray 数据集 = 快递员手里的包裹清单，所有虚拟用户（VU）共享同一份清单但各自取不同的包裹'
+- '  - default() 函数 = 快递员每次取件的动作：随机选一个包裹（conversation），送到服务器（POST /chat/completions），记录送达时间（startTime）、客户开门时间（promptEvalEndTime）、客户签收时间（endTime）'
+- '  - Trend 指标 = 快递员的小本本，记录每次送货的耗时统计'
+- '  - Rate 指标 = 退货率记录，检查包裹是否被拒收（truncated）或正常签收（stop）'
+- '  - setup() = 快递员上岗前的晨会，大声念出今天的送货地址（server_url）、包裹数量（n_prompt）和车型（model）'
+'no': 89
+summary:
+- concept: bench.py main()
+  desc: 基准测试总控编排器：argparse 解析 20+ 参数→start_server 启动 llama-server→start_benchmark
+    执行 k6 压测→读取 k6-results.json 写入 results.github.env→Prometheus 采集五大指标生成 JSON/JPG/Mermaid→输出
+    BENCH_RESULTS 等 CI 变量
+- concept: start_server
+  desc: 双阶段就绪探测协调器：先调用 is_server_listening() 做 TCP 端口连通性检查（connect_ex），再调用 is_server_ready()
+    轮询 /health HTTP 端点，CI 环境重试上限翻倍至 1200 次
+- concept: start_server_background
+  desc: 子进程创建器：组装 llama-server 完整参数链（--hf-repo/--hf-file/--n-gpu-layers/--ctx-size/--parallel/--batch-size/--ubatch-size/--n-predict/--cont-batching/--metrics/--flash-attn），subprocess.Popen
+    启动并用双线程分流 stdout/stderr
+- concept: start_benchmark
+  desc: k6 压测执行器：构造 SERVER_BENCH_* 环境变量注入 k6 进程，通过 subprocess.run 执行 k6 run 命令并导出
+    k6-results.json
+- concept: is_server_listening
+  desc: TCP 端口探测：socket.connect_ex 连接服务器，返回 0 表示已监听，打印 "server is listening on {fqdn}:{port}..."
+    日志
+- concept: is_server_ready
+  desc: HTTP 健康检查：GET http://{fqdn}:{port}/health，返回 status_code == 200 判定服务器就绪
+- concept: escape_metric_name
+  desc: 指标名规范化：re.sub('[^A-Z0-9]', '_', metric_name.upper())，将非字母数字字符替换为下划线并转为大写，适配
+    GitHub env 变量命名规范
+- concept: __main__
+  desc: 全局入口点：当直接执行脚本时调用 main()，启动整个基准测试流程
+- concept: 服务器优雅关闭
+  desc: main() 中 try/finally 块确保 llama-server 进程被安全清理：SIGINT（或 Windows CTRL_C_EVENT）→
+    500ms 超时 → force kill → while is_server_listening 轮询确认完全退出
+- concept: script.js SharedArray
+  desc: k6 的数据共享机制：所有虚拟用户（VU）共享同一份 ShareGPT 数据集，通过 JSON.parse(open(dataset_path))
+    加载并预处理
+- concept: script.js default()
+  desc: k6 主测试函数：从 SharedArray 选取对话→构造 POST 请求→通过 sse.open 发送 SSE 流式请求→在 event 回调中记录
+    TTFB 和 token 统计→最终计算 llamacpp_prompt_processing_second 和 llamacpp_tokens_second
+- concept: script.js 三段时间戳
+  desc: startTime（请求发送）→promptEvalEndTime（首个 SSE 事件到达，即 TTFB）→endTime（流结束），分别用于计算
+    promptEvalTime 和 completion_time
+- concept: script.js 指标族
+  desc: Trend（llamacpp_prompt_tokens/llamacpp_completion_tokens/llamacpp_tokens_second
+    等）记录分布，Counter（llamacpp_prompt_tokens_total_counter/llamacpp_completion_tokens_total_counter）累计总数，Rate（llamacpp_completions_truncated_rate/llamacpp_completions_stop_rate）记录比例
+- concept: script.js options
+  desc: k6 测试配置：thresholds 设置截断率 >80% 时中断测试，duration 默认 10 分钟，vus 默认 8 个虚拟用户
+units:
+- codes:
+  - file: tools/server/bench/bench.py
+    line: 28-217
+    method_or_func: main()
+  - file: tools/server/bench/bench.py
+    line: 294-295
+    method_or_func: escape_metric_name()
+  name: bench.py 生命周期编排 —— 从启动到终止的「全科医生」
+  'no': 1
+  points:
+  - main() 总控流程：argparse 解析 --name/--runner-label/--branch/--commit/--host/--port/--model-path-prefix/--n-prompts/--max-prompt-tokens/--max-tokens/--hf-repo/--hf-file/--n-gpu-layers/--ctx-size/--parallel/--batch-size/--ubatch-size/--scenario/--duration
+    等 20+ 参数，start_time 记录起始时间戳，start_server() 启动 llama-server 子进程，start_benchmark()
+    执行 k6 压测
+  - 读取 k6-results.json 并解析 metrics 对象，将每个指标的数值字段（float/int）四舍五入到两位小数后写入 results.github.env，格式为
+    {escape_metric_name(metric_name)}_{escape_metric_name(metric_metric)}={value}
+  - iterations 提取自 data['root_group']['checks']['success completion']['passes']，代表成功完成的请求次数
+  - 服务器优雅终止：server_process.send_signal(interrupt) 发送 SIGINT（Windows 为 CTRL_C_EVENT），server_process.wait(0.5)
+    等待 500ms，超时则 server_process.kill() 强制终止，最后 while is_server_listening() 轮询确认端口完全释放
+  - Prometheus 指标采集：如果 0.0.0.0:9090 端口监听（Prometheus 服务），则查询 prompt_tokens_seconds/predicted_tokens_seconds/kv_cache_usage_ratio/requests_processing/requests_deferred
+    五大指标，生成原始 JSON 文件、matplotlib JPG 图表和 Mermaid xychart 格式文件
+  - GitHub Actions 集成：最终写入 results.github.env 的 BENCH_RESULTS={json.dumps(bench_results)}
+    汇总 req/pp/tg 的 p95/avg 指标，BENCH_ITERATIONS={iterations}，BENCH_GRAPH_TITLE 和 BENCH_GRAPH_XLABEL
+    用于 CI 图表标题
+  - escape_metric_name() 使用 re.sub('[^A-Z0-9]', '_', metric_name.upper()) 将指标名转为大写下划线格式，如
+    "llamacpp_prompt_processing_second" → "LLAMACPP_PROMPT_PROCESSING_SECOND"
+- codes:
+  - file: tools/server/bench/bench.py
+    line: 262-279
+    method_or_func: start_server_background()
+  name: 子进程孵化与日志引流 —— 服务器启动的「产房护士长」
+  'no': 2
+  points:
+  - start_server_background() 确定 llama-server 可执行文件路径：默认 '../../../build/bin/llama-server'，可通过
+    LLAMA_SERVER_BIN_PATH 环境变量覆盖，适配不同构建目录结构
+  - 组装完整的服务器参数链：--host/--port（网络监听）、--hf-repo/--hf-file（模型源）、--n-gpu-layers/--ctx-size/--parallel/--batch-size/--ubatch-size（性能配置）、--n-predict
+    args.max_tokens * 2（预测上限设为两倍留下安全边际）、--cont-batching（连续批处理）、--metrics（Prometheus
+    指标暴露）、--flash-attn（Flash Attention 加速）
+  - 使用 subprocess.Popen 创建子进程，stdout 和 stderr 均通过 subprocess.PIPE 捕获，不直接继承父进程的控制台输出
+  - 启动两个独立线程分别分流日志：thread_stdout 负责将子进程 stdout 转发到 sys.stdout，thread_stderr 负责将子进程
+    stderr 转发到 sys.stderr，实现无阻塞的实时日志透传
+  - 内部定义 server_log() 函数使用 iter(in_stream.readline, b'') 哨兵模式逐行读取字节流，解码为 UTF-8 后打印，直到子进程关闭流时自然退出
+  - 返回 server_process 对象给调用者 start_server()，供后续就绪探测和最终终止使用——此函数本身不等待服务器就绪，职责单一
+  - '打印启动命令日志 "bench: starting server with: {'' ''.join(args)}"，便于 CI 日志中追溯完整的参数配置'
+- codes:
+  - file: tools/server/bench/bench.py
+    line: 240-260
+    method_or_func: start_server()
+  - file: tools/server/bench/bench.py
+    line: 281-287
+    method_or_func: is_server_listening()
+  - file: tools/server/bench/bench.py
+    line: 289-292
+    method_or_func: is_server_ready()
+  name: 双阶段就绪探测 —— 先敲门再问路的「礼仪专家」
+  'no': 3
+  points:
+  - start_server() 函数调用 start_server_background() 创建子进程后，进入双阶段等待循环：第一阶段调用 is_server_listening()
+    检查 TCP 端口是否可连接，第二阶段调用 is_server_ready() 检查 HTTP /health 端点是否返回 200
+  - is_server_listening() 使用 socket.socket(socket.AF_INET, socket.SOCK_STREAM) 创建
+    TCP socket，connect_ex((server_fqdn, server_port)) 尝试连接，返回 0 表示成功监听，打印 "server
+    is listening on {fqdn}:{port}..." 并返回 True
+  - is_server_ready() 使用 requests.get(f"http://{server_fqdn}:{server_port}/health")
+    发起 HTTP GET 请求，返回 response.status_code == 200 判定服务器完全就绪
+  - max_attempts 默认为 600 次（每次间隔 0.5 秒，总计 300 秒），但在 CI 环境（检测 GITHUB_ACTIONS 环境变量）翻倍至
+    1200 次，适应 GitHub Actions 虚拟机启动较慢的场景
+  - '两阶段循环都打印 "bench: waiting for server to start ..." 或 "bench: waiting for server
+    to be ready ..." 日志，超时则 assert False 抛出 "server not started" 或 "server not ready"
+    异常'
+  - start_server() 返回 server_process 对象供 main() 后续管理生命周期
+- codes:
+  - file: tools/server/bench/bench.py
+    line: 219-238
+    method_or_func: start_benchmark()
+  name: k6 压测执行器 —— 环境变量注入的「传令兵」
+  'no': 4
+  points:
+  - start_benchmark() 确定 k6 可执行文件路径：默认 './k6'，可通过 BENCH_K6_BIN_PATH 环境变量覆盖，适配不同 CI
+    环境的 k6 安装位置
+  - 构造 k6 命令行参数数组：['run', args.scenario, '--no-color', '--no-connection-reuse', '--no-vu-connection-reuse',
+    '--duration', args.duration, '--iterations', args.n_prompts, '--vus', args.parallel,
+    '--summary-export', 'k6-results.json', '--out', 'csv=k6-results.csv']
+  - 注入三个关键环境变量到 k6 进程环境：SERVER_BENCH_N_PROMPTS（总提示数）、SERVER_BENCH_MAX_PROMPT_TOKENS（最大提示
+    token 数，用于过滤数据集）、SERVER_BENCH_MAX_CONTEXT（最大上下文，用于过滤超长对话）
+  - 通过 subprocess.run(args, shell=True, stdout=sys.stdout, stderr=sys.stderr) 执行 k6，直接输出到控制台便于
+    CI 日志捕获
+  - '如果 k6 返回非零退出码，抛出异常 "bench: unable to run k6"，由 main() 的 try/except 捕获并打印错误'
+  - k6 执行完成后，结果导出到 k6-results.json 供 main() 后续读取并写入 GitHub env 文件
+- codes:
+  - file: tools/server/bench/bench.py
+    line: 282-283
+    method_or_func: __main__
+  name: 入口点与全局初始化 —— 按下按钮就出发的「启动开关」
+  'no': 5
+  points:
+  - '__main__ 入口点：if __name__ == ''__main__'': main() 直接调用主函数，启动整个基准测试流程'
+  - 该入口确保脚本既可作为模块导入（不执行），也可作为独立脚本运行（执行 main()）
+  - main() 返回 None，所有结果通过文件系统（results.github.env、k6-results.json、Prometheus JSON/JPG/Mermaid
+    文件）和 GitHub Actions 环境变量传递
+- codes:
+  - file: tools/server/bench/script.js
+    line: 9-76
+    method_or_func: __main__
+  - file: tools/server/bench/script.js
+    line: 44-46
+    method_or_func: setup()
+  name: k6 脚本数据中枢 —— 共享数据集的「包裹清单管理员」
+  'no': 6
+  points:
+  - __main__ 全局配置：解析 SERVER_BENCH_URL（默认 http://localhost:8080/v1）、SERVER_BENCH_N_PROMPTS（默认
+    600/10*8=480）、SERVER_BENCH_MODEL_ALIAS（默认 'my-model'）、SERVER_BENCH_DATASET（默认
+    './ShareGPT_V3_unfiltered_cleaned_split.json'）、SERVER_BENCH_MAX_TOKENS（默认 512）、SERVER_BENCH_MAX_PROMPT_TOKENS（默认
+    1024）、SERVER_BENCH_MAX_CONTEXT（默认 2048）
+  - SharedArray 数据集加载：JSON.parse(open(dataset_path)) 读取 ShareGPT 格式对话，filter 过滤少于
+    2 轮对话和非 human 开头的对话，map 提取 prompt、n_prompt_tokens、n_completion_tokens，filter 过滤太短（<4
+    tokens）或超长（n_prompt_tokens > n_prompt_tokens 或 prompt+completion > n_ctx_slot）的对话，slice
+    截取前 n_prompt 条
+  - 创建六类指标：Trend 指标 llamacpp_prompt_tokens/llamacpp_completion_tokens/llamacpp_tokens_second/llamacpp_prompt_processing_second/llamacpp_emit_first_token_second
+    记录数值分布，Counter 指标 llamacpp_prompt_tokens_total_counter/llamacpp_completion_tokens_total_counter
+    累计总数，Rate 指标 llamacpp_completions_truncated_rate/llamacpp_completions_stop_rate
+    记录比例
+  - 'options 配置：thresholds 设置 llamacpp_completions_truncated_rate 阈值 rate < 0.8 且
+    abortOnFail: true（超过 80% 截断率中断测试），duration 默认 ''10m''，vus 默认 8 个虚拟用户'
+  - setup() 函数在测试开始前打印配置摘要：server_url、n_prompt、model、dataset_path、max_tokens，便于 CI
+    日志追溯
+- codes:
+  - file: tools/server/bench/script.js
+    line: 80-150
+    method_or_func: default()
+  name: SSE 流式压测执行 —— 逐 token 记录的「快递追踪员」
+  'no': 7
+  points:
+  - default() 是 k6 的主测试函数，每次迭代执行一次：从 SharedArray 随机选取对话（data[exec.scenario.iterationInInstance
+    % data.length]），构造包含 system 和 user 消息的 POST 请求体
+  - 'payload 包含 stream: true 和 stream_options.include_usage: true，要求服务器以 SSE 流式返回并包含
+    usage 统计'
+  - 启动 SSE 连接：sse.open(`${server_url}/chat/completions`, params, callback)，在 callback
+    中监听 client.on('event') 事件
+  - 三段式时间戳记录：startTime（请求发送前）、promptEvalEndTime（首个 SSE 事件到达时，即 TTFB）、endTime（流结束时），分别用于计算
+    promptEvalTime 和 completion_time
+  - 事件处理逻辑：首个事件到来时记录 promptEvalEndTime 并添加 llamacpp_emit_first_token_second 指标；解析
+    event.data 为 JSON，提取 chunk.usage.prompt_tokens 和 chunk.usage.completion_tokens
+    记录到 Trend 和 Counter 指标；捕获 finish_reason 判断是 'length'（截断）还是 'stop'（正常结束）
+  - 最终指标计算：llamacpp_prompt_processing_second = prompt_tokens / (promptEvalEndTime
+    - startTime) * 1000，llamacpp_tokens_second = completions_tokens / (endTime - promptEvalEndTime)
+    * 1000
+  - 'check(res, {''success completion'': (r) => r.status === 200}) 验证响应状态码为 200，该检查结果会被
+    k6 统计为 root_group.checks.success completion.passes'
+  - sleep(0.3) 模拟用户阅读响应的间隔，避免请求过于密集导致服务器过载

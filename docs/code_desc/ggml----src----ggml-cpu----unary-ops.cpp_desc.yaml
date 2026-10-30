@@ -1,0 +1,540 @@
+classes: []
+desc: 该文件是 ggml 库中 CPU 后端的算子内核实现，专门负责所有一元（unary）操作的前向计算。它通过静态内联函数定义每种数学运算（如 abs、tanh、relu
+  等），并利用 C++ 模板和类型转换表，根据输入/输出张量的数据类型（FP32、FP16、BF16）分发执行，支持针对每个张量行的多线程并行计算。文件中还提供了对带参数算子（如
+  xielu）的仿函数支持，通过多个公开的 ggml_compute_forward_xxx 入口函数集成到整个引擎的计算流程中。
+file: ggml/src/ggml-cpu/unary-ops.cpp
+funcs:
+- code:
+  - static inline float op_abs(float x) {
+  - '    return fabsf(x);'
+  - '}'
+  desc: 计算浮点数 x 的绝对值。
+  line: 5-7
+  name: op_abs
+- code:
+  - static inline float op_sgn(float x) {
+  - '    return (x > 0.f) ? 1.f : ((x < 0.f) ? -1.f : 0.f);'
+  - '}'
+  desc: 返回浮点数 x 的符号函数值：正数返回 1，负数返回 -1，零返回 0。
+  line: 9-11
+  name: op_sgn
+- code:
+  - static inline float op_neg(float x) {
+  - '    return -x;'
+  - '}'
+  desc: 返回浮点数 x 的相反数。
+  line: 13-15
+  name: op_neg
+- code:
+  - static inline float op_step(float x) {
+  - '    return (x > 0.f) ? 1.f : 0.f;'
+  - '}'
+  desc: 返回阶跃函数值：x 大于 0 返回 1，否则返回 0。
+  line: 17-19
+  name: op_step
+- code:
+  - static inline float op_tanh(float x) {
+  - '    return tanhf(x);'
+  - '}'
+  desc: 计算浮点数 x 的双曲正切值。
+  line: 21-23
+  name: op_tanh
+- code:
+  - static inline float op_elu(float x) {
+  - '    return (x > 0.f) ? x : expm1f(x);'
+  - '}'
+  desc: 计算 ELU 激活函数：对于正数返回 x，对于非正数返回 exp(x)-1。
+  line: 25-27
+  name: op_elu
+- code:
+  - static inline float op_relu(float x) {
+  - '    return (x > 0.f) ? x : 0.f;'
+  - '}'
+  desc: 计算 ReLU 激活函数：正数返回 x，非正数返回 0。
+  line: 29-31
+  name: op_relu
+- code:
+  - static inline float op_sigmoid(float x) {
+  - '    return 1.f / (1.f + expf(-x));'
+  - '}'
+  desc: 计算 Sigmoid 激活函数，值域为 (0, 1)。
+  line: 33-35
+  name: op_sigmoid
+- code:
+  - static inline float op_hardsigmoid(float x) {
+  - '    return fminf(1.0f, fmaxf(0.0f, (x + 3.0f) / 6.0f));'
+  - '}'
+  desc: 计算 Hard Sigmoid 激活函数，将线性部分裁剪至 [0, 1] 区间。
+  line: 37-39
+  name: op_hardsigmoid
+- code:
+  - static inline float op_exp(float x) {
+  - '    return expf(x);'
+  - '}'
+  desc: 计算浮点数 x 的指数函数 e^x。
+  line: 41-43
+  name: op_exp
+- code:
+  - static inline float op_hardswish(float x) {
+  - '    return x * fminf(1.0f, fmaxf(0.0f, (x + 3.0f) / 6.0f));'
+  - '}'
+  desc: 计算 Hard Swish 激活函数：x 乘以 Hard Sigmoid 结果。
+  line: 45-47
+  name: op_hardswish
+- code:
+  - static inline float op_sqr(float x) {
+  - '    return x * x;'
+  - '}'
+  desc: 计算浮点数 x 的平方。
+  line: 49-51
+  name: op_sqr
+- code:
+  - static inline float op_sqrt(float x) {
+  - '    return sqrtf(x);'
+  - '}'
+  desc: 计算浮点数 x 的平方根。
+  line: 53-55
+  name: op_sqrt
+- code:
+  - static inline float op_xielu(float x, float alpha_n, float alpha_p, float beta,
+    float eps) {
+  - '    if (x > 0.0f) {'
+  - '        return alpha_p * x * x + beta * x;'
+  - '    } else {'
+  - '        const float min_x_eps = fminf(x, eps);'
+  - '        return (expm1f(min_x_eps) - x) * alpha_n + beta * x;'
+  - '    }'
+  - '}'
+  desc: 计算带参数的 XieLU 激活函数，根据 x 的正负性应用不同的二次表达式。
+  line: 57-64
+  name: op_xielu
+- code:
+  - static inline float op_sin(float x) {
+  - '    return sinf(x);'
+  - '}'
+  desc: 计算浮点数 x 的正弦值。
+  line: 66-68
+  name: op_sin
+- code:
+  - static inline float op_cos(float x) {
+  - '    return cosf(x);'
+  - '}'
+  desc: 计算浮点数 x 的余弦值。
+  line: 70-72
+  name: op_cos
+- code:
+  - static inline float op_log(float x) {
+  - '    return logf(x);'
+  - '}'
+  desc: 计算浮点数 x 的自然对数。
+  line: 74-76
+  name: op_log
+- code:
+  - static inline float op_expm1(float x) {
+  - '    return expf(x) - 1.0f;'
+  - '}'
+  desc: 计算 e^x - 1，即 exp 函数的结果减 1。
+  line: 78-80
+  name: op_expm1
+- code:
+  - static inline float op_softplus(float x) {
+  - '    return (x > 20.0f) ? x : logf(1.0f + expf(x));'
+  - '}'
+  desc: 计算 Softplus 激活函数，数值上更稳定，大数近似为 x。
+  line: 82-84
+  name: op_softplus
+- code:
+  - static inline float op_floor(float x) {
+  - '    return floorf(x);'
+  - '}'
+  desc: 返回浮点数 x 的向下取整值。
+  line: 86-88
+  name: op_floor
+- code:
+  - static inline float op_ceil(float x) {
+  - '    return ceilf(x);'
+  - '}'
+  desc: 返回浮点数 x 的向上取整值。
+  line: 90-92
+  name: op_ceil
+- code:
+  - static inline float op_round(float x) {
+  - '    return roundf(x);'
+  - '}'
+  desc: 返回浮点数 x 的四舍五入到最接近的整数值。
+  line: 94-96
+  name: op_round
+- code:
+  - static inline float op_trunc(float x) {
+  - '    return truncf(x);'
+  - '}'
+  desc: 返回浮点数 x 向零取整后的值。
+  line: 98-100
+  name: op_trunc
+- code:
+  - template <float (*op)(float), typename src0_t, typename dst_t>
+  - static inline void vec_unary_op(int64_t n, dst_t * y, const src0_t * x) {
+  - '    constexpr auto src0_to_f32 = type_conversion_table<src0_t>::to_f32;'
+  - '    constexpr auto f32_to_dst  = type_conversion_table<dst_t >::from_f32;'
+  - ''
+  - '    for (int i = 0; i < n; i++) {'
+  - '        y[i] = f32_to_dst(op(src0_to_f32(x[i])));'
+  - '    }'
+  - '}'
+  desc: 模板函数：对长度为 n 的向量执行一元操作，支持源和目标的数据类型转换。
+  line: 102-111
+  name: vec_unary_op
+- code:
+  - template <float (*op)(float), typename src0_t, typename dst_t>
+  - static void apply_unary_op(const ggml_compute_params * params, ggml_tensor * dst)
+    {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - ''
+  - '    GGML_ASSERT(ggml_is_contiguous_rows(src0) && ggml_is_contiguous_rows(dst)
+    && ggml_are_same_shape(src0, dst));'
+  - ''
+  - '    GGML_TENSOR_UNARY_OP_LOCALS'
+  - ''
+  - '    GGML_ASSERT( nb0 == sizeof(dst_t));'
+  - '    GGML_ASSERT(nb00 == sizeof(src0_t));'
+  - ''
+  - '    const auto [ir0, ir1] = get_thread_range(params, src0);'
+  - ''
+  - '    for (int64_t ir = ir0; ir < ir1; ++ir) {'
+  - '        const int64_t i03 = ir/(ne02*ne01);'
+  - '        const int64_t i02 = (ir - i03*ne02*ne01)/ne01;'
+  - '        const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);'
+  - ''
+  - '        dst_t        * dst_ptr  = (dst_t  *)       ((char *)       dst->data  +
+    i03*nb3  + i02*nb2  + i01*nb1 );'
+  - '        const src0_t * src0_ptr = (const src0_t *) ((const char *) src0->data
+    + i03*nb03 + i02*nb02 + i01*nb01);'
+  - ''
+  - '        vec_unary_op<op>(ne0, dst_ptr, src0_ptr);'
+  - '    }'
+  - '}'
+  desc: 模板函数：在张量 dst 的行上应用 vec_unary_op，负责多线程并行和行迭代。
+  line: 113-132
+  name: apply_unary_op
+- code:
+  - template <float (*op)(float)>
+  - static void unary_op(const ggml_compute_params * params, ggml_tensor * dst) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - ''
+  - '    /*  */ if (src0->type == GGML_TYPE_F32  && dst->type == GGML_TYPE_F32) {
+    // all f32'
+  - '        apply_unary_op<op, float, float>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F16) {
+    // all f16'
+  - '        apply_unary_op<op, ggml_fp16_t, ggml_fp16_t>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_BF16) {
+    // all bf16'
+  - '        apply_unary_op<op, ggml_bf16_t, ggml_bf16_t>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op<op, ggml_bf16_t, float>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op<op, ggml_fp16_t, float>(params, dst);'
+  - '    } else {'
+  - '        fprintf(stderr, "%s: unsupported types: dst: %s, src0: %s\n", __func__,'
+  - '            ggml_type_name(dst->type), ggml_type_name(src0->type));'
+  - '        GGML_ABORT("fatal error");'
+  - '    }'
+  - '}'
+  desc: 模板函数：根据 src0 和 dst 的 gglm 类型分发到具体的 apply_unary_op 实例，不支持的类型则报错。
+  line: 134-153
+  name: unary_op
+- code:
+  - template <float (*op)(float, ggml_tensor *)>
+  - static void unary_op_params(const ggml_compute_params * params, ggml_tensor *
+    dst) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - ''
+  - '    /*  */ if (src0->type == GGML_TYPE_F32  && dst->type == GGML_TYPE_F32) {
+    // all f32'
+  - '        apply_unary_op<op, float, float>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F16) {
+    // all f16'
+  - '        apply_unary_op<op, ggml_fp16_t, ggml_fp16_t>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_BF16) {
+    // all bf16'
+  - '        apply_unary_op<op, ggml_bf16_t, ggml_bf16_t>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op<op, ggml_bf16_t, float>(params, dst);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op<op, ggml_fp16_t, float>(params, dst);'
+  - '    } else {'
+  - '        fprintf(stderr, "%s: unsupported types: dst: %s, src0: %s\n", __func__,'
+  - '            ggml_type_name(dst->type), ggml_type_name(src0->type));'
+  - '        GGML_ABORT("fatal error");'
+  - '    }'
+  - '}'
+  desc: 模板函数：用于带参数的算子，根据数据类型分发到 apply_unary_op 实例。
+  line: 155-174
+  name: unary_op_params
+- code:
+  - template <typename Op, typename src0_t, typename dst_t>
+  - static inline void vec_unary_op_functor(int64_t n, dst_t * y, const src0_t * x,
+    Op op) {
+  - '    constexpr auto src0_to_f32 = type_conversion_table<src0_t>::to_f32;'
+  - '    constexpr auto f32_to_dst  = type_conversion_table<dst_t >::from_f32;'
+  - ''
+  - '    for (int i = 0; i < n; i++) {'
+  - '        y[i] = f32_to_dst(op(src0_to_f32(x[i])));'
+  - '    }'
+  - '}'
+  desc: 模板函数：仿函数版本的向量处理，支持自定义跳跃函数对象。
+  line: 176-185
+  name: vec_unary_op_functor
+- code:
+  - template <typename Op, typename src0_t, typename dst_t>
+  - static void apply_unary_op_functor(const ggml_compute_params * params, ggml_tensor
+    * dst, Op op) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - ''
+  - '    GGML_ASSERT(ggml_is_contiguous_1(src0) && ggml_is_contiguous_1(dst) && ggml_are_same_shape(src0,
+    dst));'
+  - ''
+  - '    GGML_TENSOR_UNARY_OP_LOCALS'
+  - ''
+  - '    GGML_ASSERT( nb0 == sizeof(dst_t));'
+  - '    GGML_ASSERT(nb00 == sizeof(src0_t));'
+  - ''
+  - '    const auto [ir0, ir1] = get_thread_range(params, src0);'
+  - ''
+  - '    for (int64_t ir = ir0; ir < ir1; ++ir) {'
+  - '        const int64_t i03 = ir/(ne02*ne01);'
+  - '        const int64_t i02 = (ir - i03*ne02*ne01)/ne01;'
+  - '        const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);'
+  - ''
+  - '        dst_t        * dst_ptr  = (dst_t  *)       ((char *)       dst->data  +
+    i03*nb3  + i02*nb2  + i01*nb1 );'
+  - '        const src0_t * src0_ptr = (const src0_t *) ((const char *) src0->data
+    + i03*nb03 + i02*nb02 + i01*nb01);'
+  - ''
+  - '        vec_unary_op_functor(ne0, dst_ptr, src0_ptr, op);'
+  - '    }'
+  - '}'
+  desc: 模板函数：仿函数版本的张量行应用，支持自定义操作。
+  line: 187-206
+  name: apply_unary_op_functor
+- code:
+  - template <typename Op>
+  - static void unary_op_functor(const ggml_compute_params * params, ggml_tensor *
+    dst, Op op) {
+  - '    const ggml_tensor * src0 = dst->src[0];'
+  - ''
+  - '    /*  */ if (src0->type == GGML_TYPE_F32  && dst->type == GGML_TYPE_F32) {
+    // all f32'
+  - '        apply_unary_op_functor<Op, float, float>(params, dst, op);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F16) {
+    // all f16'
+  - '        apply_unary_op_functor<Op, ggml_fp16_t, ggml_fp16_t>(params, dst, op);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_BF16) {
+    // all bf16'
+  - '        apply_unary_op_functor<Op, ggml_bf16_t, ggml_bf16_t>(params, dst, op);'
+  - '    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op_functor<Op, ggml_bf16_t, float>(params, dst, op);'
+  - '    } else if (src0->type == GGML_TYPE_F16  && dst->type == GGML_TYPE_F32) {'
+  - '        apply_unary_op_functor<Op, ggml_fp16_t, float>(params, dst, op);'
+  - '    } else {'
+  - '        fprintf(stderr, "%s: unsupported types: dst: %s, src0: %s\n", __func__,'
+  - '            ggml_type_name(dst->type), ggml_type_name(src0->type));'
+  - '        GGML_ABORT("fatal error");'
+  - '    }'
+  - '}'
+  desc: 模板函数：仿函数版本的通用分发器，根据数据类型调用 apply_unary_op_functor。
+  line: 208-227
+  name: unary_op_functor
+- code:
+  - void ggml_compute_forward_abs(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_abs>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行绝对值运算。
+  line: 229-231
+  name: ggml_compute_forward_abs
+- code:
+  - void ggml_compute_forward_sgn(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_sgn>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行符号函数运算。
+  line: 233-235
+  name: ggml_compute_forward_sgn
+- code:
+  - void ggml_compute_forward_neg(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_neg>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行取反运算。
+  line: 237-239
+  name: ggml_compute_forward_neg
+- code:
+  - void ggml_compute_forward_step(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_step>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行阶跃函数运算。
+  line: 241-243
+  name: ggml_compute_forward_step
+- code:
+  - void ggml_compute_forward_tanh(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_tanh>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行双曲正切运算。
+  line: 245-247
+  name: ggml_compute_forward_tanh
+- code:
+  - void ggml_compute_forward_elu(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_elu>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 ELU 激活运算。
+  line: 249-251
+  name: ggml_compute_forward_elu
+- code:
+  - void ggml_compute_forward_relu(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_relu>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 ReLU 激活运算。
+  line: 253-255
+  name: ggml_compute_forward_relu
+- code:
+  - void ggml_compute_forward_sigmoid(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_sigmoid>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 Sigmoid 激活运算。
+  line: 257-259
+  name: ggml_compute_forward_sigmoid
+- code:
+  - void ggml_compute_forward_hardsigmoid(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_hardsigmoid>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 Hard Sigmoid 激活运算。
+  line: 261-263
+  name: ggml_compute_forward_hardsigmoid
+- code:
+  - void ggml_compute_forward_exp(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_exp>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行指数运算。
+  line: 265-267
+  name: ggml_compute_forward_exp
+- code:
+  - void ggml_compute_forward_hardswish(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_hardswish>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 Hard Swish 激活运算。
+  line: 269-271
+  name: ggml_compute_forward_hardswish
+- code:
+  - void ggml_compute_forward_sqr(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_sqr>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行平方运算。
+  line: 273-275
+  name: ggml_compute_forward_sqr
+- code:
+  - void ggml_compute_forward_sqrt(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_sqrt>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行平方根运算。
+  line: 277-279
+  name: ggml_compute_forward_sqrt
+- code:
+  - void ggml_compute_forward_sin(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_sin>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行正弦运算。
+  line: 281-283
+  name: ggml_compute_forward_sin
+- code:
+  - void ggml_compute_forward_cos(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_cos>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行余弦运算。
+  line: 285-287
+  name: ggml_compute_forward_cos
+- code:
+  - void ggml_compute_forward_log(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_log>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行自然对数运算。
+  line: 289-291
+  name: ggml_compute_forward_log
+- code:
+  - void ggml_compute_forward_expm1(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_expm1>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 exp(x)-1 运算。
+  line: 293-295
+  name: ggml_compute_forward_expm1
+- code:
+  - void ggml_compute_forward_softplus(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_softplus>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行 Softplus 激活运算。
+  line: 297-299
+  name: ggml_compute_forward_softplus
+- code:
+  - void ggml_compute_forward_floor(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_floor>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行向下取整运算。
+  line: 301-303
+  name: ggml_compute_forward_floor
+- code:
+  - void ggml_compute_forward_ceil(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_ceil>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行向上取整运算。
+  line: 305-307
+  name: ggml_compute_forward_ceil
+- code:
+  - void ggml_compute_forward_round(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_round>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行四舍五入运算。
+  line: 309-311
+  name: ggml_compute_forward_round
+- code:
+  - void ggml_compute_forward_trunc(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    unary_op<op_trunc>(params, dst);'
+  - '}'
+  desc: 公开入口函数：调用 unary_op 执行向零取整运算。
+  line: 313-315
+  name: ggml_compute_forward_trunc
+- code:
+  - void ggml_compute_forward_xielu(const ggml_compute_params * params, ggml_tensor
+    * dst) {
+  - '    const float alpha_n = ggml_get_op_params_f32(dst, 1);'
+  - '    const float alpha_p = ggml_get_op_params_f32(dst, 2);'
+  - '    const float beta = ggml_get_op_params_f32(dst, 3);'
+  - '    const float eps = ggml_get_op_params_f32(dst, 4);'
+  - ''
+  - '    const auto xielu_op_params = [alpha_n, alpha_p, beta, eps](float f) {'
+  - '        return op_xielu(f, alpha_n, alpha_p, beta, eps);'
+  - '    };'
+  - ''
+  - '    unary_op_functor(params, dst, xielu_op_params);'
+  - '}'
+  desc: 公开入口函数：提取张量参数构建 lambda 仿函数，调用 unary_op_functor 执行 XieLU 激活运算。
+  line: 317-328
+  name: ggml_compute_forward_xielu

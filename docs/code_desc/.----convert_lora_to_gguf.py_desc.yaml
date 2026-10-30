@@ -1,0 +1,451 @@
+classes:
+- desc: A simple dataclass that holds the A and B low-rank matrices of a LoRA tensor,
+    where each part can be None.
+  methods: []
+  name: PartialLoraTensor
+- desc: A custom tensor wrapper class that represents a LoRA tensor as a pair of low-rank
+    matrices (A and B), supporting operations like indexing, reshaping, permuting,
+    and stacking while maintaining the LoRA decomposition.
+  methods:
+  - code:
+    - 'def __init__(self, A: Tensor, B: Tensor):'
+    - '    assert len(A.shape) == len(B.shape)'
+    - '    assert A.shape[-2] == B.shape[-1]'
+    - '    if A.dtype != B.dtype:'
+    - '        A = A.to(torch.float32)'
+    - '        B = B.to(torch.float32)'
+    - '    self._lora_A = A'
+    - '    self._lora_B = B'
+    - '    self._rank = B.shape[-1]'
+    desc: Initializes a LoraTorchTensor with the A and B low-rank matrices, converting
+      dtypes if they mismatch.
+    line: 64-72
+    name: __init__
+  - code:
+    - 'def get_lora_A_B(self) -> tuple[Tensor, Tensor]:'
+    - '    return (self._lora_A, self._lora_B)'
+    desc: Returns the A and B low-rank matrices as a tuple.
+    line: 74-75
+    name: get_lora_A_B
+  - code:
+    - def __getitem__(
+    - '    self,'
+    - '    indices: ('
+    - '        SupportsIndex'
+    - '        | slice'
+    - '        | tuple[SupportsIndex | slice | Tensor, ...]'
+    - '    ),'
+    - ') -> LoraTorchTensor:'
+    - '    shape = self.shape'
+    - '    if isinstance(indices, SupportsIndex):'
+    - '        if len(shape) > 2:'
+    - '            return LoraTorchTensor(self._lora_A[indices], self._lora_B[indices])'
+    - '        else:'
+    - '            raise NotImplementedError'
+    - '    elif isinstance(indices, slice):'
+    - '        if len(shape) > 2:'
+    - '            return LoraTorchTensor(self._lora_A[indices], self._lora_B[indices])'
+    - '        else:'
+    - '            return LoraTorchTensor(self._lora_A, self._lora_B[indices])'
+    - '    elif isinstance(indices, tuple):'
+    - '        assert len(indices) > 0'
+    - '        if indices[-1] is Ellipsis:'
+    - '            return self[indices[:-1]]'
+    - '        indices = tuple('
+    - '            u'
+    - '            for v in ('
+    - '                ('
+    - '                    (slice(None, None) for _ in range(len(indices) - 1))'
+    - '                    if i is Ellipsis else (i,)'
+    - '                )'
+    - '                for i in indices'
+    - '            )'
+    - '            for u in v'
+    - '        )'
+    - '        if len(indices) < len(shape):'
+    - '            indices = (*indices, *(slice(None, None) for _ in range(len(indices),
+      len(shape))))'
+    - '        indices_A = ('
+    - '            *('
+    - '                ('
+    - '                    j.__index__() % self._lora_A.shape[i]'
+    - '                    if isinstance(j, SupportsIndex) else slice(None, None)'
+    - '                )'
+    - '                for i, j in enumerate(indices[:-2])'
+    - '            ),'
+    - '            slice(None, None),'
+    - '            indices[-1],'
+    - '        )'
+    - '        indices_B = indices[:-1]'
+    - '        return LoraTorchTensor(self._lora_A[indices_A], self._lora_B[indices_B])'
+    - '    else:'
+    - '        raise NotImplementedError'
+    desc: Supports indexing and slicing operations on the LoRA tensor, returning new
+      LoraTorchTensor objects or raising exceptions for unsupported operations.
+    line: 77-119
+    name: __getitem__
+  - code:
+    - '@property'
+    - 'def dtype(self) -> torch.dtype:'
+    - '    assert self._lora_A.dtype == self._lora_B.dtype'
+    - '    return self._lora_A.dtype'
+    desc: Property that returns the dtype of the LoRA tensor, asserting both matrices
+      have the same dtype.
+    line: 121-123
+    name: dtype
+  - code:
+    - '@property'
+    - 'def shape(self) -> tuple[int, ...]:'
+    - '    assert len(self._lora_A.shape) == len(self._lora_B.shape)'
+    - '    return (*self._lora_B.shape[:-1], self._lora_A.shape[-1])'
+    desc: Property that returns the shape of the LoRA tensor, which is derived from
+      the B matrix shape and A matrix's last dimension.
+    line: 125-127
+    name: shape
+  - code:
+    - 'def size(self, dim=None):'
+    - '    assert dim is None'
+    - '    return self.shape'
+    desc: Returns the shape of the LoRA tensor, ignoring the dim parameter.
+    line: 129-131
+    name: size
+  - code:
+    - 'def contiguous(self) -> LoraTorchTensor:'
+    - '    return LoraTorchTensor('
+    - '        self._lora_A.contiguous(),'
+    - '        self._lora_B.contiguous(),'
+    - '    )'
+    desc: Returns a new LoraTorchTensor with contiguous memory layout for both matrices.
+    line: 133-137
+    name: contiguous
+  - code:
+    - 'def reshape(self, *shape: int | tuple[int, ...]) -> LoraTorchTensor:'
+    - '    if isinstance(shape[0], tuple):'
+    - '        new_shape: tuple[int, ...] = shape[0]'
+    - '    else:'
+    - '        new_shape = cast(tuple[int, ...], shape)'
+    - '    orig_shape = self.shape'
+    - '    if len(new_shape) < 2:'
+    - '        raise NotImplementedError'
+    - '    if any(dim == -1 for dim in new_shape):'
+    - '        n_elems = prod(orig_shape)'
+    - '        n_new_elems = prod(dim if dim != -1 else 1 for dim in new_shape)'
+    - '        assert n_elems % n_new_elems == 0'
+    - '        new_shape = (*(dim if dim != -1 else n_elems // n_new_elems for dim
+      in new_shape),)'
+    - '    if new_shape[-1] != orig_shape[-1]:'
+    - '        raise NotImplementedError'
+    - '    shape_A = (*(1 for _ in new_shape[:-2]), self._rank, orig_shape[-1])'
+    - '    shape_B = (*new_shape[:-1], self._rank)'
+    - '    return LoraTorchTensor('
+    - '        self._lora_A.reshape(shape_A),'
+    - '        self._lora_B.reshape(shape_B),'
+    - '    )'
+    desc: Reshapes the LoRA tensor, maintaining the decomposition by adjusting the
+      shapes of A and B matrices appropriately.
+    line: 139-159
+    name: reshape
+  - code:
+    - 'def reshape_as(self, other: Tensor) -> LoraTorchTensor:'
+    - '    return self.reshape(*other.shape)'
+    desc: Reshapes the LoRA tensor to match the shape of another tensor.
+    line: 161-162
+    name: reshape_as
+  - code:
+    - 'def view(self, *size: int) -> LoraTorchTensor:'
+    - '    return self.reshape(*size)'
+    desc: Alias for the reshape method.
+    line: 164-165
+    name: view
+  - code:
+    - 'def permute(self, *dims: int) -> LoraTorchTensor:'
+    - '    shape = self.shape'
+    - '    dims = tuple(dim - len(shape) if dim >= 0 else dim for dim in dims)'
+    - '    if dims[-1] == -1:'
+    - '        assert all(dim == 1 for dim in self._lora_A.shape[:-2])'
+    - '        return LoraTorchTensor(self._lora_A, self._lora_B.permute(*dims))'
+    - '    if len(shape) == 2 and dims[-1] == -2 and dims[-2] == -1:'
+    - '        return LoraTorchTensor(self._lora_B.permute(*dims), self._lora_A.permute(*dims))'
+    - '    else:'
+    - '        raise NotImplementedError'
+    desc: Permutes the dimensions of the LoRA tensor, supporting 2D transpose as a
+      special case.
+    line: 167-178
+    name: permute
+  - code:
+    - 'def transpose(self, dim0: int, dim1: int) -> LoraTorchTensor:'
+    - '    shape = self.shape'
+    - '    dims = [i for i in range(len(shape))]'
+    - '    dims[dim0], dims[dim1] = dims[dim1], dims[dim0]'
+    - '    return self.permute(*dims)'
+    desc: Transposes the LoRA tensor by swapping two dimensions and calling permute.
+    line: 180-184
+    name: transpose
+  - code:
+    - 'def swapaxes(self, axis0: int, axis1: int) -> LoraTorchTensor:'
+    - '    return self.transpose(axis0, axis1)'
+    desc: Alias for the transpose method.
+    line: 186-187
+    name: swapaxes
+  - code:
+    - 'def to(self, *args, **kwargs):'
+    - '    return LoraTorchTensor(self._lora_A.to(*args, **kwargs), self._lora_B.to(*args,
+      **kwargs))'
+    desc: Converts both matrices to the specified dtype/device, returning a new LoraTorchTensor.
+    line: 189-190
+    name: to
+  - code:
+    - '@classmethod'
+    - 'def __torch_function__(cls, func: Callable, types, args=(), kwargs=None):'
+    - '    del types'
+    - '    if kwargs is None:'
+    - '        kwargs = {}'
+    - '    if func is torch.permute:'
+    - '        assert len(args)'
+    - '        return type(args[0]).permute(*args, **kwargs)'
+    - '    elif func is torch.reshape:'
+    - '        assert len(args)'
+    - '        return type(args[0]).reshape(*args, **kwargs)'
+    - '    elif func is torch.stack:'
+    - '        assert len(args)'
+    - '        assert isinstance(args[0], Sequence)'
+    - '        dim = kwargs.get("dim", 0)'
+    - '        assert dim == 0'
+    - '        return LoraTorchTensor('
+    - '            torch.stack([a._lora_A for a in args[0]], dim),'
+    - '            torch.stack([b._lora_B for b in args[0]], dim),'
+    - '        )'
+    - '    elif func is torch.cat:'
+    - '        assert len(args)'
+    - '        assert isinstance(args[0], Sequence)'
+    - '        dim = kwargs.get("dim", 0)'
+    - '        assert dim == 0'
+    - '        if len(args[0][0].shape) > 2:'
+    - '            return LoraTorchTensor('
+    - '                torch.cat([a._lora_A for a in args[0]], dim),'
+    - '                torch.cat([b._lora_B for b in args[0]], dim),'
+    - '            )'
+    - '        elif all(torch.equal(args[0][0]._lora_A, t._lora_A) for t in args[0][1:]):'
+    - '            return LoraTorchTensor('
+    - '                args[0][0]._lora_A,'
+    - '                torch.cat([b._lora_B for b in args[0]], dim),'
+    - '            )'
+    - '        else:'
+    - '            raise NotImplementedError'
+    - '    else:'
+    - '        raise NotImplementedError'
+    desc: Class method that intercepts torch operations and implements custom behavior
+      for torch.permute, torch.reshape, torch.stack, and torch.cat on LoraTorchTensor
+      objects.
+    line: 192-223
+    name: __torch_function__
+  name: LoraTorchTensor
+- desc: A specialized model class that extends the base model class to handle LoRA
+    adapter conversion, overriding methods for GGUF type, parameters, tensor generation,
+    and modification.
+  methods:
+  - code:
+    - 'def __init__(self, *args, dir_lora_model: Path, lora_alpha: float, **kwargs):'
+    - '    super().__init__(*args, **kwargs)'
+    - '    self.dir_model_card = dir_lora_model'
+    - '    self.lora_alpha = float(lora_alpha)'
+    desc: Initializes the LoraModel with additional parameters for the LoRA adapter
+      directory and alpha value.
+    line: 331-335
+    name: __init__
+  - code:
+    - 'def set_vocab(self):'
+    - '    pass'
+    desc: Overridden method that does nothing for LoRA adapters.
+    line: 337-338
+    name: set_vocab
+  - code:
+    - 'def set_type(self):'
+    - '    self.gguf_writer.add_type(gguf.GGUFType.ADAPTER)'
+    - '    self.gguf_writer.add_string(gguf.Keys.Adapter.TYPE, "lora")'
+    desc: Sets the GGUF type to ADAPTER and adds the 'lora' type string.
+    line: 340-342
+    name: set_type
+  - code:
+    - 'def set_gguf_parameters(self):'
+    - '    logger.debug("GGUF KV: %s = %d", gguf.Keys.Adapter.LORA_ALPHA, self.lora_alpha)'
+    - '    self.gguf_writer.add_float32(gguf.Keys.Adapter.LORA_ALPHA, self.lora_alpha)'
+    - '    alora_invocation_tokens = lparams.get("alora_invocation_tokens")'
+    - '    invocation_string = lparams.get("invocation_string")'
+    - '    if invocation_string and not alora_invocation_tokens:'
+    - '        logger.debug("Tokenizing invocation_string -> alora_invocation_tokens")'
+    - '        base_model_path_or_id = hparams.get("_name_or_path")'
+    - '        try:'
+    - '            tokenizer = AutoTokenizer.from_pretrained(base_model_path_or_id)'
+    - '        except ValueError:'
+    - '            logger.error("Unable to load tokenizer from %s", base_model_path_or_id)'
+    - '            raise'
+    - '        alora_invocation_tokens = tokenizer(invocation_string)["input_ids"][1:]'
+    - '    if alora_invocation_tokens:'
+    - '        logger.debug("GGUF KV: %s = %s", gguf.Keys.Adapter.ALORA_INVOCATION_TOKENS,
+      alora_invocation_tokens)'
+    - '        self.gguf_writer.add_key_value('
+    - '            gguf.Keys.Adapter.ALORA_INVOCATION_TOKENS,'
+    - '            alora_invocation_tokens,'
+    - '            GGUFValueType.ARRAY,'
+    - '            GGUFValueType.UINT32,'
+    - '        )'
+    desc: Adds LoRA-specific parameters to the GGUF writer, including lora_alpha and
+      optionally tokenized invocation tokens.
+    line: 344-369
+    name: set_gguf_parameters
+  - code:
+    - 'def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:'
+    - '    return ()'
+    desc: Returns an empty iterable to indicate no extra tensors should be added for
+      LoRA adapters.
+    line: 371-372
+    name: generate_extra_tensors
+  - code:
+    - 'def get_tensors(self) -> Iterator[tuple[str, Tensor]]:'
+    - '    tensor_map: dict[str, PartialLoraTensor] = {}'
+    - '    for name, tensor in lora_model.items():'
+    - '        if self.lazy:'
+    - '            tensor = LazyTorchTensor.from_eager(tensor)'
+    - '        base_name = get_base_tensor_name(name)'
+    - '        is_lora_a = ".lora_A.weight" in name or ".lora_embedding_A" in name'
+    - '        is_lora_b = ".lora_B.weight" in name or ".lora_embedding_B" in name'
+    - '        if not is_lora_a and not is_lora_b:'
+    - '            if ".base_layer.weight" in name:'
+    - '                continue'
+    - '            if "_layernorm" in name or ".norm" in name:'
+    - '                yield (base_name, tensor)'
+    - '                continue'
+    - '            logger.error(f"Unexpected name ''{name}'': Not a lora_A or lora_B
+      tensor")'
+    - '            if ".embed_tokens.weight" in name or ".lm_head.weight" in name:'
+    - '                logger.error("Embeddings is present in the adapter. This can
+      be due to new tokens added during fine tuning")'
+    - '                logger.error("Please refer to https://github.com/ggml-org/llama.cpp/pull/9948")'
+    - '            sys.exit(1)'
+    - '        if base_name in tensor_map:'
+    - '            if is_lora_a:'
+    - '                tensor_map[base_name].A = tensor'
+    - '            else:'
+    - '                tensor_map[base_name].B = tensor'
+    - '        else:'
+    - '            if is_lora_a:'
+    - '                tensor_map[base_name] = PartialLoraTensor(A=tensor)'
+    - '            else:'
+    - '                tensor_map[base_name] = PartialLoraTensor(B=tensor)'
+    - '    for name, tensor in tensor_map.items():'
+    - '        assert tensor.A is not None'
+    - '        assert tensor.B is not None'
+    - '        yield (name, cast(torch.Tensor, LoraTorchTensor(tensor.A, tensor.B)))'
+    desc: Loads LoRA tensors from the model, groups them by base tensor name, and
+      yields LoraTorchTensor objects for each pair of A and B matrices.
+    line: 374-401
+    name: get_tensors
+  - code:
+    - 'def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) ->
+      Iterable[tuple[str, Tensor]]:'
+    - '    dest = list(super().modify_tensors(data_torch, name, bid))'
+    - '    if name == "lm_head.weight" and len(dest) == 0:'
+    - '        raise ValueError("lm_head is present in adapter, but is ignored in
+      base model")'
+    - '    for dest_name, dest_data in dest:'
+    - '        if "_norm" in dest_name:'
+    - '            assert dest_data.dim() == 1'
+    - '            yield (dest_name, dest_data)'
+    - '            continue'
+    - '        assert isinstance(dest_data, LoraTorchTensor)'
+    - '        lora_a, lora_b = dest_data.get_lora_A_B()'
+    - '        if "token_embd.weight" in dest_name:'
+    - '            lora_a = lora_a.T'
+    - '        yield (dest_name + ".lora_a", lora_a)'
+    - '        yield (dest_name + ".lora_b", lora_b)'
+    desc: Modifies the tensors for GGUF export, separating LoRA A and B matrices,
+      handling special cases for norms and token embeddings.
+    line: 403-418
+    name: modify_tensors
+  name: LoraModel
+desc: This file implements a converter that transforms Hugging Face PEFT LoRA adapter
+  files into GGUF format for use with llama.cpp. It handles loading LoRA configurations
+  and weights, maps them to the base model architecture, and exports them in the GGUF
+  adapter format. The script uses lazy tensor operations and custom tensor classes
+  to efficiently handle LoRA's low-rank matrix decomposition.
+file: ./convert_lora_to_gguf.py
+funcs:
+- code:
+  - 'def get_base_tensor_name(lora_tensor_name: str) -> str:'
+  - '    base_name = lora_tensor_name.replace("base_model.model.", "")'
+  - '    base_name = base_name.replace(".lora_A.weight", ".weight")'
+  - '    base_name = base_name.replace(".lora_B.weight", ".weight")'
+  - '    base_name = base_name.replace(".lora_embedding_A", ".weight")'
+  - '    base_name = base_name.replace(".lora_embedding_B", ".weight")'
+  - '    return base_name'
+  desc: Converts a LoRA tensor name to the base model tensor name by removing prefixes
+    and suffixes.
+  line: 228-234
+  name: get_base_tensor_name
+- code:
+  - 'def parse_args() -> argparse.Namespace:'
+  - '    parser = argparse.ArgumentParser('
+  - '        description="Convert a Hugging Face PEFT LoRA adapter to a GGUF file")'
+  - '    parser.add_argument('
+  - '        "--outfile", type=Path,'
+  - '        help="path to write to; default: based on input. {ftype} will be replaced
+    by the outtype.",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--outtype", type=str, choices=["f32", "f16", "bf16", "q8_0", "auto"],
+    default="f32",'
+  - '        help="output format - use f32 for float32, f16 for float16, bf16 for
+    bfloat16, q8_0 for Q8_0, auto for the highest-fidelity 16-bit float type depending
+    on the first loaded tensor type",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--bigendian", action="store_true",'
+  - '        help="model is executed on big endian machine",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--no-lazy", action="store_true",'
+  - '        help="use more RAM by computing all outputs before writing (use in case
+    lazy evaluation is broken)",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--verbose", action="store_true",'
+  - '        help="increase output verbosity",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--dry-run", action="store_true",'
+  - '        help="only print out what will be done, without writing any new files",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--base", type=Path,'
+  - '        help="directory containing Hugging Face model config files (config.json,
+    tokenizer.json) for the base model that the adapter is based on - only config
+    is needed, actual model weights are not required. If base model is unspecified,
+    it will be loaded from Hugging Face hub based on the adapter config",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "--base-model-id", type=str,'
+  - '        help="the model ID of the base model, if it is not available locally
+    or in the adapter config. If specified, it will ignore --base and load the base
+    model config from the Hugging Face hub (Example: ''meta-llama/Llama-3.2-1B-Instruct'')",'
+  - '    )'
+  - '    parser.add_argument('
+  - '        "lora_path", type=Path,'
+  - '        help="directory containing Hugging Face PEFT LoRA config (adapter_model.json)
+    and weights (adapter_model.safetensors or adapter_model.bin)",'
+  - '    )'
+  - '    return parser.parse_args()'
+  desc: Parses command-line arguments for the LoRA to GGUF converter script.
+  line: 237-265
+  name: parse_args
+- code:
+  - 'def load_hparams_from_hf(hf_model_id: str) -> tuple[dict[str, Any], Path | None]:'
+  - '    from huggingface_hub import try_to_load_from_cache'
+  - '    config = AutoConfig.from_pretrained(hf_model_id)'
+  - '    cache_dir = try_to_load_from_cache(hf_model_id, "config.json")'
+  - '    cache_dir = Path(cache_dir).parent if isinstance(cache_dir, str) else None'
+  - '    return config.to_dict(), cache_dir'
+  desc: Loads model hyperparameters from Hugging Face hub using AutoConfig and returns
+    the config dict and cache directory path.
+  line: 268-274
+  name: load_hparams_from_hf

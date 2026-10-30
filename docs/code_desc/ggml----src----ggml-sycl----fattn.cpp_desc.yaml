@@ -1,0 +1,64 @@
+classes: []
+desc: 该文件是ggml项目中SYCL后端的Flash Attention扩展实现，负责根据GPU硬件特性和张量属性动态选择最优的Flash Attention计算内核（向量内核或瓦片内核）并分发执行。
+file: ggml/src/ggml-sycl/fattn.cpp
+funcs:
+- code:
+  - static void ggml_sycl_flash_attn_ext_vec(ggml_backend_sycl_context & ctx, ggml_tensor
+    * dst) {
+  - '    ggml_tensor * Q = dst->src[0];'
+  - '    ggml_tensor * K = dst->src[1];'
+  - '    ggml_tensor * V = dst->src[2];'
+  - '    #ifdef GGML_SYCL_FA_ALL_QUANTS'
+  - '        FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)'
+  - '        ...'
+  - '        FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)'
+  - '    #else'
+  - '        FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)'
+  - '        FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)'
+  - '        FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)'
+  - '    #endif'
+  - '    GGML_ABORT("Not match KV type in vec");'
+  - '}'
+  desc: 静态函数，通过宏模板化分发将Flash Attention扩展计算转发给针对不同数据类型和维度优化的向量内核实现。
+  line: 40-83
+  name: ggml_sycl_flash_attn_ext_vec
+- code:
+  - static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
+    ggml_tensor * dst) {
+  - '    GGML_UNUSED(device);'
+  - '    #ifndef SYCL_FLASH_ATTN'
+  - '        GGML_UNUSED(dst);'
+  - '        return BEST_FATTN_KERNEL_NONE;'
+  - '    #endif'
+  - '    if(!g_ggml_sycl_enable_flash_attention) return BEST_FATTN_KERNEL_NONE;'
+  - '    ...'
+  - '    return BEST_FATTN_KERNEL_TILE;'
+  - '}'
+  desc: 根据GPU设备特性、张量形状和数据类型，决策并返回最合适的Flash Attention内核类型（无内核、向量内核或瓦片内核）。
+  line: 89-171
+  name: ggml_sycl_get_best_fattn_kernel
+- code:
+  - void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+    {
+  - '    ggml_sycl_set_device(ctx.device);'
+  - '    switch (ggml_sycl_get_best_fattn_kernel(ggml_sycl_get_device(), dst)) {'
+  - '        case BEST_FATTN_KERNEL_NONE:'
+  - '            GGML_ABORT("Not support Flash-Attention");'
+  - '        case BEST_FATTN_KERNEL_TILE:'
+  - '            ggml_sycl_flash_attn_ext_tile(ctx, dst);'
+  - '            break;'
+  - '        case BEST_FATTN_KERNEL_VEC:'
+  - '            ggml_sycl_flash_attn_ext_vec(ctx, dst);'
+  - '            break;'
+  - '    }'
+  - '}'
+  desc: SYCL Flash Attention扩展的入口函数，根据选择的最优内核类型分发执行对应的内核实现。
+  line: 175-185
+  name: ggml_sycl_flash_attn_ext
+- code:
+  - bool ggml_sycl_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
+  - '    return ggml_sycl_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;'
+  - '}'
+  desc: 检查当前硬件和张量配置是否支持SYCL Flash Attention扩展。
+  line: 187-189
+  name: ggml_sycl_flash_attn_ext_supported

@@ -1,0 +1,163 @@
+classes:
+- desc: 一元运算上下文结构体，用于在线程间传递运算所需的所有参数和数据，包括源/目标数据指针、行大小、内存对齐量、SPAD（ScratchPad）内存大小和计数等。
+  methods: []
+  name: htp_unary_context
+desc: 该文件为Hexagon DSP（数字信号处理器）上的GGML库实现了F32类型的各种一元运算优化内核。它定义了多个静态函数用于执行RMS归一化、缩放、平方、平方根、取负、指数、Sigmoid和Softplus等操作，利用HVX（Hexagon矢量扩展）指令集进行加速，并通过双缓冲DMA传输和VTCM（矢量Tensor协处理器内存）分块处理以优化性能。文件主要包含上层操作调度函数和执行线程函数，支持多线程并行处理。
+file: ggml/src/ggml-hexagon/htp/unary-ops.c
+funcs:
+- code:
+  - static void hvx_fast_rms_norm_f32(const uint8_t * restrict src,
+  - '                                  uint8_t * restrict dst,'
+  - '                                  uint8_t * restrict pad,'
+  - '                                  const int num_elems,'
+  - '                                  float     epsilon) {'
+  - '    ... // 计算向量内积和sum of squares，计算RMS值并归一化输出'
+  - '}'
+  - ''
+  desc: 在HVX上优化的F32 RMS归一化内核函数，计算输入向量每行的均方根并归一化，支持尾数处理，使用HVX指令集加速，内联展开（unroll）循环进行性能优化。
+  line: 66-120
+  name: hvx_fast_rms_norm_f32
+- code:
+  - static void scale_f32(const float * restrict src,
+  - '                      float * restrict dst,'
+  - '                      uint8_t * restrict spad,'
+  - '                      const uint32_t num_rows,'
+  - '                      const uint32_t row_elems,'
+  - '                      const size_t   row_size,'
+  - '                      int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_scale_offset_f32_aa进行缩放'
+  - '}'
+  - ''
+  desc: 对输入F32向量执行缩放和偏置操作，遍历所有行调用hvx_scale_offset_f32_aa函数，从op_params中读取缩放因子和偏置。
+  line: 122-139
+  name: scale_f32
+- code:
+  - static void rms_norm_f32(const float * restrict src,
+  - '                         float * restrict dst,'
+  - '                         uint8_t * restrict spad,'
+  - '                         const uint32_t num_rows,'
+  - '                         const uint32_t row_elems,'
+  - '                         const size_t   row_size,'
+  - '                         int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_fast_rms_norm_f32'
+  - '}'
+  - ''
+  desc: 对输入F32向量执行RMS归一化，遍历所有行调用hvx_fast_rms_norm_f32函数，从op_params中读取epsilon值。
+  line: 141-157
+  name: rms_norm_f32
+- code:
+  - static void sqr_f32(const float * restrict src,
+  - '                    float * restrict dst,'
+  - '                    uint8_t * restrict spad,'
+  - '                    const uint32_t num_rows,'
+  - '                    const uint32_t row_elems,'
+  - '                    const size_t   row_size,'
+  - '                    int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_sqr_f32_aa'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素平方计算，遍历所有行调用hvx_sqr_f32_aa函数。
+  line: 159-172
+  name: sqr_f32
+- code:
+  - static void sqrt_f32(const float * restrict src,
+  - '                     float * restrict dst,'
+  - '                     uint8_t * restrict spad,'
+  - '                     const uint32_t num_rows,'
+  - '                     const uint32_t row_elems,'
+  - '                     const size_t   row_size,'
+  - '                     int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_sqrt_f32_aa'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素平方根计算，遍历所有行调用hvx_sqrt_f32_aa函数。
+  line: 174-187
+  name: sqrt_f32
+- code:
+  - static void neg_f32(const float * restrict src,
+  - '                    float * restrict dst,'
+  - '                    uint8_t * restrict spad,'
+  - '                    const uint32_t num_rows,'
+  - '                    const uint32_t row_elems,'
+  - '                    const size_t   row_size,'
+  - '                    int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_scale_f32_aa(dst, src, row_elems, -1.0f)'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素取负操作，遍历所有行调用hvx_scale_f32_aa函数，缩放因子设为-1.0。
+  line: 189-202
+  name: neg_f32
+- code:
+  - static void exp_f32(const float * restrict src,
+  - '                    float * restrict dst,'
+  - '                    uint8_t * restrict spad,'
+  - '                    const uint32_t num_rows,'
+  - '                    const uint32_t row_elems,'
+  - '                    const size_t   row_size,'
+  - '                    int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_exp_f32(dst_local, src_local, row_elems, false)'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素指数计算，遍历所有行调用hvx_exp_f32函数，不使用快速模式。
+  line: 204-217
+  name: exp_f32
+- code:
+  - static void sigmoid_f32(const float * restrict src,
+  - '                         float * restrict dst,'
+  - '                         uint8_t * restrict spad,'
+  - '                         const uint32_t num_rows,'
+  - '                         const uint32_t row_elems,'
+  - '                         const size_t   row_size,'
+  - '                         int32_t *      op_params) {'
+  - '    ... // 对每一行调用hvx_sigmoid_f32_aa'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素Sigmoid激活函数计算，遍历所有行调用hvx_sigmoid_f32_aa函数。
+  line: 219-231
+  name: sigmoid_f32
+- code:
+  - static void softplus_f32(const float * restrict src,
+  - '                         float * restrict dst,'
+  - '                         uint8_t * restrict spad,'
+  - '                         const uint32_t num_rows,'
+  - '                         const uint32_t row_elems,'
+  - '                         const size_t   row_size,'
+  - '                         int32_t *      op_params) {'
+  - '    ... // 对每个元素进行softplus计算，使用logf和expf'
+  - '}'
+  - ''
+  desc: 对输入F32向量进行逐元素Softplus计算（log(1+exp(x))），匹配CPU参考实现，有大数值优化（x>20时直接返回x）。
+  line: 233-250
+  name: softplus_f32
+- code:
+  - static void unary_job_f32_per_thread(unsigned int nth, unsigned int ith, void
+    * data) {
+  - '    ... // 获取上下文、执行DMA传输、按op类型执行计算、预取下一块数据'
+  - '}'
+  - ''
+  desc: 一元运算的线程入口函数，将输入数据从DDR传输到VTCM进行分块处理，通过DMA队列实现双缓冲和预取，根据操作类型（htp_op）调用对应的运算函数，处理完后再传输回DDR。
+  line: 252-322
+  name: unary_job_f32_per_thread
+- code:
+  - static int execute_op_unary_f32(struct htp_ops_context * octx) {
+  - '    ... // 设置操作类型、计算线程数、配置VTCM内存、初始化上下文、分发线程任务'
+  - '}'
+  - ''
+  desc: 一元F32操作的主执行函数，负责配置VTCM内存大小，创建线程上下文，计算各线程的数据分块，并调用worker_pool_run_func启动多线程执行。
+  line: 324-401
+  name: execute_op_unary_f32
+- code:
+  - int op_unary(struct htp_ops_context * octx) {
+  - '    ... // 根据src0.type分发到execute_op_unary_f32或返回HTP_STATUS_NO_SUPPORT'
+  - '}'
+  - ''
+  desc: 一元运算的入口函数，根据源张量的数据类型分发到具体的执行函数，支持F32类型，其他类型返回不支持。
+  line: 403-420
+  name: op_unary
+- code:
+  - '    // 宏定义、头文件包含和结构体定义部分，包括htp_unary_preamble宏（获取张量维度、步长等参数）'
+  - '    ... // 全局代码块，包括#defines和struct定义'
+  - ''
+  desc: 文件级全局代码，包含预定义字段、宏定义（htp_unary_preamble）、头文件包含和类型定义，为后续所有函数提供基础环境。
+  line: 1-60
+  name: __main__

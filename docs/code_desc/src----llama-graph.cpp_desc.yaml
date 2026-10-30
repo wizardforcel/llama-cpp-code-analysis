@@ -1,0 +1,2592 @@
+classes:
+- desc: Handles the input embeddings tensor, setting token embeddings or embedding
+    vectors from the ubatch.
+  methods:
+  - code:
+    - void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
+    - '    if (ubatch->token) {'
+    - '        const int64_t n_tokens = ubatch->n_tokens;'
+    - '        ggml_backend_tensor_set(tokens, ubatch->token, 0, n_tokens*ggml_element_size(tokens));'
+    - '    }'
+    - '    if (ubatch->embd) {'
+    - '        GGML_ASSERT(n_embd == embd->ne[0]);'
+    - '        const int64_t n_tokens = ubatch->n_tokens;'
+    - '        ggml_backend_tensor_set(embd, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(embd));'
+    - '    }'
+    - '}'
+    desc: Copies token or embedding data from the ubatch into the pre-allocated tensors.
+    line: 69-82
+    name: set_input
+  - code:
+    - bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
+    - '    bool res = true;'
+    - '    res &= (!params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);'
+    - '    res &= (!params.ubatch.embd)  || (embd   &&   embd->ne[1] == params.ubatch.n_tokens);'
+    - '    return res;'
+    - '}'
+    desc: Checks if the input embeddings tensor dimension matches the current ubatch
+      size.
+    line: 85-91
+    name: can_reuse
+  name: llm_graph_input_embd
+- desc: Manages positional encoding tensors, handling standard and multi-dimensional
+    (M-RoPE) position data.
+  methods:
+  - code:
+    - void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
+    - '    if (ubatch->pos && pos) {'
+    - '        const int64_t n_tokens = ubatch->n_tokens;'
+    - '        if (ubatch->token && n_pos_per_embd == 4) {'
+    - '            // in case we''re using M-RoPE with text tokens, convert the 1D
+      positions to 4D'
+    - '            // the 3 first dims are the same, and 4th dim is all 0'
+    - '            std::vector<llama_pos> pos_data(n_tokens*n_pos_per_embd);'
+    - '            // copy the first dimension'
+    - '            for (int i = 0; i < n_tokens; ++i) {'
+    - '                pos_data[               i] = ubatch->pos[i];'
+    - '                pos_data[    n_tokens + i] = ubatch->pos[i];'
+    - '                pos_data[2 * n_tokens + i] = ubatch->pos[i];'
+    - '                pos_data[3 * n_tokens + i] = 0; // 4th dim is 0'
+    - '            }'
+    - '            ggml_backend_tensor_set(pos, pos_data.data(), 0, pos_data.size()*ggml_element_size(pos));'
+    - '        } else {'
+    - '            ggml_backend_tensor_set(pos, ubatch->pos, 0, n_tokens*n_pos_per_embd*ggml_element_size(pos));'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets positional data from the ubatch, converting to multi-dimensional format
+      if needed for M-RoPE.
+    line: 93-118
+    name: set_input
+  - code:
+    - bool llm_graph_input_pos::can_reuse(const llm_graph_params & params) {
+    - '    bool res = true;'
+    - '    res &= pos->ne[0] == params.ubatch.n_tokens*n_pos_per_embd;'
+    - '    return res;'
+    - '}'
+    desc: Checks if the position tensor dimension matches the current ubatch size.
+    line: 120-125
+    name: can_reuse
+  name: llm_graph_input_pos
+- desc: Manages attention temperature scaling based on position and configured scaling
+    parameters.
+  methods:
+  - code:
+    - void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
+    - '    if (ubatch->pos && attn_scale) {'
+    - '        const int64_t n_tokens = ubatch->n_tokens;'
+    - '        GGML_ASSERT(f_attn_temp_scale != 0.0f);'
+    - '        GGML_ASSERT(n_attn_temp_floor_scale != 0);'
+    - '        std::vector<float> attn_scale_data(n_tokens, 0.0f);'
+    - '        for (int i = 0; i < n_tokens; ++i) {'
+    - '            const float pos = ubatch->pos[i];'
+    - '            attn_scale_data[i] = std::log('
+    - '                std::floor((pos + f_attn_temp_offset) / n_attn_temp_floor_scale)
+      + 1.0'
+    - '            ) * f_attn_temp_scale + 1.0;'
+    - '        }'
+    - '        ggml_backend_tensor_set(attn_scale, attn_scale_data.data(), 0, n_tokens*ggml_element_size(attn_scale));'
+    - '    }'
+    - '}'
+    desc: Computes and sets attention scale values based on positions and temperature
+      floor parameters.
+    line: 127-146
+    name: set_input
+  name: llm_graph_input_attn_temp
+- desc: Handles position bucket tensors for relative positional encoding.
+  methods:
+  - code:
+    - void llm_graph_input_pos_bucket::set_input(const llama_ubatch * ubatch) {
+    - '    if (pos_bucket) {'
+    - '        const int64_t n_tokens = ubatch->n_tokens;'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(pos_bucket->buffer));'
+    - '        GGML_ASSERT(!ubatch->equal_seqs()); // TODO: use ubatch->n_seqs instead
+      of failing'
+    - '        int32_t * data = (int32_t *) pos_bucket->data;'
+    - '        for (int j = 0; j < n_tokens; ++j) {'
+    - '            for (int i = 0; i < n_tokens; ++i) {'
+    - '                data[j*n_tokens + i] = llama_relative_position_bucket(ubatch->pos[i],
+      ubatch->pos[j], hparams.n_rel_attn_bkts, true);'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Computes relative position bucket IDs for token pairs and writes them to
+      the tensor.
+    line: 148-161
+    name: set_input
+  name: llm_graph_input_pos_bucket
+- desc: Handles position bucket tensors for key-value cache with positional encoding.
+  methods:
+  - code:
+    - void llm_graph_input_pos_bucket_kv::set_input(const llama_ubatch * ubatch) {
+    - '    if (pos_bucket) {'
+    - '        mctx->set_input_pos_bucket(pos_bucket, ubatch);'
+    - '    }'
+    - '}'
+    desc: Delegates position bucket setting to the KV cache context.
+    line: 164-168
+    name: set_input
+  name: llm_graph_input_pos_bucket_kv
+- desc: Manages output ID tensors that map token positions to output indices.
+  methods:
+  - code:
+    - void llm_graph_input_out_ids::set_input(const llama_ubatch * ubatch) {
+    - '    GGML_ASSERT(out_ids);'
+    - '    const int64_t n_tokens = ubatch->n_tokens;'
+    - '    GGML_ASSERT(ggml_backend_buffer_is_host(out_ids->buffer));'
+    - '    int32_t * data = (int32_t *) out_ids->data;'
+    - '    if (n_outputs == n_tokens) {'
+    - '        for (int i = 0; i < n_tokens; ++i) {'
+    - '            data[i] = i;'
+    - '        }'
+    - '        return;'
+    - '    }'
+    - '    GGML_ASSERT(ubatch->output);'
+    - '    int n_outputs = 0;'
+    - '    for (int i = 0; i < n_tokens; ++i) {'
+    - '        if (ubatch->output[i]) {'
+    - '            data[n_outputs++] = i;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Populates output ID tensor with token indices that are marked as outputs.
+    line: 170-193
+    name: set_input
+  - code:
+    - bool llm_graph_input_out_ids::can_reuse(const llm_graph_params & params) {
+    - '    bool res = true;'
+    - '    res &= n_outputs == params.n_outputs;'
+    - '    return res;'
+    - '}'
+    desc: Checks if the output count matches the expected number of outputs.
+    line: 195-200
+    name: can_reuse
+  name: llm_graph_input_out_ids
+- desc: Manages mean pooling tensor for embedding extraction, computing per-sequence
+    weight factors.
+  methods:
+  - code:
+    - void llm_graph_input_mean::set_input(const llama_ubatch * ubatch) {
+    - '    if (cparams.embeddings   &&'
+    - '       (cparams.pooling_type == LLAMA_POOLING_TYPE_MEAN ||'
+    - '        cparams.pooling_type == LLAMA_POOLING_TYPE_RANK )) {'
+    - '        const int64_t n_tokens     = ubatch->n_tokens;'
+    - '        const int64_t n_seq_tokens = ubatch->n_seq_tokens;'
+    - '        const int64_t n_seqs_unq   = ubatch->n_seqs_unq;'
+    - '        GGML_ASSERT(mean);'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(mean->buffer));'
+    - '        float * data = (float *) mean->data;'
+    - '        memset(mean->data, 0, n_tokens*n_seqs_unq*ggml_element_size(mean));'
+    - '        std::vector<uint64_t> sums(n_seqs_unq, 0);'
+    - '        for (int i = 0; i < n_tokens; i += n_seq_tokens) {'
+    - '            for (int s = 0; s < ubatch->n_seq_id[i]; ++s) {'
+    - '                const llama_seq_id seq_id  = ubatch->seq_id[i][s];'
+    - '                const int32_t      seq_idx = ubatch->seq_idx[seq_id];'
+    - '                sums[seq_idx] += ubatch->n_seq_tokens;'
+    - '            }'
+    - '        }'
+    - '        std::vector<float> div(n_seqs_unq, 0.0f);'
+    - '        for (int s = 0; s < n_seqs_unq; ++s) {'
+    - '            const uint64_t sum = sums[s];'
+    - '            if (sum > 0) {'
+    - '                div[s] = 1.0f/float(sum);'
+    - '            }'
+    - '        }'
+    - '        for (int i = 0; i < n_tokens; i += n_seq_tokens) {'
+    - '            for (int s = 0; s < ubatch->n_seq_id[i]; ++s) {'
+    - '                const llama_seq_id seq_id  = ubatch->seq_id[i][s];'
+    - '                const int32_t      seq_idx = ubatch->seq_idx[seq_id];'
+    - '                for (int j = 0; j < n_seq_tokens; ++j) {'
+    - '                    data[seq_idx*n_tokens + i + j] = div[seq_idx];'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Computes and sets mean pooling weights for sequences with mean or rank pooling
+      types.
+    line: 202-249
+    name: set_input
+  name: llm_graph_input_mean
+- desc: Manages CLS token index tensor for sequence classification or embedding extraction.
+  methods:
+  - code:
+    - void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
+    - '    const int64_t n_tokens     = ubatch->n_tokens;'
+    - '    const int64_t n_seqs_unq   = ubatch->n_seqs_unq;'
+    - '    if (cparams.embeddings && ('
+    - '        cparams.pooling_type == LLAMA_POOLING_TYPE_CLS  ||'
+    - '        cparams.pooling_type == LLAMA_POOLING_TYPE_RANK ||'
+    - '        cparams.pooling_type == LLAMA_POOLING_TYPE_LAST'
+    - '    )) {'
+    - '        GGML_ASSERT(cls);'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(cls->buffer));'
+    - '        uint32_t * data = (uint32_t *) cls->data;'
+    - '        memset(cls->data, 0, n_seqs_unq*ggml_element_size(cls));'
+    - '        std::vector<int> target_pos(n_seqs_unq, -1);'
+    - '        std::vector<int> target_row(n_seqs_unq, -1);'
+    - '        const bool last = ('
+    - '             cparams.pooling_type == LLAMA_POOLING_TYPE_LAST ||'
+    - '            (cparams.pooling_type == LLAMA_POOLING_TYPE_RANK && (arch == LLM_ARCH_QWEN3
+      || arch == LLM_ARCH_QWEN3VL)) // qwen3 reranking & embedding models use last
+      token'
+    - '        );'
+    - '        for (int i = 0; i < n_tokens; ++i) {'
+    - '            const llama_pos pos = ubatch->pos[i];'
+    - '            for (int s = 0; s < ubatch->n_seq_id[i]; ++s) {'
+    - '                const llama_seq_id seq_id  = ubatch->seq_id[i][s];'
+    - '                const int32_t      seq_idx = ubatch->seq_idx[seq_id];'
+    - '                if ('
+    - '                    (target_pos[seq_idx] == -1) ||'
+    - '                    ( last && pos >= target_pos[seq_idx]) ||'
+    - '                    (!last && pos <  target_pos[seq_idx])'
+    - '                ) {'
+    - '                    target_pos[seq_idx] = pos;'
+    - '                    target_row[seq_idx] = i;'
+    - '                }'
+    - '            }'
+    - '        }'
+    - '        for (int s = 0; s < n_seqs_unq; ++s) {'
+    - '            if (target_row[s] >= 0) {'
+    - '                data[s] = target_row[s];'
+    - '            }'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Identifies CLS (first) or LAST token positions per sequence and records
+      their indices.
+    line: 251-294
+    name: set_input
+  name: llm_graph_input_cls
+- desc: Manages recurrent state copy tensors for memory-recurrent architectures.
+  methods:
+  - code:
+    - void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
+    - '    GGML_UNUSED(ubatch);'
+    - '    const int64_t n_rs = mctx->get_n_rs();'
+    - '    if (s_copy) {'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(s_copy->buffer));'
+    - '        int32_t * data = (int32_t *) s_copy->data;'
+    - '        // assuming copy destinations ALWAYS happen ONLY on the cells between
+      head and head+n'
+    - '        for (uint32_t i = 0; i < n_rs; ++i) {'
+    - '            data[i] = mctx->s_copy(i);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Copies recurrent state copy flags from the memory context to the tensor.
+    line: 296-314
+    name: set_input
+  - code:
+    - bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
+    - '    const auto * mctx = static_cast<const llama_memory_recurrent_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= s_copy->ne[0] == mctx->get_n_rs();'
+    - '    res &= s_copy_main->ne[0]  == params.ubatch.n_seqs;'
+    - '    res &= s_copy_extra->ne[0] == mctx->get_n_rs() - params.ubatch.n_seqs;'
+    - '    res &= head == mctx->get_head();'
+    - '    res &= rs_z == mctx->get_rs_z();'
+    - '    return res;'
+    - '}'
+    desc: Checks if recurrent state tensor dimensions and state match the current
+      context.
+    line: 316-331
+    name: can_reuse
+  name: llm_graph_input_rs
+- desc: Handles cross-attention embedding tensors, copying encoder embeddings for
+    cross-attention layers.
+  methods:
+  - code:
+    - void llm_graph_input_cross_embd::set_input(const llama_ubatch * ubatch) {
+    - '    GGML_UNUSED(ubatch);'
+    - '    if (cross_embd && !cross->v_embd.empty()) {'
+    - '        assert(cross_embd->type == GGML_TYPE_F32);'
+    - '        ggml_backend_tensor_set(cross_embd, cross->v_embd.data(), 0, ggml_nbytes(cross_embd));'
+    - '    }'
+    - '}'
+    desc: Copies cross-attention encoder embeddings into the cross-embedding tensor.
+    line: 333-340
+    name: set_input
+  name: llm_graph_input_cross_embd
+- desc: Manages attention masks for self-attention without KV cache (e.g., single
+    batch processing).
+  methods:
+  - code:
+    - void llm_graph_input_attn_no_cache::set_input(const llama_ubatch * ubatch) {
+    - '    const int64_t n_kv     = ubatch->n_tokens;'
+    - '    const int64_t n_tokens = ubatch->n_tokens;'
+    - '    const auto fill_mask = [&](float * data, int n_swa, llama_swa_type swa_type)
+      {'
+    - '        for (int i1 = 0; i1 < n_tokens; ++i1) {'
+    - '            const llama_seq_id s1 = ubatch->seq_id[i1][0];'
+    - '            const llama_pos    p1 = ubatch->pos[i1];'
+    - '            const uint64_t idst = i1*n_kv;'
+    - '            for (int i0 = 0; i0 < n_tokens; ++i0) {'
+    - '                const llama_seq_id s0 = ubatch->seq_id[i0][0];'
+    - '                const llama_pos p0    = ubatch->pos[i0];'
+    - '                // mask different sequences'
+    - '                if (s0 != s1) {'
+    - '                    continue;'
+    - '                }'
+    - '                // mask future tokens'
+    - '                if (cparams.causal_attn && p0 > p1) {'
+    - '                    continue;'
+    - '                }'
+    - '                // apply SWA if any'
+    - '                if (llama_hparams::is_masked_swa(n_swa, swa_type, p0, p1))
+      {'
+    - '                    continue;'
+    - '                }'
+    - '                data[idst + i0] = hparams.use_alibi ? -std::abs(p0 - p1) :
+      0.0f;'
+    - '            }'
+    - '        }'
+    - '    };'
+    - '    {'
+    - '        GGML_ASSERT(self_kq_mask);'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(self_kq_mask->buffer));'
+    - '        float * data = (float *) self_kq_mask->data;'
+    - '        std::fill(data, data + ggml_nelements(self_kq_mask), -INFINITY);'
+    - '        fill_mask(data, 0, LLAMA_SWA_TYPE_NONE);'
+    - '        if (debug) {'
+    - '            print_mask(data, n_tokens, n_kv, 0, LLAMA_SWA_TYPE_NONE);'
+    - '        }'
+    - '    }'
+    - '    if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {'
+    - '        GGML_ASSERT(self_kq_mask_swa);'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(self_kq_mask_swa->buffer));'
+    - '        float * data = (float *) self_kq_mask_swa->data;'
+    - '        std::fill(data, data + ggml_nelements(self_kq_mask_swa), -INFINITY);'
+    - '        fill_mask(data, hparams.n_swa, hparams.swa_type);'
+    - '        if (debug) {'
+    - '            print_mask(data, n_tokens, n_kv, hparams.n_swa, hparams.swa_type);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Builds self-attention masks, including SWA masks, and optionally prints
+      them for debugging.
+    line: 368-430
+    name: set_input
+  name: llm_graph_input_attn_no_cache
+- desc: Manages attention inputs using KV cache, including key/value indices and attention
+    masks.
+  methods:
+  - code:
+    - void llm_graph_input_attn_kv::set_input(const llama_ubatch * ubatch) {
+    - '    mctx->set_input_k_idxs(self_k_idxs, ubatch);'
+    - '    mctx->set_input_v_idxs(self_v_idxs, ubatch);'
+    - '    mctx->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);'
+    - '    if (self_k_rot) {'
+    - '        mctx->set_input_k_rot(self_k_rot);'
+    - '    }'
+    - '    if (self_v_rot) {'
+    - '        mctx->set_input_v_rot(self_v_rot);'
+    - '    }'
+    - '}'
+    desc: Sets KV indices, attention masks, and rotation tensors through the KV cache
+      context.
+    line: 432-448
+    name: set_input
+  - code:
+    - bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
+    - '    const auto * mctx = static_cast<const llama_kv_cache_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '  //res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move
+      this to the unified cache and check there'
+    - '    res &= can_reuse_kq_mask(self_kq_mask, mctx, params.ubatch, params.cparams);'
+    - '    return res;'
+    - '}'
+    desc: Checks if KV indices tensor dimensions and mask size match the current ubatch.
+    line: 450-461
+    name: can_reuse
+  name: llm_graph_input_attn_kv
+- desc: Manages attention inputs for key-only operations (e.g., when values are not
+    needed).
+  methods:
+  - code:
+    - void llm_graph_input_attn_k::set_input(const llama_ubatch * ubatch) {
+    - '    mctx->set_input_k_idxs(self_k_idxs, ubatch);'
+    - '    mctx->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);'
+    - '}'
+    desc: Sets key indices and attention masks for the query, avoiding value index
+      setup.
+    line: 463-468
+    name: set_input
+  - code:
+    - bool llm_graph_input_attn_k::can_reuse(const llm_graph_params & params) {
+    - '    const auto * mctx = static_cast<const llama_kv_cache_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '    res &= can_reuse_kq_mask(self_kq_mask, mctx, params.ubatch, params.cparams);'
+    - '    return res;'
+    - '}'
+    desc: Checks if key index tensor dimensions and mask size match the current ubatch.
+    line: 470-479
+    name: can_reuse
+  name: llm_graph_input_attn_k
+- desc: Manages attention inputs for KV cache with SWA (Sliding Window Attention)
+    support.
+  methods:
+  - code:
+    - void llm_graph_input_attn_kv_iswa::set_input(const llama_ubatch * ubatch) {
+    - '    mctx->get_base()->set_input_k_idxs(self_k_idxs, ubatch);'
+    - '    mctx->get_base()->set_input_v_idxs(self_v_idxs, ubatch);'
+    - '    mctx->get_base()->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);'
+    - '    mctx->get_swa()->set_input_k_idxs(self_k_idxs_swa, ubatch);'
+    - '    mctx->get_swa()->set_input_v_idxs(self_v_idxs_swa, ubatch);'
+    - '    mctx->get_swa()->set_input_kq_mask(self_kq_mask_swa, ubatch, cparams.causal_attn);'
+    - '    if (self_k_rot) {'
+    - '        mctx->get_base()->set_input_k_rot(self_k_rot);'
+    - '    }'
+    - '    if (self_v_rot) {'
+    - '        mctx->get_base()->set_input_v_rot(self_v_rot);'
+    - '    }'
+    - '}'
+    desc: Sets KV indices, masks, and rotation tensors for both base and SWA caches.
+    line: 481-502
+    name: set_input
+  - code:
+    - bool llm_graph_input_attn_kv_iswa::can_reuse(const llm_graph_params & params)
+      {
+    - '    const auto * mctx = static_cast<const llama_kv_cache_iswa_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '  //res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move
+      this to the unified cache and check there'
+    - '    res &= self_k_idxs_swa->ne[0] == params.ubatch.n_tokens;'
+    - '  //res &= self_v_idxs_swa->ne[0] == params.ubatch.n_tokens; // TODO: need
+      to move this to the unified cache and check there'
+    - '    res &= can_reuse_kq_mask(self_kq_mask,     mctx->get_base(), params.ubatch,
+      params.cparams);'
+    - '    res &= can_reuse_kq_mask(self_kq_mask_swa, mctx->get_swa(),  params.ubatch,
+      params.cparams);'
+    - '    return res;'
+    - '}'
+    desc: Checks if tensor dimensions for base and SWA caches and masks match the
+      current ubatch.
+    line: 504-518
+    name: can_reuse
+  name: llm_graph_input_attn_kv_iswa
+- desc: Manages cross-attention masks, comparing token sequences with encoder sequences.
+  methods:
+  - code:
+    - void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
+    - '    GGML_ASSERT(cross_kq_mask);'
+    - '    const int64_t n_enc    = cross_kq_mask->ne[0];'
+    - '    const int64_t n_tokens = ubatch->n_tokens;'
+    - '    GGML_ASSERT(ggml_backend_buffer_is_host(cross_kq_mask->buffer));'
+    - '    GGML_ASSERT(!ubatch->equal_seqs()); // TODO: use ubatch->n_seqs instead
+      of failing'
+    - '    float * data = (float *) cross_kq_mask->data;'
+    - '    for (int i = 0; i < n_tokens; ++i) {'
+    - '        GGML_ASSERT(!cross->seq_ids_enc.empty() && "llama_encode must be called
+      first");'
+    - '        for (int j = 0; j < n_enc; ++j) {'
+    - '            float f = -INFINITY;'
+    - '            for (int s = 0; s < ubatch->n_seq_id[i]; ++s) {'
+    - '                const llama_seq_id seq_id = ubatch->seq_id[i][s];'
+    - '                if (cross->seq_ids_enc[j].find(seq_id) != cross->seq_ids_enc[j].end())
+      {'
+    - '                    f = 0.0f;'
+    - '                }'
+    - '            }'
+    - '            data[i*n_enc + j] = f;'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Builds cross-attention mask by checking if query sequences match encoder
+      sequences.
+    line: 520-541
+    name: set_input
+  name: llm_graph_input_attn_cross
+- desc: Manages hybrid memory inputs combining attention and recurrent state copy
+    data.
+  methods:
+  - code:
+    - void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
+    - '    mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);'
+    - '    mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);'
+    - '    mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);'
+    - '    if (inp_attn->self_k_rot) {'
+    - '        mctx->get_attn()->set_input_k_rot(inp_attn->self_k_rot);'
+    - '    }'
+    - '    if (inp_attn->self_v_rot) {'
+    - '        mctx->get_attn()->set_input_v_rot(inp_attn->self_v_rot);'
+    - '    }'
+    - '    const int64_t n_rs = mctx->get_recr()->get_n_rs();'
+    - '    if (inp_rs->s_copy) {'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));'
+    - '        int32_t * data = (int32_t *) inp_rs->s_copy->data;'
+    - '        // assuming copy destinations ALWAYS happen ONLY on the cells between
+      head and head+n'
+    - '        for (uint32_t i = 0; i < n_rs; ++i) {'
+    - '            data[i] = mctx->get_recr()->s_copy(i);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets attention tensors and recurrent state copy flags for hybrid memory
+      model.
+    line: 543-564
+    name: set_input
+  - code:
+    - bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params)
+      {
+    - '    const auto * mctx = static_cast<const llama_memory_hybrid_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '  //res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO:
+      need to move this to the unified cache and check there'
+    - '    res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch,
+      params.cparams);'
+    - '    res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();'
+    - '    res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;'
+    - '    res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;'
+    - '    res &= inp_rs->head == mctx->get_recr()->get_head();'
+    - '    res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();'
+    - '    return res;'
+    - '}'
+    desc: Checks if attention tensors, recurrent tensors, and state match the current
+      parameters.
+    line: 566-582
+    name: can_reuse
+  name: llm_graph_input_mem_hybrid
+- desc: Manages key-only attention inputs for hybrid memory model, skipping value
+    setup.
+  methods:
+  - code:
+    - void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
+    - '    mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);'
+    - '    mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);'
+    - '    const int64_t n_rs = mctx->get_recr()->get_n_rs();'
+    - '    if (inp_rs->s_copy) {'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));'
+    - '        int32_t * data = (int32_t *) inp_rs->s_copy->data;'
+    - '        // assuming copy destinations ALWAYS happen ONLY on the cells between
+      head and head+n'
+    - '        for (uint32_t i = 0; i < n_rs; ++i) {'
+    - '            data[i] = mctx->get_recr()->s_copy(i);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets key indices, masks, and recurrent state copy flags for hybrid memory
+      model.
+    line: 584-601
+    name: set_input
+  - code:
+    - bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params)
+      {
+    - '    const auto * mctx = static_cast<const llama_memory_hybrid_context *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '    res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch,
+      params.cparams);'
+    - '    res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();'
+    - '    res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;'
+    - '    res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;'
+    - '    res &= inp_rs->head == mctx->get_recr()->get_head();'
+    - '    res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();'
+    - '    return res;'
+    - '}'
+    desc: Checks if key index tensors, recurrent tensors, and state match the current
+      parameters.
+    line: 603-618
+    name: can_reuse
+  name: llm_graph_input_mem_hybrid_k
+- desc: Manages hybrid memory inputs with SWA support, handling base and SWA attention
+    caches.
+  methods:
+  - code:
+    - void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch)
+      {
+    - '    const auto * attn_ctx = mctx->get_attn();'
+    - '    // base tensors may not be allocated if there are no non-SWA attention
+      layers'
+    - '    if (inp_attn->self_k_idxs && inp_attn->self_k_idxs->buffer) {'
+    - '        attn_ctx->get_base()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);'
+    - '        attn_ctx->get_base()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);'
+    - '        attn_ctx->get_base()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch,
+      cparams.causal_attn);'
+    - '    }'
+    - '    // swa tensors may not be allocated if there are no SWA attention layers'
+    - '    if (inp_attn->self_k_idxs_swa && inp_attn->self_k_idxs_swa->buffer) {'
+    - '        attn_ctx->get_swa()->set_input_k_idxs(inp_attn->self_k_idxs_swa, ubatch);'
+    - '        attn_ctx->get_swa()->set_input_v_idxs(inp_attn->self_v_idxs_swa, ubatch);'
+    - '        attn_ctx->get_swa()->set_input_kq_mask(inp_attn->self_kq_mask_swa,
+      ubatch, cparams.causal_attn);'
+    - '    }'
+    - '    if (inp_attn->self_k_rot) {'
+    - '        attn_ctx->get_base()->set_input_k_rot(inp_attn->self_k_rot);'
+    - '    }'
+    - '    if (inp_attn->self_v_rot) {'
+    - '        attn_ctx->get_base()->set_input_v_rot(inp_attn->self_v_rot);'
+    - '    }'
+    - '    const int64_t n_rs = mctx->get_recr()->get_n_rs();'
+    - '    if (inp_rs->s_copy) {'
+    - '        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));'
+    - '        int32_t * data = (int32_t *) inp_rs->s_copy->data;'
+    - '        // assuming copy destinations ALWAYS happen ONLY on the cells between
+      head and head+n'
+    - '        for (uint32_t i = 0; i < n_rs; ++i) {'
+    - '            data[i] = mctx->get_recr()->s_copy(i);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Sets base and SWA attention inputs (if allocated), and recurrent state copy
+      flags.
+    line: 620-660
+    name: set_input
+  - code:
+    - bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
+      {
+    - '    const auto * mctx = static_cast<const llama_memory_hybrid_iswa_context
+      *>(params.mctx);'
+    - '    this->mctx = mctx;'
+    - '    bool res = true;'
+    - '    const auto * attn_ctx = mctx->get_attn();'
+    - '    // base tensors may not be allocated if there are no non-SWA attention
+      layers'
+    - '    if (inp_attn->self_k_idxs && inp_attn->self_k_idxs->buffer) {'
+    - '        res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;'
+    - '      //res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO:
+      need to move this to the unified cache and check there'
+    - '        res &= can_reuse_kq_mask(inp_attn->self_kq_mask, attn_ctx->get_base(),
+      params.ubatch, params.cparams);'
+    - '    }'
+    - '    // swa tensors may not be allocated if there are no SWA attention layers'
+    - '    if (inp_attn->self_k_idxs_swa && inp_attn->self_k_idxs_swa->buffer) {'
+    - '        res &= inp_attn->self_k_idxs_swa->ne[0] == params.ubatch.n_tokens;'
+    - '      //res &= inp_attn->self_v_idxs_swa->ne[0] == params.ubatch.n_tokens;
+      // TODO: need to move this to the unified cache and check there'
+    - '        res &= can_reuse_kq_mask(inp_attn->self_kq_mask_swa, attn_ctx->get_swa(),
+      params.ubatch, params.cparams);'
+    - '    }'
+    - '    res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();'
+    - '    res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;'
+    - '    res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;'
+    - '    res &= inp_rs->head == mctx->get_recr()->get_head();'
+    - '    res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();'
+    - '    return res;'
+    - '}'
+    desc: Checks if base and SWA attention tensors, masks, and recurrent states match
+      current parameters.
+    line: 662-687
+    name: can_reuse
+  name: llm_graph_input_mem_hybrid_iswa
+- desc: Manages sampler inputs for sampling operations, setting backend-specific inputs
+    for active samplers.
+  methods:
+  - code:
+    - void llm_graph_input_sampling::set_input(const llama_ubatch * ubatch) {
+    - '    // set the inputs only for the active samplers in the current ubatch'
+    - '    std::unordered_set<llama_seq_id> active_samplers;'
+    - '    for (uint32_t i = 0; i < ubatch->n_tokens; i++) {'
+    - '        if (ubatch->output[i]) {'
+    - '            llama_seq_id seq_id = ubatch->seq_id[i][0];'
+    - '            active_samplers.insert(seq_id);'
+    - '        }'
+    - '    }'
+    - '    for (auto seq_id : active_samplers) {'
+    - '        if (samplers.find(seq_id) == samplers.end()) {'
+    - '            continue;'
+    - '        }'
+    - '        auto & sampler = samplers[seq_id];'
+    - '        if (sampler->iface->backend_set_input) {'
+    - '            sampler->iface->backend_set_input(sampler);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Activates samplers for sequences with output tokens and sets their backend
+      inputs.
+    line: 726-747
+    name: set_input
+  - code:
+    - bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
+    - '    if (samplers.size() != params.samplers.size()) {'
+    - '        return false;'
+    - '    }'
+    - '    for (const auto & [seq_id, sampler] : params.samplers) {'
+    - '        if (samplers[seq_id] != sampler) {'
+    - '            return false;'
+    - '        }'
+    - '    }'
+    - '    return true;'
+    - '}'
+    desc: Checks if the sampler set matches the current parameters.
+    line: 749-761
+    name: can_reuse
+  name: llm_graph_input_sampling
+- desc: Manages the computation result tensors, including graph construction, reset,
+    and output setting.
+  methods:
+  - code:
+    - 'llm_graph_result::llm_graph_result(int64_t max_nodes) : max_nodes(max_nodes)
+      {'
+    - '    reset();'
+    - '    const char * LLAMA_GRAPH_RESULT_DEBUG = getenv("LLAMA_GRAPH_RESULT_DEBUG");'
+    - '    debug = LLAMA_GRAPH_RESULT_DEBUG ? atoi(LLAMA_GRAPH_RESULT_DEBUG) : 0;'
+    - '}'
+    desc: Constructor that initializes max_nodes and resets the computation context,
+      enabling debug mode if env var set.
+    line: 764-769
+    name: llm_graph_result
+  - code:
+    - int64_t llm_graph_result::get_max_nodes() const {
+    - '    return max_nodes;'
+    - '}'
+    desc: Returns the maximum number of nodes allowed in the graph.
+    line: 771-773
+    name: get_max_nodes
+  - code:
+    - void llm_graph_result::reset() {
+    - '    t_inp_tokens  = nullptr;'
+    - '    t_inp_embd    = nullptr;'
+    - '    t_logits      = nullptr;'
+    - '    t_embd        = nullptr;'
+    - '    t_embd_pooled = nullptr;'
+    - '    t_sampled.clear();'
+    - '    t_sampled_probs.clear();'
+    - '    t_sampled_logits.clear();'
+    - '    t_candidates.clear();'
+    - '    params = {};'
+    - '    inputs.clear();'
+    - '    buf_compute_meta.resize(ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes,
+      false));'
+    - '    ggml_init_params params = {'
+    - '        /*.mem_size   =*/ buf_compute_meta.size(),'
+    - '        /*.mem_buffer =*/ buf_compute_meta.data(),'
+    - '        /*.no_alloc   =*/ true,'
+    - '    };'
+    - '    ctx_compute.reset(ggml_init(params));'
+    - '    gf = ggml_new_graph_custom(ctx_compute.get(), max_nodes, false);'
+    - '}'
+    desc: Resets tensors and allocations, initializes the compute context and graph.
+    line: 775-795
+    name: reset
+  - code:
+    - void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
+    - '    for (auto & input : inputs) {'
+    - '        input->set_input(ubatch);'
+    - '    }'
+    - '}'
+    desc: Iterates over all input handlers and sets their input from the ubatch.
+    line: 797-803
+    name: set_inputs
+  - code:
+    - void llm_graph_result::set_outputs() {
+    - '    if (t_logits != nullptr) {'
+    - '        ggml_set_output(t_logits);'
+    - '    }'
+    - '    if (t_embd != nullptr) {'
+    - '        ggml_set_output(t_embd);'
+    - '    }'
+    - '    if (t_embd_pooled != nullptr) {'
+    - '        ggml_set_output(t_embd_pooled);'
+    - '    }'
+    - '    for (auto & [seq_id, t] : t_sampled) {'
+    - '        if (t != nullptr) {'
+    - '            ggml_set_output(t);'
+    - '        }'
+    - '    }'
+    - '    for (auto & [seq_id, t] : t_sampled_probs) {'
+    - '        if (t != nullptr) {'
+    - '            ggml_set_output(t);'
+    - '        }'
+    - '    }'
+    - '    for (auto & [seq_id, t] : t_sampled_logits) {'
+    - '        if (t != nullptr) {'
+    - '            ggml_set_output(t);'
+    - '        }'
+    - '    }'
+    - '    for (auto & [seq_id, t] : t_candidates) {'
+    - '        if (t != nullptr) {'
+    - '            ggml_set_output(t);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: Marks all output tensors (logits, embeddings, sampled tensors) as graph
+      outputs.
+    line: 805-839
+    name: set_outputs
+  - code:
+    - bool llm_graph_result::can_reuse(const llm_graph_params & params) {
+    - '    if (!this->params.allow_reuse(params)) {'
+    - '        if (debug > 1) {'
+    - '            LLAMA_LOG_DEBUG("%s: cannot reuse graph due to incompatible graph
+      parameters\n", __func__);'
+    - '        }'
+    - '        return false;'
+    - '    }'
+    - '    if (debug > 1) {'
+    - '        LLAMA_LOG_DEBUG("%s: checking compatibility of %d inputs:\n", __func__,
+      (int) inputs.size());'
+    - '    }'
+    - '    bool res = true;'
+    - '    for (auto & input : inputs) {'
+    - '        const bool cur = input->can_reuse(params);'
+    - '        if (debug > 1) {'
+    - '            LLAMA_LOG_DEBUG("%s: can_reuse = %d\n", "placeholder", cur);'
+    - '        }'
+    - '        res = res && cur;'
+    - '    }'
+    - '    if (debug > 0) {'
+    - '        LLAMA_LOG_DEBUG("%s: can reuse graph = %d\n", __func__, res);'
+    - '    }'
+    - '    return res;'
+    - '}'
+    desc: Checks if the graph parameters are compatible and all inputs can be reused.
+    line: 841-862
+    name: can_reuse
+  - code:
+    - llm_graph_input_i * llm_graph_result::add_input(llm_graph_input_ptr input) {
+    - '    inputs.emplace_back(std::move(input));'
+    - '    return inputs.back().get();'
+    - '}'
+    desc: Adds a new input handler to the graph result and returns a pointer to it.
+    line: 864-867
+    name: add_input
+  - code:
+    - void llm_graph_result::set_params(const llm_graph_params & params) {
+    - '    this->params = params;'
+    - '}'
+    desc: Sets the graph parameters for the current result.
+    line: 869-872
+    name: set_params
+  name: llm_graph_result
+- desc: Main context class for building the computation graph, holding model parameters
+    and providing building blocks like normalization and feed-forward layers.
+  methods:
+  - code:
+    - 'llm_graph_context::llm_graph_context(const llm_graph_params & params) :'
+    - '    arch             (params.arch),'
+    - '    hparams          (params.hparams),'
+    - '    cparams          (params.cparams),'
+    - '    ubatch           (params.ubatch),'
+    - '    n_embd           (hparams.n_embd),'
+    - '    n_layer          (hparams.n_layer),'
+    - '    n_rot            (hparams.n_rot()),'
+    - '    n_ctx            (cparams.n_ctx),'
+    - '    n_head           (hparams.n_head()),'
+    - '    n_head_kv        (hparams.n_head_kv()),'
+    - '    n_embd_head_k    (hparams.n_embd_head_k()),'
+    - '    n_embd_k_gqa     (hparams.n_embd_k_gqa()),'
+    - '    n_embd_head_v    (hparams.n_embd_head_v()),'
+    - '    n_embd_v_gqa     (hparams.n_embd_v_gqa()),'
+    - '    n_expert         (hparams.n_expert),'
+    - '    n_expert_used    (cparams.warmup ? hparams.n_expert : hparams.n_expert_used),'
+    - '    freq_base        (cparams.rope_freq_base),'
+    - '    freq_scale       (cparams.rope_freq_scale),'
+    - '    ext_factor       (cparams.yarn_ext_factor),'
+    - '    attn_factor      (cparams.yarn_attn_factor),'
+    - '    beta_fast        (cparams.yarn_beta_fast),'
+    - '    beta_slow        (cparams.yarn_beta_slow),'
+    - '    norm_eps         (hparams.f_norm_eps),'
+    - '    norm_rms_eps     (hparams.f_norm_rms_eps),'
+    - '    n_tokens         (ubatch.n_tokens),'
+    - '    n_outputs        (params.n_outputs),'
+    - '    n_ctx_orig       (cparams.n_ctx_orig_yarn),'
+    - '    pooling_type     (cparams.pooling_type),'
+    - '    rope_type        (hparams.rope_type),'
+    - '    sched            (params.sched),'
+    - '    backend_cpu      (params.backend_cpu),'
+    - '    cvec             (params.cvec),'
+    - '    loras            (params.loras),'
+    - '    mctx             (params.mctx),'
+    - '    cross            (params.cross),'
+    - '    samplers         (params.samplers),'
+    - '    cb_func          (params.cb),'
+    - '    res              (params.res),'
+    - '    ctx0             (res->get_ctx()),'
+    - '    gf               (res->get_gf()) {'
+    - '        res->set_params(params);'
+    - '    }'
+    desc: Constructor initializing all model parameters, context, and graph references.
+    line: 874-918
+    name: llm_graph_context
+  - code:
+    - void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const
+      {
+    - '    if (cb_func) {'
+    - '        cb_func(ubatch, cur, name, il);'
+    - '    }'
+    - '}'
+    desc: Calls the callback function with the current tensor and name if one is set.
+    line: 920-925
+    name: cb
+  - code:
+    - ggml_tensor * llm_graph_context::build_cvec(
+    - '         ggml_tensor * cur,'
+    - '                 int   il) const {'
+    - '    return cvec->apply_to(ctx0, cur, il);'
+    - '}'
+    desc: Applies control vector (cvec) modifications to a tensor.
+    line: 927-933
+    name: build_cvec
+  - code:
+    - ggml_tensor * llm_graph_context::build_lora_mm(
+    - '          ggml_tensor * w,'
+    - '          ggml_tensor * cur,'
+    - '          ggml_tensor * w_s) const {'
+    - '    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);'
+    - '    for (const auto & lora : *loras) {'
+    - '        llama_adapter_lora_weight * lw = lora.first->get_weight(w);'
+    - '        if (lw == nullptr) {'
+    - '            continue;'
+    - '        }'
+    - '        const float adapter_scale = lora.second;'
+    - '        const float scale = lw->get_scale(lora.first->alpha, adapter_scale);'
+    - '        ggml_tensor * ab_cur = ggml_mul_mat('
+    - '                ctx0, lw->b,'
+    - '                ggml_mul_mat(ctx0, lw->a, cur)'
+    - '                );'
+    - '        ab_cur = ggml_scale(ctx0, ab_cur, scale);'
+    - '        res = ggml_add(ctx0, res, ab_cur);'
+    - '    }'
+    - '    if (w_s) {'
+    - '        res = ggml_mul(ctx0, res, w_s);'
+    - '    }'
+    - '    return res;'
+    - '}'
+    desc: Builds a matrix multiplication with LoRA (Low-Rank Adaptation) modifications.
+    line: 935-965
+    name: build_lora_mm
+  - code:
+    - ggml_tensor * llm_graph_context::build_lora_mm_id(
+    - '          ggml_tensor * w,   // ggml_tensor * as'
+    - '          ggml_tensor * cur, // ggml_tensor * b'
+    - '          ggml_tensor * ids) const {'
+    - '    ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur, ids);'
+    - '    for (const auto & lora : *loras) {'
+    - '        llama_adapter_lora_weight * lw = lora.first->get_weight(w);'
+    - '        if (lw == nullptr) {'
+    - '            continue;'
+    - '        }'
+    - '        const float alpha = lora.first->alpha;'
+    - '        const float rank  = (float) lw->b->ne[0];'
+    - '        const float scale = alpha ? lora.second * alpha / rank : lora.second;'
+    - '        ggml_tensor * ab_cur = ggml_mul_mat_id('
+    - '                ctx0, lw->b,'
+    - '                ggml_mul_mat_id(ctx0, lw->a, cur, ids),'
+    - '                ids'
+    - '                );'
+    - '        ab_cur = ggml_scale(ctx0, ab_cur, scale);'
+    - '        res = ggml_add(ctx0, res, ab_cur);'
+    - '    }'
+    - '    return res;'
+    - '}'
+    desc: Builds matrix multiplication with LoRA and expert ID selection (for Mixture
+      of Experts).
+    line: 967-990
+    name: build_lora_mm_id
+  - code:
+    - ggml_tensor * llm_graph_context::build_norm(
+    - '         ggml_tensor * cur,'
+    - '         ggml_tensor * mw,'
+    - '         ggml_tensor * mb,'
+    - '       llm_norm_type   type,'
+    - '                 int   il) const {'
+    - '    switch (type) {'
+    - '        case LLM_NORM:       cur = ggml_norm    (ctx0, cur, hparams.f_norm_eps);     break;'
+    - '        case LLM_NORM_RMS:   cur = ggml_rms_norm(ctx0, cur, hparams.f_norm_rms_eps);
+      break;'
+    - '        case LLM_NORM_GROUP:'
+    - '            {'
+    - '                cur = ggml_reshape_3d(ctx0, cur, cur->ne[0], 1, cur->ne[1]);'
+    - '                cur = ggml_group_norm(ctx0, cur, hparams.n_norm_groups, hparams.f_norm_group_eps);'
+    - '                cur = ggml_reshape_2d(ctx0, cur, cur->ne[0],    cur->ne[2]);'
+    - '            } break;'
+    - '    }'
+    - '    if (mw || mb) {'
+    - '        cb(cur, "norm", il);'
+    - '    }'
+    - '    if (mw) {'
+    - '        cur = ggml_mul(ctx0, cur, mw);'
+    - '        if (mb) {'
+    - '            cb(cur, "norm_w", il);'
+    - '        }'
+    - '    }'
+    - '    if (mb) {'
+    - '        cur = ggml_add(ctx0, cur, mb);'
+    - '    }'
+    - '    return cur;'
+    - '}'
+    desc: Applies normalization (layer norm, RMS norm, or group norm) to the input
+      tensor with optional weights.
+    line: 992-1022
+    name: build_norm
+  - code:
+    - ggml_tensor * llm_graph_context::build_ffn(
+    - '         ggml_tensor * cur,'
+    - '         ggml_tensor * up,'
+    - '         ggml_tensor * up_b,'
+    - '         ggml_tensor * up_s,'
+    - '         ggml_tensor * gate,'
+    - '         ggml_tensor * gate_b,'
+    - '         ggml_tensor * gate_s,'
+    - '         ggml_tensor * down,'
+    - '         ggml_tensor * down_b,'
+    - '         ggml_tensor * down_s,'
+    - '         ggml_tensor * act_scales,'
+    - '     llm_ffn_op_type   type_op,'
+    - '   llm_ffn_gate_type   type_gate,'
+    - '                 int   il) const {'
+    - '    ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur;'
+    - '    cb(tmp, "ffn_up", il);'
+    - '    if (up_b) {'
+    - '        tmp = ggml_add(ctx0, tmp, up_b);'
+    - '        cb(tmp, "ffn_up_b", il);'
+    - '    }'
+    - '    if (up_s) {'
+    - '        tmp = ggml_mul(ctx0, tmp, up_s);'
+    - '        cb(tmp, "ffn_up_s", il);'
+    - '    }'
+    - '    if (gate) {'
+    - '        switch (type_gate) {'
+    - '            case LLM_FFN_SEQ:'
+    - '                {'
+    - '                    cur = build_lora_mm(gate, tmp);'
+    - '                    cb(cur, "ffn_gate", il);'
+    - '                } break;'
+    - '            case LLM_FFN_PAR:'
+    - '                {'
+    - '                    cur = build_lora_mm(gate, cur);'
+    - '                    cb(cur, "ffn_gate", il);'
+    - '                } break;'
+    - '        }'
+    - '        if (gate_b) {'
+    - '            cur = ggml_add(ctx0, cur, gate_b);'
+    - '            cb(cur, "ffn_gate_b", il);'
+    - '        }'
+    - '        if (gate_s) {'
+    - '            cur = ggml_mul(ctx0, cur, gate_s);'
+    - '            cb(cur, "ffn_gate_s'
+    - '        }'
+    desc: Builds a feed-forward network (FFN) with up, gate, and down projections,
+      optionally with LoRA and gating.
+    line: 1024-1065
+    name: build_ffn
+  name: llm_graph_context
+- desc: 该上下文类封装了图构建所需的状态（如 ggml 上下文、批次数据、模型参数），并提供了一系列方法来构建特定于基础设施的计算图节点，例如 FFN、MoE、输入嵌入及注意力相关操作。
+  methods:
+  - code:
+    - ggml_tensor * llm_graph_context::build_moe_ffn(
+    - '         ggml_tensor * cur,'
+    - '         ggml_tensor * gate_inp,'
+    - '         ggml_tensor * up_exps,'
+    - '         ggml_tensor * gate_exps,'
+    - '         ggml_tensor * down_exps,'
+    - '         ggml_tensor * exp_probs_b,'
+    - '             int64_t   n_expert,'
+    - '             int64_t   n_expert_used,'
+    - '     llm_ffn_op_type   type_op,'
+    - '                bool   norm_w,'
+    - '               float   w_scale,'
+    - '         llama_expert_gating_func_type gating_op,'
+    - '                 int   il,'
+    - '         ggml_tensor * probs_in,'
+    - '         ggml_tensor * gate_up_exps,'
+    - '         ggml_tensor * up_exps_s,'
+    - '         ggml_tensor * gate_exps_s,'
+    - '         ggml_tensor * down_exps_s) const {'
+    - '    return build_moe_ffn('
+    - '        cur,'
+    - '        gate_inp,  /* gate_inp_b  */ nullptr,'
+    - '        up_exps,   /* up_exps_b   */ nullptr,'
+    - '        gate_exps, /* gate_exps_b */ nullptr,'
+    - '        down_exps, /* down_exps_b */ nullptr,'
+    - '        exp_probs_b,'
+    - '        n_expert,'
+    - '        n_expert_used,'
+    - '        type_op,'
+    - '        norm_w,'
+    - '        w_scale,'
+    - '        gating_op,'
+    - '        il,'
+    - '        probs_in,'
+    - '        gate_up_exps,'
+    - '        /* gate_up_exps_b */ nullptr,'
+    - '        up_exps_s,'
+    - '        gate_exps_s,'
+    - '        down_exps_s'
+    - '    );'
+    - '}'
+    desc: 构建混合专家（MoE）前馈网络的计算图。支持专家门控、权重归一化及多种激活函数，并处理专家选择、权重缩放和最终的输出聚合。
+    line: 218-242
+    name: build_moe_ffn
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const
+      {
+    - '    const int64_t n_embd_inp = hparams.n_embd_inp();'
+    - '    const int64_t n_embd     = hparams.n_embd;'
+    - ''
+    - '    assert(n_embd_inp >= n_embd);'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_embd>(n_embd_inp);'
+    - ''
+    - '    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);'
+    - '    cb(inp->tokens, "inp_tokens", -1);'
+    - '    ggml_set_input(inp->tokens);'
+    - '    res->t_inp_tokens = inp->tokens;'
+    - ''
+    - '    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd_inp, ubatch.n_tokens);'
+    - '    cb(inp->embd, "inp_embd", -1);'
+    - '    ggml_set_input(inp->embd);'
+    - ''
+    - '    // select one of the 2 inputs, based on the batch contents'
+    - '    // ref: https://github.com/ggml-org/llama.cpp/pull/18550'
+    - '    std::array<ggml_tensor *, 2> inps;'
+    - ''
+    - '    // token embeddings path (ubatch.token != nullptr)'
+    - '    {'
+    - '        auto & cur = inps[0];'
+    - ''
+    - '        cur = ggml_get_rows(ctx0, tok_embd, inp->tokens);'
+    - ''
+    - '        // apply lora for embedding tokens if needed'
+    - '        for (const auto & lora : *loras) {'
+    - '            llama_adapter_lora_weight * lw = lora.first->get_weight(tok_embd);'
+    - '            if (lw == nullptr) {'
+    - '                continue;'
+    - '            }'
+    - ''
+    - '            const float adapter_scale = lora.second;'
+    - '            const float scale = lw->get_scale(lora.first->alpha, adapter_scale);'
+    - ''
+    - '            ggml_tensor * inpL_delta = ggml_scale(ctx0, ggml_mul_mat('
+    - '                        ctx0, lw->b, // non-transposed lora_b'
+    - '                        ggml_get_rows(ctx0, lw->a, inp->tokens)'
+    - '                        ), scale);'
+    - ''
+    - '            cur = ggml_add(ctx0, cur, inpL_delta);'
+    - '        }'
+    - ''
+    - '        if (n_embd_inp != n_embd) {'
+    - '            cur = ggml_pad(ctx0, cur, hparams.n_embd_inp() - n_embd, 0, 0,
+      0);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    // vector embeddings path (ubatch.embd != nullptr)'
+    - '    {'
+    - '        auto & cur = inps[1];'
+    - ''
+    - '        cur = inp->embd;'
+    - '    }'
+    - ''
+    - '    assert(ggml_are_same_shape (inps[0], inps[1]));'
+    - '    assert(ggml_are_same_stride(inps[0], inps[1]));'
+    - ''
+    - '    ggml_tensor * cur = ggml_build_forward_select(gf, inps.data(), inps.size(),
+      ubatch.token ? 0 : 1);'
+    - ''
+    - '    if (n_embd_inp != n_embd) {'
+    - '        cur = ggml_view_2d(ctx0, cur, n_embd, n_tokens, cur->nb[1], 0);'
+    - '    }'
+    - ''
+    - '    res->t_inp_embd = cur;'
+    - ''
+    - '    // For Granite architecture'
+    - '    if (hparams.f_embedding_scale != 0.0f) {'
+    - '        cur = ggml_scale(ctx0, cur, hparams.f_embedding_scale);'
+    - '    }'
+    - ''
+    - '    cb(cur, "embd", -1);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    // make sure the produced embeddings are immediately materialized in the
+      ggml graph'
+    - '    // ref: https://github.com/ggml-org/llama.cpp/pull/18599'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建输入嵌入的计算图。它接受 token 索引，查找对应的嵌入，并可选地应用 LoRA 适配器，然后将结果（或外部提供的嵌入）填充到图中。
+    line: 348-421
+    name: build_inp_embd
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_pos() const {
+    - '    auto inp = std::make_unique<llm_graph_input_pos>(hparams.n_pos_per_embd());'
+    - ''
+    - '    auto & cur = inp->pos;'
+    - ''
+    - '    cur = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, (int64_t)n_tokens*hparams.n_pos_per_embd());'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建位置索引（position indices）的输入张量，其形状根据每个 token 的嵌入维度确定。
+    line: 423-434
+    name: build_inp_pos
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_attn_scale() const {
+    - '    auto inp = std::make_unique<llm_graph_input_attn_temp>(hparams.n_attn_temp_floor_scale,
+      hparams.f_attn_temp_scale, hparams.f_attn_temp_offset);'
+    - ''
+    - '    auto & cur = inp->attn_scale;'
+    - ''
+    - '    // this need to be 1x1xN for broadcasting'
+    - '    cur = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, 1, n_tokens);'
+    - '    ggml_set_input(cur);'
+    - '    ggml_set_name(cur, "attn_scale");'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建注意力缩放因子（attention scale）的输入张量，用于动态调整注意力计算。
+    line: 436-449
+    name: build_inp_attn_scale
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_out_ids() const {
+    - '    // note: when all tokens are output, we could skip this optimization to
+      spare the ggml_get_rows() calls,'
+    - '    //       but this would make the graph topology depend on the number of
+      output tokens, which can interfere with'
+    - '    //       features that require constant topology such as pipeline parallelism'
+    - '    //       ref: https://github.com/ggml-org/llama.cpp/pull/14275#issuecomment-2987424471'
+    - '    //if (n_outputs < n_tokens) {'
+    - '    //    return nullptr;'
+    - '    //}'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_out_ids>(hparams, cparams,
+      n_outputs);'
+    - ''
+    - '    auto & cur = inp->out_ids;'
+    - ''
+    - '    cur = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_outputs);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建输出 token ID 的输入张量，用于指定需要计算输出的位置。
+    line: 451-469
+    name: build_inp_out_ids
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_mean() const {
+    - '    auto inp = std::make_unique<llm_graph_input_mean>(cparams);'
+    - ''
+    - '    auto & cur = inp->mean;'
+    - ''
+    - '    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_tokens, ubatch.n_seqs_unq);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建均值池化输入张量，用于某些需要序列级表示的任务。
+    line: 471-481
+    name: build_inp_mean
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_cls() const {
+    - '    auto inp = std::make_unique<llm_graph_input_cls>(cparams, arch);'
+    - ''
+    - '    auto & cur = inp->cls;'
+    - ''
+    - '    cur = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_seqs_unq);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建分类任务所需的输入张量，用于序列分类。
+    line: 483-493
+    name: build_inp_cls
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
+    - '    auto inp = std::make_unique<llm_graph_input_cross_embd>(cross);'
+    - ''
+    - '    auto & cur = inp->cross_embd;'
+    - ''
+    - '    // if we have the output embeddings from the encoder, use them directly'
+    - '    // TODO: needs more work to be correct, for now just use the tensor shape'
+    - '    //if (cross->t_embd) {'
+    - '    //    cur = ggml_view_tensor(ctx0, cross->t_embd);'
+    - '    //    return cur;'
+    - '    //}'
+    - ''
+    - '    const auto n_embd = !cross->v_embd.empty() ? cross->n_embd : hparams.n_embd_inp();'
+    - '    const auto n_enc  = !cross->v_embd.empty() ? cross->n_enc  : hparams.n_ctx_train;'
+    - ''
+    - '    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_enc);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建交叉注意力（cross-attention）所需的编码器嵌入输入张量。
+    line: 495-518
+    name: build_inp_cross_embd
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_pos_bucket_enc() const {
+    - '    auto inp = std::make_unique<llm_graph_input_pos_bucket>(hparams);'
+    - ''
+    - '    auto & cur = inp->pos_bucket;'
+    - ''
+    - '    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_tokens, n_tokens);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建用于编码器自注意力的位置桶（position bucket）输入张量。
+    line: 520-531
+    name: build_inp_pos_bucket_enc
+  - code:
+    - ggml_tensor * llm_graph_context::build_inp_pos_bucket_dec() const {
+    - '    const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_pos_bucket_kv>(hparams, mctx_cur);'
+    - ''
+    - '    const auto n_kv = mctx_cur->get_n_kv();'
+    - ''
+    - '    auto & cur = inp->pos_bucket;'
+    - ''
+    - '    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_tokens);'
+    - '    ggml_set_input(cur);'
+    - ''
+    - '    res->add_input(std::move(inp));'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建用于解码器自注意力的位置桶（position bucket）输入张量，其维度基于 KV 缓存大小。
+    line: 533-547
+    name: build_inp_pos_bucket_dec
+  - code:
+    - ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_tensor
+      * attn_rel_b) const {
+    - '    ggml_tensor * pos_bucket_1d = ggml_reshape_1d(ctx0, pos_bucket, pos_bucket->ne[0]
+      * pos_bucket->ne[1]);'
+    - '    cb(pos_bucket_1d, "pos_bucket_1d", -1);'
+    - ''
+    - '    ggml_tensor * pos_bias = ggml_get_rows(ctx0, attn_rel_b, pos_bucket_1d);'
+    - ''
+    - '    pos_bias = ggml_reshape_3d(ctx0, pos_bias, pos_bias->ne[0], pos_bucket->ne[0],
+      pos_bucket->ne[1]);'
+    - '    pos_bias = ggml_permute   (ctx0, pos_bias, 2, 0, 1, 3);'
+    - '    pos_bias = ggml_cont      (ctx0, pos_bias);'
+    - ''
+    - '    cb(pos_bias, "pos_bias", -1);'
+    - ''
+    - '    return pos_bias;'
+    - '}'
+    desc: 根据位置桶索引和相对位置偏置表，构建位置偏置（position bias）张量。
+    line: 549-561
+    name: build_pos_bias
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn_mha(
+    - '         ggml_tensor * q,'
+    - '         ggml_tensor * k,'
+    - '         ggml_tensor * v,'
+    - '         ggml_tensor * kq_b,'
+    - '         ggml_tensor * kq_mask,'
+    - '         ggml_tensor * sinks,'
+    - '         ggml_tensor * v_mla,'
+    - '               float   kq_scale,'
+    - '                 int   il) const {'
+    - '    const bool v_trans = v->nb[1] > v->nb[2];'
+    - ''
+    - '    // split the batch into streams if needed'
+    - '    const auto n_stream = k->ne[3];'
+    - ''
+    - '    q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream,
+      q->nb[1], q->nb[2], q->nb[3], 0);'
+    - ''
+    - '    q = ggml_permute(ctx0, q, 0, 2, 1, 3);'
+    - '    k = ggml_permute(ctx0, k, 0, 2, 1, 3);'
+    - '    v = ggml_permute(ctx0, v, 0, 2, 1, 3);'
+    - ''
+    - '    ggml_tensor * cur;'
+    - ''
+    - '    const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;'
+    - '    if (use_flash_attn) {'
+    - '        GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ
+      bias yet");'
+    - ''
+    - '        if (v_trans) {'
+    - '            v = ggml_transpose(ctx0, v);'
+    - '        }'
+    - ''
+    - '        // this can happen when KV cache is not used (e.g. an embedding model
+      with non-causal attn)'
+    - '        if (k->type == GGML_TYPE_F32) {'
+    - '            k = ggml_cast(ctx0, k, GGML_TYPE_F16);'
+    - '        }'
+    - ''
+    - '        if (v->type == GGML_TYPE_F32) {'
+    - '            v = ggml_cast(ctx0, v, GGML_TYPE_F16);'
+    - '        }'
+    - ''
+    - '        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,'
+    - '                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping
+      : 0.0f);'
+    - '        cb(cur, LLAMA_TENSOR_NAME_FATTN, il);'
+    - ''
+    - '        ggml_flash_attn_ext_add_sinks(cur, sinks);'
+    - '        ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);'
+    - ''
+    - '        if (v_mla) {'
+    - '            // v_mla can be applied as a matrix-vector multiplication with
+      broadcasting across dimension 3 == n_tokens.'
+    - '            // However, the code is optimized for dimensions 0 and 1 being
+      large, so this is inefficient.'
+    - '            // It''s preferable to do the calculation as a matrix-matrix multiplication
+      with n_tokens in dimension 1.'
+    - '            // The permutations are noops and only change how the tensor data
+      is interpreted.'
+    - '            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);'
+    - '            cur = ggml_mul_mat(ctx0, v_mla, cur);'
+    - '            cb(cur, "fattn_mla", il);'
+    - '            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);'
+    - '            cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects
+      contiguous inputs.'
+    - '        }'
+    - ''
+    - '        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);'
+    - '    } else {'
+    - '        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);'
+    - '        cb(kq, "kq", il);'
+    - ''
+    - '        // note: this op tends to require high floating point range'
+    - '        //       while for some models F16 is enough, for others it is not,
+      so we default to F32 here'
+    - '        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);'
+    - ''
+    - '        if (arch == LLM_ARCH_GROK) {'
+    - '            // need to do the following:'
+    - '            // multiply by attn_output_multiplier'
+    - '            // and then :'
+    - '            // kq = 30 * tanh(kq / 30)'
+    - '            // before the softmax below'
+    - '            kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale
+      / hparams.f_attn_logit_softcapping));'
+    - '            cb(kq, "kq_tanh", il);'
+    - '            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);'
+    - '            cb(kq, "kq_scaled", il);'
+    - '        }'
+    - ''
+    - '        if (hparams.attn_soft_cap) {'
+    - '            kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);'
+    - '            cb(kq, "kq_scaled_1", il);'
+    - '            kq = ggml_tanh (ctx0, kq);'
+    - '            cb(kq, "kq_tanh", il);'
+    - '            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);'
+    - '            cb(kq, "kq_scaled_2", il);'
+    - '        }'
+    - ''
+    - '        if (kq_b) {'
+    - '            kq = ggml_add(ctx0, kq, kq_b);'
+    - '            cb(kq, "kq_plus_kq_b", il);'
+    - '        }'
+    - ''
+    - '        kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);'
+    - '        ggml_soft_max_add_sinks(kq, sinks);'
+    - '        cb(kq, "kq_soft_max", il);'
+    - ''
+    - '        if (!v_trans) {'
+    - '            // note: avoid this branch'
+    - '            v = ggml_cont(ctx0, ggml_transpose(ctx0, v));'
+    - '            cb(v, "v_cont", il);'
+    - '        }'
+    - ''
+    - '        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);'
+    - '        cb(kqv, "kqv", il);'
+    - ''
+    - '        // for MLA with the absorption optimization, we need to "decompress"
+      from MQA back to MHA'
+    - '        if (v_mla) {'
+    - '            kqv = ggml_mul_mat(ctx0, v_mla, kqv);'
+    - '            cb(kqv, "kqv_mla", il);'
+    - '        }'
+    - ''
+    - '        cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);'
+    - ''
+    - '        // recombine streams'
+    - '        cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);'
+    - ''
+    - '        if (!cparams.offload_kqv) {'
+    - '            // all nodes between the KV store and the attention output are
+      run on the CPU'
+    - '            ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    ggml_build_forward_expand(gf, cur);'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建多头注意力（MHA）的核心计算图节点，处理 Q、K、V 张量并输出注意力结果，支持 Flash Attention 优化。
+    line: 563-653
+    name: build_attn_mha
+  - code:
+    - llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache()
+      const {
+    - '    auto inp = std::make_unique<llm_graph_input_attn_no_cache>(hparams, cparams);'
+    - ''
+    - '    // note: there is no KV cache, so the number of KV values is equal to the
+      number of tokens in the batch'
+    - '    inp->self_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_tokens, n_tokens,
+      1, 1);'
+    - '    ggml_set_input(inp->self_kq_mask);'
+    - ''
+    - '    inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask,
+      GGML_TYPE_F16) : inp->self_kq_mask;'
+    - ''
+    - '    if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {'
+    - '        inp->self_kq_mask_swa = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_tokens,
+      n_tokens, 1, 1);'
+    - '        ggml_set_input(inp->self_kq_mask_swa);'
+    - ''
+    - '        inp->self_kq_mask_swa_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask_swa,
+      GGML_TYPE_F16) : inp->self_kq_mask_swa;'
+    - '    } else {'
+    - '        inp->self_kq_mask_swa     = nullptr;'
+    - '        inp->self_kq_mask_swa_cnv = nullptr;'
+    - '    }'
+    - ''
+    - '    return (llm_graph_input_attn_no_cache *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建无 KV 缓存（如嵌入模型）情况下注意力计算所需的掩码输入张量。
+    line: 655-674
+    name: build_attn_inp_no_cache
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn(
+    - '        llm_graph_input_attn_no_cache * inp,'
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_b,'
+    - '        ggml_tensor * sinks,'
+    - '        ggml_tensor * v_mla,'
+    - '            float     kq_scale,'
+    - '            int       il) const {'
+    - '    GGML_UNUSED(n_tokens);'
+    - ''
+    - '    // these nodes are added to the graph together so that they are not reordered'
+    - '    // by doing so, the number of splits in the graph is reduced'
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - '    ggml_build_forward_expand(gf, k_cur);'
+    - '    ggml_build_forward_expand(gf, v_cur);'
+    - ''
+    - '    const bool is_swa = hparams.is_swa(il);'
+    - ''
+    - '    const auto & kq_mask = is_swa ? inp->get_kq_mask_swa() : inp->get_kq_mask();'
+    - ''
+    - '    ggml_tensor * q = q_cur;'
+    - '    ggml_tensor * k = k_cur;'
+    - '    ggml_tensor * v = v_cur;'
+    - ''
+    - '    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla,
+      kq_scale, il);'
+    - '    cb(cur, "kqv_out", il);'
+    - ''
+    - '    if (wo) {'
+    - '        cur = build_lora_mm(wo, cur);'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        //cb(cur, "kqv_wo", il);'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建完整的注意力层图节点，包括先前构建的 Q、K、V 以及输出投影，并应用掩码。
+    line: 676-708
+    name: build_attn
+  - code:
+    - static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
+    - '           ggml_context * ctx0,'
+    - '     const llama_ubatch & ubatch,'
+    - '    const llama_hparams & hparams,'
+    - '    const llama_cparams & cparams,'
+    - '    const llama_kv_cache_context * mctx_cur) {'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_attn_kv>(hparams, cparams,
+      mctx_cur);'
+    - ''
+    - ''
+    desc: 构建用于 KV 缓存注意力计算的输入张量，包括掩码和位置信息（这是一个内联辅助函数）。
+    line: 710-715
+    name: build_inp_kv
+  name: llm_graph_context
+- desc: LLM图上下文类，负责构建和管理各种图输入节点和计算图结构，支持多种注意力模式（标准、KV-only、ISWA、交叉注意力）以及混合内存架构。
+  methods:
+  - code:
+    - llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
+    - '    const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);'
+    - ''
+    - '    auto inp = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建标准注意力机制的KV输入，包含键索引、值索引、遮罩和旋转位置编码的初始化。
+    line: 2067-2074
+    name: build_attn_inp_kv
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn(
+    - '        llm_graph_input_attn_kv * inp,'
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_b,'
+    - '        ggml_tensor * sinks,'
+    - '        ggml_tensor * v_mla, // TODO: remove'
+    - '            float     kq_scale,'
+    - '            int       il) const {'
+    - '    GGML_ASSERT(v_mla == nullptr);'
+    - ''
+    - '    if (inp->self_k_rot) {'
+    - '        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot);'
+    - '        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot);'
+    - '    }'
+    - ''
+    - '    if (inp->self_v_rot) {'
+    - '        v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot);'
+    - '    }'
+    - ''
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - '    ggml_build_forward_expand(gf, v_cur);'
+    - '    ggml_build_forward_expand(gf, k_cur);'
+    - ''
+    - '    const auto * mctx_cur = inp->mctx;'
+    - ''
+    - '    {'
+    - '        const auto & k_idxs = inp->get_k_idxs();'
+    - '        const auto & v_idxs = inp->get_v_idxs();'
+    - ''
+    - '        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs,
+      il));'
+    - '        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs,
+      il));'
+    - '    }'
+    - ''
+    - '    const auto & kq_mask = inp->get_kq_mask();'
+    - ''
+    - '    ggml_tensor * q = q_cur;'
+    - '    ggml_tensor * k = mctx_cur->get_k(ctx0, il);'
+    - '    ggml_tensor * v = mctx_cur->get_v(ctx0, il);'
+    - ''
+    - '    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla,
+      kq_scale, il);'
+    - '    cb(cur, "kqv_out", il);'
+    - ''
+    - '    if (inp->self_v_rot) {'
+    - '        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);'
+    - '    }'
+    - ''
+    - '    if (wo) {'
+    - '        cur = build_lora_mm(wo, cur);'
+    - '        if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE || arch == LLM_ARCH_JAIS2)
+      {'
+    - '            ggml_mul_mat_set_prec(cur, GGML_PREC_F32);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建多头注意力计算图，包含QKV处理、KV缓存存储、注意力合并和输出投影（此重载支持旋转位置编码操作）。
+    line: 2076-2140
+    name: build_attn
+  - code:
+    - llm_graph_input_attn_k * llm_graph_context::build_attn_inp_k() const {
+    - '    const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);'
+    - ''
+    - '    auto inp = build_attn_inp_k_impl(ctx0, ubatch, hparams, cparams, mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_attn_k *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建仅包含键索引的注意力输入，用于某些特殊的注意力机制场景。
+    line: 2182-2188
+    name: build_attn_inp_k
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn(
+    - '        llm_graph_input_attn_k * inp,'
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_b,'
+    - '        ggml_tensor * sinks,'
+    - '        ggml_tensor * v_mla,'
+    - '            float     kq_scale,'
+    - '            int       il) const {'
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - '    ggml_build_forward_expand(gf, v_cur);'
+    - '    ggml_build_forward_expand(gf, k_cur);'
+    - ''
+    - '    const auto * mctx_cur = inp->mctx;'
+    - ''
+    - '    {'
+    - '        const auto & k_idxs = inp->get_k_idxs();'
+    - ''
+    - '        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs,
+      il));'
+    - '    }'
+    - ''
+    - '    const auto & kq_mask = inp->get_kq_mask();'
+    - ''
+    - '    ggml_tensor * q = q_cur;'
+    - '    ggml_tensor * k = mctx_cur->get_k(ctx0, il);'
+    - '    ggml_tensor * v = ggml_view_4d(ctx0, k, v_cur->ne[0], k->ne[1], k->ne[2],
+      k->ne[3], k->nb[1], k->nb[2], k->nb[3], 0);'
+    - ''
+    - '    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla,
+      kq_scale, il);'
+    - '    cb(cur, "kqv_out", il);'
+    - ''
+    - '    if (wo) {'
+    - '        cur = build_lora_mm(wo, cur);'
+    - '        if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {'
+    - '            ggml_mul_mat_set_prec(cur, GGML_PREC_F32);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建注意力计算图（K-only版本），不进行旋转位置编码操作，直接从KV缓存中获取值。
+    line: 2190-2243
+    name: build_attn
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn(
+    - '        llm_graph_input_attn_kv_iswa * inp,'
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_b,'
+    - '        ggml_tensor * sinks,'
+    - '        ggml_tensor * v_mla,'
+    - '            float     kq_scale,'
+    - '            int       il) const {'
+    - '    if (inp->self_k_rot) {'
+    - '        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot);'
+    - '        if (k_cur) {'
+    - '            k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot);'
+    - '        }'
+    - '    }'
+    - '    if (inp->self_v_rot) {'
+    - '        if (v_cur) {'
+    - '            v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot);'
+    - '        }'
+    - '    }'
+    - ''
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - ''
+    - '    if (k_cur) {'
+    - '        ggml_build_forward_expand(gf, k_cur);'
+    - '    }'
+    - ''
+    - '    if (v_cur) {'
+    - '        ggml_build_forward_expand(gf, v_cur);'
+    - '    }'
+    - ''
+    - '    const auto * mctx_iswa = inp->mctx;'
+    - ''
+    - '    const bool is_swa = hparams.is_swa(il);'
+    - ''
+    - '    const auto * mctx_cur = is_swa ? mctx_iswa->get_swa() : mctx_iswa->get_base();'
+    - ''
+    - '    if (k_cur) {'
+    - '        const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();'
+    - ''
+    - '        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs,
+      il));'
+    - '    }'
+    - ''
+    - '    if (v_cur) {'
+    - '        const auto & v_idxs = is_swa ? inp->get_v_idxs_swa() : inp->get_v_idxs();'
+    - ''
+    - '        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs,
+      il));'
+    - '    }'
+    - ''
+    - '    const auto & kq_mask = is_swa ? inp->get_kq_mask_swa() : inp->get_kq_mask();'
+    - ''
+    - '    ggml_tensor * q = q_cur;'
+    - '    ggml_tensor * k = mctx_cur->get_k(ctx0, il);'
+    - '    ggml_tensor * v = mctx_cur->get_v(ctx0, il);'
+    - ''
+    - '    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla,
+      kq_scale, il);'
+    - '    cb(cur, "kqv_out", il);'
+    - ''
+    - '    if (inp->self_v_rot) {'
+    - '        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);'
+    - '    }'
+    - ''
+    - '    if (wo) {'
+    - '        cur = build_lora_mm(wo, cur);'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建ISWA版注意力计算图，支持滑窗注意力和标准注意力的混合，根据层索引决定使用哪种缓存。
+    line: 2245-2331
+    name: build_attn
+  - code:
+    - llm_graph_input_attn_cross * llm_graph_context::build_attn_inp_cross() const
+      {
+    - '    auto inp = std::make_unique<llm_graph_input_attn_cross>(cross);'
+    - ''
+    - '    const int32_t n_enc = !cross->v_embd.empty() ? cross->n_enc : hparams.n_ctx_train;'
+    - ''
+    - '    inp->cross_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_enc, n_tokens,
+      1, 1);'
+    - '    ggml_set_input(inp->cross_kq_mask);'
+    - ''
+    - '    inp->cross_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->cross_kq_mask,
+      GGML_TYPE_F16) : inp->cross_kq_mask;'
+    - ''
+    - '    return (llm_graph_input_attn_cross *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建交叉注意力机制的输入，包含编码器长度的遮罩张量和转换后的浮点版本。
+    line: 2333-2345
+    name: build_attn_inp_cross
+  - code:
+    - ggml_tensor * llm_graph_context::build_attn(
+    - '        llm_graph_input_attn_cross * inp,'
+    - '        ggml_tensor * wo,'
+    - '        ggml_tensor * wo_b,'
+    - '        ggml_tensor * q_cur,'
+    - '        ggml_tensor * k_cur,'
+    - '        ggml_tensor * v_cur,'
+    - '        ggml_tensor * kq_b,'
+    - '        ggml_tensor * sinks,'
+    - '        ggml_tensor * v_mla,'
+    - '            float     kq_scale,'
+    - '            int       il) const {'
+    - '    ggml_build_forward_expand(gf, q_cur);'
+    - '    ggml_build_forward_expand(gf, k_cur);'
+    - '    ggml_build_forward_expand(gf, v_cur);'
+    - ''
+    - '    const auto & kq_mask = inp->get_kq_mask_cross();'
+    - ''
+    - '    ggml_tensor * q = q_cur;'
+    - '    ggml_tensor * k = k_cur;'
+    - '    ggml_tensor * v = v_cur;'
+    - ''
+    - '    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla,
+      kq_scale, il);'
+    - '    cb(cur, "kqv_out", il);'
+    - ''
+    - '    if (wo) {'
+    - '        cur = build_lora_mm(wo, cur);'
+    - '    }'
+    - ''
+    - '    if (wo_b) {'
+    - '        cur = ggml_add(ctx0, cur, wo_b);'
+    - '    }'
+    - ''
+    - '    return cur;'
+    - '}'
+    desc: 构建交叉注意力计算图，直接使用输入的QKV张量而不依赖KV缓存。
+    line: 2347-2393
+    name: build_attn
+  - code:
+    - llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const
+      {
+    - '    const auto * mctx_cur = static_cast<const llama_kv_cache_iswa_context *>(mctx);'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_attn_kv_iswa>(hparams, cparams,
+      mctx_cur);'
+    - ''
+    - '    {'
+    - '        inp->self_k_idxs = mctx_cur->get_base()->build_input_k_idxs(ctx0, ubatch);'
+    - '        inp->self_v_idxs = mctx_cur->get_base()->build_input_v_idxs(ctx0, ubatch);'
+    - ''
+    - '        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur->get_base(),
+      ubatch, cparams);'
+    - '        inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask,
+      GGML_TYPE_F16) : inp->self_kq_mask;'
+    - '    }'
+    - ''
+    - '    {'
+    - '        GGML_ASSERT(hparams.swa_type != LLAMA_SWA_TYPE_NONE && "Use llama_kv_cache
+      for non-SWA");'
+    - ''
+    - '        inp->self_k_idxs_swa = mctx_cur->get_swa()->build_input_k_idxs(ctx0,
+      ubatch);'
+    - '        inp->self_v_idxs_swa = mctx_cur->get_swa()->build_input_v_idxs(ctx0,
+      ubatch);'
+    - ''
+    - '        inp->self_kq_mask_swa = build_attn_inp_kq_mask(ctx0, mctx_cur->get_swa(),
+      ubatch, cparams);'
+    - '        inp->self_kq_mask_swa_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask_swa,
+      GGML_TYPE_F16) : inp->self_kq_mask_swa;'
+    - '    }'
+    - ''
+    - '    inp->self_k_rot = mctx_cur->get_base()->build_input_k_rot(ctx0);'
+    - '    inp->self_v_rot = mctx_cur->get_base()->build_input_v_rot(ctx0);'
+    - ''
+    - '    return (llm_graph_input_attn_kv_iswa *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建ISWA版本的KV输入，包括基础缓存和滑窗缓存两套索引和遮罩。
+    line: 2395-2421
+    name: build_attn_inp_kv_iswa
+  - code:
+    - ggml_tensor * llm_graph_context::build_rs(
+    - '        ggml_tensor * s,'
+    - '        ggml_tensor * state_copy_main,'
+    - '        ggml_tensor * state_copy_extra,'
+    - '            int32_t   state_size,'
+    - '            int32_t   n_seqs,'
+    - '           uint32_t   n_rs,'
+    - '           uint32_t   rs_head,'
+    - '           uint32_t   rs_size,'
+    - '           int32_t   rs_zero,'
+    - '        const llm_graph_get_rows_fn & get_state_rows) const {'
+    - ''
+    - '    ggml_tensor * states = ggml_reshape_2d(ctx0, s, state_size, rs_size);'
+    - ''
+    - '    ggml_tensor * state_zero = ggml_view_1d(ctx0, states, state_size*(rs_zero
+      >= 0), rs_zero*states->nb[1]*(rs_zero >= 0));'
+    - '    ggml_build_forward_expand(gf, ggml_scale_inplace(ctx0, state_zero, 0));'
+    - ''
+    - '    ggml_tensor * output_states = get_state_rows(ctx0, states, state_copy_main);'
+    - '    ggml_build_forward_expand(gf, output_states);'
+    - ''
+    - '    ggml_tensor * states_extra = ggml_get_rows(ctx0, states, state_copy_extra);'
+    - '    ggml_build_forward_expand(gf,'
+    - '        ggml_cpy(ctx0,'
+    - '            states_extra,'
+    - '            ggml_view_1d(ctx0, s, state_size*(n_rs - n_seqs), (rs_head + n_seqs)*state_size*ggml_element_size(s))));'
+    - ''
+    - '    return output_states;'
+    - '}'
+    desc: 构建循环状态处理计算图，创建状态拷贝索引并清空目标状态，复制主要状态和额外状态（重载版本1）。
+    line: 2423-2455
+    name: build_rs
+  - code:
+    - llm_graph_input_rs * llm_graph_context::build_rs_inp() const {
+    - '    const auto * mctx_cur = static_cast<const llama_memory_recurrent_context
+      *>(mctx);'
+    - ''
+    - '    auto inp = build_rs_inp_impl(ctx0, ubatch, mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_rs *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建循环状态输入节点，包含状态拷贝索引张量和主/额外视图。
+    line: 2468-2473
+    name: build_rs_inp
+  - code:
+    - ggml_tensor * llm_graph_context::build_rs(
+    - '        llm_graph_input_rs * inp,'
+    - '        ggml_tensor * s,'
+    - '            int32_t   state_size,'
+    - '            int32_t   n_seqs,'
+    - '        const llm_graph_get_rows_fn & get_state_rows) const {'
+    - '    const auto * kv_state = inp->mctx;'
+    - ''
+    - '    return build_rs(s, inp->s_copy_main, inp->s_copy_extra, state_size, n_seqs,'
+    - '                    kv_state->get_n_rs(), kv_state->get_head(), kv_state->get_size(),
+      kv_state->get_rs_z(),'
+    - '                    get_state_rows);'
+    - '}'
+    desc: 构建循环状态处理计算图，直接基于输入对象调用重载版本1进行状态拷贝（重载版本2）。
+    line: 2475-2484
+    name: build_rs
+  - code:
+    - ggml_tensor * llm_graph_context::build_rwkv_token_shift_load(
+    - '    llm_graph_input_rs * inp,'
+    - '    const llama_ubatch & ubatch,'
+    - '                   int   il) const {'
+    - '    const auto * mctx_cur = static_cast<const llama_memory_recurrent_context
+      *>(mctx);'
+    - ''
+    - '    const auto token_shift_count = hparams.token_shift_count;'
+    - ''
+    - '    const int64_t n_seqs  = ubatch.n_seqs;'
+    - ''
+    - '    ggml_tensor * token_shift_all = mctx_cur->get_r_l(il);'
+    - ''
+    - '    ggml_tensor * token_shift = build_rs('
+    - '            inp, token_shift_all,'
+    - '            hparams.n_embd_r(), n_seqs);'
+    - ''
+    - '    token_shift = ggml_reshape_3d(ctx0, token_shift, hparams.n_embd, token_shift_count,
+      n_seqs);'
+    - ''
+    - '    return token_shift;'
+    - '}'
+    desc: 构建RWKV token shift加载操作，从状态中提取token shift数据并重塑为三维张量。
+    line: 2486-2505
+    name: build_rwkv_token_shift_load
+  - code:
+    - ggml_tensor * llm_graph_context::build_rwkv_token_shift_store(
+    - '         ggml_tensor * token_shift,'
+    - '  const llama_ubatch & ubatch,'
+    - '                 int   il) const {'
+    - '    const auto * mctx_cur = static_cast<const llama_memory_recurrent_context
+      *>(mctx);'
+    - ''
+    - '    const auto token_shift_count = hparams.token_shift_count;'
+    - '    const auto n_embd = hparams.n_embd;'
+    - ''
+    - '    const int64_t n_seqs = ubatch.n_seqs;'
+    - ''
+    - '    const auto kv_head = mctx_cur->get_head();'
+    - ''
+    - '    return ggml_cpy('
+    - '        ctx0,'
+    - '        ggml_view_1d(ctx0, token_shift, n_embd * n_seqs * token_shift_count,
+      0),'
+    - '        ggml_view_1d(ctx0, mctx_cur->get_r_l(il), hparams.n_embd_r()*n_seqs,
+      hparams.n_embd_r()*kv_head*ggml_element_size(mctx_cur->get_r_l(il)))'
+    - '    );'
+    - '}'
+    desc: 构建RWKV token shift存储操作，将token shift数据拷贝回状态张量中。
+    line: 2507-2527
+    name: build_rwkv_token_shift_store
+  - code:
+    - llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const
+      {
+    - '    const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);'
+    - ''
+    - '    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());'
+    - '    auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams,
+      mctx_cur->get_attn());'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_mem_hybrid>(cparams, std::move(inp_attn),
+      std::move(inp_rs), mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_mem_hybrid *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建混合内存输入，同时包含循环状态输入和注意力KV输入。
+    line: 2529-2540
+    name: build_inp_mem_hybrid
+  - code:
+    - llm_graph_input_mem_hybrid_k * llm_graph_context::build_inp_mem_hybrid_k() const
+      {
+    - '    const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);'
+    - ''
+    - '    auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());'
+    - '    auto inp_attn = build_attn_inp_k_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_mem_hybrid_k>(cparams, std::move(inp_attn),
+      std::move(inp_rs), mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_mem_hybrid_k *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建仅K版本的混合内存输入，包含循环状态和仅K注意力输入。
+    line: 2542-2553
+    name: build_inp_mem_hybrid_k
+  - code:
+    - llm_graph_input_mem_hybrid_iswa * llm_graph_context::build_inp_mem_hybrid_iswa()
+      const {
+    - '    const auto * mctx_cur = static_cast<const llama_memory_hybrid_iswa_context
+      *>(mctx);'
+    - ''
+    - '    auto inp_rs = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());'
+    - ''
+    - '    const auto * attn_ctx = mctx_cur->get_attn();'
+    - ''
+    - '    auto inp_attn = std::make_unique<llm_graph_input_attn_kv_iswa>(hparams,
+      cparams, attn_ctx);'
+    - ''
+    - '    {'
+    - '        inp_attn->self_k_idxs = attn_ctx->get_base()->build_input_k_idxs(ctx0,
+      ubatch);'
+    - '        inp_attn->self_v_idxs = attn_ctx->get_base()->build_input_v_idxs(ctx0,
+      ubatch);'
+    - ''
+    - '        inp_attn->self_kq_mask = build_attn_inp_kq_mask(ctx0, attn_ctx->get_base(),
+      ubatch, cparams);'
+    - '        inp_attn->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp_attn->self_kq_mask,
+      GGML_TYPE_F16) : inp_attn->self_kq_mask;'
+    - '    }'
+    - ''
+    - '    {'
+    - '        inp_attn->self_k_idxs_swa = attn_ctx->get_swa()->build_input_k_idxs(ctx0,
+      ubatch);'
+    - '        inp_attn->self_v_idxs_swa = attn_ctx->get_swa()->build_input_v_idxs(ctx0,
+      ubatch);'
+    - ''
+    - '        inp_attn->self_kq_mask_swa = build_attn_inp_kq_mask(ctx0, attn_ctx->get_swa(),
+      ubatch, cparams);'
+    - '        inp_attn->self_kq_mask_swa_cnv = cparams.flash_attn ? ggml_cast(ctx0,
+      inp_attn->self_kq_mask_swa, GGML_TYPE_F16) : inp_attn->self_kq_mask_swa;'
+    - '    }'
+    - ''
+    - '    auto inp = std::make_unique<llm_graph_input_mem_hybrid_iswa>(cparams, std::move(inp_attn),
+      std::move(inp_rs), mctx_cur);'
+    - ''
+    - '    return (llm_graph_input_mem_hybrid_iswa *) res->add_input(std::move(inp));'
+    - '}'
+    desc: 构建ISWA版本的混合内存输入，包含循环状态和ISWA注意力的双重输入。
+    line: 2555-2586
+    name: build_inp_mem_hybrid_iswa
+  - code:
+    - void llm_graph_context::build_dense_out(
+    - '    ggml_tensor * dense_2,'
+    - '    ggml_tensor * dense_2_b,'
+    - '    ggml_tensor * dense_3) const {'
+    - '    if (!cparams.embeddings || !(dense_2 || dense_2_b || dense_3)) {'
+    - '        return;'
+    - '    }'
+    - '    ggml_tensor * cur = res->t_embd_pooled != nullptr ? res->t_embd_pooled
+      : res->t_embd;'
+    - '    GGML_ASSERT(cur != nullptr && "missing t_embd_pooled/t_embd");'
+    - ''
+    - '    if (dense_2) {'
+    - '        cur = ggml_mul_mat(ctx0, dense_2, cur);'
+    - '    }'
+    - '    if (dense_2_b) {'
+    - '        cur = ggml_add(ctx0, cur, dense_2_b);'
+    - '    }'
+    - '    if (dense_3) {'
+    - '        cur = ggml_mul_mat(ctx0, dense_3, cur);'
+    - '    }'
+    - '    cb(cur, "result_embd_pooled", -1);'
+    - '    res->t_embd_pooled = cur;'
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构建密集输出层，在嵌入模式下对池化结果进行额外的线性变换。
+    line: 2588-2611
+    name: build_dense_out
+  - code:
+    - void llm_graph_context::build_pooling(
+    - '        ggml_tensor * cls,'
+    - '        ggml_tensor * cls_b,'
+    - '        ggml_tensor * cls_out,'
+    - '        ggml_tensor * cls_out_b,'
+    - '        ggml_tensor * cls_norm) const {'
+    - '    if (!cparams.embeddings) {'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    ggml_tensor * inp = res->t_embd;'
+    - ''
+    - '    GGML_ASSERT(inp != nullptr && "missing result_norm/result_embd tensor");'
+    - ''
+    - '    ggml_tensor * cur;'
+    - ''
+    - '    switch (pooling_type) {'
+    - '        case LLAMA_POOLING_TYPE_NONE:'
+    - '            cur = inp;'
+    - '            break;'
+    - '        case LLAMA_POOLING_TYPE_MEAN:'
+    - '            ggml_tensor * inp_mean = build_inp_mean();'
+    - '            cur = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, inp)),
+      inp_mean);'
+    - '            break;'
+    - '        case LLAMA_POOLING_TYPE_CLS:'
+    - '        case LLAMA_POOLING_TYPE_LAST:'
+    - '            ggml_tensor * inp_cls = build_inp_cls();'
+    - '            cur = ggml_get_rows(ctx0, inp, inp_cls);'
+    - '            break;'
+    - '        case LLAMA_POOLING_TYPE_RANK:'
+    - '            if (arch == LLM_ARCH_MODERN_BERT) {'
+    - '                ggml_tensor * inp_mean = build_inp_mean();'
+    - '                cur = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0,
+      inp)), inp_mean);'
+    - '            } else {'
+    - '                ggml_tensor * inp_cls = build_inp_cls();'
+    - '                cur = ggml_get_rows(ctx0, inp, inp_cls);'
+    - '            }'
+    - ''
+    - '            if (cls) {'
+    - '                cur = ggml_mul_mat(ctx0, cls, cur);'
+    - '                if (cls_b) {'
+    - '                    cur = ggml_add(ctx0, cur, cls_b);'
+    - '                }'
+    - '                if (arch == LLM_ARCH_MODERN_BERT) {'
+    - '                    cur = ggml_gelu(ctx0, cur);'
+    - '                } else {'
+    - '                    cur = ggml_tanh(ctx0, cur);'
+    - '                }'
+    - '                if (cls_norm) {'
+    - '                    cur = build_norm(cur, cls_norm, NULL, LLM_NORM, -1);'
+    - '                }'
+    - '            }'
+    - ''
+    - '            if (cls_out) {'
+    - '                cur = ggml_mul_mat(ctx0, cls_out, cur);'
+    - '                if (cls_out_b) {'
+    - '                    cur = ggml_add(ctx0, cur, cls_out_b);'
+    - '                }'
+    - '            }'
+    - ''
+    - '            if (arch == LLM_ARCH_QWEN3 || arch == LLM_ARCH_QWEN3VL) {'
+    - '                cur = ggml_soft_max(ctx0, cur);'
+    - '            }'
+    - '            break;'
+    - '        default:'
+    - '            GGML_ABORT("unknown pooling type");'
+    - '    }'
+    - ''
+    - '    cb(cur, "result_embd_pooled", -1);'
+    - '    res->t_embd_pooled = cur;'
+    - ''
+    - '    ggml_build_forward_expand(gf, cur);'
+    - '}'
+    desc: 构建池化层，支持NONE、MEAN、CLS、LAST和RANK五种池化类型，并对排序模型应用分类头部。
+    line: 2613-2676
+    name: build_pooling
+  - code:
+    - void llm_graph_context::build_sampling() const {
+    - '    if (samplers.empty() || !res->t_logits) {'
+    - '        return;'
+    - '    }'
+    - ''
+    - '    std::array<ggml_tensor *, 2> outs;'
+    - '    outs[0] = res->t_logits;'
+    - ''
+    - '    auto inp_sampling = std::make_unique<llm_graph_input_sampling>(samplers);'
+    - '    res->add_input(std::move(inp_sampling));'
+    - ''
+    - '    std::map<llama_seq_id, int32_t> seq_to_logit_row;'
+    - '    int32_t logit_row_idx = 0;'
+    - ''
+    - '    for (uint32_t i = 0; i < ubatch.n_tokens; i++) {'
+    - '        if (ubatch.output[i]) {'
+    - '            llama_seq_id seq_id = ubatch.seq_id[i][0];'
+    - '            seq_to_logit_row[seq_id] = logit_row_idx;'
+    - '            logit_row_idx++;'
+    - '        }'
+    - '    }'
+    - ''
+    - '    GGML_ASSERT(res->t_logits != nullptr && "missing t_logits tensor");'
+    - ''
+    - '    ggml_tensor * logits_t = ggml_pad(ctx0, res->t_logits, 0, 1, 0, 0);'
+    - ''
+    - '    for (const auto & [seq_id, sampler] : samplers) {'
+    - '        const auto it = seq_to_logit_row.find(seq_id);'
+    - ''
+    - '        const auto row_idx = it != seq_to_logit_row.end() ? it->second : 0;'
+    - '        const int i_out    = it != seq_to_logit_row.end() ? 1          : 0;'
+    - ''
+    - '        ggml_tensor * logits_seq = ggml_view_1d(ctx0, logits_t, logits_t->ne[0],
+      row_idx * logits_t->nb[1]);'
+    - '        ggml_format_name(logits_seq, "logits_seq_%d", seq_id);'
+    - ''
+    - '        struct llama_sampler_data data = {'
+    - '            /*.logits      =*/ logits_seq,'
+    - '            /*.probs       =*/ nullptr,'
+    - '            /*.sampled     =*/ nullptr,'
+    - '            /*.candidates  =*/ nullptr,'
+    - '        };'
+    - ''
+    - '        assert(sampler->iface->backend_apply);'
+    - '        sampler->iface->backend_apply(sampler, ctx0, gf, &data);'
+    - ''
+    - '        if (data.sampled != nullptr) {'
+    - '            res->t_sampled[seq_id] = data.sampled;'
+    - '            outs[1] = data.sampled;'
+    - '            ggml_build_forward_select(gf, outs.data(), outs.size(), i_out);'
+    - '        }'
+    - ''
+    - '        if (data.probs != nullptr) {'
+    - '            res->t_sampled_probs[seq_id] = data.probs;'
+    - '            outs[1] = data.probs;'
+    - '            ggml_build_forward_select(gf, outs.data(), outs.size(), i_out);'
+    - '        }'
+    - ''
+    - '        if (data.logits != nullptr) {'
+    - '            res->t_sampled_logits[seq_id] = data.logits;'
+    - '            outs[1] = data.logits;'
+    - '            ggml_build_forward_select(gf, outs.data(), outs.size(), i_out);'
+    - '        }'
+    - ''
+    - '        if (data.candidates != nullptr) {'
+    - '            res->t_candidates[seq_id] = data.candidates;'
+    - '            outs[1] = data.candidates;'
+    - '            ggml_build_forward_select(gf, outs.data(), outs.size(), i_out);'
+    - '        }'
+    - '    }'
+    - '}'
+    desc: 构建采样计算图，为每个序列分配logits并应用对应的采样器，生成采样结果。
+    line: 2678-2741
+    name: build_sampling
+  name: llm_graph_context
+desc: This file implements the graph construction and input handling for the llama
+  inference engine. It defines multiple classes that manage different types of inputs
+  (token embeddings, positional encodings, attention masks, etc.) and provides methods
+  to set their values and check if they can be reused. The main llm_graph_context
+  class builds the computation graph for transformer layers, including attention,
+  normalization, and feed-forward operations.该代码是 llama.cpp 推理引擎中图构建模块的一部分，实现了大规模语言模型推理时的前馈网络（FFN）和混合专家（MoE）模块的图构建，以及注意力机制（Attention）的输入数据与操作构建。它负责将模型的权重张量与输入数据通过
+  ggml 操作符组合成计算图，用于后续的前向传播。该代码是llama.cpp中核心的图构建模块，负责构建和优化llm推理计算图。它定义了多个图上下文类（llm_graph_context）及其内部辅助结构（如llm_graph_input_attn_kv、llm_graph_input_attn_k、llm_graph_input_attn_cross、llm_graph_input_attn_kv_iswa、llm_graph_input_rs和llm_graph_input_mem_hybrid等），用于管理注意力机制的输入、KV缓存、循环状态和多种池化/采样操作。代码包含对标准注意力、仅K缓存、滑窗注意力（SWA）、混合内存（循环+注意力）等不同架构的图构建逻辑，以及相对位置桶计算等辅助工具函数。该模块的主要功能是将模型参数和输入数据转化为可执行的ggml计算图，支持推理过程的注意力计算、状态复制、token
+  shift、池化输出和采样等操作。
+file: src/llama-graph.cpp
+funcs:
+- code:
+  - static ggml_tensor * build_attn_inp_kq_mask(
+  - '        ggml_context * ctx,'
+  - '        const llama_kv_cache_context * mctx,'
+  - '        const llama_ubatch & ubatch,'
+  - '        const llama_cparams & cparams) {'
+  - '    const auto n_kv     = mctx->get_n_kv();'
+  - '    const auto n_tokens = ubatch.n_tokens;'
+  - '    const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;'
+  - '    ggml_tensor * res = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, n_kv, n_tokens/n_stream,
+    1, n_stream);'
+  - '    ggml_set_input(res);'
+  - '    ggml_set_name(res, "attn_inp_kq_mask");'
+  - '    return res;'
+  - '}'
+  desc: Contains static helper functions for deduplication and matrix multiplication
+    utilities.
+  line: 24-42
+  name: __main__
+- code:
+  - static bool can_reuse_kq_mask(
+  - '        ggml_tensor * kq_mask,'
+  - '        const llama_kv_cache_context * mctx,'
+  - '        const llama_ubatch & ubatch,'
+  - '        const llama_cparams & cparams) {'
+  - '    const auto n_kv     = mctx->get_n_kv();'
+  - '    const auto n_tokens = ubatch.n_tokens;'
+  - '    const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;'
+  - '    bool res = true;'
+  - '    res &= (kq_mask->ne[0] == n_kv);'
+  - '    res &= (kq_mask->ne[1] == n_tokens/n_stream);'
+  - '    res &= (kq_mask->ne[2] == 1);'
+  - '    res &= (kq_mask->ne[3] == n_stream);'
+  - '    return res;'
+  - '}'
+  desc: Contains static helper function to check if a KQ mask tensor can be reused.
+  line: 44-60
+  name: __main__
+- code:
+  - static ggml_tensor * ggml_mul_mat_aux(
+  - '        ggml_context * ctx,'
+  - '        ggml_tensor * cur,'
+  - '        ggml_tensor * rot) {'
+  - '    const auto n = rot->ne[0];'
+  - '    ggml_tensor * res;'
+  - '    res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);'
+  - '    res = ggml_mul_mat   (ctx, rot, res);'
+  - '    res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);'
+  - '    return res;'
+  - '}'
+  desc: Contains static helper function for matrix multiplication with rotation tensors.
+  line: 62-70
+  name: __main__
+- code:
+  - static void print_mask(const float * data, int64_t n_tokens, int64_t n_kv, int64_t
+    n_swa, llama_swa_type swa_type) {
+  - '    LLAMA_LOG_DEBUG("%s: === Attention mask ===\n", __func__);'
+  - '    const char * swa_type_str = "unknown";'
+  - '    switch (swa_type) {'
+  - '        case LLAMA_SWA_TYPE_NONE:      swa_type_str = "LLAMA_SWA_TYPE_NONE";
+    break;'
+  - '        case LLAMA_SWA_TYPE_STANDARD:  swa_type_str = "LLAMA_SWA_TYPE_STANDARD";
+    break;'
+  - '        case LLAMA_SWA_TYPE_CHUNKED:   swa_type_str = "LLAMA_SWA_TYPE_CHUNKED";
+    break;'
+  - '        case LLAMA_SWA_TYPE_SYMMETRIC: swa_type_str = "LLAMA_SWA_TYPE_SYMMETRIC";
+    break;'
+  - '    };'
+  - '    LLAMA_LOG_DEBUG("%s: n_swa : %d, n_kv: %d, swq_type: %s\n", __func__, (int)n_swa,
+    (int)n_kv, swa_type_str);'
+  - '    LLAMA_LOG_DEBUG("%s: ''0'' = can attend, ''∞'' = masked\n", __func__);'
+  - '    LLAMA_LOG_DEBUG("%s: Rows = query tokens, Columns = key/value tokens\n\n",
+    __func__);'
+  - '    LLAMA_LOG_DEBUG("    ");'
+  - '    for (int j = 0; j < std::min((int64_t)20, n_kv); ++j) {'
+  - '        LLAMA_LOG_DEBUG("%2d", j);'
+  - '    }'
+  - '    LLAMA_LOG_DEBUG("\n");'
+  - '    for (int i = 0; i < std::min((int64_t)20, n_tokens); ++i) {'
+  - '        LLAMA_LOG_DEBUG(" %2d ", i);'
+  - '        for (int j = 0; j < std::min((int64_t)20, n_kv); ++j) {'
+  - '            float val = data[i * n_kv + j];'
+  - '            if (val == -INFINITY) {'
+  - '                LLAMA_LOG_DEBUG(" ∞");'
+  - '            } else {'
+  - '                LLAMA_LOG_DEBUG(" 0");'
+  - '            }'
+  - '        }'
+  - '        LLAMA_LOG_DEBUG("\n");'
+  - '    }'
+  - '}'
+  desc: Contains static helper function to print an attention mask for debugging.
+  line: 342-367
+  name: __main__
+- code:
+  - '    return build_moe_ffn('
+  - '        cur,'
+  - '        gate_inp,'
+  - '        gate_inp_b,'
+  - '        up_exps,'
+  - '        up_exps_b,'
+  - '        gate_exps,'
+  - '        gate_exps_b,'
+  - '        down_exps,'
+  - '        down_exps_b,'
+  - '        exp_probs_b,'
+  - '        n_expert,'
+  - '        n_expert_used,'
+  - '        type_op,'
+  - '        norm_w,'
+  - '        w_scale,'
+  - '        gating_op,'
+  - '        il,'
+  - '        probs_in,'
+  - '        gate_up_exps,'
+  - '        gate_up_exps_b,'
+  - '        up_exps_s,'
+  - '        gate_exps_s,'
+  - '        down_exps_s'
+  - '    );'
+  - '}'
+  - ''
+  - // input embeddings with optional lora
+  - ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const
+    {
+  - '    // ...'
+  - '}'
+  desc: 该文件的全局代码片段，主要包含对 build_moe_ffn 的重载调用以及一个静态辅助函数 build_attn_inp_kv_impl 的一部分，用于配置
+    KV 缓存注意力输入。
+  line: 243-352
+  name: __main__
+- code:
+  - static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
+  - '           ggml_context * ctx0,'
+  - '     const llama_ubatch & ubatch,'
+  - '    const llama_hparams & hparams,'
+  - '    const llama_cparams & cparams,'
+  - '    const llama_kv_cache_context * mctx_cur) {'
+  - ''
+  - '    auto inp = std::make_unique<llm_graph_input_attn_kv>(hparams, cparams, mctx_cur);'
+  - ''
+  - '    {'
+  - '        GGML_ASSERT(hparams.swa_type == LLAMA_SWA_TYPE_NONE && "Use llama_kv_cache_iswa
+    for SWA");'
+  - ''
+  - '        inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);'
+  - '        inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);'
+  - ''
+  - '        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);'
+  - '        inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask,
+    GGML_TYPE_F16) : inp->self_kq_mask;'
+  - '    }'
+  - ''
+  - '    inp->self_k_rot = mctx_cur->build_input_k_rot(ctx0);'
+  - '    inp->self_v_rot = mctx_cur->build_input_v_rot(ctx0);'
+  - ''
+  - '    return inp;'
+  - '}'
+  desc: 实现注意力KV输入的具体构建逻辑，初始化索引、遮罩和旋转位置编码。
+  line: 2067-2092
+  name: build_attn_inp_kv_impl
+- code:
+  - static std::unique_ptr<llm_graph_input_attn_k> build_attn_inp_k_impl(
+  - '           ggml_context * ctx0,'
+  - '     const llama_ubatch & ubatch,'
+  - '    const llama_hparams & hparams,'
+  - '    const llama_cparams & cparams,'
+  - '    const llama_kv_cache_context * mctx_cur) {'
+  - ''
+  - '    auto inp = std::make_unique<llm_graph_input_attn_k>(hparams, cparams, mctx_cur);'
+  - ''
+  - '    {'
+  - '        GGML_ASSERT(hparams.swa_type == LLAMA_SWA_TYPE_NONE && "Use llama_kv_cache_iswa
+    for SWA");'
+  - ''
+  - '        inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);'
+  - ''
+  - '        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);'
+  - '        inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask,
+    GGML_TYPE_F16) : inp->self_kq_mask;'
+  - '    }'
+  - ''
+  - '    return inp;'
+  - '}'
+  desc: 实现仅K注意力输入的具体构建逻辑，初始化索引和遮罩（不含旋转位置编码）。
+  line: 2142-2165
+  name: build_attn_inp_k_impl
+- code:
+  - static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
+  - '           ggml_context * ctx0,'
+  - '     const llama_ubatch & ubatch,'
+  - '    const llama_memory_recurrent_context * mctx_cur) {'
+  - ''
+  - '    auto inp = std::make_unique<llm_graph_input_rs>(mctx_cur);'
+  - ''
+  - '    const int64_t n_rs   = mctx_cur->get_n_rs();'
+  - '    const int64_t n_seqs = ubatch.n_seqs;'
+  - ''
+  - '    inp->s_copy = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);'
+  - '    ggml_set_input(inp->s_copy);'
+  - ''
+  - '    inp->s_copy_main  = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);'
+  - '    inp->s_copy_extra = ggml_view_1d(ctx0, inp->s_copy, n_rs - n_seqs, n_seqs
+    * inp->s_copy->nb[0]);'
+  - ''
+  - '    inp->head = mctx_cur->get_head();'
+  - '    inp->rs_z = mctx_cur->get_rs_z();'
+  - ''
+  - '    return inp;'
+  - '}'
+  desc: 实现循环状态输入的具体构建逻辑，创建状态拷贝索引张量及其主/额外视图。
+  line: 2457-2473
+  name: build_rs_inp_impl
+- code:
+  - int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buckets,
+    bool bidirectional) {
+  - '    const int64_t max_distance = 128;'
+  - ''
+  - '    if (bidirectional) {'
+  - '        n_buckets >>= 1;'
+  - '    }'
+  - ''
+  - '    const int64_t max_exact = n_buckets >> 1;'
+  - ''
+  - '    int32_t relative_position = x - y;'
+  - '    int32_t relative_bucket = 0;'
+  - ''
+  - '    if (bidirectional) {'
+  - '        relative_bucket += (relative_position > 0) * n_buckets;'
+  - '        relative_position = std::abs(relative_position);'
+  - '    } else {'
+  - '        relative_position = -std::min<int32_t>(relative_position, 0);'
+  - '    }'
+  - ''
+  - '    int32_t relative_position_if_large = floorf(max_exact + logf(1.0 * relative_position
+    / max_exact) * (n_buckets - max_exact) / log(1.0 * max_distance / max_exact));'
+  - '    relative_position_if_large = std::min<int32_t>(relative_position_if_large,
+    n_buckets - 1);'
+  - '    relative_bucket += (relative_position < max_exact ? relative_position : relative_position_if_large);'
+  - ''
+  - '    return relative_bucket;'
+  - '}'
+  desc: 计算T5风格的相对位置桶索引，支持单/双向模式，将相对位置映射到离散的桶中。
+  line: 2743-2771
+  name: llama_relative_position_bucket

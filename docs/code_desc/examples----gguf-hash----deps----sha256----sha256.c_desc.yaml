@@ -1,0 +1,157 @@
+classes: []
+desc: 该文件是SHA-256哈希算法的C语言实现，提供了初始化、更新、最终摘要和一次性哈希等核心功能。它基于Igor Pavlov发布的公共领域代码，内部通过一系列宏定义和变换函数实现SHA-256的加密逻辑，支持哈希数据的流式处理与最终输出固定长度的摘要。
+file: examples/gguf-hash/deps/sha256/sha256.c
+funcs:
+- code:
+  - void
+  - sha256_init(sha256_t *p)
+  - '{'
+  - '  p->state[0] = 0x6a09e667;'
+  - '  p->state[1] = 0xbb67ae85;'
+  - '  p->state[2] = 0x3c6ef372;'
+  - '  p->state[3] = 0xa54ff53a;'
+  - '  p->state[4] = 0x510e527f;'
+  - '  p->state[5] = 0x9b05688c;'
+  - '  p->state[6] = 0x1f83d9ab;'
+  - '  p->state[7] = 0x5be0cd19;'
+  - '  p->count = 0;'
+  - '}'
+  desc: 初始化SHA-256上下文结构体，设置初始哈希值（标准的八个32位常量）和计数器为零。
+  line: 22-35
+  name: sha256_init
+- code:
+  - static void
+  - sha256_transform(uint32_t *state, const uint32_t *data)
+  - '{'
+  - '  uint32_t W[16] = {0};'
+  - '  unsigned j;'
+  - '  #ifdef _SHA256_UNROLL2'
+  - '  uint32_t a,b,c,d,e,f,g,h;'
+  - '  a = state[0];'
+  - '  b = state[1];'
+  - '  c = state[2];'
+  - '  d = state[3];'
+  - '  e = state[4];'
+  - '  f = state[5];'
+  - '  g = state[6];'
+  - '  h = state[7];'
+  - '  #else'
+  - '  uint32_t T[8];'
+  - '  for (j = 0; j < 8; j++)'
+  - '    T[j] = state[j];'
+  - '  #endif'
+  - ''
+  - '  for (j = 0; j < 64; j += 16)'
+  - '  {'
+  - '    #if defined(_SHA256_UNROLL) || defined(_SHA256_UNROLL2)'
+  - '    RX_8(0); RX_8(8);'
+  - '    #else'
+  - '    unsigned i;'
+  - '    for (i = 0; i < 16; i++) { R(i); }'
+  - '    #endif'
+  - '  }'
+  - ''
+  - '  #ifdef _SHA256_UNROLL2'
+  - '  state[0] += a;'
+  - '  state[1] += b;'
+  - '  state[2] += c;'
+  - '  state[3] += d;'
+  - '  state[4] += e;'
+  - '  state[5] += f;'
+  - '  state[6] += g;'
+  - '  state[7] += h;'
+  - '  #else'
+  - '  for (j = 0; j < 8; j++)'
+  - '    state[j] += T[j];'
+  - '  #endif'
+  - ''
+  - '  /* Wipe variables */'
+  - '  /* memset(W, 0, sizeof(W)); */'
+  - '  /* memset(T, 0, sizeof(T)); */'
+  - '}'
+  desc: 执行SHA-256加密核心变换，对512位的数据块进行处理，更新哈希状态。该函数是内部静态函数，通过展开宏或数组操作实现64轮复杂的位运算和逻辑操作。
+  line: 88-134
+  name: sha256_transform
+- code:
+  - static void
+  - sha256_write_byte_block(sha256_t *p)
+  - '{'
+  - '  uint32_t data32[16];'
+  - '  unsigned i;'
+  - '  for (i = 0; i < 16; i++)'
+  - '    data32[i] ='
+  - '      ((uint32_t)(p->buffer[i * 4    ]) << 24) +'
+  - '      ((uint32_t)(p->buffer[i * 4 + 1]) << 16) +'
+  - '      ((uint32_t)(p->buffer[i * 4 + 2]) <<  8) +'
+  - '      ((uint32_t)(p->buffer[i * 4 + 3]));'
+  - '  sha256_transform(p->state, data32);'
+  - '}'
+  desc: 将缓冲区中的64字节数据转换为16个32位字，并调用sha256_transform进行处理。该函数是内部静态函数，用于解析待处理的数据块。
+  line: 143-154
+  name: sha256_write_byte_block
+- code:
+  - void
+  - sha256_hash(unsigned char *buf, const unsigned char *data, size_t size)
+  - '{'
+  - '  sha256_t hash;'
+  - '  sha256_init(&hash);'
+  - '  sha256_update(&hash, data, size);'
+  - '  sha256_final(&hash, buf);'
+  - '}'
+  desc: 执行一次性的SHA-256哈希计算，接受输入数据并输出摘要，内部调用init、update和final三个函数完成全过程。
+  line: 160-165
+  name: sha256_hash
+- code:
+  - void
+  - sha256_update(sha256_t *p, const unsigned char *data, size_t size)
+  - '{'
+  - '  uint32_t curBufferPos = (uint32_t)p->count & 0x3F;'
+  - '  while (size > 0)'
+  - '  {'
+  - '    p->buffer[curBufferPos++] = *data++;'
+  - '    p->count++;'
+  - '    size--;'
+  - '    if (curBufferPos == 64)'
+  - '    {'
+  - '      curBufferPos = 0;'
+  - '      sha256_write_byte_block(p);'
+  - '    }'
+  - '  }'
+  - '}'
+  desc: 向SHA-256上下文更新数据，将输入数据逐字节写入缓冲区，当缓冲区满时触发变换，支持多块数据的流式处理。
+  line: 169-183
+  name: sha256_update
+- code:
+  - void
+  - sha256_final(sha256_t *p, unsigned char *digest)
+  - '{'
+  - '  uint64_t lenInBits = (p->count << 3);'
+  - '  uint32_t curBufferPos = (uint32_t)p->count & 0x3F;'
+  - '  unsigned i;'
+  - '  p->buffer[curBufferPos++] = 0x80;'
+  - '  while (curBufferPos != (64 - 8))'
+  - '  {'
+  - '    curBufferPos &= 0x3F;'
+  - '    if (curBufferPos == 0)'
+  - '      sha256_write_byte_block(p);'
+  - '    p->buffer[curBufferPos++] = 0;'
+  - '  }'
+  - '  for (i = 0; i < 8; i++)'
+  - '  {'
+  - '    p->buffer[curBufferPos++] = (unsigned char)(lenInBits >> 56);'
+  - '    lenInBits <<= 8;'
+  - '  }'
+  - '  sha256_write_byte_block(p);'
+  - ''
+  - '  for (i = 0; i < 8; i++)'
+  - '  {'
+  - '    *digest++ = (unsigned char)(p->state[i] >> 24);'
+  - '    *digest++ = (unsigned char)(p->state[i] >> 16);'
+  - '    *digest++ = (unsigned char)(p->state[i] >> 8);'
+  - '    *digest++ = (unsigned char)(p->state[i]);'
+  - '  }'
+  - '  sha256_init(p);'
+  - '}'
+  desc: 完成SHA-256哈希计算，填充数据长度，执行最终变换，并输出32字节的摘要，随后重置上下文以支持新计算。
+  line: 187-210
+  name: sha256_final

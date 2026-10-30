@@ -1,0 +1,911 @@
+code_map:
+- README.md
+- ├── llama.cpp 项目全景介绍
+- │   ├── 项目定位：zero-dependency、cross-platform、minimalism
+- │   ├── 支持模型矩阵与后端矩阵
+- │   └── 工具链生态：llama-cli、llama-server、llama-bench 等
+- ''
+- common/common.h
+- ├── 核心数据结构定义
+- '│   ├── common_time_meas                    # 计时器类（RAII 风格）'
+- '│   │   ├── common_time_meas()              # 构造：记录开始时间'
+- '│   │   └── ~common_time_meas()             # 析构：累加耗时'
+- '│   ├── cpu_params                          # CPU 线程/掩码/优先级参数'
+- '│   ├── common_adapter_lora_info            # LoRA 适配器信息（路径/缩放/指针）'
+- '│   ├── common_grammar                      # 语法约束封装（类型 + 字符串）'
+- '│   │   ├── common_grammar()                # 默认构造'
+- '│   │   ├── common_grammar(type, grammar)   # 带参构造（含断言）'
+- '│   │   └── empty()                         # 判空'
+- '│   ├── common_params_sampling              # 采样参数（seed/top_k/top_p/grammar/logit_bias）'
+- '│   │   ├── has_logit_bias()                # 检查 logit_bias 是否存在'
+- '│   │   └── print()                         # 格式化输出'
+- '│   ├── common_params_model                 # 模型来源（path/URL/HF repo）'
+- '│   ├── common_params_speculative           # 投机解码参数（含草稿模型）'
+- '│   │   └── has_dft()                       # 是否有草稿模型'
+- '│   ├── common_params_vocoder               # 语音合成参数'
+- '│   ├── common_params_diffusion             # 扩散模型参数'
+- '│   ├── common_params                       # 总控参数（聚合所有子配置）'
+- '│   ├── common_control_vector_data          # 控制向量数据（n_embd + data）'
+- '│   ├── common_control_vector_load_info     # 控制向量加载配置'
+- '│   ├── common_file_info                    # 文件系统条目（path/name/size/is_dir）'
+- '│   ├── common_init_result                  # 初始化结果封装（Pimpl 模式）'
+- '│   │   ├── common_init_result(params)      # 构造：加载模型+上下文+采样器'
+- '│   │   ├── ~common_init_result()           # 析构：自动释放资源'
+- '│   │   ├── model()                         # 获取 llama_model*'
+- '│   │   ├── context()                       # 获取 llama_context*'
+- '│   │   ├── sampler(seq_id)                 # 按序列 ID 获取采样器'
+- '│   │   ├── reset_samplers()                # 重置所有采样器'
+- '│   │   └── lora()                          # 获取 LoRA 适配器列表'
+- '│   └── lr_opt                              # 学习率优化器（AdamW/SGD 调度）'
+- '│       ├── init()                          # 初始化衰减策略'
+- '│       └── get_lr(epoch)                   # 计算指定 epoch 的学习率'
+- ├── 内联工具函数
+- '│   ├── common_grammar_value()              # 提取语法字符串'
+- '│   ├── common_grammar_needs_prefill()      # 判断是否需要预填充'
+- '│   ├── string_starts_with()                # 前缀匹配'
+- '│   ├── string_ends_with()                  # 后缀匹配'
+- '│   ├── string_remove_suffix()              # 移除后缀'
+- '│   ├── string_find_partial_stop()          # 查找部分停止符'
+- '│   ├── string_split<T>(str, delim)         # 模板拆分（泛型）'
+- '│   ├── string_split<std::string>()         # 特化：字符串拆分'
+- '│   └── llm_ffn_exps_block_regex()          # 生成 FFN 专家张量正则'
+- └── 公共函数声明
+- '    ├── 系统信息'
+- '    │   ├── common_init()                   # 初始化公共环境（日志/编码）'
+- '    │   ├── common_params_get_system_info() # 生成系统信息字符串'
+- '    │   └── tty_can_use_colors()            # 终端颜色支持检测'
+- '    ├── CPU 参数处理'
+- '    │   ├── cpu_get_num_physical_cores()    # 物理核心数'
+- '    │   ├── cpu_get_num_math()              # 数学核心数（避开能效核）'
+- '    │   ├── parse_cpu_range()               # 解析 CPU 范围'
+- '    │   ├── parse_cpu_mask()                # 解析 CPU 掩码'
+- '    │   ├── postprocess_cpu_params()        # 后处理（默认值填充）'
+- '    │   └── set_process_priority()          # 设置进程优先级'
+- '    ├── 字符串处理'
+- '    │   ├── string_format()                 # printf 风格格式化'
+- '    │   ├── string_strip()                  # 去除首尾空白'
+- '    │   ├── string_join()                   # 连接字符串数组'
+- '    │   ├── string_split()                  # 拆分字符串'
+- '    │   ├── string_repeat()                 # 重复字符串'
+- '    │   ├── string_replace_all()            # 全局替换'
+- '    │   ├── regex_escape()                  # 正则特殊字符转义'
+- '    │   ├── string_from(bool/int_vec)       # 类型转字符串'
+- '    │   ├── string_process_escapes()        # 处理转义序列（\n/\t/\xNN）'
+- '    │   ├── string_parse_kv_override()      # 解析 KV 覆盖配置'
+- '    │   └── string_get_sortable_timestamp() # 可排序时间戳'
+- '    ├── 文件系统'
+- '    │   ├── fs_validate_filename()          # 文件名校验'
+- '    │   ├── fs_create_directory_with_parents() # 递归创建目录'
+- '    │   ├── fs_is_directory()               # 判断是否目录'
+- '    │   ├── fs_get_cache_directory()        # 获取缓存目录'
+- '    │   ├── fs_get_cache_file()             # 获取缓存文件路径'
+- '    │   ├── fs_list()                       # 列出目录内容'
+- '    │   └── glob_match()                    # Glob 模式匹配'
+- '    ├── 参数转换桥接'
+- '    │   ├── common_model_params_to_llama()   # common_params → llama_model_params'
+- '    │   ├── common_context_params_to_llama() # common_params → llama_context_params'
+- '    │   └── ggml_threadpool_params_from_cpu_params() # CPU 参数 → 线程池参数'
+- '    ├── 模型初始化与适配器'
+- '    │   ├── common_init_from_params()       # 从参数初始化模型资源'
+- '    │   ├── common_set_adapter_lora()       # 应用 LoRA 适配器'
+- '    │   ├── common_control_vector_load()    # 加载控制向量'
+- '    │   └── get_model_endpoint()            # 获取模型下载端点'
+- '    ├── 批处理与分词'
+- '    │   ├── common_batch_clear()            # 清空批处理'
+- '    │   ├── common_batch_add()              # 添加 token 到批处理'
+- '    │   ├── common_prompt_batch_decode()    # 批量解码提示词'
+- '    │   ├── common_replay_last_token()      # 重放最后 token（恢复状态）'
+- '    │   ├── common_tokenize(ctx/vocab)      # 文本 → token 向量'
+- '    │   ├── common_token_to_piece()         # token → 文本片段'
+- '    │   └── common_detokenize()             # token 向量 → 文本'
+- '    ├── 嵌入向量工具'
+- '    │   ├── common_embd_normalize()         # 嵌入归一化（L2/p-norm/max）'
+- '    │   └── common_embd_similarity_cos()    # 余弦相似度计算'
+- '    └── 训练优化'
+- '        ├── common_opt_dataset_init()       # 初始化训练数据集'
+- '        ├── common_opt_lr_pars()            # 学习率调度回调'
+- '        └── common_opt_get_optimizer()      # 解析优化器类型'
+- ''
+- common/common.cpp
+- ├── CPU 检测与控制（60-338 行）
+- '│   ├── cpu_get_num_physical_cores()        # 跨平台物理核心检测'
+- '│   ├── cpuid()                             # x86 CPUID 指令封装'
+- '│   ├── pin_cpu()                           # 线程绑定到指定 CPU'
+- '│   ├── is_hybrid_cpu()                     # 混合架构检测（Intel P/E 核）'
+- '│   ├── is_running_on_efficiency_core()     # 是否运行在能效核'
+- '│   ├── cpu_count_math_cpus()               # 统计数学核心（避开 E 核）'
+- '│   ├── cpu_get_num_math()                  # 推荐数学线程数'
+- '│   ├── set_process_priority()              # 跨平台进程优先级设置'
+- '│   ├── postprocess_cpu_params()            # 参数补全与校验'
+- '│   ├── parse_cpu_range()                   # 解析 "0-3" 范围'
+- '│   └── parse_cpu_mask()                    # 解析 "0xFFFF" 掩码'
+- ├── 初始化与系统信息（340-380 行）
+- '│   ├── common_init()                       # Windows UTF-8 + 日志回调设置'
+- '│   └── common_params_get_system_info()     # 拼接系统信息字符串'
+- ├── 字符串处理（382-607 行）
+- '│   ├── string_format()                     # vsnprintf 两次调用法'
+- '│   ├── string_strip()                      # 去除首尾空白'
+- '│   ├── string_get_sortable_timestamp()     # YYYY_MM_DD-HH_MM_SS.NNN 格式'
+- '│   ├── string_replace_all()                # 循环查找替换'
+- '│   ├── regex_escape()                      # std::regex 转义特殊字符'
+- '│   ├── string_join()                       # ostringstream 拼接'
+- '│   ├── string_split()                      # 循环 find + substr'
+- '│   ├── string_repeat()                     # reserve + 循环 += 优化'
+- '│   ├── string_from(bool)                   # true/false'
+- '│   ├── string_from(int_vec)                # [1, 2, 3] 格式'
+- '│   ├── string_from(ctx, tokens)            # token + piece 混合格式'
+- '│   ├── string_from(ctx, batch)             # batch 元数据格式化'
+- '│   ├── string_process_escapes()            # \\n/\\t/\\xNN 转实际字符'
+- '│   └── string_parse_kv_override()          # 解析 "key=type:value" 格式'
+- ├── Glob 匹配（657-749 行）
+- '│   ├── glob_class_match()                  # 字符类匹配 [a-z]'
+- '│   └── glob_match()                        # 递归实现 * ? ** [] 匹配'
+- ├── 文件系统（756-1042 行）
+- '│   ├── fs_validate_filename()              # UTF-8/长度/非法字符校验'
+- '│   ├── utf8_to_wstring()                   # Windows 宽字符转换'
+- '│   ├── fs_create_directory_with_parents()  # 递归 mkdir（跨平台）'
+- '│   ├── fs_is_directory()                   # std::filesystem 封装'
+- '│   ├── fs_get_cache_directory()            # 环境变量优先 + 平台默认'
+- '│   ├── fs_get_cache_file()                 # 拼接缓存文件路径'
+- '│   ├── fs_list()                           # directory_iterator 遍历'
+- '│   └── tty_can_use_colors()                # NO_COLOR/TERM 环境变量检测'
+- ├── 采样器初始化（1048-1154 行）
+- '│   ├── common_init_sampler_from_model()    # 从模型元数据读取采样参数'
+- '│   └── common_init_from_params()           # warmup + LoRA + 控制向量加载'
+- ├── 模型资源管理（1116-1312 行）
+- '│   ├── common_init_result::impl            # Pimpl 内部类'
+- '│   │   ├── impl()                          # 默认构造'
+- '│   │   └── ~impl()                         # 默认析构（自动逆序释放）'
+- '│   ├── common_init_result::common_init_result() # 构造：完整初始化流水线'
+- '│   ├── common_init_result::model()         # 返回裸指针'
+- '│   ├── common_init_result::context()       # 返回裸指针'
+- '│   ├── common_init_result::sampler(seq_id) # 边界检查后返回采样器'
+- '│   ├── common_init_result::reset_samplers() # 批量重置 RNG 状态'
+- '│   ├── common_init_result::lora()          # 返回引用（可修改）'
+- '│   ├── common_init_result::~common_init_result() # 默认析构'
+- '│   ├── common_set_adapter_lora()           # 解包指针+缩放到 llama API'
+- '│   └── get_model_endpoint()                # MODEL_ENDPOINT/HF_ENDPOINT 优先级'
+- ├── 参数转换桥接（1325-1395 行）
+- '│   ├── common_model_params_to_llama()      # 字段逐个映射'
+- '│   ├── common_context_params_to_llama()    # 含 KV 缓存类型转换'
+- '│   └── ggml_threadpool_params_from_cpu_params() # cpumask/prio/poll 复制'
+- ├── 学习率优化器（1398-1417 行）
+- '│   ├── lr_opt::init()                      # 计算 scale_epoch（指数衰减）'
+- '│   └── lr_opt::get_lr(epoch)               # 分段返回 lr0/decay/lr_min'
+- ├── 批处理与分词（1407-1503 行）
+- '│   ├── common_batch_clear()                # n_tokens = 0'
+- '│   ├── common_batch_add()                  # 填 token/pos/seq_ids/logits'
+- '│   ├── common_tokenize()                   # 两次调用 llama_tokenize 处理未知长度'
+- '│   ├── common_token_to_piece()             # 动态调整 buffer 大小'
+- '│   └── common_detokenize()                 # 处理返回负值的扩容逻辑'
+- ├── 嵌入向量工具（1507-1558 行）
+- '│   ├── common_embd_normalize()             # switch 处理 4 种归一化'
+- '│   └── common_embd_similarity_cos()        # 点积 / (norm1 * norm2)'
+- ├── 控制向量加载（1562-1667 行）
+- '│   ├── common_control_vector_load_one()    # 单文件加载（GGUF 解析）'
+- '│   └── common_control_vector_load()        # 多文件累加合并'
+- ├── 训练优化（1669-1711 行）
+- '│   ├── common_opt_dataset_init()           # token 序列 → ggml_opt_dataset'
+- '│   ├── common_opt_lr_pars()                # 回调适配 lr_opt'
+- '│   ├── eq_case_insensitive()               # 大小写不敏感比较'
+- '│   └── common_opt_get_optimizer()          # 字符串 → 枚举（adamw/sgd）'
+- └── 状态恢复（1719-1773 行）
+- '    ├── common_replay_last_token()          # 单 token 重放恢复'
+- '    └── common_prompt_batch_decode()        # 批量解码 + 状态保存'
+exercises:
+- contents:
+  - 阅读 `common/common.h` 第 88-443 行，理解以下核心结构：
+  - 1. `common_init_result` - 初始化结果封装类
+  - 2. `cpu_params` - CPU 参数结构
+  - 3. `common_params_sampling` - 采样参数
+  - 4. `common_params` - 总控参数
+  - 5. `lr_opt` - 学习率优化器
+  - ''
+  - 回答问题：
+  - '- `common_init_result` 为什么使用 Pimpl 模式？它的 `impl` 类里持有哪些资源？'
+  - '- `common_params_sampling` 中的 `grammar` 字段是什么类型？它的 `empty()` 方法如何判断语法是否设置？'
+  - '- `common_params_model` 如何同时支持本地路径、URL 和 Hugging Face 仓库？字段设计体现了什么思路？'
+  - '- `lr_opt::get_lr(epoch)` 的分段逻辑是什么？什么时候返回 `lr0`，什么时候返回 `lr_min`？'
+  'no': 1
+  title: 阅读 common 模块核心数据结构
+- contents:
+  - 阅读 `common/common.cpp` 第 60-338 行，理解以下函数的实现：
+  - 1. `cpu_get_num_physical_cores()` - 物理核心数检测
+  - 2. `is_hybrid_cpu()` 与 `is_running_on_efficiency_core()` - 混合架构检测
+  - 3. `cpu_count_math_cpus()` - 统计数学核心数
+  - 4. `postprocess_cpu_params()` - CPU 参数后处理
+  - 5. `parse_cpu_range()` 与 `parse_cpu_mask()` - CPU 范围与掩码解析
+  - ''
+  - 回答问题：
+  - '- `is_hybrid_cpu()` 使用什么 CPUID 叶节点检测混合架构？返回值如何解析？'
+  - '- `cpu_count_math_cpus()` 为什么要跳过能效核心（E 核）？它如何避免超线程的影响？'
+  - '- `postprocess_cpu_params()` 中的 `role_model` 参数有什么作用？什么情况下会从 `role_model` 复制参数？'
+  - '- 如果用户设置了 `cpumask` 但 `n_threads` 大于掩码中置位的数量，`postprocess_cpu_params()` 会做什么？'
+  - '- `parse_cpu_range()` 和 `parse_cpu_mask()` 分别支持什么格式的输入？它们如何协同工作？'
+  'no': 2
+  title: 分析 CPU 检测与线程控制逻辑
+- contents:
+  - 阅读 `common/common.cpp` 第 382-1042 行，重点关注以下函数：
+  - 1. `string_format()` - 字符串格式化
+  - 2. `string_process_escapes()` - 转义序列处理
+  - 3. `string_parse_kv_override()` - KV 覆盖配置解析
+  - 4. `fs_create_directory_with_parents()` - 递归创建目录
+  - 5. `fs_get_cache_directory()` - 缓存目录获取
+  - 6. `fs_validate_filename()` - 文件名校验
+  - 7. `glob_match()` - Glob 模式匹配
+  - 8. `tty_can_use_colors()` - 终端颜色检测
+  - ''
+  - 回答问题：
+  - '- `string_format()` 为什么需要两次调用 `vsnprintf`？第一次调用传入 `nullptr` 和 0 的作用是什么？'
+  - '- `string_process_escapes()` 如何处理 `\\xNN` 十六进制转义？未知转义序列会被怎么处理？'
+  - '- `string_parse_kv_override()` 支持哪些数据类型？如何解析 `key=type:value` 格式？'
+  - '- `fs_create_directory_with_parents()` 在 Windows 和 POSIX 平台分别使用什么 API？如何判断路径已存在但不是目录的情况？'
+  - '- `fs_get_cache_directory()` 的目录优先级顺序是什么？（提示：LLAMA_CACHE → XDG_CACHE_HOME → HOME
+    → ...）'
+  - '- `fs_validate_filename()` 检查哪些规则？为什么要拒绝 `..` 和 `.` 作为文件名？'
+  - '- `glob_match()` 中的 `**` 与 `*` 有什么区别？`**` 为什么可以跨越目录分隔符？'
+  - '- `tty_can_use_colors()` 如何尊重用户的 NO_COLOR 环境变量设置？'
+  'no': 3
+  title: 跟踪字符串与文件系统工具
+- contents:
+  - 阅读 `common/common.cpp` 第 1116-1312 行，理解 `common_init_result` 的构造与资源管理：
+  - 1. `common_init_result::common_init_result()` - 构造函数
+  - 2. `common_init_result::sampler()` - 采样器获取
+  - 3. `common_init_result::reset_samplers()` - 批量重置采样器
+  - 4. `common_init_result::model() / context() / lora()` - 资源访问接口
+  - 5. `common_set_adapter_lora()` - LoRA 适配器应用
+  - 6. `common_init_from_params()` - 完整初始化流程（含 warmup、控制向量）
+  - 7. `common_init_sampler_from_model()` - 从模型元数据读取采样参数
+  - ''
+  - 回答问题：
+  - '- `common_init_result` 构造函数的执行顺序是什么？（提示：参数转换 → 模型加载 → 上下文创建 → 采样器初始化 → LoRA 加载）'
+  - '- `impl` 类中的成员变量声明顺序为什么重要？析构时的释放顺序是怎样的？'
+  - '- `sampler(seq_id)` 为什么要检查 `seq_id < 0 || seq_id >= size`？这种边界检查体现了什么设计考虑？'
+  - '- `common_set_adapter_lora()` 如何将 `std::vector<common_adapter_lora_info>` 拆分给
+    `llama_set_adapters_lora()`？'
+  - '- `common_init_from_params()` 在什么情况下会执行 warmup？warmup 的目的是什么？'
+  - '- `common_init_sampler_from_model()` 如何避免覆盖用户显式指定的采样参数？'
+  'no': 4
+  title: 解析 common_init_result 的装配流程
+- contents:
+  - 阅读 `common/common.cpp` 第 1407-1503 行，理解分词与批处理接口：
+  - 1. `common_batch_add()` 与 `common_batch_clear()` - 批处理添加与清空
+  - 2. `common_tokenize()` - 文本分词（两个重载版本）
+  - 3. `common_token_to_piece()` - token 转文本片段
+  - 4. `common_detokenize()` - token 反分词
+  - 5. `common_prompt_batch_decode()` - 批量解码
+  - 6. `common_replay_last_token()` - 重放最后 token
+  - ''
+  - 回答问题：
+  - '- `common_tokenize()` 为什么要调用两次 `llama_tokenize()`？第一次返回负值时表示什么？'
+  - '- `common_token_to_piece()` 如何处理 buffer 大小不足的情况？为什么先尝试当前容量再扩容？'
+  - '- `common_batch_add()` 中的 `seq_ids` 参数为什么是一个 vector？什么场景下会有多个序列 ID？'
+  - '- `common_prompt_batch_decode()` 的 `state_path` 和 `save_state` 参数如何配合实现状态保存？保存状态发生在什么时候？'
+  - '- `common_replay_last_token()` 在什么场景下使用？为什么要重新解码最后一个 token？'
+  - '- 设计一个实验：给定一段文本，使用 `common_tokenize()` 分词后用 `common_detokenize()` 还原，验证往返一致性，并观察特殊
+    token 的处理差异（`special=true/false`）。'
+  'no': 5
+  title: 实验分词与批处理流程
+- contents:
+  - 阅读 `common/common.cpp` 第 1507-1667 行，理解：
+  - 1. `common_embd_normalize()` - 嵌入向量归一化
+  - 2. `common_embd_similarity_cos()` - 余弦相似度
+  - 3. `common_control_vector_load_one()` 与 `common_control_vector_load()` - 控制向量加载
+  - ''
+  - 回答问题：
+  - '- `common_embd_normalize()` 的 `embd_norm` 参数支持哪几种归一化方式？`case -1`、`case 0`、`case
+    2` 分别对应什么？'
+  - '- `common_embd_similarity_cos()` 中为什么要特判 `sum1 == 0.0 || sum2 == 0.0`？两个零向量的相似度被定义为什么？'
+  - '- `common_control_vector_load()` 如何合并多个控制向量文件？如果 Vec1 的层数比 Vec2 少，`result.data.resize()`
+    会发生什么？'
+  - '- `common_control_vector_load_one()` 使用什么库加载 GGUF 文件？如何遍历张量并提取数据？'
+  - '- 控制向量加载为什么使用 `int32_t n_embd` 作为有效性标志？`-1` 表示什么含义？'
+  'no': 6
+  title: 探索嵌入向量与控制向量工具
+- contents:
+  - 基于 `postprocess_cpu_params()` 的设计模式（`common/common.cpp` 第 237-258 行），设计一个类似的参数后处理函数：
+  - ''
+  - 任务要求：
+  - '- 假设你有一个 `sampling_params_custom` 结构，包含 `temperature`、`top_p`、`top_k` 字段'
+  - '- 写一个 `postprocess_sampling_params()` 函数，实现以下逻辑：'
+  - '  1. 如果 `temperature < 0`，设置为默认值 0.7'
+  - '  2. 如果 `top_p` 不在 [0, 1] 范围内，截断到合法范围并输出警告'
+  - '  3. 如果 `top_k <= 0`，设置为 -1（表示禁用）'
+  - '  4. 可选：如果提供了 `role_model` 参数且当前参数无效，从 `role_model` 复制'
+  - ''
+  - 思考问题：
+  - '- 为什么要将参数校验和默认值填充集中在单独的后处理函数中，而不是散落在各处？'
+  - '- `postprocess_cpu_params()` 中的 `role_model` 模式有什么好处？什么场景下会用多个「角色模板」？'
+  - '- 如何在参数非法时优雅降级而不是直接崩溃？（参考 `set_process_priority()` 的错误处理）'
+  - '- 扩展思考：如何设计一个支持参数依赖检查的后处理函数？（例如：当 A 参数启用时，B 参数必须在特定范围内）'
+  'no': 7
+  title: 设计自定义参数后处理函数
+- contents:
+  - 参考 `glob_match()` 的实现（`common/common.cpp` 第 699-749 行），实现一个简化版的 Glob 匹配器：
+  - ''
+  - 任务要求：
+  - '- 支持 `*`（任意字符序列，不含 `/`）与 `?`（单个字符）'
+  - '- 不需要支持 `**`、`[]` 字符类'
+  - '- 使用递归或动态规划实现'
+  - '- 函数签名：`bool simple_glob_match(const char* pattern, const char* str)`'
+  - ''
+  - 思考问题：
+  - '- 为什么 `*` 不能匹配 `/`？这与文件系统路径的语义有什么关系？'
+  - '- `glob_match()` 中的 `**` 如何实现递归？它为什么可以跨越目录边界？'
+  - '- 如果用动态规划优化递归实现，状态转移方程是什么？空间复杂度能优化到什么程度？'
+  - '- 测试用例设计：至少包含以下场景：'
+  - '  - 完全匹配（无通配符）'
+  - '  - `*` 在开头/中间/结尾'
+  - '  - 连续多个 `*`'
+  - '  - `?` 与 `*` 混合'
+  - '  - 模式与字符串长度差异很大'
+  - '- 进阶挑战：如何支持转义字符（如 `\\*` 表示字面星号）？'
+  'no': 8
+  title: 实现一个简化的 Glob 匹配器
+learning_targets:
+- 理解 common 模块在 llama.cpp 生态中的定位与价值，掌握「基础设施层」的设计哲学
+- 掌握 cpu_params、common_params 等核心数据结构的设计思路与字段语义
+- 熟悉 CPU 检测、进程优先级设置、字符串处理、文件系统操作等公共底层能力的实现
+- 理解 common_init_result 如何通过 Pimpl 模式管理模型、上下文、采样器与 LoRA 适配器的生命周期
+- 掌握 common_batch_add、common_tokenize、common_detokenize 等高频推理接口的使用方法
+- 能够阅读并扩展 common 模块中的工具函数，为自定义推理应用提供支撑
+life_analogy:
+- 想象 llama.cpp 的 common 模块是一个**随身携带的多功能工具箱**：
+- '- **cpu_params / common_params** = 工具箱的**控制面板**（每个旋钮对应一种配置）'
+- '- **common_init_result** = 工具箱的**总电源开关**（一启动就装配好模型、上下文、采样器）'
+- '- **string_format、string_strip** = 工具箱里的**螺丝刀、钳子**（处理各种字符串小活儿）'
+- '- **fs_create_directory_with_parents、fs_list** = 工具箱的**文件收纳格**（整理磁盘路径）'
+- '- **common_tokenize、common_detokenize** = 工具箱的**翻译官**（文本 ↔ token 互转）'
+- '- **common_batch_add、common_batch_clear** = 工具箱的**流水线工人**（批量装货卸货）'
+- '- **LoRA 适配器、控制向量** = 工具箱的**插件槽**（随时扩展新功能）'
+- '- **Pimpl 模式** = 工具箱的**外壳**（把内部复杂结构藏起来，只暴露简洁接口）'
+- '- **postprocess_cpu_params、set_process_priority** = 工具箱的**性能调优师**（根据硬件自动调校）'
+- ''
+- 就像工匠出门干活必备一个工具箱，llama.cpp 的每个上层应用（CLI、server、benchmark）都依赖这个 common 工具箱，避免重复造轮子，也把「杂活」和「核心业务」分离开来。
+'no': 42
+summary:
+- concept: common 模块
+  desc: llama.cpp 的「随身工具箱」，集中管理参数、日志、字符串、文件系统、模型初始化等高频可复用能力
+- concept: cpu_params
+  desc: CPU 线程数、亲和性掩码、调度优先级的参数封装
+- concept: common_params
+  desc: 总控制面板，聚合采样、模型、投机解码、扩散、LoRA 等所有配置
+- concept: common_init_result
+  desc: 模型资源生命周期管理器（Pimpl 模式），持有 model/context/sampler/LoRA 指针
+- concept: Pimpl 模式
+  desc: Pointer to Implementation，用 impl 指针隐藏实现细节，降低耦合
+- concept: cpu_get_num_math
+  desc: 推荐数学计算线程数（避开 Intel E 核，减少超线程干扰）
+- concept: is_hybrid_cpu
+  desc: 检测 CPU 是否为混合架构（P 核 + E 核）
+- concept: postprocess_cpu_params
+  desc: CPU 参数后处理：补全默认值、校验掩码与线程数匹配
+- concept: set_process_priority
+  desc: 跨平台进程优先级设置（Windows SetPriorityClass / POSIX setpriority）
+- concept: string_format
+  desc: printf 风格格式化字符串（两次 vsnprintf 计算长度 + 填充）
+- concept: string_process_escapes
+  desc: 处理 \\n/\\t/\\xNN 等转义序列，转为实际字符
+- concept: string_parse_kv_override
+  desc: 解析 key=type:value 格式的模型元数据覆盖配置
+- concept: fs_create_directory_with_parents
+  desc: 递归创建目录（类似 mkdir -p），跨平台实现
+- concept: fs_get_cache_directory
+  desc: 获取缓存目录，优先 LLAMA_CACHE 环境变量，否则按平台约定
+- concept: fs_validate_filename
+  desc: 文件名校验：UTF-8 合法性、长度限制、非法字符检测
+- concept: glob_match
+  desc: 支持 * ? ** [] 的简单 Glob 模式匹配（递归实现）
+- concept: tty_can_use_colors
+  desc: 检测终端是否支持彩色输出（尊重 NO_COLOR 和 TERM=dumb）
+- concept: common_model_params_to_llama
+  desc: 参数桥接：将 common_params 转为 llama_model_params
+- concept: common_context_params_to_llama
+  desc: 参数桥接：将 common_params 转为 llama_context_params
+- concept: common_tokenize
+  desc: 文本 → token 向量，两次调用 llama_tokenize 处理未知长度
+- concept: common_token_to_piece
+  desc: token → 文本片段，动态调整缓冲区大小
+- concept: common_detokenize
+  desc: token 向量 → 文本，处理负返回值动态扩容
+- concept: common_batch_add
+  desc: 向 llama_batch 添加 token/位置/序列 ID/logits 标志
+- concept: common_batch_clear
+  desc: 清空批处理（n_tokens = 0）
+- concept: common_prompt_batch_decode
+  desc: 批量解码提示词，支持中途保存状态
+- concept: common_replay_last_token
+  desc: 重放最后一个 token，用于恢复会话状态后续推
+- concept: common_embd_normalize
+  desc: 嵌入向量归一化（L2/p-norm/max/不归一化）
+- concept: common_embd_similarity_cos
+  desc: 计算两个嵌入向量的余弦相似度
+- concept: common_set_adapter_lora
+  desc: 将 LoRA 适配器列表与缩放系数应用到上下文
+- concept: common_control_vector_load
+  desc: 从多个 GGUF 文件加载控制向量并累加合并
+- concept: common_init_from_params
+  desc: 完整的模型资源初始化流程（含 warmup、LoRA、控制向量）
+- concept: common_init_sampler_from_model
+  desc: 从模型元数据读取采样参数（仅填充未显式指定的项）
+- concept: get_model_endpoint
+  desc: 获取模型下载端点（MODEL_ENDPOINT/HF_ENDPOINT 环境变量优先级）
+- concept: lr_opt
+  desc: 学习率优化器，支持指数衰减与最小学习率限制
+- concept: common_opt_dataset_init
+  desc: 从 token 序列创建训练数据集（ggml_opt_dataset）
+- concept: common_opt_lr_pars
+  desc: 学习率调度回调，将 lr_opt 适配到 ggml 优化器
+- concept: common_opt_get_optimizer
+  desc: 解析优化器类型（adamw/sgd），大小写不敏感
+- concept: common_time_meas
+  desc: RAII 计时器：构造时记录开始时间，析构时累加耗时
+- concept: string_get_sortable_timestamp
+  desc: 生成 YYYY_MM_DD-HH_MM_SS.NNNNNNNNN 可排序时间戳
+- concept: ggml_threadpool_params_from_cpu_params
+  desc: 将 cpu_params 转换为 ggml 线程池参数（线程数/掩码/优先级）
+- concept: common_init
+  desc: 初始化公共环境：Windows UTF-8 代码页 + 日志回调
+- concept: common_params_get_system_info
+  desc: 生成包含线程数、硬件并发、llama 系统信息的描述字符串
+units:
+- codes:
+  - file: README.md
+    line: 1-999
+    method_or_func: __main__
+  - file: common/common.h
+    line: 40-43
+    method_or_func: common_time_meas.common_time_meas()
+  - file: common/common.h
+    line: 40-43
+    method_or_func: common_time_meas.~common_time_meas()
+  - file: common/common.h
+    line: 220-226
+    method_or_func: common_grammar.common_grammar()
+  - file: common/common.h
+    line: '229'
+    method_or_func: common_grammar.empty()
+  - file: common/common.h
+    line: 236-238
+    method_or_func: common_grammar_value()
+  - file: common/common.h
+    line: 243-246
+    method_or_func: common_grammar_needs_prefill()
+  - file: common/common.h
+    line: 252-254
+    method_or_func: llm_ffn_exps_block_regex()
+  - file: common/common.h
+    line: 256-259
+    method_or_func: llm_ffn_exps_cpu_override()
+  - file: common/common.h
+    line: 11-24
+    method_or_func: string_split<T>()
+  - file: common/common.h
+    line: 26-40
+    method_or_func: string_split<std::string>()
+  - file: common/common.h
+    line: 43-46
+    method_or_func: string_starts_with()
+  - file: common/common.h
+    line: 49-52
+    method_or_func: string_ends_with()
+  - file: common/common.h
+    line: 54-61
+    method_or_func: string_remove_suffix()
+  - file: common/common.h
+    line: 63-76
+    method_or_func: string_find_partial_stop()
+  name: common 模块的定位 —— llama.cpp 的"随身工具箱"
+  'no': 1
+  points:
+  - '**common 模块解决什么痛点？**'
+  - '- 大模型推理不只需要核心引擎，还需要参数管理、日志打印、字符串处理、终端交互、批处理、分词等大量周边能力'
+  - '- 如果每个 CLI、server、工具程序都各自实现这些逻辑，整个项目会迅速失控'
+  - '- common 模块相当于把这些高频可复用能力集中收纳，成了 llama.cpp 的"随身工具箱"'
+  - '- README 里体现了这种工程诉求：项目强调零依赖、易上手、跨平台，这正是 common 模块存在的土壤'
+  - ''
+  - '**为什么把它看成"瑞士军刀"？**'
+  - '- 它不直接决定模型结构，而是负责把各种基础能力打磨得足够顺手'
+  - '- 上层应用只需要打开工具箱，就能拿到初始化、采样封装、文件系统、映射转换等通用功能'
+  - '- 这种"基础设施层"的思路，能把业务逻辑和细节杂活儿分开'
+  - '- 也让 llama.cpp 在复杂生态中保持清爽、可组合、可扩展'
+- codes:
+  - file: common/common.cpp
+    line: 60-111
+    method_or_func: cpu_get_num_physical_cores()
+  - file: common/common.cpp
+    line: 116-125
+    method_or_func: cpuid()
+  - file: common/common.cpp
+    line: 127-133
+    method_or_func: pin_cpu()
+  - file: common/common.cpp
+    line: 135-140
+    method_or_func: is_hybrid_cpu()
+  - file: common/common.cpp
+    line: 142-149
+    method_or_func: is_running_on_efficiency_core()
+  - file: common/common.cpp
+    line: 151-165
+    method_or_func: cpu_count_math_cpus()
+  - file: common/common.cpp
+    line: 172-193
+    method_or_func: cpu_get_num_math()
+  - file: common/common.cpp
+    line: 201-229
+    method_or_func: set_process_priority()
+  - file: common/common.cpp
+    line: 237-258
+    method_or_func: postprocess_cpu_params()
+  - file: common/common.cpp
+    line: 260-297
+    method_or_func: parse_cpu_range()
+  - file: common/common.cpp
+    line: 299-338
+    method_or_func: parse_cpu_mask()
+  - file: common/common.cpp
+    line: 359-376
+    method_or_func: common_params_get_system_info()
+  - file: common/common.cpp
+    line: 382-395
+    method_or_func: string_format()
+  - file: common/common.cpp
+    line: 397-407
+    method_or_func: string_strip()
+  - file: common/common.cpp
+    line: 409-426
+    method_or_func: string_get_sortable_timestamp()
+  - file: common/common.cpp
+    line: 428-445
+    method_or_func: string_replace_all()
+  - file: common/common.cpp
+    line: 447-450
+    method_or_func: regex_escape()
+  - file: common/common.cpp
+    line: 452-461
+    method_or_func: string_join()
+  - file: common/common.cpp
+    line: 463-478
+    method_or_func: string_split()
+  - file: common/common.cpp
+    line: 480-491
+    method_or_func: string_repeat()
+  - file: common/common.cpp
+    line: 493-495
+    method_or_func: string_from()
+  - file: common/common.cpp
+    line: 497-514
+    method_or_func: string_from()
+  - file: common/common.cpp
+    line: 516-538
+    method_or_func: string_from()
+  - file: common/common.cpp
+    line: 540-567
+    method_or_func: string_from()
+  - file: common/common.cpp
+    line: 569-607
+    method_or_func: string_process_escapes()
+  - file: common/common.cpp
+    line: 609-655
+    method_or_func: string_parse_kv_override()
+  - file: common/common.cpp
+    line: 657-696
+    method_or_func: glob_class_match()
+  - file: common/common.cpp
+    line: 699-749
+    method_or_func: glob_match()
+  - file: common/common.cpp
+    line: 756-824
+    method_or_func: fs_validate_filename()
+  - file: common/common.cpp
+    line: 830-846
+    method_or_func: utf8_to_wstring()
+  - file: common/common.cpp
+    line: 850-918
+    method_or_func: fs_create_directory_with_parents()
+  - file: common/common.cpp
+    line: 920-923
+    method_or_func: fs_is_directory()
+  - file: common/common.cpp
+    line: 925-967
+    method_or_func: fs_get_cache_directory()
+  - file: common/common.cpp
+    line: 969-978
+    method_or_func: fs_get_cache_file()
+  - file: common/common.cpp
+    line: 980-1018
+    method_or_func: fs_list()
+  - file: common/common.cpp
+    line: 1024-1042
+    method_or_func: tty_can_use_colors()
+  name: 公共底层能力 —— 系统信息与字符串处理的"杂务工坊"
+  'no': 2
+  points:
+  - '**系统探测为何放在 common？**'
+  - '- cpu_get_num_physical_cores、cpu_get_num_math、is_hybrid_cpu、is_running_on_efficiency_core
+    这类函数，解决的是"代码跑在什么硬件上"的问题'
+  - '- 它们为后续线程配置、调度优先级、性能优化提供基线'
+  - '- 尤其混合 CPU 场景下，需要避开能效核、尽量让数学线程跑在真正适合计算的核上'
+  - ''
+  - '**线程与优先级控制的核心逻辑**'
+  - '- pin_cpu、postprocess_cpu_params、set_process_priority 共同构成了一套 CPU 控制工具链'
+  - '- 用户既可以显式设置线程数和 CPU 掩码，也可以让 common 自动补齐'
+  - '- 这背后体现的是 llama.cpp 对性能敏感度的重视：推理不是只算法正确，还必须跑得稳'
+  - ''
+  - '**字符串与文件系统工具的作用**'
+  - '- string_format、string_strip、string_join、string_split、string_replace_all、regex_escape、string_process_escapes，支撑日志、参数、调试输出等高频场景'
+  - '- fs_create_directory_with_parents、fs_get_cache_directory、fs_list、glob_match
+    让路径管理和目录遍历跨平台一致'
+  - '- 这些函数像杂务工坊：看似琐碎，却是整个框架可靠性的底座'
+- codes:
+  - file: common/common.h
+    line: '96'
+    method_or_func: common_init_result.common_init_result()
+  - file: common/common.h
+    line: '97'
+    method_or_func: common_init_result.~common_init_result()
+  - file: common/common.h
+    line: '99'
+    method_or_func: common_init_result.model()
+  - file: common/common.h
+    line: '100'
+    method_or_func: common_init_result.context()
+  - file: common/common.h
+    line: '102'
+    method_or_func: common_init_result.sampler()
+  - file: common/common.h
+    line: '103'
+    method_or_func: common_init_result.reset_samplers()
+  - file: common/common.h
+    line: '105'
+    method_or_func: common_init_result.lora()
+  - file: common/common.h
+    line: 286-288
+    method_or_func: common_params_sampling.has_logit_bias()
+  - file: common/common.h
+    line: '290'
+    method_or_func: common_params_sampling.print()
+  - file: common/common.h
+    line: 374-376
+    method_or_func: common_params_speculative.has_dft()
+  - file: common/common.h
+    line: 438-440
+    method_or_func: lr_opt.get_lr()
+  - file: common/common.h
+    line: '442'
+    method_or_func: lr_opt.init()
+  name: 核心数据结构 —— CPU、采样、模型与训练参数的"控制面板"
+  'no': 3
+  points:
+  - '**common_params 系列是 common 模块的中枢神经**'
+  - '- cpu_params、common_params_sampling、common_params_model、common_params、common_params_speculative、common_params_vocoder、common_params_diffusion
+    等结构体，把推理所需的各类配置集中收纳'
+  - '- 它们像一块块控制面板：线程数、采样策略、模型位置、LoRA 配置、扩散参数、语音合成参数都能在这里找到位置'
+  - '- 这样上层程序就不必在代码中到处散落参数对象，工程一致性很强'
+  - ''
+  - '**为什么这些结构体长成现在这样？**'
+  - '- 大量参数来自真实使用场景，字段设计会天然偏向"够用且好读"'
+  - '- 例如 common_params_sampling 里既有基础采样参数，也有语法、logit_bias 等约束配置'
+  - '- common_params_model 需要同时兼容本地路径、URL、Hugging Face 仓库等不同来源'
+  - '- common_init_result 则封装了模型、上下文、采样器、LoRA 资源的生命周期，体现典型的资源聚合设计'
+  - ''
+  - '**训练相关结构的价值**'
+  - '- lr_opt 让训练/微调场景可以表达学习率衰减策略'
+  - '- common_adapter_lora_info、common_control_vector_data 描述了适配器、控制向量这类增强行为所需的元信息'
+  - '- 这些结构共同说明 common 模块并不是"纯粹工程杂件"，而是为推理与训练两类工作提供统一骨架'
+- codes:
+  - file: common/common.cpp
+    line: 340-357
+    method_or_func: common_init()
+  - file: common/common.cpp
+    line: 1325-1352
+    method_or_func: common_model_params_to_llama()
+  - file: common/common.cpp
+    line: 1354-1383
+    method_or_func: common_context_params_to_llama()
+  - file: common/common.cpp
+    line: 1385-1395
+    method_or_func: ggml_threadpool_params_from_cpu_params()
+  - file: common/common.cpp
+    line: 1407-1409
+    method_or_func: common_batch_clear()
+  - file: common/common.cpp
+    line: 1411-1426
+    method_or_func: common_batch_add()
+  - file: common/common.cpp
+    line: 1430-1437
+    method_or_func: common_tokenize()
+  - file: common/common.cpp
+    line: 1439-1461
+    method_or_func: common_tokenize()
+  - file: common/common.cpp
+    line: 1463-1467
+    method_or_func: common_token_to_piece()
+  - file: common/common.cpp
+    line: 1469-1483
+    method_or_func: common_token_to_piece()
+  - file: common/common.cpp
+    line: 1485-1489
+    method_or_func: common_detokenize()
+  - file: common/common.cpp
+    line: 1491-1503
+    method_or_func: common_detokenize()
+  - file: common/common.cpp
+    line: 1719-1727
+    method_or_func: common_replay_last_token()
+  - file: common/common.cpp
+    line: 1729-1773
+    method_or_func: common_prompt_batch_decode()
+  - file: common/common.h
+    line: '620'
+    method_or_func: common_init()
+  - file: common/common.h
+    line: '123'
+    method_or_func: common_model_params_to_llama()
+  - file: common/common.h
+    line: '124'
+    method_or_func: common_context_params_to_llama()
+  - file: common/common.h
+    line: '125'
+    method_or_func: ggml_threadpool_params_from_cpu_params()
+  - file: common/common.h
+    line: '136'
+    method_or_func: common_batch_clear()
+  - file: common/common.h
+    line: 138-143
+    method_or_func: common_batch_add()
+  - file: common/common.h
+    line: 153-159
+    method_or_func: common_prompt_batch_decode()
+  - file: common/common.h
+    line: '163'
+    method_or_func: common_replay_last_token()
+  - file: common/common.h
+    line: 171-181
+    method_or_func: common_tokenize()
+  - file: common/common.h
+    line: 187-195
+    method_or_func: common_token_to_piece()
+  - file: common/common.h
+    line: 201-209
+    method_or_func: common_detokenize()
+  name: 通用推理接口 —— 初始化、分词、批处理与状态回放的"流水线"
+  'no': 4
+  points:
+  - '**common_init 把平台初始化统一收进来**'
+  - '- Windows 下设置 UTF-8 控制台输出'
+  - '- 统一接入 llama_log_set，确保日志走向固定'
+  - '- 打出关键构建信息，方便排查环境问题'
+  - '- 这类初始化函数像流水线的总开关，先保证运行环境可控'
+  - ''
+  - '**参数转换是两段式桥接**'
+  - '- common_model_params_to_llama、common_context_params_to_llama 将 common 层的配置翻译成
+    llama 原生参数'
+  - '- 这层桥接很关键：上层应用面对的是通用参数集，底层引擎保持自己的接口演进自由度'
+  - '- 它避免了"上层参数穿透到底层后耦合过深"的老问题'
+  - ''
+  - '**批处理、分词、反分词是常用三件套**'
+  - '- common_batch_clear、common_batch_add 让 batch 填充更直观'
+  - '- common_tokenize、common_token_to_piece、common_detokenize 将文本与 token 的来回转换包装得更顺手'
+  - '- 配合 common_prompt_batch_decode 和 common_replay_last_token，可以处理 prompt+state
+    的恢复、续推等场景'
+  - '**这套流水线的价值在于稳定和可复用**'
+  - '- 上层应用不用重复造轮子，也不容易在细节上翻车'
+  - '- 对推理引擎来说，这种基础设施决定了开发体验和可靠性下限'
+- codes:
+  - file: common/common.cpp
+    line: '47'
+    method_or_func: common_time_meas.common_time_meas()
+  - file: common/common.cpp
+    line: 49-54
+    method_or_func: common_time_meas.~common_time_meas()
+  - file: common/common.cpp
+    line: 1150-1227
+    method_or_func: common_init_result.common_init_result()
+  - file: common/common.cpp
+    line: 1229-1231
+    method_or_func: common_init_result.model()
+  - file: common/common.cpp
+    line: 1233-1235
+    method_or_func: common_init_result.context()
+  - file: common/common.cpp
+    line: 1237-1242
+    method_or_func: common_init_result.sampler()
+  - file: common/common.cpp
+    line: 1244-1248
+    method_or_func: common_init_result.reset_samplers()
+  - file: common/common.cpp
+    line: 1250-1252
+    method_or_func: common_init_result.lora()
+  - file: common/common.cpp
+    line: '1298'
+    method_or_func: common_init_result.~common_init_result()
+  - file: common/common.cpp
+    line: 1254-1297
+    method_or_func: common_init_from_params()
+  - file: common/common.cpp
+    line: 1300-1312
+    method_or_func: get_model_endpoint()
+  - file: common/common.cpp
+    line: 1314-1323
+    method_or_func: common_set_adapter_lora()
+  - file: common/common.cpp
+    line: 1048-1154
+    method_or_func: common_init_sampler_from_model()
+  - file: common/common.cpp
+    line: 1507-1539
+    method_or_func: common_embd_normalize()
+  - file: common/common.cpp
+    line: 1541-1558
+    method_or_func: common_embd_similarity_cos()
+  - file: common/common.cpp
+    line: 1562-1635
+    method_or_func: common_control_vector_load_one()
+  - file: common/common.cpp
+    line: 1637-1667
+    method_or_func: common_control_vector_load()
+  - file: common/common.cpp
+    line: 1398-1409
+    method_or_func: lr_opt.init()
+  - file: common/common.cpp
+    line: 1411-1417
+    method_or_func: lr_opt.get_lr()
+  - file: common/common.cpp
+    line: 1669-1681
+    method_or_func: common_opt_dataset_init()
+  - file: common/common.cpp
+    line: 1683-1689
+    method_or_func: common_opt_lr_pars()
+  - file: common/common.cpp
+    line: 1693-1701
+    method_or_func: eq_case_insensitive()
+  - file: common/common.cpp
+    line: 1703-1711
+    method_or_func: common_opt_get_optimizer()
+  - file: common/common.h
+    line: '121'
+    method_or_func: common_init_from_params()
+  - file: common/common.h
+    line: '128'
+    method_or_func: common_set_adapter_lora()
+  - file: common/common.h
+    line: '130'
+    method_or_func: get_model_endpoint()
+  - file: common/common.h
+    line: '215'
+    method_or_func: common_embd_normalize()
+  - file: common/common.h
+    line: '217'
+    method_or_func: common_embd_similarity_cos()
+  - file: common/common.h
+    line: '235'
+    method_or_func: common_control_vector_load()
+  - file: common/common.h
+    line: '265'
+    method_or_func: common_opt_dataset_init()
+  - file: common/common.h
+    line: '268'
+    method_or_func: common_opt_get_optimizer()
+  name: 模型资源与适配器管理 —— 采样器、LoRA 与控制向量的"中控室"
+  'no': 5
+  points:
+  - '**common_init_result 是资源生命周期管理者**'
+  - '- 它把 model、context、sampler、LoRA 适配器等核心对象集中托管'
+  - '- 通过 Pimpl 风格的 impl 类隐藏资源细节，避免实现和接口强耦合'
+  - '- 构造函数里完成模型加载、上下文创建、采样器初始化，形成一条完整装配线'
+  - ''
+  - '**采样器为什么要单独管理？**'
+  - '- sampler() 按 seq_id 精确拿取采样器，说明很多场景是多序列、多会话并发推进'
+  - '- reset_samplers() 则承担了状态清洗职责，保证重复实验中参数可控'
+  - '- 这背后体现的是"会话恢复"和"多路复用"的实际需求'
+  - ''
+  - '**LoRA 与控制向量体现 common 的开放扩展性**'
+  - '- common_set_adapter_lora 负责把适配器挂在上下文上'
+  - '- lora() 与 common_control_vector_load 则说明 common 模块并不只管基础推理，还管理增强层能力'
+  - '- 这部分内容让 common 成了''中控室''：既能调度模型，也能调度行为修饰器'
+  - ''
+  - '**嵌入向量与训练优化是进阶工具**'
+  - '- common_embd_normalize 和 common_embd_similarity_cos 为嵌入任务提供数学基础'
+  - '- lr_opt、common_opt_dataset_init、common_opt_lr_pars、common_opt_get_optimizer
+    构成轻量级训练支持'
+  - '- 从这些函数能看出 common 不仅服务推理，还考虑了微调和个性化训练的工程需求'

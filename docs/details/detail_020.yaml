@@ -1,0 +1,1174 @@
+code_map:
+- src/llama-sampler.h
+- '├── struct llama_sampler_chain       # 采样链容器'
+- '│   ├── params / is_init             # 构造参数与后端初始化标志'
+- '│   ├── std::vector<info> samplers   # 子采样器列表（每项含 is_backend）'
+- '│   ├── std::vector<llama_token_data> cur  # 预分配的 token 缓冲'
+- '│   └── t_sample_us / n_sample       # 性能统计字段'
+- '└── llama_sampler_init_dry_testing() # 测试用 DRY 构造器声明'
+- ''
+- src/llama-sampler.cpp
+- '├── ring_buffer<T>                   # 自定义环形缓冲区（penalties/dry 用）'
+- '│   ├── ring_buffer() / front / back # 构造与访问器'
+- '│   ├── push_back / pop_front / rat  # 末尾追加 / 头部弹出 / 反向索引'
+- '│   ├── to_vector                    # 线性化导出'
+- '│   └── clear / empty / size         # 状态查询'
+- │
+- '├── llama_token_data_array_partial_sort()      # 桶排序 + partial_sort 的混合排序'
+- '├── llama_token_data_array_partial_sort_inplace # 小数组就地 partial_sort 入口'
+- '├── llama_sample_dist()             # 按概率离散分布采样（std::discrete_distribution）'
+- '├── llama_sampler_softmax_impl()     # 数值稳定的 softmax 实现（可选排序）'
+- '├── llama_sampler_temp_impl()        # 温度缩放：temp≤0 退化为 argmax'
+- │
+- ├── 采样器公共基础
+- '│   ├── llama_sampler_init/apply/accept/reset/clone/free  # 抽象 API 入口'
+- '│   ├── llama_sampler_name()         # 接口契约的查询方法'
+- '│   └── llama_sampler_empty_i        # 空采样器占位符（?xxx 名称）'
+- │
+- ├── 后端辅助：llama_sampler_backend 基类
+- '│   ├── llama_sampler_backend()      # 构造（name + is_init=false + support=false）'
+- '│   ├── get_name()                   # 返回 +/-name 前缀表示后端支持情况'
+- '│   └── init()                       # 一次性设置 support 标志'
+- │
+- ├── 后端探测：llama_sampler_backend_support()
+- │   ├── 构造 dummy ggml 图（1M 长度 F32 + I32 candidates）
+- │   ├── 用 backend_apply 填充算子
+- │   └── ggml_backend_dev_supports_op() 遍历检查
+- │
+- ├── 采样链：llama_sampler_chain_*
+- '│   ├── chain_apply    # is_backend 短路 + time_meas 自动计时'
+- '│   ├── chain_accept   # 广播 accept 到所有子采样器'
+- '│   ├── chain_reset    # 重置所有子采样器'
+- '│   ├── chain_clone / chain_free  # 克隆与释放（深拷贝所有子采样器）'
+- '│   ├── chain_backend_init / _apply / _accept / _set_input  # 后端短路链'
+- '│   ├── chain_add/n/get/remove  # 子采样器增删查'
+- '│   ├── chain_name             # 固定返回 "chain"'
+- '│   └── chain_sample() # 主入口：拉取 logits/probs/candidates → cur 缓冲 → apply'
+- │
+- ├── 贪心采样（greedy）
+- '│   ├── greedy_name / reset / clone / free   # 标识与生命周期'
+- '│   ├── greedy_apply         # 线性扫描找 argmax'
+- '│   ├── greedy_backend_apply # ggml_argmax 算子'
+- '│   └── greedy_backend_init  # 探测后端支持'
+- │
+- ├── 分布采样（dist）
+- '│   ├── dist_name / reset / clone / free      # 标识与生命周期'
+- '│   ├── dist_apply           # softmax + cumulative sum 一次采样'
+- '│   ├── dist_backend_apply   # soft_max → cumsum → sub → step → sum 算子图'
+- '│   ├── dist_backend_set_input # double 精度 RNG → float uniform'
+- '│   └── dist_backend_init    # 探测后端支持'
+- │
+- ├── Top-K 采样
+- '│   ├── top_k_name / clone / free             # 标识与生命周期'
+- '│   ├── top_k_impl           # partial_sort 截断到 k 个'
+- '│   ├── top_k_apply          # 调用 top_k_impl'
+- '│   ├── top_k_backend_apply  # ggml_top_k + get_rows 索引筛选'
+- '│   └── top_k_backend_init   # 探测后端支持'
+- │
+- ├── Top-P 采样
+- '│   ├── top_p_name / clone / free             # 标识与生命周期'
+- '│   ├── top_p_apply          # softmax + 累加概率截断 + 256 候选启发式'
+- '│   ├── top_p_backend_apply  # argsort + cumsum + step + log + add 算子图'
+- '│   └── top_p_backend_init   # 探测后端支持'
+- │
+- ├── Min-P 采样
+- '│   ├── min_p_name / clone / free             # 标识与生命周期'
+- '│   ├── min_p_apply          # 未排序数组快速线性扫描 vs 排序后二分'
+- '│   ├── min_p_backend_apply  # argmax + scale_bias + step + log + add'
+- '│   └── min_p_backend_init   # 探测后端支持'
+- │
+- ├── Typical 采样（仅 CPU）
+- '│   ├── typical_name / clone / free          # 标识与生命周期'
+- '│   └── typical_apply        # 计算 entropy + |(-log p) - H| 排序截断'
+- │
+- ├── 温度采样（temp / temp-ext）
+- '│   ├── temp_name / clone / free             # 标识与生命周期'
+- '│   ├── temp_apply          # 调用 temp_impl'
+- '│   ├── temp_backend_apply  # ggml_scale 缩放 + argmax 分支'
+- '│   └── temp_backend_init   # 探测后端支持'
+- │
+- ├── 温度扩展采样（temp-ext）
+- '│   ├── temp_ext_name / clone / free         # 标识与生命周期'
+- '│   ├── temp_ext_apply      # 熵 → 幂函数 → 动态温度区间'
+- '│   ├── temp_ext_backend_apply # soft_max → log → mul → sum → scale → exp → div'
+- '│   └── temp_ext_backend_init # 探测后端支持'
+- │
+- ├── XTC 采样（Exclude Top Choices）
+- '│   ├── xtc_name / reset / clone / free      # 标识与生命周期'
+- '│   └── xtc_apply           # 概率性剔除累积概率 ≥ threshold 的 token'
+- │
+- ├── Mirostat v1 / v2
+- '│   ├── mirostat_name / reset / clone / free # 标识与生命周期'
+- '│   ├── mirostat_apply       # 用 s_hat 估计动态 k + 滑动学习 μ'
+- │   ├── mirostat_v2_name / reset / clone / free
+- '│   └── mirostat_v2_apply    # 按 μ 截断 surprise，重 softmax 采样'
+- │
+- ├── Adaptive-P 采样
+- '│   ├── adaptive_p_name / clone / free       # 标识与生命周期'
+- '│   ├── adaptive_p_apply     # 二次函数形变 logit + EMA 目标'
+- '│   ├── adaptive_p_accept    # pending_token 验证后才更新 EMA'
+- '│   └── adaptive_p_reset     # 重置 EMA + pending_token + RNG'
+- │
+- ├── Grammar 采样
+- '│   ├── grammar_name / accept_impl / apply / reset / clone / free  # 标识与生命周期'
+- '│   └── grammar_init_impl    # 支持 lazy / trigger_words / trigger_patterns'
+- │
+- ├── Penalties 采样
+- '│   ├── penalties_name / clone / free        # 标识与生命周期'
+- '│   ├── penalties_apply      # repeat (乘/除按符号) + freq + present'
+- '│   └── penalties_accept     # ring_buffer + unordered_map token_count'
+- │
+- ├── Top-N-Sigma 采样
+- '│   ├── top_n_sigma_name / clone / free     # 标识与生命周期'
+- '│   └── top_n_sigma_apply    # mean + std → 保留 max - n*std'
+- │
+- ├── DRY 采样
+- '│   ├── dry_name / reset / clone / free      # 标识与生命周期'
+- '│   ├── dry_apply            # Z-算法求最长后缀重复 + dry_processed_breakers'
+- '│   ├── dry_accept           # push_back 当前 token 到 last_tokens'
+- '│   └── get_overlapping_token_sequences() # 词表反查 seq_breaker token 序列'
+- │
+- ├── Logit-Bias 采样
+- '│   ├── logit_bias_name / clone / free       # 标识与生命周期'
+- '│   ├── logit_bias_apply     # 直接 logit += bias；先用 idx==id 快速路径'
+- '│   ├── logit_bias_backend_apply # ggml_fill + ggml_set_rows + ggml_add'
+- '│   ├── logit_bias_backend_set_input # 把 bias 与 idx 数据写到 inp_* 张量'
+- '│   └── logit_bias_backend_init # 探测后端支持'
+- │
+- ├── Infill 采样
+- '│   ├── infill_name / clone / free           # 标识与生命周期'
+- '│   └── infill_apply         # EOG 比例抑制 + 共享前缀 token 合并 + 双重 thold'
+- │
+- └── 工具与统计
+- '├── get_rng_seed()           # LLAMA_DEFAULT_SEED → system_clock / random_device'
+- '├── llama_sampler_get_seed() # 从 dist / mirostat / chain 反向查 seed'
+- '└── llama_perf_sampler() / _print() / _reset()  # t_sample_ms / n_sample'
+exercises:
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码段：
+  - 1. `llama_sampler_init_empty()`（320-365行）
+  - 2. `llama_sampler_init()` 与 `llama_sampler_apply()`（232-260行）
+  - 3. `llama_sampler_empty_i` 的空操作钩子实现
+  - 回答问题：
+  - '- `llama_sampler_i` 虚函数表定义了哪 10 个钩子？每个钩子的职责是什么？'
+  - '- 为什么空采样器的 `accept` 和 `apply` 都用 `GGML_UNUSED` 标记？'
+  - '- 当 `k<=0` 时 `llama_sampler_init_top_k` 返回空采样器并命名为 `?top-k`，这种设计的好处是什么？'
+  - '- 10 个钩子中，哪些是必须实现的，哪些可以不提供（接口中默认为 null）？'
+  'no': 1
+  title: 阅读采样器接口与空采样器
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_chain_apply()`（510-538行）
+  - 2. `llama_sampler_chain_accept()`（496-508行）
+  - 3. `llama_sampler_sample()`（770-880行）
+  - 回答问题：
+  - '- 采样链的 `apply` 方法中 `is_backend` 标志如何实现 CPU/GPU 路径互斥？'
+  - '- `time_meas tm(chain->t_sample_us, ...)` 是如何自动累计耗时到 chain 的？'
+  - '- `llama_sampler_sample` 如何区分使用 chain 预分配的 `cur` 缓冲还是本地 `cur_local`？'
+  - '- 当后端采样器已经采样（sampled_token != LLAMA_TOKEN_NULL）时，CPU 采样器会执行吗？'
+  'no': 2
+  title: 追踪采样链的执行流程
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_top_p_apply()`（1328-1395行）
+  - 2. `llama_sampler_min_p_apply()`（1500-1548行）
+  - 3. 两者的后端实现 `top_p_backend_apply` 与 `min_p_backend_apply`
+  - 回答问题：
+  - '- Top-P 用「累积概率 ≥ p」截断，Min-P 用「max_logit + log(p)」截断，两者的几何意义有何不同？'
+  - '- Top-P 在未排序数组大于 1024 个候选时用了什么启发式？为什么是 256？'
+  - '- Min-P 在未排序时尝试了快速线性扫描路径，如果失败才回退到排序路径，这种「先快后慢」策略的好处是什么？'
+  - '- 后端实现中 log(mask) 技巧是如何把「保留/剔除」转化为「logit 加 0/-INF」？'
+  'no': 3
+  title: 理解 Top-P 与 Min-P 的算法差异
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_mirostat_apply()`（2030-2075行）
+  - 2. `llama_sampler_mirostat_v2_apply()`（2175-2210行）
+  - 回答问题：
+  - '- Mirostat v1 用了 s_hat 估计动态 k，公式中 `sum_ti_bi / sum_ti_sq` 的几何含义是什么？'
+  - '- Mirostat v2 没有 m 参数，它是按什么阈值跳取 token 的？'
+  - '- 为什么两个版本的 reset 都要把 μ 初始化为 `2.0f*tau`？'
+  - '- 两者的 μ 更新公式都是 `mu = mu - eta * e`，这个梯度下降的方向有什么物理意义？'
+  - '- 为什么 Mirostat 仍然依赖 `llama_sample_dist`（CPU 实现）而不是 GGML 算子图？'
+  'no': 4
+  title: 对比 Mirostat v1 与 v2 的实现差异
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_adaptive_p_apply()`（2370-2430行）
+  - 2. `llama_sampler_adaptive_p_accept()`（2432-2448行）
+  - 3. `llama_sampler_adaptive_p_reset()`
+  - 回答问题：
+  - '- `weighted_sum` 与 `total_weight` 是如何用 EMA 跟踪历史 token 概率的？'
+  - '- 为什么需要 `pending_token` 机制？为什么不在 apply 里直接更新 EMA？'
+  - '- 形变函数 `PEAK_LOGIT_VALUE - SHARPNESS * dist*dist / (1.0f + dist)` 在 dist=0 与
+    dist→∞ 时分别趋近什么值？'
+  - '- `DISTRIBUTION_WIDTH = 0.3f` 这个常量控制了什么？调大调小会有什么效果？'
+  - '- clone 时为什么不复制 `original_probs`？这与 reset 时不重置 `target`/`decay` 的设计是否一致？'
+  'no': 5
+  title: 分析 adaptive_p 的 EMA 与二次形变
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_dry_apply()`（2900-3050行）
+  - 2. `get_overlapping_token_sequences()`（2820-2870行）
+  - 3. `llama_sampler_init_dry()` 中的 `get_overlapping_token_sequences` 调用
+  - 回答问题：
+  - '- Z-算法在 `dry_repeat_count` 数组中记录的是什么？以 `a b c c b c y a b c` 为例逐步追踪。'
+  - '- `rep_limit` 在 step 1 中是如何被 seq_breakers 跳取的？为什么这能避免过度抑制？'
+  - '- `max_exponent = FLOAT_MAX_LOG / std::log(ctx->dry_base)` 是怎么防 pow 溢出的？'
+  - '- `llama_sampler_init_dry_testing` 与 `llama_sampler_init_dry` 在初始化上有何差异？为什么用
+    dummy_vocab？'
+  - '- dry 的 clone 为什么要包含 processed_breakers？'
+  'no': 6
+  title: 理解 DRY 的 Z-算法与重复抑制
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_penalties_apply()`（2625-2666行）
+  - 2. `llama_sampler_penalties_accept()` 中的 ring_buffer 与 token_count 更新
+  - 3. `ring_buffer<T>::push_back()` 与 `rat()`
+  - 回答问题：
+  - '- `ring_buffer<llama_token>` 的 `push_back` 在容量满时做了什么？'
+  - '- 为什么 `repeat` 惩罚对正负 logit 分别用除法和乘法？只用一种会有什么问题？'
+  - '- `freq` 与 `present` 的区别是什么？为什么 `present` 用 `count > 0` 而不是 `count`？'
+  - '- `ring_buffer::rat(i)` 与普通 `operator[](i)` 的索引方向有何不同？DRY 算法为什么要用 `rat`？'
+  - '- 当 penalty_last_n == 0 时为什么直接返回空采样器？这与「配置不合法就返回 `?penalties`」的策略是否一致？'
+  'no': 7
+  title: 理解 Penalties 的三件套与环形缓冲区
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_backend_support()`（380-440行）
+  - 2. `llama_sampler_dist_backend_apply()`（1170-1230行）
+  - 3. `llama_sampler_dist_backend_set_input()`
+  - 回答问题：
+  - '- `backend_support` 是如何用一个 dummy ggml 图（1M 长度 F32 logits）探测后端能力的？'
+  - '- `dist_backend_apply` 中 `cumsum - uniform` 再过 `step` 的算子组合，是如何实现「按累积概率采样」的？'
+  - '- 为什么后端采样器要保留 CPU 实现作为 fallback？什么时候会触发 CPU fallback？'
+  - '- `llama_sampler_backend` 基类的 `get_name` 在 `is_init=false` 时返回什么？初始化后又返回什么？'
+  - '- `name_ext` 的 `+/-` 前缀设计有什么调试价值？'
+  'no': 8
+  title: 阅读后端采样器支持检测
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_token_data_array_partial_sort()`（120-180行）
+  - 2. `ring_buffer<T>::push_back()`（48-65行）
+  - 3. `ring_buffer<T>::rat()`（85-92行）
+  - 4. `ring_buffer<T>::to_vector()` 与 clear/empty/size
+  - 回答问题：
+  - '- 桶排序中 `bucket_low = -10, bucket_high = 10` 是怎么覆盖典型 logit 范围的？'
+  - '- `bucket_ptrs` 数组中保存的是什么指针？为什么反向迭代（j 从 nbuckets-1 到 ib）？'
+  - '- `ring_buffer::rat(i)` 与普通 `operator[](i)` 的索引方向有何不同？DRY 算法为什么要用 `rat`？'
+  - '- `ring_buffer::to_vector()` 如何保证输出的顺序是「从头到尾」？'
+  - '- `ring_buffer::clear()` 为什么不释放内存？这样设计的好处是什么？'
+  'no': 9
+  title: 理解桶排序与环形缓冲区数据结构
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sample_xtc_apply()`（1925-1962行）
+  - 2. `llama_sampler_typical_apply()`（1455-1520行）
+  - 回答问题：
+  - '- XTC 中 `pos_last` 的作用是什么？为什么只有当 `size - pos_last >= min_keep && pos_last > 0`
+    时才执行剔除？'
+  - '- XTC 用 `std::uniform_real_distribution` 决定是否触发的概率由谁控制？'
+  - '- Typical 中 `shifted_score = |(-log p) - entropy|` 的物理意义是什么？为什么按这个距离排序而不是按概率？'
+  - '- 为什么 Typical 没有后端实现只有 CPU 实现？'
+  - '- XTC 与 Top-K 的核心差异是什么？两者能否组合使用？'
+  'no': 10
+  title: 理解 XTC 与 Typical 采样的语义
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_temp_impl()`（200-225行）
+  - 2. `llama_sampler_temp_ext_apply()`（1735-1810行）
+  - 3. `llama_sampler_backend_temp_sampling()`（1720-1750行）
+  - 回答问题：
+  - '- `llama_sampler_temp_impl` 在 temp≤0 时如何实现 argmax 退化的？为什么不需要排序？'
+  - '- `temp_ext` 中 `max_entropy = log(n)` 是怎么推导的？为什么 `n>1` 时熵不为 0？'
+  - '- `dyn_temp = min_temp + (max_temp - min_temp) * pow(normalized_entropy, exponent)`
+    中 exponent 的作用是什么？'
+  - '- 后端 `temp_ext` 实现中，`pow(norm_entropy, exponent)` 是如何用 `exp(exponent * log(norm_entropy))`
+    实现的？这样设计的好处是什么？'
+  - '- `clamp(probs, 1e-10, 1.0)` 的作用是什么？'
+  'no': 11
+  title: 理解 Temp 与 Temp-Ext 的温度调节
+- contents:
+  - 阅读 `src/llama-sampler.cpp` 中以下代码：
+  - 1. `llama_sampler_init_grammar_impl()`（2300-2380行）
+  - 2. `llama_sampler_grammar_reset()`（2270-2295行）
+  - 3. `llama_sampler_grammar_apply()` 与 `accept_impl`
+  - 回答问题：
+  - '- `lazy` 标志在 grammar 中起到什么作用？'
+  - '- `trigger_words` 是如何被转换为正则 `trigger_pattern` 的？为什么要用 `std::regex_replace` 转义？'
+  - '- `grammar_reset` 为什么需要重新调用 `llama_grammar_init_impl`？保留 trigger 配置的意图是什么？'
+  - '- `grammar_clone` 在 ctx 为空时调用 `init_grammar_impl(..., nullptr, ...)` 是为什么？'
+  - '- grammar 在链中通常放在哪个位置？为什么？'
+  'no': 12
+  title: 理解 Grammar 的 lazy 机制与 reset
+learning_targets:
+- 理解 `llama_sampler_i` 虚函数表的契约设计与多态调度机制
+- 掌握采样器链 `llama_sampler_chain` 的链式调度与时间统计原理
+- 了解贪心、Dist、Top-K、Top-P、Min-P、Typical、xtc 等基础采样器的算法实现
+- 掌握温度与自适应（Mirostat、adaptive_p）采样如何动态调整概率分布
+- 理解 Penalties、DRY、Top-N-Sigma 等重复抑制算法的实现细节
+- 掌握 Logit Bias、Infill、Grammar 等直接干预 logit 的特权通道
+- 了解 GGML 计算图如何承载后端采样器，让 GPU 也能成为「指挥官」
+- 熟悉环形缓冲区 `ring_buffer`、Z-算法、桶排序等关键数据结构
+- 理解 `apply` / `accept` / `reset` / `clone` / `free` / `name` 六大钩子在状态机中的角色
+- 掌握采样器的 clone/reset/free 生命周期管理以及 ring_buffer 等辅助数据结构
+- 理解 empty 采样器作为占位符的设计哲学以及后端支持检测机制
+life_analogy:
+- 想象一下 LLM 的 token 选择是一个**「乐团指挥选拔下一位乐手」**的过程：
+- '- **logits** = 所有候选乐手的「试奏评分」（尚未归一化的偏好分数）'
+- '- **贪心采样** = 指挥只看分数最高的乐手，缺乏变化但稳定'
+- '- **Dist（分布采样）** = 按试奏评分的高低概率抽签决定，多样但有时会爆冷'
+- '- **Top-K / Top-P** = 「限定选拔范围」（K 个候选 / 概率累积到 P 为止），让指挥只关注头部'
+- '- **Min-P** = 「按最高分比例定门槛」，把远低于冠军的乐手直接淘汰'
+- '- **Typical** = 「按典型性选人」，偏离分布熵的「怪才」会被淘汰'
+- '- **Temperature** = 「演出氛围调节」：温度低→冷静精准（接近贪心），温度高→热烈奔放'
+- '- **Temp-Ext** = 「自适应氛围」：根据已有分布的熵自动调节温度，让氛围变化更细腻'
+- '- **XTC** = 「随机禁用最高音」：故意剔除一些高分乐手，打破同质化'
+- '- **Mirostat / adaptive_p** = 「自适应裁判」：根据观众反应实时调整选拔尺度'
+- '- **Penalties / DRY** = 「反重复纪律委员」：已经登台的乐手要降权，避免连续重复'
+- '- **Logit Bias** = 「VIP 通道」：用户可以为某些 token 加减分强制出场'
+- '- **Infill** = 「填空专用」：在文本中间补全时，会主动抑制 EOS 并合并共享前缀的 token'
+- '- **Grammar** = 「语法警察」：只允许符合 BNF 文法的 token 通过'
+- '- **采样链** = 「流水线指挥链」：每个采样器只负责一道工序（先温度、再 Top-K、再 Top-P……）'
+- '- **后端采样（backend_apply）** = 「让 GPU 当指挥」：用 GGML 计算图直接在 GPU 上完成 softmax、cumsum、argmax
+  等操作，避免 CPU/GPU 数据来回搬运'
+- '- **ring_buffer** = 「最近 N 次登台记录」：用定长滚动窗口记录最近 penalty_last_n 个 token，老数据自动滚出'
+- '- **Z-算法（DRY）** = 「重复片段扫描仪」：用 O(N) 时间找出末尾序列在历史中最早出现的最长匹配'
+- '- **桶排序 + partial_sort** = 「快速分类筛子」：先用 128 个桶粗分，再用 partial_sort 在桶内细排，节省排序时间'
+- '- **empty 采样器** = 「指挥休息位」：当某个采样策略不需要时（如 k<=0、temp=1），安排一个什么都不做的乐手保留位置，确保流水线不被打乱'
+- '- **clone / free / reset / name** = 「乐团的复制 / 解散 / 复位 / 点名」：每个采样器都支持复制以生成相同状态的副本、安全释放内存、恢复初始状态、以及查询自己的身份'
+'no': 19
+summary:
+- concept: '`llama_sampler_i`'
+  desc: 虚函数表抽象，name/apply/accept/reset/clone/free + 后端四钩子（backend_init/apply/accept/set_input）
+- concept: 空采样器（empty）
+  desc: 占位符，名称带 `?`，所有方法 no-op，配置不合法时自动插入以保链稳定
+- concept: '`llama_sampler_chain`'
+  desc: 采样链容器，保存子采样器列表、is_backend 标志、预分配 cur 缓冲与计时字段
+- concept: '`llama_sampler_sample`'
+  desc: 采样入口：拉 logits/probs/candidates → apply → 返回 selected token
+- concept: '`llama_sampler_backend_support`'
+  desc: 用 dummy ggml 图遍历算子，检查后端是否支持，否则降级为 CPU 路径
+- concept: '`llama_sampler_backend`'
+  desc: 后端采样器基类，提供 name_ext 前缀（+支持/-不支持）与 init 一次性开关
+- concept: '`llama_sampler_greedy`'
+  desc: 贪心，线性 argmax；后端用 ggml_argmax
+- concept: '`llama_sampler_dist`'
+  desc: softmax + 累积概率一次完成采样+归一化；用 double 精度 RNG 保证可复现
+- concept: '`llama_sampler_top_k`'
+  desc: partial_sort 截断到 k；k≤0 时返回空采样器
+- concept: '`llama_sampler_top_p`'
+  desc: 排序累加概率达 p 截断；未排序时用 256 候选桶排序启发式
+- concept: '`llama_sampler_min_p`'
+  desc: 相对 max_logit 的阈值过滤；未排序数组有快速线性扫描路径
+- concept: '`llama_sampler_typical`'
+  desc: 用 |(-log p) - H| 作为偏离熵的距离排序截断（仅 CPU）
+- concept: '`llama_sampler_temp`'
+  desc: logit /= temp；temp≤0 退化为 argmax；temp=1.0 返回空采样器
+- concept: '`llama_sampler_temp_ext`'
+  desc: 基于熵的动态温度；后端完整用 soft_max/log/mul/sum/scale/exp/div 算子图
+- concept: '`llama_sampler_xtc`'
+  desc: 概率性剔除累积概率首次低于 threshold 的高频 token
+- concept: '`llama_sampler_mirostat`'
+  desc: 用 s_hat 估计动态 top-k；按 observed_surprise - τ 更新 μ
+- concept: '`llama_sampler_mirostat_v2`'
+  desc: 直接按 μ 截断 surprise，无需 m 参数，更简洁
+- concept: '`llama_sampler_adaptive_p`'
+  desc: EMA 跟踪被选 token 概率；用二次函数形变 logit 靠近目标
+- concept: '`llama_sampler_grammar`'
+  desc: 委托 llama_grammar_apply_impl 把非法 token 设 -INF；支持 lazy + trigger
+- concept: '`llama_sampler_penalties`'
+  desc: ring_buffer + token_count；repeat 按符号乘/除，freq 按次数扣，present 出现即扣
+- concept: '`llama_sampler_top_n_sigma`'
+  desc: Z-score 风格截断，保留 max - n*std 以上的 token
+- concept: '`llama_sampler_dry`'
+  desc: Z-算法求最长后缀重复；seq_breakers 阻止过度抑制；max_exponent 防 pow 溢出
+- concept: '`llama_sampler_logit_bias`'
+  desc: 直接 logit += bias；先 idx==id 快速路径，后用 ggml_set_rows + ggml_add
+- concept: '`llama_sampler_infill`'
+  desc: EOG 比例抑制 + 共享前缀 token 合并 + 双重 thold（0.2 + 1/(n+1)）
+- concept: '`ring_buffer<T>`'
+  desc: 定容环形缓冲；满时 push_back 自动覆盖最旧元素；rat(i) 反向索引；to_vector 线性化
+- concept: '`llama_token_data_array_partial_sort`'
+  desc: 128 桶桶排序 + partial_sort 混合；仅保留前 npartial 个候选
+- concept: '`llama_sample_dist`'
+  desc: std::discrete_distribution 包装，迭代器遍历 token_data 的 p 字段
+- concept: '`llama_sampler_softmax_impl`'
+  desc: 数值稳定 softmax：减 max_l 再 exp，可选就地排序
+- concept: '`get_rng_seed`'
+  desc: 统一处理 LLAMA_DEFAULT_SEED，自动用 system_clock 或 random_device
+- concept: '`llama_perf_sampler`'
+  desc: 读取 chain 的 t_sample_us / n_sample，返回性能统计
+- concept: '`llama_sampler_get_seed`'
+  desc: 从 dist/mirostat/chain 反向查找实际生效的 RNG 种子
+units:
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 320-365
+    method_or_func: llama_sampler_init_empty()
+  - file: src/llama-sampler.cpp
+    line: 232-237
+    method_or_func: llama_sampler_init()
+  - file: src/llama-sampler.cpp
+    line: 250-260
+    method_or_func: llama_sampler_apply()
+  - file: src/llama-sampler.cpp
+    line: 240-249
+    method_or_func: llama_sampler_accept()
+  - file: src/llama-sampler.cpp
+    line: 262-269
+    method_or_func: llama_sampler_reset()
+  - file: src/llama-sampler.cpp
+    line: 271-289
+    method_or_func: llama_sampler_clone()
+  - file: src/llama-sampler.cpp
+    line: 291-301
+    method_or_func: llama_sampler_free()
+  - file: src/llama-sampler.cpp
+    line: 239-242
+    method_or_func: llama_sampler_name()
+  - file: src/llama-sampler.cpp
+    line: 305-308
+    method_or_func: llama_sampler_empty_name()
+  - file: src/llama-sampler.cpp
+    line: 317-320
+    method_or_func: llama_sampler_empty_apply()
+  - file: src/llama-sampler.cpp
+    line: 310-314
+    method_or_func: llama_sampler_empty_accept()
+  - file: src/llama-sampler.cpp
+    line: 323-325
+    method_or_func: llama_sampler_empty_reset()
+  - file: src/llama-sampler.cpp
+    line: 328-332
+    method_or_func: llama_sampler_empty_clone()
+  - file: src/llama-sampler.cpp
+    line: 335-337
+    method_or_func: llama_sampler_empty_free()
+  - file: src/llama-sampler.cpp
+    line: 345-352
+    method_or_func: llama_sampler_empty_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 354-364
+    method_or_func: llama_sampler_empty_backend_accept()
+  - file: src/llama-sampler.cpp
+    line: 367-378
+    method_or_func: llama_sampler_empty_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 381-383
+    method_or_func: llama_sampler_empty_backend_set_input()
+  name: 采样器接口与生命周期 —— 设计统一的「指挥官契约」
+  'no': 1
+  points:
+  - '**为什么需要 `llama_sampler_i` 虚函数表？**'
+  - '- 采样器种类繁多（贪心、温度、Top-K、Grammar 等），但调用方只关心「采样下一个 token」'
+  - '- 通过面向对象的多态机制，把每个采样器的具体行为封装到 ctx 中'
+  - '- 头文件中 `llama_sampler_i` 抽象了 name/accept/apply/reset/clone/free 六大核心钩子 + 四大后端钩子（backend_init/apply/accept/set_input）'
+  - '**空采样器（Empty Sampler）的占位符艺术**'
+  - '- 当配置参数不合法（如 k<=0、p>=1）时，构造函数返回 `?top-k` 这样带问号的空采样器'
+  - '- 空采样器的所有方法都是 no-op，但保留在采样链中可保留位置'
+  - '- 这种设计避免了采样链中的「采样器数量与位置不固定」带来的管理复杂度'
+  - '**公共 API：llama_sampler_init/apply/accept/reset/clone/free**'
+  - '- `llama_sampler_init` 是统一的构造函数，接收 iface + ctx，返回堆上的 sampler'
+  - '- `apply` 必现，`accept/reset/clone/free` 都可以为 null（用 `if (smpl->iface->xxx)` 防御）'
+  - '- `name` 查询走 `smpl->iface->name(smpl)`，让 ctx 自己决定如何报告身份'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 510-538
+    method_or_func: llama_sampler_chain_apply()
+  - file: src/llama-sampler.cpp
+    line: 496-508
+    method_or_func: llama_sampler_chain_accept()
+  - file: src/llama-sampler.cpp
+    line: 540-547
+    method_or_func: llama_sampler_chain_reset()
+  - file: src/llama-sampler.cpp
+    line: 549-560
+    method_or_func: llama_sampler_chain_clone()
+  - file: src/llama-sampler.cpp
+    line: 562-572
+    method_or_func: llama_sampler_chain_free()
+  - file: src/llama-sampler.cpp
+    line: 660-667
+    method_or_func: llama_sampler_chain_n()
+  - file: src/llama-sampler.cpp
+    line: 637-658
+    method_or_func: llama_sampler_chain_get()
+  - file: src/llama-sampler.cpp
+    line: 669-682
+    method_or_func: llama_sampler_chain_remove()
+  - file: src/llama-sampler.cpp
+    line: 614-619
+    method_or_func: llama_sampler_chain_add()
+  - file: src/llama-sampler.cpp
+    line: 491-494
+    method_or_func: llama_sampler_chain_name()
+  - file: src/llama-sampler.cpp
+    line: 770-880
+    method_or_func: llama_sampler_sample()
+  - file: src/llama-sampler.cpp
+    line: 745-758
+    method_or_func: llama_sampler_chain_init()
+  name: 采样器链：链式调度的「流水线指挥官」
+  'no': 2
+  points:
+  - '**为什么需要「采样器链」？**'
+  - '- 真实推理中往往需要组合多种策略（如先 Temperature，再 Top-K，再 Top-P）'
+  - '- 单个采样器无法满足复杂需求；链式组合让配置像积木一样灵活'
+  - '- 每个子采样器只关心自己的 logits 变换，链负责按顺序调度'
+  - '**采样链的数据结构：sampler 的「列车车厢」**'
+  - '- `llama_sampler_chain` 内部用 `std::vector<info>` 保存所有子采样器'
+  - '- 每个 info 还携带 `is_backend` 标志，标记能否在 GPU 后端运行'
+  - '- `cur` 是预分配的 token_data 缓冲，避免每次采样都重新分配内存'
+  - '**时间统计与后端调度**'
+  - '- 每次 apply 都会被 `time_meas` 包裹，自动累计 `t_sample_us`'
+  - '- `n_sample` 记录采样次数，`llama_perf_sampler()` 可以查看总耗时'
+  - '- 当前 sampler 是 backend 类型时，后续 CPU 采样器会被跳过以避免重复'
+  - '**链的辅助操作：clone/reset/free/n/get/remove/add**'
+  - '- `chain_clone` 深拷贝所有子采样器（递归调用每个 sampler 的 clone）'
+  - '- `chain_reset` 广播 reset 到所有子采样器；`chain_free` 逐个 free 后删除 chain'
+  - '- `chain_n` 返回子采样器数量；`chain_get` 按索引访问；`chain_remove` 弹出指定采样器'
+  - '- `chain_add` 把 sampler 追加到 `std::vector<info>` 末尾，默认 `is_backend=false`'
+  - '- `chain_name` 固定返回字符串 "chain"，标识链路身份'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 988-996
+    method_or_func: llama_sampler_greedy_apply()
+  - file: src/llama-sampler.cpp
+    line: 1024-1034
+    method_or_func: llama_sampler_greedy_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1014-1022
+    method_or_func: llama_sampler_greedy_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 935-938
+    method_or_func: llama_sampler_greedy_name()
+  - file: src/llama-sampler.cpp
+    line: 947-962
+    method_or_func: llama_sampler_greedy_clone()
+  - file: src/llama-sampler.cpp
+    line: 965-967
+    method_or_func: llama_sampler_greedy_free()
+  - file: src/llama-sampler.cpp
+    line: 941-944
+    method_or_func: llama_sampler_greedy_reset()
+  - file: src/llama-sampler.cpp
+    line: 1044-1052
+    method_or_func: llama_sampler_init_greedy()
+  - file: src/llama-sampler.cpp
+    line: 195-230
+    method_or_func: llama_sample_dist()
+  - file: src/llama-sampler.cpp
+    line: 1080-1140
+    method_or_func: llama_sampler_dist_apply()
+  - file: src/llama-sampler.cpp
+    line: 1170-1230
+    method_or_func: llama_sampler_dist_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1255-1270
+    method_or_func: llama_sampler_dist_backend_set_input()
+  - file: src/llama-sampler.cpp
+    line: 1162-1170
+    method_or_func: llama_sampler_dist_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1060-1063
+    method_or_func: llama_sampler_dist_name()
+  - file: src/llama-sampler.cpp
+    line: 1127-1143
+    method_or_func: llama_sampler_dist_clone()
+  - file: src/llama-sampler.cpp
+    line: 1145-1147
+    method_or_func: llama_sampler_dist_free()
+  - file: src/llama-sampler.cpp
+    line: 1115-1119
+    method_or_func: llama_sampler_dist_reset()
+  - file: src/llama-sampler.cpp
+    line: 1268-1285
+    method_or_func: llama_sampler_init_dist()
+  - file: src/llama-sampler.cpp
+    line: 263-285
+    method_or_func: llama_sampler_top_k_impl()
+  - file: src/llama-sampler.cpp
+    line: 1226-1230
+    method_or_func: llama_sampler_top_k_apply()
+  - file: src/llama-sampler.cpp
+    line: 1310-1337
+    method_or_func: llama_sampler_top_k_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1300-1308
+    method_or_func: llama_sampler_top_k_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1296-1299
+    method_or_func: llama_sampler_top_k_name()
+  - file: src/llama-sampler.cpp
+    line: 1283-1286
+    method_or_func: llama_sampler_top_k_clone()
+  - file: src/llama-sampler.cpp
+    line: 1288-1290
+    method_or_func: llama_sampler_top_k_free()
+  - file: src/llama-sampler.cpp
+    line: 1343-1356
+    method_or_func: llama_sampler_init_top_k()
+  - file: src/llama-sampler.cpp
+    line: 1328-1395
+    method_or_func: llama_sampler_top_p_apply()
+  - file: src/llama-sampler.cpp
+    line: 1430-1495
+    method_or_func: llama_sampler_top_p_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1422-1428
+    method_or_func: llama_sampler_top_p_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1416-1419
+    method_or_func: llama_sampler_top_p_name()
+  - file: src/llama-sampler.cpp
+    line: 1404-1407
+    method_or_func: llama_sampler_top_p_clone()
+  - file: src/llama-sampler.cpp
+    line: 1409-1411
+    method_or_func: llama_sampler_top_p_free()
+  - file: src/llama-sampler.cpp
+    line: 1502-1516
+    method_or_func: llama_sampler_init_top_p()
+  - file: src/llama-sampler.cpp
+    line: 1500-1548
+    method_or_func: llama_sampler_min_p_apply()
+  - file: src/llama-sampler.cpp
+    line: 1640-1685
+    method_or_func: llama_sampler_min_p_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1630-1638
+    method_or_func: llama_sampler_min_p_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1625-1628
+    method_or_func: llama_sampler_min_p_name()
+  - file: src/llama-sampler.cpp
+    line: 1613-1616
+    method_or_func: llama_sampler_min_p_clone()
+  - file: src/llama-sampler.cpp
+    line: 1618-1620
+    method_or_func: llama_sampler_min_p_free()
+  - file: src/llama-sampler.cpp
+    line: 1689-1702
+    method_or_func: llama_sampler_init_min_p()
+  - file: src/llama-sampler.cpp
+    line: 237-260
+    method_or_func: llama_sampler_softmax_impl()
+  - file: src/llama-sampler.cpp
+    line: 120-180
+    method_or_func: llama_token_data_array_partial_sort()
+  - file: src/llama-sampler.cpp
+    line: 182-205
+    method_or_func: llama_token_data_array_partial_sort_inplace()
+  name: 基础采样器：贪心、Dist、Top-K、Top-P、Min-P —— 选 token 的「基本招式」
+  'no': 3
+  points:
+  - '**Greedy：永远选概率最高的**'
+  - '- `llama_sampler_greedy_apply` 遍历 cur_p 找到 logit 最大的 token，设为 selected'
+  - '- 实现极简，但缺乏多样性，常用于确定性测试场景'
+  - '- 后端实现用 `ggml_argmax` 算子直接选出最大下标'
+  - '**Dist：按概率分布随机采样**'
+  - '- `llama_sample_dist` 用 `std::discrete_distribution` 按概率权重选 token'
+  - '- `llama_sampler_dist_apply` 先做 softmax 把 logit 转成概率，再用 cumulative sum 一次完成采样+归一化'
+  - '- 双精度（double）随机数确保与不同 RNG 实现产生相同序列'
+  - '- `dist_backend_set_input` 也用 double 精度 RNG 才能复现与 CPU 路径完全一致的序列'
+  - '**Top-K：截断到概率最高的 K 个**'
+  - '- `llama_sampler_top_k_impl` 把 cur_p 的 size 缩小到 k'
+  - '- 当 k<=0 时退化为空采样器（不裁剪）'
+  - '- 后端实现用 `ggml_top_k` 算子 + `ggml_get_rows` 在 GPU 上并行完成索引筛选'
+  - '**Top-P（Nucleus）：累积概率达到 p 为止**'
+  - '- 排序后累加概率，找到刚好 ≥p 的位置截断'
+  - '- 当 cur_p 未排序且较大时，先做 partial_sort（256 个候选）作为启发式'
+  - '- 后端实现用 argsort + cumsum + step + log + add 算子图，把 mask 转 logit 偏置'
+  - '**Min-P：相对最大 logit 的阈值过滤**'
+  - '- 计算 max_logit + log(p)，过滤掉所有低于该阈值的 token'
+  - '- 对未排序数组做了快速线性扫描的优化路径'
+  - '- 后端实现用 argmax + step + log 算子构造偏置，叠加到 logits 上'
+  - '**桶排序与 partial_sort 基础**'
+  - '- `llama_token_data_array_partial_sort` 用 128 桶（-10~+10）粗排 + partial_sort 细排'
+  - '- `llama_token_data_array_partial_sort_inplace` 是 npartial≤128 时的快路径'
+  - '- `llama_sampler_softmax_impl` 数值稳定 softmax：减 max_l 再 exp，可选就地排序'
+  - '**采样器的生命周期：name/clone/free/init_greedy/dist/top_k/top_p/min_p**'
+  - '- 每个采样器的 `name` 函数返回字符串标识，便于调试和链式报告'
+  - '- `clone` 用「重新 init + 拷贝动态状态」的方式深拷贝'
+  - '- `free` 仅 delete ctx（基类 iface 由静态定义，无需释放）'
+  - '- 各 init 函数在配置不合法时返回空采样器（`?top-k` 等）'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 200-225
+    method_or_func: llama_sampler_temp_impl()
+  - file: src/llama-sampler.cpp
+    line: 1729-1733
+    method_or_func: llama_sampler_temp_apply()
+  - file: src/llama-sampler.cpp
+    line: 1782-1788
+    method_or_func: llama_sampler_temp_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1774-1780
+    method_or_func: llama_sampler_temp_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1766-1769
+    method_or_func: llama_sampler_temp_name()
+  - file: src/llama-sampler.cpp
+    line: 1733-1736
+    method_or_func: llama_sampler_temp_clone()
+  - file: src/llama-sampler.cpp
+    line: 1738-1740
+    method_or_func: llama_sampler_temp_free()
+  - file: src/llama-sampler.cpp
+    line: 1791-1804
+    method_or_func: llama_sampler_init_temp()
+  - file: src/llama-sampler.cpp
+    line: 1735-1810
+    method_or_func: llama_sampler_temp_ext_apply()
+  - file: src/llama-sampler.cpp
+    line: 1840-1920
+    method_or_func: llama_sampler_temp_ext_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 1832-1838
+    method_or_func: llama_sampler_temp_ext_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 1824-1827
+    method_or_func: llama_sampler_temp_ext_name()
+  - file: src/llama-sampler.cpp
+    line: 1808-1811
+    method_or_func: llama_sampler_temp_ext_clone()
+  - file: src/llama-sampler.cpp
+    line: 1813-1815
+    method_or_func: llama_sampler_temp_ext_free()
+  - file: src/llama-sampler.cpp
+    line: 1922-1944
+    method_or_func: llama_sampler_init_temp_ext()
+  - file: src/llama-sampler.cpp
+    line: 1720-1750
+    method_or_func: llama_sampler_backend_temp_sampling()
+  - file: src/llama-sampler.cpp
+    line: 1455-1520
+    method_or_func: llama_sampler_typical_apply()
+  - file: src/llama-sampler.cpp
+    line: 1453-1454
+    method_or_func: llama_sampler_typical_name()
+  - file: src/llama-sampler.cpp
+    line: 1526-1529
+    method_or_func: llama_sampler_typical_clone()
+  - file: src/llama-sampler.cpp
+    line: 1531-1533
+    method_or_func: llama_sampler_typical_free()
+  - file: src/llama-sampler.cpp
+    line: 1538-1551
+    method_or_func: llama_sampler_init_typical()
+  - file: src/llama-sampler.cpp
+    line: 1925-1962
+    method_or_func: llama_sample_xtc_apply()
+  - file: src/llama-sampler.cpp
+    line: 1917-1919
+    method_or_func: llama_sampler_xtc_name()
+  - file: src/llama-sampler.cpp
+    line: 1986-1990
+    method_or_func: llama_sampler_xtc_reset()
+  - file: src/llama-sampler.cpp
+    line: 1972-1984
+    method_or_func: llama_sampler_xtc_clone()
+  - file: src/llama-sampler.cpp
+    line: 1982-1984
+    method_or_func: llama_sampler_xtc_free()
+  - file: src/llama-sampler.cpp
+    line: 1992-2012
+    method_or_func: llama_sampler_init_xtc()
+  name: 温度、Typical、XTC：调节「生成多样性」的旋钮
+  'no': 4
+  points:
+  - '**Temperature：logit 的「温度计」**'
+  - '- `llama_sampler_temp_impl` 把所有 logit 除以 temp'
+  - '- temp≤0 时退化为 argmax（等价于贪心），但保留为独立采样器'
+  - '- temp=1.0 时是恒等变换，返回空采样器节省开销'
+  - '- 后端 `llama_sampler_backend_temp_sampling` 是 temp/temp_ext 后端的公共工具'
+  - '**Temp-Ext：基于熵的动态温度**'
+  - '- 计算 softmax 分布的熵，按幂函数映射到 [min_temp, max_temp] 区间'
+  - '- 熵高（分布均匀）→ 用 max_temp 鼓励探索；熵低（分布尖锐）→ 用 min_temp 收紧'
+  - '- delta=0 时退化为标准 temperature 采样'
+  - '- 后端实现完全用 GGML 算子图：soft_max → log → mul → sum → scale → exp → div'
+  - '**Typical（仅 CPU）：按「偏离熵」排序截断**'
+  - '- 先做 softmax，再计算整条分布的 entropy H'
+  - '- 计算每个 token 的 |(-log p) - H|，把「离熵的距离」作为偏离典型性的度量'
+  - '- 按距离升序排列后累加概率，达到 p 时截断'
+  - '- 只有 CPU 实现，没有后端 GPU 路径'
+  - '**XTC（Exclude Top Choices）：概率性剔除高频 token**'
+  - '- 用 softmax 得到概率，找累积概率首次低于 threshold 的位置'
+  - '- 仅保留低概率尾部，鼓励模型跳出重复模式'
+  - '- 用 `std::uniform_real_distribution` 决定是否触发（概率由 probability 控制）'
+  - '**温度家族生命周期**'
+  - '- `llama_sampler_init_temp` 当 temp==1.0 时返回 `?temp` 空采样器'
+  - '- `llama_sampler_init_temp_ext` 当 temp==1.0 且 delta<=0 时返回 `?temp-ext`'
+  - '- `temp_backend_apply` 用 `llama_sampler_backend_temp_sampling` 实现 scale + argmax'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 2030-2075
+    method_or_func: llama_sampler_mirostat_apply()
+  - file: src/llama-sampler.cpp
+    line: 2175-2210
+    method_or_func: llama_sampler_mirostat_v2_apply()
+  - file: src/llama-sampler.cpp
+    line: 2019-2021
+    method_or_func: llama_sampler_mirostat_name()
+  - file: src/llama-sampler.cpp
+    line: 2083-2088
+    method_or_func: llama_sampler_mirostat_reset()
+  - file: src/llama-sampler.cpp
+    line: 2072-2081
+    method_or_func: llama_sampler_mirostat_clone()
+  - file: src/llama-sampler.cpp
+    line: 2090-2092
+    method_or_func: llama_sampler_mirostat_free()
+  - file: src/llama-sampler.cpp
+    line: 2101-2122
+    method_or_func: llama_sampler_init_mirostat()
+  - file: src/llama-sampler.cpp
+    line: 2129-2131
+    method_or_func: llama_sampler_mirostat_v2_name()
+  - file: src/llama-sampler.cpp
+    line: 2155-2159
+    method_or_func: llama_sampler_mirostat_v2_reset()
+  - file: src/llama-sampler.cpp
+    line: 2162-2174
+    method_or_func: llama_sampler_mirostat_v2_clone()
+  - file: src/llama-sampler.cpp
+    line: 2176-2178
+    method_or_func: llama_sampler_mirostat_v2_free()
+  - file: src/llama-sampler.cpp
+    line: 2185-2204
+    method_or_func: llama_sampler_init_mirostat_v2()
+  - file: src/llama-sampler.cpp
+    line: 2370-2430
+    method_or_func: llama_sampler_adaptive_p_apply()
+  - file: src/llama-sampler.cpp
+    line: 2432-2448
+    method_or_func: llama_sampler_adaptive_p_accept()
+  - file: src/llama-sampler.cpp
+    line: 2450-2460
+    method_or_func: llama_sampler_adaptive_p_reset()
+  - file: src/llama-sampler.cpp
+    line: 2340-2342
+    method_or_func: llama_sampler_adaptive_p_name()
+  - file: src/llama-sampler.cpp
+    line: 2462-2476
+    method_or_func: llama_sampler_adaptive_p_clone()
+  - file: src/llama-sampler.cpp
+    line: 2478-2480
+    method_or_func: llama_sampler_adaptive_p_free()
+  - file: src/llama-sampler.cpp
+    line: 2487-2513
+    method_or_func: llama_sampler_init_adaptive_p()
+  name: Mirostat 与 adaptive_p：自适应「目标惊奇度」算法
+  'no': 5
+  points:
+  - '**Mirostat v1：用 s_hat 估计动态 top-k**'
+  - '- 用前 m 个 token 的 log(p_i/p_{i+1}) 估计分布的「熵衰减斜率」'
+  - '- 基于 s_hat 和目标惊奇度 τ 反推 k 值，再用 Top-K 裁剪'
+  - '- 采样后根据观测到的实际惊奇度（-log2(p)）调整 μ（学习状态）'
+  - '- μ 越大说明模型越「无趣」，需要鼓励多样化'
+  - '- reset 时把 μ 重置为 `2.0f*tau`，并重新种子化 RNG'
+  - '**Mirostat v2：按 μ 直接截断而非 top-k**'
+  - '- 把所有 surprise > μ 的 token 直接砍掉，重新 softmax 后采样'
+  - '- v2 比 v1 更简单且无需 m 参数'
+  - '- reset 同样把 μ 初始化为 `2.0f*tau`'
+  - '**adaptive_p：指数滑动平均目标适配**'
+  - '- 用 EMA 跟踪历史被选 token 的原始概率，动态调整目标概率'
+  - '- 当实际概率普遍高于目标 → 收紧目标；反之放宽'
+  - '- 通过二次函数把偏离目标的位置 logit 调低，靠近目标的位置保持高分'
+  - '- pending_token 机制保证只有真正被接受的 token 才更新 EMA'
+  - '- DISTRIBUTION_WIDTH / PEAK_LOGIT_VALUE / SHARPNESS 三个常量控制形变曲线'
+  - '- clone 复制 weighted_sum / total_weight / pending_token 状态；不复制 original_probs'
+  - '- reset 重置 EMA 状态、pending_token 与 RNG 种子'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 2625-2666
+    method_or_func: llama_sampler_penalties_apply()
+  - file: src/llama-sampler.cpp
+    line: 2605-2623
+    method_or_func: llama_sampler_penalties_accept()
+  - file: src/llama-sampler.cpp
+    line: 2594-2596
+    method_or_func: llama_sampler_penalties_name()
+  - file: src/llama-sampler.cpp
+    line: 2686-2690
+    method_or_func: llama_sampler_penalties_reset()
+  - file: src/llama-sampler.cpp
+    line: 2693-2707
+    method_or_func: llama_sampler_penalties_clone()
+  - file: src/llama-sampler.cpp
+    line: 2709-2711
+    method_or_func: llama_sampler_penalties_free()
+  - file: src/llama-sampler.cpp
+    line: 2717-2738
+    method_or_func: llama_sampler_init_penalties()
+  - file: src/llama-sampler.cpp
+    line: 2900-3050
+    method_or_func: llama_sampler_dry_apply()
+  - file: src/llama-sampler.cpp
+    line: 2888-2896
+    method_or_func: llama_sampler_dry_accept()
+  - file: src/llama-sampler.cpp
+    line: 3115-3120
+    method_or_func: llama_sampler_dry_reset()
+  - file: src/llama-sampler.cpp
+    line: 3123-3141
+    method_or_func: llama_sampler_dry_clone()
+  - file: src/llama-sampler.cpp
+    line: 3143-3145
+    method_or_func: llama_sampler_dry_free()
+  - file: src/llama-sampler.cpp
+    line: 2878-2880
+    method_or_func: llama_sampler_dry_name()
+  - file: src/llama-sampler.cpp
+    line: 3148-3210
+    method_or_func: llama_sampler_init_dry()
+  - file: src/llama-sampler.h
+    line: 41-46
+    method_or_func: llama_sampler_init_dry_testing()
+  - file: src/llama-sampler.cpp
+    line: 3212-3245
+    method_or_func: llama_sampler_init_dry_testing()
+  - file: src/llama-sampler.cpp
+    line: 2820-2870
+    method_or_func: get_overlapping_token_sequences()
+  - file: src/llama-sampler.cpp
+    line: 2740-2790
+    method_or_func: llama_sampler_top_n_sigma_apply()
+  - file: src/llama-sampler.cpp
+    line: 2737-2739
+    method_or_func: llama_sampler_top_n_sigma_name()
+  - file: src/llama-sampler.cpp
+    line: 2784-2787
+    method_or_func: llama_sampler_top_n_sigma_clone()
+  - file: src/llama-sampler.cpp
+    line: 2789-2791
+    method_or_func: llama_sampler_top_n_sigma_free()
+  - file: src/llama-sampler.cpp
+    line: 2795-2808
+    method_or_func: llama_sampler_init_top_n_sigma()
+  - file: src/llama-sampler.cpp
+    line: '9'
+    method_or_func: ring_buffer<T>.ring_buffer()
+  - file: src/llama-sampler.cpp
+    line: 48-65
+    method_or_func: ring_buffer<T>.push_back()
+  - file: src/llama-sampler.cpp
+    line: 67-75
+    method_or_func: ring_buffer<T>.pop_front()
+  - file: src/llama-sampler.cpp
+    line: 11-21
+    method_or_func: ring_buffer<T>.front()
+  - file: src/llama-sampler.cpp
+    line: 23-33
+    method_or_func: ring_buffer<T>.back()
+  - file: src/llama-sampler.cpp
+    line: 85-92
+    method_or_func: ring_buffer<T>.rat()
+  - file: src/llama-sampler.cpp
+    line: 94-103
+    method_or_func: ring_buffer<T>.to_vector()
+  - file: src/llama-sampler.cpp
+    line: 105-110
+    method_or_func: ring_buffer<T>.clear()
+  - file: src/llama-sampler.cpp
+    line: 112-114
+    method_or_func: ring_buffer<T>.empty()
+  - file: src/llama-sampler.cpp
+    line: 116-118
+    method_or_func: ring_buffer<T>.size()
+  name: 重复惩罚：Penalties、DRY 与 Top-N-Sigma —— 抑制重复的「纪律委员」
+  'no': 6
+  points:
+  - '**Penalties：经典三件套（repeat / freq / present）**'
+  - '- 用环形缓冲区 `ring_buffer<llama_token>` 保存最近 penalty_last_n 个 token'
+  - '- 用哈希表 `token_count` 统计窗口内每个 token 的出现次数'
+  - '- repeat 惩罚：logit 正负时分别用除法/乘法（避免负 logit 反向放大）'
+  - '- freq 惩罚：按出现次数扣减 logit（次数越多扣越多）'
+  - '- present 惩罚：出现过就扣固定值'
+  - '- clone 时复制 ring_buffer（深拷贝）；reset 时清空 prev + token_count'
+  - '**DRY（Don''t Repeat Yourself）：基于序列相似度的惩罚**'
+  - '- 用 Z-算法（线性时间）找出最近 N 个 token 中所有重复后缀'
+  - '- seq_breakers 序列断裂符阻止过度抑制（如句号、换行）'
+  - '- 用 `pow(dry_base, repeat_len)` 计算指数级惩罚'
+  - '- 用 `max_exponent` 防 float 溢出'
+  - '- `llama_sampler_init_dry` 在初始化时调用 `get_overlapping_token_sequences` 把 seq_breaker
+    字符串转换为 token 序列对'
+  - '- `llama_sampler_init_dry_testing` 是测试专用入口，直接接收 token 序列对'
+  - '**Top-N-Sigma：基于标准差的截断**'
+  - '- 计算所有非 -INF logit 的均值和标准差'
+  - '- 保留 max - n*std 以上的 token，剔除离群低值'
+  - '- 类似 Z-score 异常检测的思路'
+  - '**环形缓冲区数据结构详解**'
+  - '- 构造时按 capacity 预分配 `std::vector<T>`，无内存动态扩张'
+  - '- `push_back` 在容量满时让 first 指针前进一格，自动覆盖最旧元素'
+  - '- `front()` / `back()` 提供两端访问；空时抛 std::runtime_error'
+  - '- `rat(i)` 反向索引：rat(0) 是最新，rat(1) 是上一个；DRY 算法专用'
+  - '- `to_vector` 把环形内容线性化为 vector，按「从头到尾」顺序'
+  - '- `clear` 仅重置状态不释放内存；`empty/size` 维护当前长度'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 2500-2545
+    method_or_func: llama_sampler_logit_bias_apply()
+  - file: src/llama-sampler.cpp
+    line: 2580-2610
+    method_or_func: llama_sampler_logit_bias_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 2548-2575
+    method_or_func: llama_sampler_logit_bias_backend_set_input()
+  - file: src/llama-sampler.cpp
+    line: 2640-2655
+    method_or_func: llama_sampler_logit_bias_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 2543-2545
+    method_or_func: llama_sampler_logit_bias_name()
+  - file: src/llama-sampler.cpp
+    line: 2560-2563
+    method_or_func: llama_sampler_logit_bias_clone()
+  - file: src/llama-sampler.cpp
+    line: 2565-2567
+    method_or_func: llama_sampler_logit_bias_free()
+  - file: src/llama-sampler.cpp
+    line: 2661-2681
+    method_or_func: llama_sampler_init_logit_bias()
+  - file: src/llama-sampler.cpp
+    line: 3230-3360
+    method_or_func: llama_sampler_infill_apply()
+  - file: src/llama-sampler.cpp
+    line: 3228-3230
+    method_or_func: llama_sampler_infill_name()
+  - file: src/llama-sampler.cpp
+    line: 3365-3368
+    method_or_func: llama_sampler_infill_clone()
+  - file: src/llama-sampler.cpp
+    line: 3370-3372
+    method_or_func: llama_sampler_infill_free()
+  - file: src/llama-sampler.cpp
+    line: 3378-3387
+    method_or_func: llama_sampler_init_infill()
+  - file: src/llama-sampler.cpp
+    line: 2240-2248
+    method_or_func: llama_sampler_grammar_apply()
+  - file: src/llama-sampler.cpp
+    line: 2246-2252
+    method_or_func: llama_sampler_grammar_accept_impl()
+  - file: src/llama-sampler.cpp
+    line: 2270-2295
+    method_or_func: llama_sampler_grammar_reset()
+  - file: src/llama-sampler.cpp
+    line: 2302-2318
+    method_or_func: llama_sampler_grammar_clone()
+  - file: src/llama-sampler.cpp
+    line: 2320-2328
+    method_or_func: llama_sampler_grammar_free()
+  - file: src/llama-sampler.cpp
+    line: 2238-2240
+    method_or_func: llama_sampler_grammar_name()
+  - file: src/llama-sampler.cpp
+    line: 2330-2400
+    method_or_func: llama_sampler_init_grammar_impl()
+  - file: src/llama-sampler.cpp
+    line: 2402-2405
+    method_or_func: llama_sampler_init_grammar()
+  - file: src/llama-sampler.cpp
+    line: 2407-2417
+    method_or_func: llama_sampler_init_grammar_lazy()
+  - file: src/llama-sampler.cpp
+    line: 2419-2424
+    method_or_func: llama_sampler_init_grammar_lazy_patterns()
+  name: Logit Bias、Infill 与 Grammar：直接干预 logit 的「特权通道」
+  'no': 7
+  points:
+  - '**Logit Bias：给指定 token 加减分**'
+  - '- `logit_bias` 是 {token, bias} 列表，apply 时直接修改对应 token 的 logit'
+  - '- 优化策略：先处理 idx==id 的简单情况，剩下的放进 to_search 二次扫描'
+  - '- 后端实现用 `ggml_set_rows` 把 bias 写入指定 token 的位置，再 `ggml_add` 叠加'
+  - '- 后端 `set_input` 把 bias 与 idx 数据写入 `inp_logit_bias` 与 `inp_logit_idxs` 张量'
+  - '**Infill：Fill-in-the-Middle 填充采样**'
+  - '- 当 EOG token 概率过高（>文本 token 总概率 / 3N）时强制采样 EOG'
+  - '- 用 token piece 字符串前缀合并策略：把共享前缀的多 token 合并为高概率项'
+  - '- 双重 thold 过滤（0.2 + 1/(n_non_eog+1)）保留足够多候选'
+  - '- 如果所有候选都是 EOG，则强制返回 EOT/EOS'
+  - '- `buf0/buf1` 预分配 512 字节，存储 token_to_piece 输出避免反复分配'
+  - '**Grammar：语法约束采样**'
+  - '- 委托给 `llama_grammar_apply_impl` 修改 logit：把不合法 token 设为 -INF'
+  - '- lazy 模式支持 trigger_words/trigger_patterns 延迟激活'
+  - '- reset 时会重新初始化 grammar 对象（保留 trigger 配置）'
+  - '- clone 在 ctx 为空时调用 `init_grammar_impl(..., nullptr, ...)` 创建空实例再填充状态'
+  - '**Grammar 初始化的多样性**'
+  - '- `llama_sampler_init_grammar` 默认非 lazy'
+  - '- `llama_sampler_init_grammar_lazy` 支持 trigger_words + trigger_tokens'
+  - '- `llama_sampler_init_grammar_lazy_patterns` 支持正则 trigger_patterns'
+  - '- `llama_sampler_init_grammar_impl` 是三者的内部公共入口'
+  - '- trigger_words 会被转换为正则 trigger_pattern：`[\s\S]*?(word1|word2|...)[\s\S]*`'
+- codes:
+  - file: src/llama-sampler.cpp
+    line: 388-390
+    method_or_func: llama_sampler_backend.llama_sampler_backend()
+  - file: src/llama-sampler.cpp
+    line: 392-405
+    method_or_func: llama_sampler_backend.get_name()
+  - file: src/llama-sampler.cpp
+    line: 407-414
+    method_or_func: llama_sampler_backend.init()
+  - file: src/llama-sampler.cpp
+    line: 417-470
+    method_or_func: llama_sampler_backend_support()
+  - file: src/llama-sampler.cpp
+    line: 585-620
+    method_or_func: llama_sampler_chain_backend_init()
+  - file: src/llama-sampler.cpp
+    line: 622-636
+    method_or_func: llama_sampler_chain_backend_accept()
+  - file: src/llama-sampler.cpp
+    line: 638-660
+    method_or_func: llama_sampler_chain_backend_apply()
+  - file: src/llama-sampler.cpp
+    line: 662-674
+    method_or_func: llama_sampler_chain_backend_set_input()
+  - file: src/llama-sampler.cpp
+    line: 3430-3450
+    method_or_func: llama_perf_sampler()
+  - file: src/llama-sampler.cpp
+    line: 3452-3456
+    method_or_func: llama_perf_sampler_print()
+  - file: src/llama-sampler.cpp
+    line: 3458-3469
+    method_or_func: llama_perf_sampler_reset()
+  - file: src/llama-sampler.cpp
+    line: 275-287
+    method_or_func: get_rng_seed()
+  - file: src/llama-sampler.cpp
+    line: 3400-3425
+    method_or_func: llama_sampler_get_seed()
+  - file: src/llama-sampler.cpp
+    line: 1-3459
+    method_or_func: __main__
+  name: 采样器后端支持与性能统计 —— 让 GPU 也能当「指挥官」
+  'no': 8
+  points:
+  - '**后端采样：让 GGML 计算图直接选 token**'
+  - '- 每个 sampler 的 `backend_apply` 在 ggml_context 中构造算子图（softmax、cumsum、argmax 等）'
+  - '- `backend_init` 调用 `llama_sampler_backend_support` 用一个 dummy 张量跑一遍图，检查所有 op
+    是否被后端支持'
+  - '- 支持的采样器名字会带 `+` 前缀（如 `+top-k`），不支持的带 `-`（如 `-top-p`）'
+  - '- `llama_sampler_backend` 基类管理 name_ext 的 `+/-` 前缀状态'
+  - '**链中的后端短路**'
+  - '- `llama_sampler_chain_apply` 发现当前 sampler 是 backend 类型就跳过后续 CPU sampler'
+  - '- `chain_backend_accept / _apply / _set_input` 也遵循同样的链式前缀规则'
+  - '- `chain_backend_init` 遍历所有 sampler 探测后端支持，结果保存在 info.is_backend'
+  - '- 保证 GPU 路径与 CPU 路径互斥，避免重复采样'
+  - '**Dist 后端的 double 精度 RNG**'
+  - '- `dist_backend_set_input` 在每次采样前把 uniform 张量填充新的 random 数'
+  - '- 必须用 double 精度才能保证与 CPU 路径产生完全一致的序列'
+  - '**Logit Bias 后端：ggml_set_rows 的零拷贝写入**'
+  - '- `logit_bias_backend_apply` 构造 fill(0) → set_rows(bias) → add 算子链'
+  - '- `logit_bias_backend_set_input` 把 bias 和 idx 数据写到 inp_* 张量'
+  - '**采样统计与种子管理**'
+  - '- `llama_perf_sampler` 读取 chain 的 t_sample_us / n_sample 返回性能数据'
+  - '- `get_rng_seed` 统一处理 LLAMA_DEFAULT_SEED：自动用 system_clock 或 random_device'
+  - '- `llama_sampler_get_seed` 支持从 dist/mirostat/mirostat_v2/链中反向查找实际种子'
+  - '**perf 接口家族**'
+  - '- `llama_perf_sampler` 返回结构体（t_sample_ms + n_sample）'
+  - '- `llama_perf_sampler_print` 用 LLAMA_LOG_INFO 打印人类可读的性能报告'
+  - '- `llama_perf_sampler_reset` 把 t_sample_us/n_sample 清零'

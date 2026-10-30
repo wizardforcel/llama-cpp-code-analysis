@@ -1,0 +1,282 @@
+code_map:
+- gguf-py/gguf/gguf_reader.py
+- '├── ReaderField (NamedTuple)        # GGUF字段核心数据结构'
+- '│   ├── offset                      # 字段在文件中的偏移量'
+- '│   ├── name                        # 字段名称'
+- '│   ├── parts                       # numpy数组分片列表'
+- '│   ├── data                        # 数据索引映射'
+- '│   ├── types                       # 类型链（嵌套类型）'
+- '│   └── contents(index_or_slice)    # 按需提取字段内容'
+- '├── ReaderTensor (NamedTuple)       # 张量信息结构'
+- '│   ├── name                        # 张量名称'
+- '│   ├── tensor_type                 # 量化类型'
+- '│   ├── shape                       # 张量形状'
+- '│   ├── n_elements                  # 元素总数'
+- '│   ├── n_bytes                     # 字节总数'
+- '│   ├── data_offset                 # 数据物理偏移'
+- '│   ├── data                        # 实际张量数据'
+- '│   └── field                       # 对应的ReaderField'
+- '├── GGUFReader                      # 核心读取器类'
+- '│   ├── __init__(path, mode)        # 初始化：内存映射+魔数校验+字节序检测'
+- '│   ├── get_field(key)              # 按键名获取字段'
+- '│   ├── get_tensor(idx)             # 按索引获取张量'
+- '│   ├── _get(offset, dtype, count, override_order) # 底层字节读取原语'
+- '│   ├── _push_field(field, skip_sum) # 字段注册与去重校验'
+- '│   ├── _get_str(offset)            # 字符串读取（长度+数据）'
+- '│   ├── _get_field_parts(orig_offs, raw_type) # 递归解析字段数据'
+- '│   ├── _get_tensor_info_field(orig_offs) # 解析单个张量信息'
+- '│   ├── _build_fields(offs, count)  # 批量解析元数据字段'
+- '│   ├── _build_tensor_info(offs, count) # 批量解析张量信息'
+- '│   └── _build_tensors(start_offs, fields) # 构建张量数据列表'
+- ''
+- gguf-py/gguf/gguf.py
+- '├── __main__                        # 兼容性入口'
+- '│   ├── sys.path.insert()           # 路径调整'
+- '│   ├── importlib.invalidate_caches() # 缓存失效'
+- '│   ├── import gguf                 # 加载包'
+- '│   └── importlib.reload(gguf)      # 强制重载'
+exercises:
+- contents:
+  - 使用Python的`struct`模块或`numpy`手动读取一个GGUF文件的前32字节
+  - 1. 读取前4字节验证GGUF_MAGIC
+  - 2. 读取版本号并判断字节序
+  - 3. 读取tensor_count和kv_count
+  - 思考问题：
+  - '- 为什么要用8字节而不是4字节存储tensor_count？'
+  - '- 如果文件是大端序，代码需要做哪些调整？'
+  'no': 1
+  title: 手动解析GGUF文件头
+- contents:
+  - 参考`gguf_reader.py`第129-177行，实现一个只能读取元数据（不读张量）的简化版读取器
+  - 要求：
+  - 1. 支持魔数校验和字节序检测
+  - 2. 能读取所有键值对并打印名称和类型
+  - 3. 使用`try-except`处理重复键名异常
+  - 扩展：尝试解析字符串和数组类型的字段值
+  'no': 2
+  title: 实现简化版GGUF读取器
+- contents:
+  - 下载两个不同字节序的GGUF文件（或使用hex编辑器修改一个文件的字节序标记）
+  - 1. 使用`GGUFReader`分别读取两个文件
+  - 2. 对比`reader.byte_order`和`reader.endianess`的值
+  - 3. 用`_get()`方法读取同一个偏移量的数据，观察字节序转换效果
+  - 思考问题：
+  - '- 为什么版本号的高16位为0可以推断是反向字节序？'
+  - '- `override_order=''<''`参数在什么场景下必须使用？'
+  'no': 3
+  title: 字节序转换实验
+- contents:
+  - 使用`GGUFReader`读取一个真实的GGUF模型文件
+  - 1. 调用`_get_tensor_info_field()`解析前几个张量的元信息
+  - 2. 观察名称、维度、量化类型和偏移量的提取过程
+  - 3. 对比`_build_tensor_info()`批量解析与手动单个解析的结果
+  - 思考问题：
+  - '- 为什么张量偏移量是相对值（相对于数据区起始位置）？'
+  - '- `data_idxs`列表中的`[1,3,4,5]`分别对应哪些数据部分？'
+  'no': 4
+  title: 张量信息解析流程追踪
+- contents:
+  - 编写脚本使用`get_field()`和`get_tensor()`接口：
+  - 1. 遍历所有字段，打印键名和数据类型
+  - 2. 尝试访问不存在的键，观察返回值
+  - 3. 通过`get_tensor()`随机访问不同索引的张量
+  - 4. 统计不同`GGMLQuantizationType`的张量数量分布
+  - 思考问题：
+  - '- 为什么`get_tensor()`使用索引而不是名称？'
+  - '- 如果多次调用`get_field(''general.name'')`，性能会有影响吗？'
+  'no': 5
+  title: 公共接口使用与性能
+- contents:
+  - 编写性能测试脚本，对比以下两种读取方式的效率
+  - 方式A：使用`np.memmap`（GGUFReader采用的方式）
+  - 方式B：使用`open().read()`一次性读入内存
+  - 测试场景：
+  - 1. 读取文件头部（前1KB）
+  - 2. 随机访问文件中部的1MB数据
+  - 3. 顺序读取整个文件
+  - 记录并分析两种方式的内存占用和耗时差异
+  - 思考：为什么GGUF选择内存映射而不是全量加载？
+  'no': 6
+  title: 内存映射vs传统读取性能对比
+learning_targets:
+- 理解GGUF文件格式的二进制结构与解析原理
+- 掌握ReaderField和ReaderTensor两个核心数据结构的字段含义与使用方法
+- 学会使用GGUFReader读取GGUF文件的元数据与张量数据
+- 理解内存映射（memmap）技术在大型模型文件读取中的零拷贝优势
+- 掌握GGUF文件的字节序自动检测与跨平台兼容处理机制
+- 能够解析GGUF文件中的标量、字符串、数组等不同类型的元数据字段
+- 掌握张量信息的解析流程：从原始字节到结构化张量元数据
+- 理解公共查询接口get_field/get_tensor在代码中的桥梁作用
+life_analogy:
+- 想象GGUF文件是一个巨大的**集装箱货运船**：
+- '- **GGUFReader** = 港口的「开箱验货员」，负责按清单逐一检查货物'
+- '- **内存映射(memmap)** = 直接在船上查看货物，不用搬下船（零拷贝）'
+- '- **ReaderField** = 每个集装箱的「货物清单」，记录品名、数量、位置'
+- '- **ReaderTensor** = 集装箱里的「实际货物」，附带详细的规格说明'
+- '- **字节序检测** = 识别清单是「从左往右写」还是「从右往左写」（大端/小端）'
+- '- **_get_field_parts()** = 开箱时的「分层检查」：先看外包装类型，再拆内包装'
+- '- **_get_tensor_info_field()** = 张量的「身份登记员」，记录名称、尺寸、类型'
+- '- **contents()方法** = 根据清单「按需取货」，可以只取一件或取一批'
+- '- **get_field/get_tensor** = 对外开放的「查询窗口」，随时按单号取货'
+- ''
+- 就像验货员不需要把所有货物搬下船就能确认内容，GGUFReader通过内存映射直接在文件上「隔空取物」，高效读取任意位置的元数据和张量。
+'no': 57
+summary:
+- concept: ReaderField
+  desc: GGUF元数据字段的命名元组，包含偏移、名称、数据分片、索引映射和类型链
+- concept: ReaderTensor
+  desc: GGUF张量信息的命名元组，封装形状、量化类型、数据偏移和实际数据
+- concept: GGUFReader
+  desc: 核心读取器类，负责解析GGUF文件的头部、元数据和张量数据
+- concept: 内存映射(memmap)
+  desc: 通过numpy.memmap实现零拷贝文件访问，支持大型模型高效读取
+- concept: 字节序检测
+  desc: 自动识别文件是大端还是小端，通过`newbyteorder`动态切换视图
+- concept: _get()
+  desc: 底层读取原语，基于偏移量和数据类型从内存映射中提取数据
+- concept: _get_str()
+  desc: 字符串读取协议：先读8字节长度，再读对应字节数据
+- concept: _get_field_parts()
+  desc: 递归解析字段数据，支持标量、字符串、数组的嵌套类型
+- concept: _get_tensor_info_field()
+  desc: 解析单个张量的元信息：名称、维度、量化类型和相对偏移
+- concept: get_field()/get_tensor()
+  desc: 对外查询接口，按键名或索引返回已解析的字段和张量对象
+- concept: GGUF_MAGIC
+  desc: 文件魔数校验，识别合法GGUF文件的第一道关卡
+- concept: general.alignment
+  desc: 内存对齐字段（默认32字节），必须是2的幂次方
+- concept: GGMLQuantizationType
+  desc: 量化类型枚举，决定张量的块大小和存储格式
+- concept: gguf.py兼容入口
+  desc: 通过路径调整和模块重载，兼容旧代码的直接导入方式
+units:
+- codes:
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 71-111
+    method_or_func: ReaderField.contents()
+  name: ReaderField 与 ReaderTensor —— 数据基石与智能快递员
+  'no': 1
+  points:
+  - '**ReaderField：GGUF 的「最小单元」**'
+  - '- 使用 `NamedTuple` 定义，包含字段偏移量、名称、数据分片（`parts`）、数据索引（`data`）及类型信息（`types`）'
+  - '- `types` 列表记录嵌套类型（如 `ARRAY` 内嵌 `STRING`），为复杂数据结构提供类型线索'
+  - '- `parts` 存储原始 `numpy` 数组片段，避免立即解码，实现按需加载'
+  - '**contents()：数据的「精准提取器」**'
+  - '- 支持按索引（`int`）或切片（`slice`）提取数据，灵活应对单值或批量读取'
+  - '- 针对字符串类型自动执行 UTF-8 解码（`tobytes()` → `str`）'
+  - '- 针对数组类型通过 `data` 索引映射（`self.parts[idx]`）递归提取嵌套内容'
+  - '- 对标量类型直接调用 `tolist()` 返回 Python 原生类型'
+  - '**ReaderTensor：张量的「身份证」**'
+  - '- 封装张量名称、量化类型（`GGMLQuantizationType`）、形状（`shape`）、元素数与字节数'
+  - '- 通过 `data_offset` 记录张量在文件内的物理偏移，解耦元数据与实际数据'
+- codes:
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 129-177
+    method_or_func: GGUFReader.__init__()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 253-268
+    method_or_func: GGUFReader._build_fields()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 270-275
+    method_or_func: GGUFReader._build_tensor_info()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 277-325
+    method_or_func: GGUFReader._build_tensors()
+  name: GGUFReader 核心流程 —— 二进制世界的「开箱验货」
+  'no': 2
+  points:
+  - '**__init__：打开「潘多拉魔盒」**'
+  - '- 使用 `numpy.memmap` 建立内存映射，实现大文件的零拷贝读取'
+  - '- 校验 `GGUF_MAGIC` 魔数，识别非法文件'
+  - '- 检测版本号的高16位是否被截断，自动推断文件端序（大端/小端），并标记 `byte_order = ''S''` 表示需要交换'
+  - '- 根据宿主机的 `sys.byteorder` 与文件端序，设置 `self.endianess` 为后续解析的基准'
+  - '- 解析 `tensor_count` 与 `kv_count`，为后续循环解析提供边界'
+  - '**_build_fields()：元数据的「批量生产线」**'
+  - '- 循环读取 `kv_count` 个键值对，先读键名（字符串），再读值类型码，最后递归解析值内容'
+  - '- 调用 `_push_field` 将字段注册到 `self.fields` 有序字典，并校验重复键名'
+  - '**_build_tensor_info() 与对齐填充**'
+  - '- 连续解析 `tensor_count` 个张量信息，每个包含名称、维度数组、量化类型及相对偏移量'
+  - '- 读取 `general.alignment` 字段（默认32字节），校验其必须为2的幂次方，确保内存对齐合法性'
+  - '- 计算 `padding` 并对齐 `offs`，确定张量数据区的绝对起始位置 `data_offset`'
+  - '**_build_tensors()：张量数据的「按图索骥」**'
+  - '- 校验张量名称唯一性，防止恶意构造的重复名称'
+  - '- 根据 `GGMLQuantizationType` 查询 `GGML_QUANT_SIZES` 获取块大小（`block_size`）与类型大小（`type_size`），计算张量实际占用的物理字节数
+    `n_bytes`'
+  - '- 对 F16/F32/F64/I8/I16/I32/I64 等非量化类型，直接按元素个数读取并 `reshape`；对量化类型，按 `uint8` 读取后调用
+    `quant_shape_to_byte_shape` 转换逻辑形状到字节形状'
+  - '- 最终生成 `ReaderTensor` 列表，完成从二进制到结构化数据的映射'
+- codes:
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 189-194
+    method_or_func: GGUFReader._get()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 205-206
+    method_or_func: GGUFReader._get_str()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 208-229
+    method_or_func: GGUFReader._get_field_parts()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 197-203
+    method_or_func: GGUFReader._push_field()
+  name: 底层读取原语 —— 字节级考古的「刷子和铲子」
+  'no': 3
+  points:
+  - '**_get()：内存映射的「精准手术刀」**'
+  - '- 基于 `numpy.memmap` 切片视图（`view`）实现零拷贝读取，避免重复内存分配'
+  - '- 通过 `newbyteorder` 动态切换字节序视图，兼容大端（`S`）与小端（宿主）数据'
+  - '- 支持 `override_order` 参数强制使用特定端序（如文件头固定为小端），确保跨平台一致性'
+  - '**_get_str()：变长字符串的「测量仪」**'
+  - '- 先读取8字节无符号整数作为字符串长度，再按长度读取 `uint8` 字节流，返回长度与数据二元组'
+  - '- 将「长度前缀+数据」的 GGUF 字符串协议抽象为原子操作'
+  - '**_get_field_parts()：类型递归的「解码器」**'
+  - '- **字符串处理**：直接调用 `_get_str` 读取长度与数据，`data` 索引设为 `[1]` 指向实际内容'
+  - '- **标量处理**：通过 `gguf_scalar_to_np` 映射表将 GGUF 类型转为 `numpy` 类型，读取后标记索引 `[0]`'
+  - '- **数组处理**：递归调用自身解析子类型，通过 `data_idxs` 记录每个数组元素在 `parts` 列表中的实际索引位置，实现「扁平化存储，索引化访问」'
+  - '- 返回四元组（总字节数、分片列表、索引映射、类型链），为上层构建 `ReaderField` 提供完整素材'
+  - '**_push_field()：键值注册的「守门员」**'
+  - '- 严格校验重复键名并抛出 `KeyError`，防止恶意构造的重复键破坏数据一致性'
+  - '- 通过 `skip_sum` 参数控制是否返回字段总字节数，优化 `_build_fields` 中的偏移计算'
+- codes:
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 231-251
+    method_or_func: GGUFReader._get_tensor_info_field()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 181-182
+    method_or_func: GGUFReader.get_field()
+  - file: gguf-py/gguf/gguf_reader.py
+    line: 185-186
+    method_or_func: GGUFReader.get_tensor()
+  name: 张量信息解析与公共查询 —— 数据库的「索引窗口」
+  'no': 4
+  points:
+  - '**_get_tensor_info_field：张量「身份登记员」**'
+  - '- 依次读取张量名称（`_get_str`）、维度数量（`uint32`）、维度数组（`uint64` 列表）、量化类型码（`uint32`）和相对偏移量（`uint64`）'
+  - '- 将原始字节组装为 `ReaderField`，其中 `parts` 包含六个分量，`data` 索引 `[1, 3, 4, 5]` 分别指向名称数据、维度数组、量化类型和偏移量'
+  - '**_build_tensor_info：批量张量信息「流水线」**'
+  - '- 循环调用 `_get_tensor_info_field` 解析所有 `tensor_count` 个张量的元信息'
+  - '- 通过 `sum(part.nbytes)` 计算每个张量信息占用的字节数，推进偏移量 `offs`'
+  - 返回字段列表供后续 `_build_tensors` 使用
+  - '**get_field：元数据的「按名查询」**'
+  - '- 从 `self.fields` 有序字典中按键名检索 `ReaderField` 对象'
+  - '- 键不存在时返回 `None`，提供安全的空值访问'
+  - '**get_tensor：张量的「按号取件」**'
+  - '- 从 `self.tensors` 列表按索引直接返回 `ReaderTensor` 对象'
+  - '- 索引越界时将触发标准的 `IndexError` 异常'
+  - '**设计哲学**：这两个公共方法将内部的字典/列表结构封装为简洁的查询接口，是用户与解析结果交互的主要桥梁'
+- codes:
+  - file: gguf-py/gguf/gguf.py
+    line: 1-17
+    method_or_func: __main__
+  name: 兼容性入口 gguf.py —— 旧代码的「时空隧道」
+  'no': 5
+  points:
+  - '**历史包袱问题**：早期用户直接 `import gguf.gguf` 或使用 `sys.path` 添加 `gguf-py/gguf` 目录，导致包名与模块名冲突'
+  - '**路径魔法**：'
+  - '- 使用 `Path(__file__).parent.parent` 定位到 `gguf-py` 顶层目录并插入 `sys.path` 首部，确保 `import
+    gguf` 能找到包'
+  - '- 通过 `importlib.invalidate_caches()` 清除导入缓存，强制重新扫描模块路径'
+  - '**动态重载**：'
+  - '- 先 `import gguf` 加载包，再 `importlib.reload(gguf)` 强制重新执行 `gguf/__init__.py`'
+  - '- 确保即使之前以错误方式加载过，也能刷新为正确的包对象，暴露 `GGUFReader`、`GGUFWriter` 等公共接口'
+  - '**设计哲学**：以极小的代码代价维持 API 兼容，避免旧教程、旧脚本失效，同时引导新用户使用标准包导入'

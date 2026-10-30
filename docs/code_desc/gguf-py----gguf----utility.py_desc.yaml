@@ -1,0 +1,331 @@
+classes:
+- desc: 使用 dataclass 定义的数据类，用于存储远程张量的元数据（数据类型、形状、偏移量、大小和 URL），并提供 data 方法从远程获取张量数据。
+  methods:
+  - code:
+    - 'def data(self) -> bytearray:'
+    - '    # TODO: handle request errors (maybe with limited retries?)'
+    - '    # NOTE: using a bytearray, otherwise PyTorch complains the buffer is not
+      writeable'
+    - '    data = bytearray(SafetensorRemote.get_data_by_range(url=self.url, start=self.offset_start,
+      size=self.size))'
+    - '    return data'
+    desc: 从远程 safetensor 文件读取张量数据，返回为 bytearray 对象。
+    line: 76-79
+    name: data
+  name: RemoteTensor
+- desc: 工具类，专门用于处理远程 safetensor 文件的读取和元数据解析，支持 Hugging Face 模型仓库中的单个或多个分片文件。
+  methods:
+  - code:
+    - '@classmethod'
+    - 'def get_list_tensors_hf_model(cls, model_id: str) -> dict[str, RemoteTensor]:'
+    - '    # case 1: model has only one single model.safetensor file'
+    - '    is_single_file = cls.check_file_exist(f"{cls.BASE_DOMAIN}/{model_id}/resolve/main/model.safetensors")'
+    - '    if is_single_file:'
+    - '        url = f"{cls.BASE_DOMAIN}/{model_id}/resolve/main/model.safetensors"'
+    - '        return cls.get_list_tensors(url)'
+    - ''
+    - '    # case 2: model has multiple files'
+    - '    index_url = f"{cls.BASE_DOMAIN}/{model_id}/resolve/main/model.safetensors.index.json"'
+    - '    is_multiple_files = cls.check_file_exist(index_url)'
+    - '    if is_multiple_files:'
+    - '        # read the index file'
+    - '        index_data = cls.get_data_by_range(index_url, 0)'
+    - '        index_str = index_data.decode(''utf-8'')'
+    - '        index_json = json.loads(index_str)'
+    - '        assert index_json.get("weight_map") is not None, "weight_map not found
+      in index file"'
+    - '        weight_map = index_json["weight_map"]'
+    - '        # get the list of files'
+    - '        all_files = list(set(weight_map.values()))'
+    - '        all_files.sort() # make sure we load shard files in order'
+    - '        # get the list of tensors'
+    - '        tensors: dict[str, RemoteTensor] = {}'
+    - '        for file in all_files:'
+    - '            url = f"{cls.BASE_DOMAIN}/{model_id}/resolve/main/{file}"'
+    - '            for key, val in cls.get_list_tensors(url).items():'
+    - '                tensors[key] = val'
+    - '        return tensors'
+    - ''
+    - '    raise ValueError('
+    - '        f"No safetensor file has been found for model {model_id}."'
+    - '        "If the repo has safetensor files, make sure the model is public or
+      you have a "'
+    - '        "valid Hugging Face token set in the environment variable HF_TOKEN."'
+    - '    )'
+    desc: 从 Hugging Face 模型仓库获取所有张量的元数据字典，支持单文件和多文件分片情况。
+    line: 95-129
+    name: get_list_tensors_hf_model
+  - code:
+    - '@classmethod'
+    - 'def get_list_tensors(cls, url: str) -> dict[str, RemoteTensor]:'
+    - '    metadata, data_start_offset = cls.get_metadata(url)'
+    - '    res: dict[str, RemoteTensor] = {}'
+    - ''
+    - '    for name, meta in metadata.items():'
+    - '        if name == "__metadata__":'
+    - '            continue'
+    - '        if not isinstance(meta, dict):'
+    - '            raise ValueError(f"Invalid metadata for tensor ''{name}'': {meta}")'
+    - '        try:'
+    - '            dtype = meta["dtype"]'
+    - '            shape = meta["shape"]'
+    - '            offset_start_relative, offset_end_relative = meta["data_offsets"]'
+    - '            size = offset_end_relative - offset_start_relative'
+    - '            offset_start = data_start_offset + offset_start_relative'
+    - '            res[name] = RemoteTensor(dtype=dtype, shape=tuple(shape), offset_start=offset_start,
+      size=size, url=url)'
+    - '        except KeyError as e:'
+    - '            raise ValueError(f"Missing key in metadata for tensor ''{name}'':
+      {e}, meta = {meta}")'
+    - ''
+    - '    # order by name (same as default safetensors behavior)'
+    - '    # ref: https://github.com/huggingface/safetensors/blob/0816a1ae1d6b731cefd67f061d80d1cadd0dd7bb/bindings/python/src/lib.rs#L606'
+    - '    res = dict(sorted(res.items(), key=lambda t: t[0]))'
+    - ''
+    - '    return res'
+    desc: 从单个远程 safetensor 文件解析所有张量的元数据，返回按名称排序的张量字典。
+    line: 132-151
+    name: get_list_tensors
+  - code:
+    - '@classmethod'
+    - 'def get_metadata(cls, url: str) -> tuple[dict, int]:'
+    - '    # Request first 5MB of the file (hopefully enough for metadata)'
+    - '    read_size = 5 * 1024 * 1024'
+    - '    raw_data = cls.get_data_by_range(url, 0, read_size)'
+    - ''
+    - '    # Parse header'
+    - '    # First 8 bytes contain the metadata length as u64 little-endian'
+    - '    if len(raw_data) < 8:'
+    - '        raise ValueError("Not enough data to read metadata size")'
+    - '    metadata_length = int.from_bytes(raw_data[:8], byteorder=''little'')'
+    - ''
+    - '    # Calculate the data start offset'
+    - '    data_start_offset = 8 + metadata_length'
+    - ''
+    - '    # Check if we have enough data to read the metadata'
+    - '    if len(raw_data) < 8 + metadata_length:'
+    - '        raise ValueError(f"Could not read complete metadata. Need {8 + metadata_length}
+      bytes, got {len(raw_data)}")'
+    - ''
+    - '    # Extract metadata bytes and parse as JSON'
+    - '    metadata_bytes = raw_data[8:8 + metadata_length]'
+    - '    metadata_str = metadata_bytes.decode(''utf-8'')'
+    - '    try:'
+    - '        metadata = json.loads(metadata_str)'
+    - '        return metadata, data_start_offset'
+    - '    except json.JSONDecodeError as e:'
+    - '        raise ValueError(f"Failed to parse safetensor metadata as JSON: {e}")'
+    desc: 从远程 safetensor 文件获取 JSON 元数据和数据起始偏移量，只读取前 5MB 数据。
+    line: 154-175
+    name: get_metadata
+  - code:
+    - '@classmethod'
+    - 'def get_data_by_range(cls, url: str, start: int, size: int = -1) -> bytes:'
+    - '    import requests'
+    - '    from urllib.parse import urlparse'
+    - ''
+    - '    parsed_url = urlparse(url)'
+    - '    if not parsed_url.scheme or not parsed_url.netloc:'
+    - '        raise ValueError(f"Invalid URL: {url}")'
+    - ''
+    - '    headers = cls._get_request_headers()'
+    - '    if size > -1:'
+    - '        headers["Range"] = f"bytes={start}-{start + size}"'
+    - '    response = requests.get(url, allow_redirects=True, headers=headers)'
+    - '    response.raise_for_status()'
+    - ''
+    - '    # Get raw byte data'
+    - '    return response.content[slice(size if size > -1 else None)]'
+    desc: 通过 HTTP Range 请求从远程文件获取指定范围的原始字节数据。
+    line: 178-190
+    name: get_data_by_range
+  - code:
+    - '@classmethod'
+    - 'def check_file_exist(cls, url: str) -> bool:'
+    - '    import requests'
+    - '    from urllib.parse import urlparse'
+    - ''
+    - '    parsed_url = urlparse(url)'
+    - '    if not parsed_url.scheme or not parsed_url.netloc:'
+    - '        raise ValueError(f"Invalid URL: {url}")'
+    - ''
+    - '    try:'
+    - '        headers = cls._get_request_headers()'
+    - '        headers["Range"] = "bytes=0-0"'
+    - '        response = requests.head(url, allow_redirects=True, headers=headers)'
+    - '        # Success (2xx) or redirect (3xx)'
+    - '        return 200 <= response.status_code < 400'
+    - '    except requests.RequestException:'
+    - '        return False'
+    desc: 通过发送 HEAD 请求检查远程文件是否存在，返回布尔值。
+    line: 193-205
+    name: check_file_exist
+  - code:
+    - '@classmethod'
+    - 'def _get_request_headers(cls) -> dict[str, str]:'
+    - '    headers = {"User-Agent": "convert_hf_to_gguf"}'
+    - '    if os.environ.get("HF_TOKEN"):'
+    - '        headers["Authorization"] = f"Bearer {os.environ[''HF_TOKEN'']}"'
+    - '    return headers'
+    desc: 准备通用的 HTTP 请求头，包括可选的 Hugging Face 授权令牌。
+    line: 208-211
+    name: _get_request_headers
+  name: SafetensorRemote
+- desc: 使用 dataclass 定义的数据类，表示本地张量数据的文件路径、偏移量和大小信息。
+  methods: []
+  name: LocalTensorRange
+- desc: 使用 dataclass 定义的数据类，存储本地张量的元数据（数据类型、形状）和数据范围对象，提供 mmap_bytes 方法进行内存映射。
+  methods:
+  - code:
+    - 'def mmap_bytes(self) -> np.ndarray:'
+    - '    return np.memmap(self.data_range.filename, mode=''c'', offset=self.data_range.offset,
+      shape=self.data_range.size)'
+    desc: 使用 numpy 内存映射方式读取本地张量数据，避免一次性加载到内存。
+    line: 223-224
+    name: mmap_bytes
+  name: LocalTensor
+- desc: 用于从本地文件系统读取 safetensors 文件的类，提供自定义解析以获得对内存使用的更多控制。
+  methods:
+  - code:
+    - 'def __init__(self, filename: Path):'
+    - '    with open(filename, "rb") as f:'
+    - '        metadata_length = int.from_bytes(f.read(8), byteorder=''little'')'
+    - '        file_size = os.stat(filename).st_size'
+    - '        if file_size < 8 + metadata_length:'
+    - '            raise ValueError(f"Could not read complete metadata. Need {8 +
+      metadata_length} bytes, got {file_size}")'
+    - ''
+    - '        metadata_str = f.read(metadata_length).decode(''utf-8'')'
+    - '        try:'
+    - '            metadata = json.loads(metadata_str)'
+    - '        except json.JSONDecodeError as e:'
+    - '            raise ValueError(f"Failed to parse safetensors metadata as JSON:
+      {e}")'
+    - ''
+    - '        data_start_offset = f.tell()'
+    - ''
+    - '        tensors: dict[str, LocalTensor] = {}'
+    - '        for name, meta in metadata.items():'
+    - '            if name == "__metadata__":'
+    - '                # ignore metadata, it''s not a tensor'
+    - '                continue'
+    - ''
+    - '            tensors[name] = LocalTensor('
+    - '                dtype=meta["dtype"],'
+    - '                shape=tuple(meta["shape"]),'
+    - '                data_range=LocalTensorRange('
+    - '                    filename,'
+    - '                    data_start_offset + meta["data_offsets"][0],'
+    - '                    meta["data_offsets"][1] - meta["data_offsets"][0],'
+    - '                ),'
+    - '            )'
+    - ''
+    - '        # order by name (same as default safetensors behavior)'
+    - '        # ref: https://github.com/huggingface/safetensors/blob/0816a1ae1d6b731cefd67f061d80d1cadd0dd7bb/bindings/python/src/lib.rs#L606'
+    - '        self.tensors = dict(sorted(tensors.items(), key=lambda t: t[0]))'
+    desc: 初始化方法，解析本地 safetensors 文件的元数据并构建张量字典。
+    line: 228-255
+    name: __init__
+  - code:
+    - 'def __enter__(self, *args, **kwargs):'
+    - '    del args, kwargs  # unused'
+    - '    return self.tensors'
+    desc: 上下文管理器入口方法，返回张量字典。
+    line: 257-259
+    name: __enter__
+  - code:
+    - 'def __exit__(self, *args, **kwargs):'
+    - '    del args, kwargs  # unused'
+    desc: 上下文管理器退出方法，无特殊清理操作。
+    line: 261-262
+    name: __exit__
+  name: SafetensorsLocal
+desc: 该文件提供了多种实用工具函数和类，用于处理模型文件名模板填充、参数数量格式化、命名约定生成，以及本地和远程 safetensor 文件的读取与元数据解析，特别支持
+  Hugging Face 仓库中的模型文件访问。
+file: gguf-py/gguf/utility.py
+funcs:
+- code:
+  - 'def fill_templated_filename(filename: str, output_type: str | None) -> str:'
+  - '    # Given a file name fill in any type templates e.g. ''some-model-name.{ftype}.gguf'''
+  - '    ftype_lowercase: str = output_type.lower() if output_type is not None else
+    ""'
+  - '    ftype_uppercase: str = output_type.upper() if output_type is not None else
+    ""'
+  - '    return filename.format(ftype_lowercase,'
+  - '                           outtype=ftype_lowercase, ftype=ftype_lowercase,'
+  - '                           OUTTYPE=ftype_uppercase, FTYPE=ftype_uppercase)'
+  desc: 根据输出类型填充文件名模板中的类型占位符，生成最终的 GGUF 文件名。
+  line: 9-15
+  name: fill_templated_filename
+- code:
+  - 'def model_weight_count_rounded_notation(model_params_count: int, min_digits:
+    int = 2) -> str:'
+  - '    if model_params_count > 1e12 :'
+  - '        # Trillions Of Parameters'
+  - '        scaled_model_params = model_params_count * 1e-12'
+  - '        scale_suffix = "T"'
+  - '    elif model_params_count > 1e9 :'
+  - '        # Billions Of Parameters'
+  - '        scaled_model_params = model_params_count * 1e-9'
+  - '        scale_suffix = "B"'
+  - '    elif model_params_count > 1e6 :'
+  - '        # Millions Of Parameters'
+  - '        scaled_model_params = model_params_count * 1e-6'
+  - '        scale_suffix = "M"'
+  - '    else:'
+  - '        # Thousands Of Parameters'
+  - '        scaled_model_params = model_params_count * 1e-3'
+  - '        scale_suffix = "K"'
+  - ''
+  - '    fix = max(min_digits - len(str(round(scaled_model_params)).lstrip(''0'')),
+    0)'
+  - ''
+  - '    return f"{scaled_model_params:.{fix}f}{scale_suffix}"'
+  desc: 将模型参数数量格式化为带单位后缀（T/B/M/K）的简化字符串，支持最小位数控制。
+  line: 18-35
+  name: model_weight_count_rounded_notation
+- code:
+  - 'def size_label(total_params: int, shared_params: int, expert_params: int, expert_count:
+    int) -> str:'
+  - '    if expert_count > 0:'
+  - '        pretty_size = model_weight_count_rounded_notation(abs(shared_params)
+    + abs(expert_params), min_digits=2)'
+  - '        size_class = f"{expert_count}x{pretty_size}"'
+  - '    else:'
+  - '        size_class = model_weight_count_rounded_notation(abs(total_params), min_digits=2)'
+  - ''
+  - '    return size_class'
+  desc: 根据共享/专家参数以及专家数量生成模型尺寸标签，特殊处理包含专家的模型。
+  line: 38-45
+  name: size_label
+- code:
+  - 'def naming_convention(model_name: str | None, base_name: str | None, finetune_string:
+    str | None, version_string: str | None, size_label: str | None, output_type: str
+    | None, model_type: Literal[''vocab'', ''LoRA''] | None = None) -> str:'
+  - '    # Reference: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md#gguf-naming-convention'
+  - ''
+  - '    if base_name is not None:'
+  - '        name = base_name.strip().replace('' '', ''-'').replace(''/'', ''-'')'
+  - '    elif model_name is not None:'
+  - '        name = model_name.strip().replace('' '', ''-'').replace(''/'', ''-'')'
+  - '    else:'
+  - '        name = "ggml-model"'
+  - ''
+  - '    parameters = f"-{size_label}" if size_label is not None else ""'
+  - ''
+  - '    finetune = f"-{finetune_string.strip().replace('' '', ''-'')}" if finetune_string
+    is not None else ""'
+  - ''
+  - '    version = f"-{version_string.strip().replace('' '', ''-'')}" if version_string
+    is not None else ""'
+  - ''
+  - '    encoding = f"-{output_type.strip().replace('' '', ''-'').upper()}" if output_type
+    is not None else ""'
+  - ''
+  - '    kind = f"-{model_type.strip().replace('' '', ''-'')}" if model_type is not
+    None else ""'
+  - ''
+  - '    return f"{name}{parameters}{finetune}{version}{encoding}{kind}"'
+  desc: 根据不同组件（基础名称、尺寸、微调信息、版本等）组装符合 GGUF 命名约定的模型名称。
+  line: 48-66
+  name: naming_convention

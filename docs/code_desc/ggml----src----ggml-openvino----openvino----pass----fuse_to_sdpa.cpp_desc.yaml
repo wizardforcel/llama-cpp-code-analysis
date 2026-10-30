@@ -1,0 +1,53 @@
+classes:
+- desc: 继承自ov::pass::MatcherPass的模式匹配pass类，匹配并替换QK^T缩放加Mask后经Softmax再与V相乘的经典Attention模式为SDPA算子。
+  methods:
+  - code:
+    - '    FuseToSDPA() {'
+    - '        // 定义匹配模式：MatMul(Q,K) -> Convert -> Multiply(scale) -> Add(mask) ->
+      Softmax -> Convert -> MatMul(V)'
+    - '        const auto m_k = ov::pass::pattern::any_input();'
+    - '        const auto m_q = ov::pass::pattern::any_input();'
+    - '        const auto m_qk = ov::pass::pattern::wrap_type<ov::op::v0::MatMul>({m_q,
+      m_k});'
+    - '        const auto m_qk_f32 = ov::pass::pattern::wrap_type<ov::op::v0::Convert>({m_qk});'
+    - '        const auto m_scale = ov::pass::pattern::any_input();'
+    - '        const auto m_scaled_qk = ov::pass::pattern::wrap_type<ov::op::v1::Multiply>({m_qk_f32,
+      m_scale});'
+    - '        const auto m_mask = ov::pass::pattern::any_input();'
+    - '        const auto m_masked_qk = ov::pass::pattern::wrap_type<ov::op::v1::Add>({m_scaled_qk,
+      m_mask});'
+    - '        const auto m_softmax_qk = ov::pass::pattern::wrap_type<ov::op::v8::Softmax>({m_masked_qk});'
+    - '        const auto m_softmax_qk_f16 = ov::pass::pattern::wrap_type<ov::op::v0::Convert>({m_softmax_qk});'
+    - '        const auto m_v = ov::pass::pattern::any_input();'
+    - '        const auto m_qkv = ov::pass::pattern::wrap_type<ov::op::v0::MatMul>({m_softmax_qk_f16,
+      m_v});'
+    - '        const auto callback = [=](ov::pass::pattern::Matcher & m) {'
+    - '            auto & pattern_to_output = m.get_pattern_value_map();'
+    - '            auto k = pattern_to_output[m_k];'
+    - '            auto q = pattern_to_output[m_q];'
+    - '            auto v = pattern_to_output[m_v];'
+    - '            auto mask = pattern_to_output[m_mask];'
+    - '            auto scale = pattern_to_output[m_scale];'
+    - '            // 将mask和scale转换为f16类型'
+    - '            auto mask_f16 = register_new_node<ov::op::v0::Convert>(mask, ov::element::f16);'
+    - '            auto scale_f16 = register_new_node<ov::op::v0::Convert>(scale,
+      ov::element::f16);'
+    - '            // 创建SDPA节点(因果掩码设为false)'
+    - '            auto sdpa = std::make_shared<ov::op::v13::ScaledDotProductAttention>(q,
+      k, v, mask_f16, scale_f16, false);'
+    - '            // 替换匹配子图的根节点为SDPA节点'
+    - '            ov::replace_node(m.get_match_root(), sdpa);'
+    - '            ov::copy_runtime_info(m.get_matched_nodes(), sdpa);'
+    - '            return true;'
+    - '        };'
+    - '        // 注册匹配器'
+    - '        register_matcher(std::make_shared<ov::pass::pattern::Matcher>(m_qkv,
+      "ov::frontend::ggml::pass::FuseToSDPA"), callback);'
+    - '    }'
+    desc: 构造函数，定义匹配模式（Q、K、V、mask、scale输入）及回调函数，将匹配的子图整体替换为一个ScaledDotProductAttention节点。
+    line: 20-88
+    name: FuseToSDPA
+  name: FuseToSDPA
+desc: 该文件定义了一个OpenVINO前端ggml转换阶段的模式匹配pass，用于将ggml模型中由MatMul、Convert、Multiply、Add、Softmax等算子组合成的注意力计算模式融合为一个ScaledDotProductAttention算子，以提高执行效率。
+file: ggml/src/ggml-openvino/openvino/pass/fuse_to_sdpa.cpp
+funcs: []

@@ -1,0 +1,125 @@
+classes: []
+desc: This file implements a rehype plugin that restores limited HTML elements (line
+  breaks and unordered lists) inside Markdown table cells by traversing the HAST tree,
+  parsing whitelisted HTML patterns from text nodes, and replacing them with actual
+  HAST element nodes.
+file: tools/server/webui/src/lib/markdown/table-html-restorer.ts
+funcs:
+- code:
+  - 'function expandBrTags(value: string): ElementContent[] {'
+  - "\tconst matches = [...value.matchAll(BR_PATTERN)];"
+  - "\tif (!matches.length) return [{ type: 'text', value } as Text];"
+  - ''
+  - "\tconst result: ElementContent[] = [];"
+  - "\tlet cursor = 0;"
+  - ''
+  - "\tfor (const m of matches) {"
+  - "\t\tif (m.index! > cursor) {"
+  - "\t\t\tresult.push({ type: 'text', value: value.slice(cursor, m.index) } as Text);"
+  - "\t\t}"
+  - "\t\tresult.push({ type: 'element', tagName: 'br', properties: {}, children: []\
+    \ } as Element);"
+  - "\t\tcursor = m.index! + m[0].length;"
+  - "\t}"
+  - ''
+  - "\tif (cursor < value.length) {"
+  - "\t\tresult.push({ type: 'text', value: value.slice(cursor) } as Text);"
+  - "\t}"
+  - ''
+  - "\treturn result;"
+  - '}'
+  desc: Expands text containing `<br>` tags into an array of text nodes and br elements.
+  line: 76-97
+  name: expandBrTags
+- code:
+  - 'function parseList(value: string): Element | null {'
+  - "\tconst match = value.trim().match(LIST_PATTERN);"
+  - "\tif (!match) return null;"
+  - ''
+  - "\tconst body = match[1];"
+  - "\tconst items: ElementContent[] = [];"
+  - "\tlet cursor = 0;"
+  - ''
+  - "\tfor (const liMatch of body.matchAll(LI_PATTERN)) {"
+  - "\t\t// Reject if there's non-whitespace between list items"
+  - "\t\tif (body.slice(cursor, liMatch.index!).trim()) return null;"
+  - ''
+  - "\t\titems.push({"
+  - "\t\t\ttype: 'element',"
+  - "\t\t\ttagName: 'li',"
+  - "\t\t\tproperties: {},"
+  - "\t\t\tchildren: expandBrTags(liMatch[1] ?? '')"
+  - "\t\t} as Element);"
+  - ''
+  - "\t\tcursor = liMatch.index! + liMatch[0].length;"
+  - "\t}"
+  - ''
+  - "\t// Reject if no items found or trailing garbage exists"
+  - "\tif (!items.length || body.slice(cursor).trim()) return null;"
+  - ''
+  - "\treturn { type: 'element', tagName: 'ul', properties: {}, children: items }\
+    \ as Element;"
+  - '}'
+  desc: Parses a `<ul><li>...</li></ul>` string into a HAST element, returning null
+    if the markup is malformed or contains unexpected content.
+  line: 103-129
+  name: parseList
+- code:
+  - 'function processCell(cell: Element) {'
+  - "\tvisitParents(cell, 'text', (textNode: Text, ancestors) => {"
+  - "\t\tconst parent = ancestors[ancestors.length - 1];"
+  - "\t\tif (!parent || parent.type !== 'element') return;"
+  - ''
+  - "\t\tconst parentEl = parent as Element;"
+  - "\t\tconst siblings = parentEl.children as ElementContent[];"
+  - "\t\tconst startIndex = siblings.indexOf(textNode as ElementContent);"
+  - "\t\tif (startIndex === -1) return;"
+  - ''
+  - "\t\t// Combine consecutive text nodes and <br> elements into one string"
+  - "\t\tlet combined = '';"
+  - "\t\tlet endIndex = startIndex;"
+  - ''
+  - "\t\tfor (let i = startIndex; i < siblings.length; i++) {"
+  - "\t\t\tconst sib = siblings[i];"
+  - "\t\t\tif (sib.type === 'text') {"
+  - "\t\t\t\tcombined += (sib as Text).value;"
+  - "\t\t\t\tendIndex = i;"
+  - "\t\t\t} else if (sib.type === 'element' && (sib as Element).tagName === 'br')\
+    \ {"
+  - "\t\t\t\tcombined += '\\n';"
+  - "\t\t\t\tendIndex = i;"
+  - "\t\t\t} else {"
+  - "\t\t\t\tbreak;"
+  - "\t\t\t}"
+  - "\t\t}"
+  - ''
+  - "\t\t// Try parsing as list first (replaces entire combined range)"
+  - "\t\tconst list = parseList(combined);"
+  - "\t\tif (list) {"
+  - "\t\t\tsiblings.splice(startIndex, endIndex - startIndex + 1, list);"
+  - "\t\t\treturn;"
+  - "\t\t}"
+  - ''
+  - "\t\t// Otherwise, just expand <br> tags in this text node"
+  - "\t\tconst expanded = expandBrTags(textNode.value);"
+  - "\t\tif (expanded.length !== 1 || expanded[0] !== textNode) {"
+  - "\t\t\tsiblings.splice(startIndex, 1, ...expanded);"
+  - "\t\t}"
+  - "\t});"
+  - '}'
+  desc: Processes a single table cell, restoring HTML elements from text content by
+    combining siblings and parsing lists or expanding br tags.
+  line: 134-172
+  name: processCell
+- code:
+  - 'export const rehypeRestoreTableHtml: Plugin<[], Root> = () => (tree) => {'
+  - "\tvisit(tree, 'element', (node: Element) => {"
+  - "\t\tif (node.tagName === 'td' || node.tagName === 'th') {"
+  - "\t\t\tprocessCell(node);"
+  - "\t\t}"
+  - "\t});"
+  - '};'
+  desc: Rehype plugin entry point that traverses the HAST tree to find table cells
+    (`td` or `th`) and processes them to restore HTML elements.
+  line: 174-180
+  name: rehypeRestoreTableHtml

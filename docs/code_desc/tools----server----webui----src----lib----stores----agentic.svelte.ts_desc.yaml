@@ -1,0 +1,398 @@
+classes:
+- desc: Agentic 循环的响应式状态存储类，封装会话管理、多轮 LLM-工具循环编排、计时统计聚合与附件提取等核心业务逻辑。
+  methods:
+  - code:
+    - 'get isReady(): boolean {'
+    - "\treturn true;"
+    - '}'
+    desc: 获取器，始终返回 true，表示存储已就绪可用。
+    line: 120-122
+    name: isReady (getter)
+  - code:
+    - 'get isAnyRunning(): boolean {'
+    - "\tfor (const session of this._sessions.values()) {"
+    - "\t\tif (session.isRunning) return true;"
+    - "\t}"
+    - "\treturn false;"
+    - '}'
+    desc: 获取器，遍历所有会话，若存在任一正在运行的会话则返回 true。
+    line: 123-128
+    name: isAnyRunning (getter)
+  - code:
+    - 'getSession(conversationId: string): AgenticSession {'
+    - "\tlet session = this._sessions.get(conversationId);"
+    - "\tif (!session) {"
+    - "\t\tsession = createDefaultSession();"
+    - "\t\tthis._sessions.set(conversationId, session);"
+    - "\t}"
+    - "\treturn session;"
+    - '}'
+    desc: 获取指定会话 ID 的会话对象，若不存在则创建默认会话并缓存后返回。
+    line: 130-137
+    name: getSession
+  - code:
+    - 'private updateSession(conversationId: string, update: Partial<AgenticSession>):
+      void {'
+    - "\tconst session = this.getSession(conversationId);"
+    - "\tthis._sessions.set(conversationId, { ...session, ...update });"
+    - '}'
+    desc: 私有方法，以不可变方式合并部分字段更新指定会话状态。
+    line: 139-142
+    name: updateSession
+  - code:
+    - 'clearSession(conversationId: string): void {'
+    - "\tthis._sessions.delete(conversationId);"
+    - '}'
+    desc: 删除指定会话 ID 的会话状态。
+    line: 144-146
+    name: clearSession
+  - code:
+    - 'getActiveSessions(): Array<{ conversationId: string; session: AgenticSession
+      }> {'
+    - "\tconst active: Array<{ conversationId: string; session: AgenticSession }>\
+      \ = [];"
+    - "\tfor (const [conversationId, session] of this._sessions.entries()) {"
+    - "\t\tif (session.isRunning) active.push({ conversationId, session });"
+    - "\t}"
+    - "\treturn active;"
+    - '}'
+    desc: 返回所有处于运行状态的会话及其会话 ID 的列表。
+    line: 148-154
+    name: getActiveSessions
+  - code:
+    - 'isRunning(conversationId: string): boolean {'
+    - "\treturn this.getSession(conversationId).isRunning;"
+    - '}'
+    desc: 查询指定会话当前是否处于运行状态。
+    line: 156-158
+    name: isRunning
+  - code:
+    - 'currentTurn(conversationId: string): number {'
+    - "\treturn this.getSession(conversationId).currentTurn;"
+    - '}'
+    desc: 查询指定会话当前所处的轮次编号。
+    line: 160-162
+    name: currentTurn
+  - code:
+    - 'totalToolCalls(conversationId: string): number {'
+    - "\treturn this.getSession(conversationId).totalToolCalls;"
+    - '}'
+    desc: 查询指定会话累计的工具调用总数。
+    line: 164-166
+    name: totalToolCalls
+  - code:
+    - 'lastError(conversationId: string): Error | null {'
+    - "\treturn this.getSession(conversationId).lastError;"
+    - '}'
+    desc: 查询指定会话最近一次发生的错误。
+    line: 168-170
+    name: lastError
+  - code:
+    - 'streamingToolCall(conversationId: string): { name: string; arguments: string
+      } | null {'
+    - "\treturn this.getSession(conversationId).streamingToolCall;"
+    - '}'
+    desc: 查询指定会话当前正在流式传输的工具调用信息（名称与参数）。
+    line: 172-174
+    name: streamingToolCall
+  - code:
+    - 'clearError(conversationId: string): void {'
+    - "\tthis.updateSession(conversationId, { lastError: null });"
+    - '}'
+    desc: 清除指定会话中记录的最近错误。
+    line: 176-178
+    name: clearError
+  - code:
+    - 'getConfig(settings: SettingsConfigType, perChatOverrides?: McpServerOverride[]):
+      AgenticConfig {'
+    - "\tconst maxTurns = Number(settings.agenticMaxTurns) || DEFAULT_AGENTIC_CONFIG.maxTurns;"
+    - "\tconst maxToolPreviewLines ="
+    - "\t\tNumber(settings.agenticMaxToolPreviewLines) || DEFAULT_AGENTIC_CONFIG.maxToolPreviewLines;"
+    - "\treturn {"
+    - "\t\tenabled: mcpStore.hasEnabledServers(perChatOverrides) && DEFAULT_AGENTIC_CONFIG.enabled,"
+    - "\t\tmaxTurns,"
+    - "\t\tmaxToolPreviewLines"
+    - "\t};"
+    - '}'
+    desc: 根据全局设置与每会话覆盖项计算 Agentic 配置（是否启用、最大轮次、工具预览行数上限）。
+    line: 180-189
+    name: getConfig
+  - code:
+    - 'async runAgenticFlow(params: AgenticFlowParams): Promise<AgenticFlowResult>
+      {'
+    - "\tconst { conversationId, messages, options = {}, callbacks, signal, perChatOverrides\
+      \ } = params;"
+    - ''
+    - "\tconst agenticConfig = this.getConfig(config(), perChatOverrides);"
+    - "\tif (!agenticConfig.enabled) return { handled: false };"
+    - ''
+    - "\tconst initialized = await mcpStore.ensureInitialized(perChatOverrides);"
+    - "\tif (!initialized) {"
+    - "\t\tconsole.log('[AgenticStore] MCP not initialized, falling back to standard\
+      \ chat');"
+    - "\t\treturn { handled: false };"
+    - "\t}"
+    - ''
+    - "\tconst tools = mcpStore.getToolDefinitionsForLLM();"
+    - "\tif (tools.length === 0) {"
+    - "\t\tconsole.log('[AgenticStore] No tools available, falling back to standard\
+      \ chat');"
+    - "\t\treturn { handled: false };"
+    - "\t}"
+    - ''
+    - "\tconsole.log(`[AgenticStore] Starting agentic flow with ${tools.length} tools`);"
+    - ''
+    - "\tconst normalizedMessages: ApiChatMessageData[] = messages"
+    - "\t\t.map((msg) => {"
+    - "\t\t\tif ('id' in msg && 'convId' in msg && 'timestamp' in msg)"
+    - "\t\t\t\treturn ChatService.convertDbMessageToApiChatMessageData("
+    - "\t\t\t\t\tmsg as DatabaseMessage & { extra?: DatabaseMessageExtra[] }"
+    - "\t\t\t\t);"
+    - "\t\t\treturn msg as ApiChatMessageData;"
+    - "\t\t})"
+    - "\t\t.filter((msg) => {"
+    - "\t\t\tif (msg.role === MessageRole.SYSTEM) {"
+    - "\t\t\t\tconst content = typeof msg.content === 'string' ? msg.content : '';"
+    - "\t\t\t\treturn content.trim().length > 0;"
+    - "\t\t\t}"
+    - "\t\t\treturn true;"
+    - "\t\t});"
+    - ''
+    - "\tthis.updateSession(conversationId, {"
+    - "\t\tisRunning: true,"
+    - "\t\tcurrentTurn: 0,"
+    - "\t\ttotalToolCalls: 0,"
+    - "\t\tlastError: null"
+    - "\t});"
+    - "\tmcpStore.acquireConnection();"
+    - ''
+    - "\ttry {"
+    - "\t\tawait this.executeAgenticLoop({"
+    - "\t\t\tconversationId,"
+    - "\t\t\tmessages: normalizedMessages,"
+    - "\t\t\toptions,"
+    - "\t\t\ttools,"
+    - "\t\t\tagenticConfig,"
+    - "\t\t\tcallbacks,"
+    - "\t\t\tsignal"
+    - "\t\t});"
+    - "\t\treturn { handled: true };"
+    - "\t} catch (error) {"
+    - "\t\tconst normalizedError = error instanceof Error ? error : new Error(String(error));"
+    - "\t\tthis.updateSession(conversationId, { lastError: normalizedError });"
+    - "\t\tcallbacks.onError?.(normalizedError);"
+    - "\t\treturn { handled: true, error: normalizedError };"
+    - "\t} finally {"
+    - "\t\tthis.updateSession(conversationId, { isRunning: false });"
+    - "\t\tawait mcpStore"
+    - "\t\t\t.releaseConnection()"
+    - "\t\t\t.catch((err: unknown) =>"
+    - "\t\t\t\tconsole.warn('[AgenticStore] Failed to release MCP connection:', err)"
+    - "\t\t\t);"
+    - "\t}"
+    - '}'
+    desc: Agentic 流程入口：校验配置与 MCP 初始化、规范化消息、初始化会话状态、执行循环并处理错误与连接释放。
+    line: 191-253
+    name: runAgenticFlow
+  - code:
+    - 'private async executeAgenticLoop(params: {'
+    - "\tconversationId: string;"
+    - "\tmessages: ApiChatMessageData[];"
+    - "\toptions: AgenticFlowOptions;"
+    - "\ttools: ReturnType<typeof mcpStore.getToolDefinitionsForLLM>;"
+    - "\tagenticConfig: AgenticConfig;"
+    - "\tcallbacks: AgenticFlowCallbacks;"
+    - "\tsignal?: AbortSignal;"
+    - '}): Promise<void> { ... }'
+    desc: 私有核心方法，执行多轮 Agentic 循环：逐轮调用 LLM 流式接口、检测与规范化工具调用、执行 MCP 工具、聚合计时统计、处理取消/错误/附件并触发各类回调。
+    line: 255-571
+    name: executeAgenticLoop
+  - code:
+    - private buildFinalTimings(
+    - "\tcapturedTimings: ChatMessageTimings | undefined,"
+    - "\tagenticTimings: ChatMessageAgenticTimings"
+    - '): ChatMessageTimings | undefined {'
+    - "\tif (agenticTimings.toolCallsCount === 0) return capturedTimings;"
+    - "\treturn {"
+    - "\t\tpredicted_n: capturedTimings?.predicted_n,"
+    - "\t\tpredicted_ms: capturedTimings?.predicted_ms,"
+    - "\t\tprompt_n: capturedTimings?.prompt_n,"
+    - "\t\tprompt_ms: capturedTimings?.prompt_ms,"
+    - "\t\tcache_n: capturedTimings?.cache_n,"
+    - "\t\tagentic: agenticTimings"
+    - "\t};"
+    - '}'
+    desc: 私有方法，将捕获的 LLM 计时与 Agentic 聚合计时合并为最终计时对象；若无工具调用则直接返回原始计时。
+    line: 573-586
+    name: buildFinalTimings
+  - code:
+    - 'private normalizeToolCalls(toolCalls: ApiChatCompletionToolCall[]): AgenticToolCallList
+      {'
+    - "\tif (!toolCalls) return [];"
+    - "\treturn toolCalls.map((call, index) => ({"
+    - "\t\tid: call?.id ?? `tool_${index}`,"
+    - "\t\ttype: (call?.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,"
+    - "\t\tfunction: { name: call?.function?.name ?? '', arguments: call?.function?.arguments\
+      \ ?? '' }"
+    - "\t}));"
+    - '}'
+    desc: 私有方法，将原始 API 工具调用对象规范化为带默认 id/type/空参数的 AgenticToolCallList。
+    line: 588-595
+    name: normalizeToolCalls
+  - code:
+    - 'private extractBase64Attachments(result: string): {'
+    - "\tcleanedResult: string;"
+    - "\tattachments: DatabaseMessageExtra[];"
+    - '} {'
+    - "\tif (!result.trim()) {"
+    - "\t\treturn { cleanedResult: result, attachments: [] };"
+    - "\t}"
+    - ''
+    - "\tconst lines = result.split(NEWLINE_SEPARATOR);"
+    - "\tconst attachments: DatabaseMessageExtra[] = [];"
+    - "\tlet attachmentIndex = 0;"
+    - ''
+    - "\tconst cleanedLines = lines.map((line) => {"
+    - "\t\tconst trimmedLine = line.trim();"
+    - ''
+    - "\t\tconst match = trimmedLine.match(DATA_URI_BASE64_REGEX);"
+    - "\t\tif (!match) {"
+    - "\t\t\treturn line;"
+    - "\t\t}"
+    - ''
+    - "\t\tconst mimeType = match[1].toLowerCase();"
+    - "\t\tconst base64Data = match[2];"
+    - ''
+    - "\t\tif (!base64Data) {"
+    - "\t\t\treturn line;"
+    - "\t\t}"
+    - ''
+    - "\t\tattachmentIndex += 1;"
+    - "\t\tconst name = this.buildAttachmentName(mimeType, attachmentIndex);"
+    - ''
+    - "\t\tif (mimeType.startsWith(MimeTypePrefix.IMAGE)) {"
+    - "\t\t\tattachments.push({ type: AttachmentType.IMAGE, name, base64Url: trimmedLine\
+      \ });"
+    - ''
+    - "\t\t\treturn `[Attachment saved: ${name}]`;"
+    - "\t\t}"
+    - ''
+    - "\t\treturn line;"
+    - "\t});"
+    - ''
+    - "\treturn { cleanedResult: cleanedLines.join(NEWLINE_SEPARATOR), attachments\
+      \ };"
+    - '}'
+    desc: 私有方法，扫描工具结果中的 data URI base64 行，提取图片附件并以占位文本替换原始内容。
+    line: 597-637
+    name: extractBase64Attachments
+  - code:
+    - 'private buildAttachmentName(mimeType: string, index: number): string {'
+    - "\tconst extension = IMAGE_MIME_TO_EXTENSION[mimeType] ?? DEFAULT_IMAGE_EXTENSION;"
+    - ''
+    - "\treturn `${MCP_ATTACHMENT_NAME_PREFIX}-${Date.now()}-${index}.${extension}`;"
+    - '}'
+    desc: 私有方法，根据 MIME 类型生成带时间戳与序号的附件文件名。
+    line: 639-643
+    name: buildAttachmentName
+  name: AgenticStore
+desc: 该文件实现了基于 Svelte 5 Runes 的 agenticStore 响应式状态存储，用于编排多轮 Agentic 循环：管理会话状态（运行状态、当前轮次、工具调用计数、错误）、LLM
+  流式调用与工具调用检测、通过 mcpStore 执行 MCP 工具、从工具结果中提取 base64 附件、聚合各轮次与工具调用的计时统计，并通过导出的辅助函数简化对会话状态的访问。
+file: tools/server/webui/src/lib/stores/agentic.svelte.ts
+funcs:
+- code:
+  - 'function createDefaultSession(): AgenticSession {'
+  - "\treturn {"
+  - "\t\tisRunning: false,"
+  - "\t\tcurrentTurn: 0,"
+  - "\t\ttotalToolCalls: 0,"
+  - "\t\tlastError: null,"
+  - "\t\tstreamingToolCall: null"
+  - "\t};"
+  - '}'
+  desc: 创建并返回一个默认初始状态的 AgenticSession 对象（未运行、轮次与工具调用计数为零、无错误）。
+  line: 74-82
+  name: createDefaultSession
+- code:
+  - 'function toAgenticMessages(messages: ApiChatMessageData[]): AgenticMessage[]
+    {'
+  - "\treturn messages.map((message) => {"
+  - "\t\tif ("
+  - "\t\t\tmessage.role === MessageRole.ASSISTANT &&"
+  - "\t\t\tmessage.tool_calls &&"
+  - "\t\t\tmessage.tool_calls.length > 0"
+  - "\t\t) {"
+  - "\t\t\treturn {"
+  - "\t\t\t\trole: MessageRole.ASSISTANT,"
+  - "\t\t\t\tcontent: message.content,"
+  - "\t\t\t\ttool_calls: message.tool_calls.map((call, index) => ({"
+  - "\t\t\t\t\tid: call.id ?? `call_${index}`,"
+  - "\t\t\t\t\ttype: (call.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,"
+  - "\t\t\t\t\tfunction: { name: call.function?.name ?? '', arguments: call.function?.arguments\
+    \ ?? '' }"
+  - "\t\t\t\t}))"
+  - "\t\t\t} satisfies AgenticMessage;"
+  - "\t\t}"
+  - "\t\tif (message.role === MessageRole.TOOL && message.tool_call_id) {"
+  - "\t\t\treturn {"
+  - "\t\t\t\trole: MessageRole.TOOL,"
+  - "\t\t\t\ttool_call_id: message.tool_call_id,"
+  - "\t\t\t\tcontent: typeof message.content === 'string' ? message.content : ''"
+  - "\t\t\t} satisfies AgenticMessage;"
+  - "\t\t}"
+  - "\t\treturn {"
+  - "\t\t\trole: message.role as MessageRole.SYSTEM | MessageRole.USER,"
+  - "\t\t\tcontent: message.content"
+  - "\t\t} satisfies AgenticMessage;"
+  - "\t});"
+  - '}'
+  desc: 将 API 消息数组转换为内部 AgenticMessage 数组，规范处理带工具调用的助手消息、工具结果消息及普通系统/用户消息。
+  line: 84-110
+  name: toAgenticMessages
+- code:
+  - export const agenticStore = new AgenticStore();
+  desc: 模块级全局代码：创建并导出 agenticStore 单例实例。
+  line: 647-647
+  name: __main__
+- code:
+  - 'export function agenticIsRunning(conversationId: string) {'
+  - "\treturn agenticStore.isRunning(conversationId);"
+  - '}'
+  desc: 导出的辅助函数，返回指定会话是否正在运行。
+  line: 649-651
+  name: agenticIsRunning
+- code:
+  - 'export function agenticCurrentTurn(conversationId: string) {'
+  - "\treturn agenticStore.currentTurn(conversationId);"
+  - '}'
+  desc: 导出的辅助函数，返回指定会话当前所处轮次。
+  line: 653-655
+  name: agenticCurrentTurn
+- code:
+  - 'export function agenticTotalToolCalls(conversationId: string) {'
+  - "\treturn agenticStore.totalToolCalls(conversationId);"
+  - '}'
+  desc: 导出的辅助函数，返回指定会话累计的工具调用总数。
+  line: 657-659
+  name: agenticTotalToolCalls
+- code:
+  - 'export function agenticLastError(conversationId: string) {'
+  - "\treturn agenticStore.lastError(conversationId);"
+  - '}'
+  desc: 导出的辅助函数，返回指定会话最近一次发生的错误。
+  line: 661-663
+  name: agenticLastError
+- code:
+  - 'export function agenticStreamingToolCall(conversationId: string) {'
+  - "\treturn agenticStore.streamingToolCall(conversationId);"
+  - '}'
+  desc: 导出的辅助函数，返回指定会话当前正在流式传输的工具调用信息。
+  line: 665-667
+  name: agenticStreamingToolCall
+- code:
+  - export function agenticIsAnyRunning() {
+  - "\treturn agenticStore.isAnyRunning;"
+  - '}'
+  desc: 导出的辅助函数，返回是否存在任一正在运行的 Agentic 会话。
+  line: 669-671
+  name: agenticIsAnyRunning

@@ -1,0 +1,437 @@
+code_map:
+- gguf-py/gguf/quants.py
+- ├── 基础工具函数
+- │   ├── quant_shape_to_byte_shape
+- │   ├── quant_shape_from_byte_shape
+- │   ├── _apply_over_grouped_rows
+- │   └── np_roundf
+- ├── __Quant 抽象基类
+- │   ├── __init__
+- │   ├── __init_subclass__
+- │   ├── init_grid
+- │   ├── quantize_blocks
+- │   ├── dequantize_blocks
+- │   ├── quantize_rows
+- │   ├── dequantize_rows
+- │   ├── __shape_to_bytes
+- │   ├── __shape_from_bytes
+- │   ├── __quantize_array
+- │   ├── __dequantize_array
+- │   ├── __quantize_lazy
+- │   ├── __dequantize_lazy
+- │   ├── can_quantize
+- │   ├── quantize
+- │   └── dequantize
+- ├── 经典量化家族（Q系列）
+- │   ├── BF16
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── Q4_0
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── Q4_1
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── Q5_0
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── Q5_1
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   └── Q8_0
+- │       ├── quantize_blocks
+- │       └── dequantize_blocks
+- ├── K-quant系列（极致压缩）
+- │   ├── Q2_K.dequantize_blocks
+- │   ├── Q3_K.dequantize_blocks
+- │   ├── Q4_K
+- │   │   ├── get_scale_min
+- │   │   └── dequantize_blocks
+- │   ├── Q5_K.dequantize_blocks
+- │   └── Q6_K.dequantize_blocks
+- ├── IQ系列（非均匀量化）
+- │   ├── IQ2_XXS.dequantize_blocks
+- │   ├── IQ2_S.dequantize_blocks
+- │   ├── IQ3_XXS.dequantize_blocks
+- │   ├── IQ3_S.dequantize_blocks
+- │   ├── IQ1_S.dequantize_blocks
+- │   ├── IQ1_M.dequantize_blocks
+- │   ├── IQ4_NL.dequantize_blocks
+- │   └── IQ4_XS.dequantize_blocks
+- ├── 前沿量化格式
+- │   ├── TQ1_0
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── TQ2_0
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   ├── MXFP4
+- │   │   ├── e8m0_to_fp32_half
+- │   │   ├── quantize_blocks
+- │   │   └── dequantize_blocks
+- │   └── NVFP4
+- │       ├── ue4m3_to_fp32
+- │       ├── fp32_to_ue4m3
+- │       └── dequantize_blocks
+- ├── 全局入口函数
+- │   ├── quantize
+- │   └── dequantize
+- '└── __main__  # grid_hex/grid_map/ksigns 等静态数据定义'
+exercises:
+- contents:
+  - 编写Python脚本，生成一个包含10000个随机浮点数（标准正态分布）的张量。
+  - 1. 使用Q4_0、Q8_0、T Q2_0分别进行量化（quantize）后再反量化（dequantize）
+  - 2. 计算并比较三种格式的均方误差（MSE）和最大绝对误差
+  - 3. 绘制原始数据分布与反量化后数据的直方图对比
+  - 思考问题：
+  - '- 为什么Q4_0的误差比Q8_0大？从字节布局角度解释其原因'
+  - '- TQ2_0在哪些数值区域会出现较大失真？这与它的三元量化特性有何关系？'
+  'no': 1
+  title: 量化往返精度测试
+- contents:
+  - 在Python交互式环境中导入gguf.quants，执行以下操作：
+  - 1. 打印_type_traits.keys()，列出所有已注册的量化类型
+  - 2. 检查Q4_K.__dict__，确认block_size和type_size属性的来源
+  - 3. 定义一个继承自__Quant且qtype为自定义值的临时类，观察_type_traits的变化
+  - 思考问题：
+  - '- __init_subclass__在何时被调用？（是在import时还是第一次使用时？）'
+  - '- 如果忘记在类定义中指定qtype参数会发生什么？为什么assert qtype not in _type_traits是必要的？'
+  'no': 2
+  title: 追踪_  type_traits注册机制
+- contents:
+  - 根据Q4_K源码反推其字节布局，手工构造一个合法的Q4_K块（256字节）：
+  - 1. 构造缩放因子部分（2字节d + 2字节dmin + 12字节scales）
+  - 2. 构造量化数据部分（128字节qs），填入特定模式（如全0x11）
+  - 3. 调用Q4_K.dequantize_blocks验证你的数据能否正确解码
+  - 4. 修改scales中的某一位，观察输出值的变化规律
+  - 思考问题：
+  - '- d和dmin为什么是float16存储？这限制了它们的动态范围，如何影响量化精度？'
+  - '- scales的打包格式（前8字节低4位+后4字节高2位）如何对应get_scale_min的解码逻辑？'
+  'no': 3
+  title: 手工构造Q4_K块数据
+- contents:
+  - 深入研究IQ2_XXS的dequantize_blocks实现：
+  - 1. 提取IQ2_XXS.grid_hex（如果可见）或调用init_grid()后打印grid.shape和grid的部分值
+  - 2. 理解qs[...,0]和qs[...,1]如何分别作为grid索引和scales/符号信息
+  - 3. 手动计算一个简单块的解码过程：给定d=1.0，qs=[0x12,0x34,...]，追踪到最终浮点值
+  - 4. 统计ksigns数组的理论大小（应为128字节）
+  - 思考问题：
+  - '- 为什么IQ2_XXS使用db * grid * signs的三重乘法而不是简单的d * q？'
+  - '- 如果grid_hex被损坏（假设全设为0），反量化结果会变成什么样？这揭示了查找表在IQ量化中的什么作用？'
+  'no': 4
+  title: IQ2_XXS网格解码分析
+learning_targets:
+- 理解GGUF量化格式的核心框架设计，包括`__Quant`抽象基类的注册机制与惰性计算包装
+- 掌握Q4_0/Q4_1、Q5_0/Q5_1、Q8_0等经典量化算法的位级实现细节与舍入策略
+- 深入K-quant系列（Q2_K到Q6_K）的嵌套缩放与多级反量化原理
+- 理解IQ系列基于网格查找表的非均匀量化方法及其hex解码机制
+- 掌握TQ、MXFP4、NVFP4等新型量化格式的硬件协同设计理念
+- 能够使用`quantize`/`dequantize`全局入口进行张量转换，并解析形状变换逻辑
+life_analogy:
+- 想象GGUF的量化系统是一个**精密行李压缩工坊**，专门帮旅行者在不超重的情况下尽可能多装物品：
+- '- **__Quant基类** = 工坊的SOP手册，定义了所有压缩工艺的标准流程（注册、打包、拆包）'
+- '- **__init_subclass__** = 自动登记处，每开发一种新压缩工艺就自动录入档案，方便调度'
+- '- **Q4_0/Q4_1** = 经典压缩袋，抽真空后按比例折叠整齐（对称/非对称缩放）'
+- '- **K-quant系列** = 俄罗斯套娃式压缩，先分成小盒子，再对盒子分级打包，极致利用空间'
+- '- **IQ系列** = 定制模具压缩，用预制的非均匀形状模具（网格）贴合物品原有形状'
+- '- **MXFP4/NVFP4** = 新型真空袋，专为特定行李箱（NVIDIA Blackwell GPU）设计，硬件级压缩'
+- '- **LazyNumpyTensor** = 智能快递柜，只有当你真正需要取件时才从仓库调出（惰性计算）'
+- 就像工坊师傅必须精准计算每件物品的压缩率而不弄坏它，量化算法必须在精度和体积间找到完美平衡。
+'no': 59
+summary:
+- concept: __Quant 基类
+  desc: 量化框架的抽象基类，定义注册、形状转换、惰性计算等统一接口
+- concept: __init_subclass__
+  desc: 类定义时自动注册到_type_traits字典，实现插件化架构
+- concept: init_grid
+  desc: 将hex字符串解码为float32查找表，供IQ系列反量化使用
+- concept: _apply_over_grouped_rows
+  desc: 将大数组按16行分组批量处理，平衡内存与并行效率
+- concept: Q4_0/Q4_1
+  desc: 4-bit经典量化，对称用max/-8，非对称用(max-min)/15
+- concept: Q5_0/Q5_1
+  desc: 5-bit量化，分离低4位字节与高位掩码(qh)，packbits压缩第5位
+- concept: Q8_0
+  desc: 8-bit量化，np_roundf确保与C语言舍入行为位级一致
+- concept: Q2_K~Q6_K (K-quant)
+  desc: K系列量化，采用嵌套缩放、多级编码与YaRN风格偏移，极致压缩
+- concept: get_scale_min
+  desc: Q4_K/Q5_K的静态辅助方法，解包压缩的scales和mins
+- concept: IQ_XX系列
+  desc: 非均匀量化，使用init_grid预计算网格，通过查表法反量化
+- concept: ksigns符号压缩
+  desc: 将8个符号位打包为7-bit索引，查表还原符号矩阵
+- concept: delta偏移
+  desc: IQ1_S/IQ1_M使用±0.125偏移细化零点附近精度
+- concept: TQ1_0/TQ2_0
+  desc: 三元量化（-1,0,1），利用对数级数组合打包多个值到单字节
+- concept: MXFP4 (E8M0)
+  desc: 微缩放浮点格式，8-bit指数提供动态范围，e2m1尾数节省空间
+- concept: NVFP4 (UE4M3)
+  desc: NVIDIA FP4格式，超块含64值，共享4个E4M3缩放因子
+- concept: kvalues网格
+  desc: 预定义非均匀浮点数组（如[0,0.5,1,1.5,2,3,4,6]），用于FP4类量化
+- concept: quantize/dequantize
+  desc: 全局入口函数，根据GGMLQuantizationType自动路由到对应实现类
+- concept: quant_shape_to_byte_shape
+  desc: 计算量化后的字节形状，校验块大小对齐（整除检查）
+- concept: np_roundf
+  desc: 实现远离零舍入（round half away from zero），匹配C的roundf函数
+units:
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 153-154
+    method_or_func: __Quant.__init__
+  - file: gguf-py/gguf/quants.py
+    line: 156-166
+    method_or_func: __Quant.__init_subclass__
+  - file: gguf-py/gguf/quants.py
+    line: 168-188
+    method_or_func: __Quant.init_grid
+  - file: gguf-py/gguf/quants.py
+    line: 190-193
+    method_or_func: __Quant.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 195-198
+    method_or_func: __Quant.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 200-208
+    method_or_func: __Quant.quantize_rows
+  - file: gguf-py/gguf/quants.py
+    line: 210-217
+    method_or_func: __Quant.dequantize_rows
+  - file: gguf-py/gguf/quants.py
+    line: 219-221
+    method_or_func: __Quant.__shape_to_bytes
+  - file: gguf-py/gguf/quants.py
+    line: 223-225
+    method_or_func: __Quant.__shape_from_bytes
+  - file: gguf-py/gguf/quants.py
+    line: 227-228
+    method_or_func: __Quant.__quantize_array
+  - file: gguf-py/gguf/quants.py
+    line: 230-232
+    method_or_func: __Quant.__dequantize_array
+  - file: gguf-py/gguf/quants.py
+    line: 234-235
+    method_or_func: __Quant.__quantize_lazy
+  - file: gguf-py/gguf/quants.py
+    line: 237-238
+    method_or_func: __Quant.__dequantize_lazy
+  - file: gguf-py/gguf/quants.py
+    line: 240-241
+    method_or_func: __Quant.can_quantize
+  - file: gguf-py/gguf/quants.py
+    line: 243-249
+    method_or_func: __Quant.quantize
+  - file: gguf-py/gguf/quants.py
+    line: 251-254
+    method_or_func: __Quant.dequantize
+  - file: gguf-py/gguf/quants.py
+    line: 30-39
+    method_or_func: _apply_over_grouped_rows
+  name: __Quant 基类 —— 量化框架的'万能模具'
+  'no': 1
+  points:
+  - '**注册机制的魔法**：`__init_subclass__` 如何像自动登记处一样，在子类定义时自动收集量化类型到 `_type_traits` 全局字典'
+  - '**惰性计算包装**：通过 `LazyNumpyTensor._wrap_fn` 将普通数组操作转换为支持延迟计算的代理，实现 ''按需计算'' 的内存优化'
+  - '**形状变换双生子**：`__shape_to_bytes` / `__shape_from_bytes` 负责逻辑张量形状与量化字节形状之间的转换，解决块大小对齐问题'
+  - '**批量处理策略**：`_apply_over_grouped_rows` 将大数组分组为 16 行批次处理，在内存占用与并行效率间取得平衡'
+  - '**统一接口设计**：`quantize` / `dequantize` 类方法作为总入口，根据输入类型自动路由到惰性或即时计算路径'
+  - '**网格初始化**：`init_grid` 类方法在首次使用时将十六进制字符串解码为浮点查找表，支持 IQ 系列的查表法反量化'
+  - '**生命周期控制**：`__init__` 阻止实例化，`__quantize_array`/`__dequantize_array` 管理底层数组处理流程'
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 277-283
+    method_or_func: BF16.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 285-286
+    method_or_func: BF16.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 295-309
+    method_or_func: Q4_0.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 311-320
+    method_or_func: Q4_0.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 328-344
+    method_or_func: Q4_1.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 346-357
+    method_or_func: Q4_1.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 364-380
+    method_or_func: Q5_0.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 382-395
+    method_or_func: Q5_0.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 402-420
+    method_or_func: Q5_1.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 422-438
+    method_or_func: Q5_1.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 445-458
+    method_or_func: Q8_0.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 460-465
+    method_or_func: Q8_0.dequantize_blocks
+  name: 经典量化家族 —— 整数压缩的'经典四重奏'
+  'no': 2
+  points:
+  - '**BF16 的位运算精要**：`quantize_blocks` 中通过 `np.uint64` 中间类型实现 ''round to nearest even''
+    舍入，确保与 C 语言实现位级一致'
+  - '**Q4_0 对称量化**：基于块内绝对最大值计算缩放因子 `d=max/-8`，使用 `imax` 定位极值，实现 4-bit 对称量化（带隐藏位偏移
+    8）'
+  - '**Q4_1 非对称量化**：引入最小值偏移 `m`，通过 `d=(max-min)/15` 覆盖全范围，适合分布不均的张量'
+  - '**Q5_x 的位扩展艺术**：Q5_0/Q5_1 将 32 个 5-bit 值拆分为低 4 位字节 + 高 1 位掩码（`qh`），利用 `np.packbits`
+    压缩第 5 位'
+  - '**Q8_0 精确保留**：使用 8-bit 整数存储权重，通过 `np_roundf`（远离零舍入）匹配 C 参考实现的舍入行为，误差最小但体积较大'
+  - '**字节布局规范**：所有经典格式均遵循 `[d(float16), (m), qs]` 的内存布局，其中 `qs` 为 packed 4/5/8-bit
+    整数'
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 472-494
+    method_or_func: Q2_K.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 501-536
+    method_or_func: Q3_K.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 544-563
+    method_or_func: Q4_K.get_scale_min
+  - file: gguf-py/gguf/quants.py
+    line: 565-580
+    method_or_func: Q4_K.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 587-608
+    method_or_func: Q5_K.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 615-633
+    method_or_func: Q6_K.dequantize_blocks
+  name: K-quant 系列 —— 极致压缩的'俄罗斯套娃'
+  'no': 3
+  points:
+  - '**Q2_K 的极限压缩**：将 256 个值压缩到 (QK_K//16) 字节，使用嵌套缩放（全局 `d` 和 `dmin` + 子块 `scales`），实现约
+    2.5 bit/权重'
+  - '**Q3_K 的六比特拼图**：通过位操作解包 12 字节压缩存储的 16 个 6-bit 缩放因子（高 2 位与低 4 位分离），每个子块 3-bit
+    量化'
+  - '**Q4_K/Q5_K 的共享设计**：复用 `get_scale_min` 静态方法解包压缩的 `scales` 和 `mins`（12 字节存储 8
+    组 scale+min），处理超级块（super-block）内的多级缩放'
+  - '**Q6_K 的高低拼接**：将 6-bit 拆分为低 4 位（`ql`）和高 2 位（`qh`），通过 `scales` 数组存储 16 个 int8
+    子缩放因子，平衡精度与体积'
+  - '**YaRN 风格偏移**：K 系列普遍采用 `d * q - dm` 的非对称公式，其中 `dm` 作为偏移量校正零点，优于简单对称量化'
+  - '**反量化流水线**：所有 K-quant 的 `dequantize_blocks` 遵循 ''字节拆分 → 缩放重建 → 整数解包 → 浮点合成''
+    的标准流程'
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 857-878
+    method_or_func: IQ2_XXS.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 934-966
+    method_or_func: IQ2_S.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 999-1024
+    method_or_func: IQ3_XXS.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 1061-1093
+    method_or_func: IQ3_S.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 1128-1155
+    method_or_func: IQ1_S.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 1162-1191
+    method_or_func: IQ1_M.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 1194-1204
+    method_or_func: IQ4_NL.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 1208-1230
+    method_or_func: IQ4_XS.dequantize_blocks
+  name: IQ 系列 —— 非均匀量化的'查表艺术'
+  'no': 4
+  points:
+  - '**网格查找表（Grid LUT）**：IQ 系列不使用均匀整数，而是预定义非均匀网格（如 IQ2_XXS 的 `grid_map`），通过 `init_grid`
+    将 hex 字符串解码为 float32 查找表'
+  - '**符号位压缩**：`ksigns` 数组将 8 个符号位打包为 7-bit 索引，通过 `np.take_along_axis` 快速查表还原符号矩阵'
+  - '**多层级联反量化**：IQ2_XXS 采用 `d * (0.5 + scales) * 0.25 * grid * signs` 的多级公式，分离幅度、网格形状和符号'
+  - '**IQ3_XXS 的三值网格**：扩展为 3-bit 索引，结合 `qh`（高位掩码）和 `qs`（低位）组成 9-bit 或 11-bit 索引，访问更大网格'
+  - '**Delta 偏移技巧**：IQ1_S/IQ1_M 引入 `delta` 偏移量（±0.125），通过判断 `qh` 最高位选择加/减 delta，细化零点附近精度'
+  - '**IQ4 非线性**：IQ4_NL 使用固定 `kvalues` 查找表，IQ4_XS 则结合高低位 `scales` 拆分实现更精细的缩放控制'
+  - '**非线性量化优势**：相比传统均匀量化，IQ 系列在 2-3 bit 范围能更好保留原始分布的偏态特征，减少精度损失'
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 641-660
+    method_or_func: TQ1_0.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 662-677
+    method_or_func: TQ1_0.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 684-698
+    method_or_func: TQ2_0.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 700-709
+    method_or_func: TQ2_0.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 720-723
+    method_or_func: MXFP4.e8m0_to_fp32_half
+  - file: gguf-py/gguf/quants.py
+    line: 725-744
+    method_or_func: MXFP4.quantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 746-756
+    method_or_func: MXFP4.dequantize_blocks
+  - file: gguf-py/gguf/quants.py
+    line: 765-773
+    method_or_func: NVFP4.ue4m3_to_fp32
+  - file: gguf-py/gguf/quants.py
+    line: 775-794
+    method_or_func: NVFP4.fp32_to_ue4m3
+  - file: gguf-py/gguf/quants.py
+    line: 796-806
+    method_or_func: NVFP4.dequantize_blocks
+  name: 前沿量化格式 —— 面向新硬件的'特种部队'
+  'no': 5
+  points:
+  - '**三元量化（Ternary）**：TQ1_0/TQ2_0 将权重量化为 {-1, 0, 1}，TQ1_0 使用 5 个三元组打包为 1 字节，TQ2_0
+    使用 4 个三元组打包，适合极低位宽推理'
+  - '**MXFP4 的 E8M0 指数**：采用 Open Compute Project 的 Microscaling 格式，8-bit 指数（e8m0）提供大动态范围，e2m1
+    尾数节省空间，通过 `e8m0_to_fp32_half` 转换'
+  - '**NVFP4 的 UE4M3 编码**：NVIDIA FP4 使用无符号 E4M3 格式（bias=7），通过 `ue4m3_to_fp32` 和 `fp32_to_ue4m3`
+    实现硬件级兼容转换'
+  - '**E2M1 与 K-Values**：MXFP4 和 NVFP4 均使用预定义浮点数组 `kvalues`（如 [0, 0.5, 1, 1.5, 2,
+    3, 4, 6]）作为量化网格，非线性分布优化精度'
+  - '**超块（Super-block）结构**：NVFP4 每 64 个值为一组，共享 4 个 ue4m3 缩放因子，比传统单缩放因子更灵活'
+  - '**硬件协同设计**：这些新格式直接对应 NVIDIA Blackwell 等新一代 GPU 的 FP4 张量核心，实现计算与存储的双重加速'
+- codes:
+  - file: gguf-py/gguf/quants.py
+    line: 17-21
+    method_or_func: quant_shape_to_byte_shape
+  - file: gguf-py/gguf/quants.py
+    line: 23-27
+    method_or_func: quant_shape_from_byte_shape
+  - file: gguf-py/gguf/quants.py
+    line: 113-119
+    method_or_func: quantize
+  - file: gguf-py/gguf/quants.py
+    line: 122-129
+    method_or_func: dequantize
+  - file: gguf-py/gguf/quants.py
+    line: 42-47
+    method_or_func: np_roundf
+  - file: gguf-py/gguf/quants.py
+    line: '859'
+    method_or_func: __main__
+  name: 全局入口与工具函数 —— 量化转换的'交通枢纽'
+  'no': 6
+  points:
+  - '**自动类型路由**：模块级 `quantize` / `dequantize` 函数根据 `GGMLQuantizationType` 枚举自动分发到
+    F32/F16 直接转换或 `_type_traits` 中的具体实现类'
+  - '**形状转换工具**：`quant_shape_to_byte_shape` 和 `quant_shape_from_byte_shape` 处理逻辑形状与字节形状的双向转换，校验块大小对齐'
+  - '**舍入一致性**：`np_roundf` 复现 C 语言 `roundf` 的''远离零''舍入行为，确保 Python 量化结果与 C 实现位级一致（对
+    Q8_0 等敏感格式至关重要）'
+  - '**静态数据仓库**：`__main__` 中定义的 `grid_hex`、`grid_map`、`ksigns`、`delta` 等类属性存储了 IQ
+    系列所需的全部查找表原始数据'
+  - '**错误处理策略**：对未实现的量化类型抛出 `NotImplementedError`，对无法整除块大小的形状抛出 `ValueError`，防止静默错误'
+  - '**测试与验证钩子**：通过 `_type_traits` 字典暴露所有内部实现类，便于单元测试直接调用各类的 `quantize_blocks` / `dequantize_blocks`
+    方法'
